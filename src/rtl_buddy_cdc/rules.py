@@ -1018,8 +1018,12 @@ def run_all(
     module: Module,
     crossings: list[Crossing],
     clock_spec: ClockSpec | None = None,
+    required_depth: int = 2,
 ) -> list[Violation]:
     out: list[Violation] = []
-    for rule in RULES.values():
-        out.extend(rule(module, crossings, clock_spec))
+    for rule_id, rule in RULES.items():
+        if rule_id == "CDC-002":
+            out.extend(check_cdc_002(module, crossings, clock_spec, required_depth))
+        else:
+            out.extend(rule(module, crossings, clock_spec))
     return out

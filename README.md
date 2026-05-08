@@ -112,7 +112,7 @@ If no SDC is supplied, the tool prints a structural summary and skips all rule c
 | ID | Severity | What it catches |
 |---|---|---|
 | **CDC-001** | error | Unsynchronized control crossing — destination flop has no second-stage synchronizer (chain depth = 1) |
-| **CDC-002** | warning | Insufficient synchronizer depth — chain present but shorter than the project's `required_depth` (default 2 = silent; configurable for high-speed designs that need 3+ stages) |
+| **CDC-002** | warning | Insufficient synchronizer depth — chain present but shorter than the project's `--sync-depth` (default 2 = silent; raise to 3+ for high-speed / low-MTBF designs) |
 | **CDC-003** | error | Combinational logic between source flop and synchronizer first stage — gate output can glitch and be sampled |
 | **CDC-004** | error | Multi-bit bus crossing without recognized gating or gray-coding (canonical `g = b ^ (b >> 1)` pattern detected structurally; `(* cdc_gray *)` is the explicit escape hatch) |
 | **CDC-005** | warning | Reconvergent synchronizers — one source flop fans out to multiple sync chains with independent metastability resolution |
@@ -248,10 +248,10 @@ Implemented:
 - [x] Gray-coded bus recognition for CDC-004 (canonical `g = b ^ (b >> 1)` structural detection + multi-bit 2FF chain at the destination)
 - [x] Paired positive (`good_*`) fixtures for every implemented rule
 - [x] rtl-buddy `rb cdc` / `rb cdc-regression` integration (lives in the rtl_buddy repo)
+- [x] Configurable CDC-002 sync depth via `--sync-depth N` (also accepted as `sync-depth:` under `cfg-cdc-tools` opts)
 
 Not yet:
 
-- [ ] Configurable CDC-002 sync depth — `required_depth` is parameterized in code but the CLI and rtl-buddy config entry don't yet expose `--sync-depth` / `sync-depth:`
 - [ ] SDC: `create_generated_clock`, logically-exclusive / physically-exclusive groups, `set_false_path -from/-to` as crossing hints, `set_input_delay` / `set_output_delay` for port-side domain inference
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks

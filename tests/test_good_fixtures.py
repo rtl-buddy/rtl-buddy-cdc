@@ -59,3 +59,30 @@ def test_good_fixture_has_no_violations(name: str, expected_async: int) -> None:
         f"{name}: expected zero violations, got "
         f"{[(v.rule_id, v.message) for v in violations]}"
     )
+
+
+def test_cdc_002_fires_when_required_depth_raised() -> None:
+    """A 2-stage synchronizer is silent at the default required_depth=2
+    but must fire CDC-002 when the project raises the bar to 3."""
+    name = "good_2ff_sync"
+    fix_dir = FIX_ROOT / name
+    json_path = fix_dir / f"{name}.json"
+    sdc_path = fix_dir / f"{name}.sdc"
+    if not json_path.exists():
+        pytest.skip(f"fixture not built: {json_path}")
+
+    module = netlist.load(json_path)
+    spec = sdc_mod.parse_file(sdc_path)
+    crossings = find_crossings(module)
+    async_crossings = [
+        c
+        for c in crossings
+        if spec.are_async(
+            spec.clock_for_port(c.src_clock) or c.src_clock,
+            spec.clock_for_port(c.dst_clock) or c.dst_clock,
+        )
+    ]
+
+    assert run_all_rules(module, async_crossings, spec, required_depth=2) == []
+    raised = run_all_rules(module, async_crossings, spec, required_depth=3)
+    assert len(raised) == 1 and raised[0].rule_id == "CDC-002"

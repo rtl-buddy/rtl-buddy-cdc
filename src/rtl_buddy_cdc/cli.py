@@ -40,6 +40,13 @@ _OUTPUT_OPT = typer.Option(
     "-o",
     help="Write the report to this file (default: stdout).",
 )
+_SYNC_DEPTH_OPT = typer.Option(
+    2,
+    "--sync-depth",
+    min=2,
+    help="Required synchronizer depth for CDC-002. Default 2 (rule "
+    "silent unless raised). Set to 3+ for high-speed / low-MTBF designs.",
+)
 
 
 @app.command()
@@ -72,9 +79,12 @@ def analyze(
     ),
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
+    sync_depth: int = _SYNC_DEPTH_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
-    code = _analyze_and_report(netlist_path, sdc_path, waivers_path, fmt, output_path)
+    code = _analyze_and_report(
+        netlist_path, sdc_path, waivers_path, fmt, output_path, sync_depth
+    )
     if code != 0:
         raise typer.Exit(code=code)
 
@@ -117,6 +127,7 @@ def lint(
     ),
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
+    sync_depth: int = _SYNC_DEPTH_OPT,
 ) -> None:
     """Convenience wrapper: run yosys to produce a flattened netlist,
     then analyze it. Equivalent to ``yosys -p 'read_verilog ...; \
@@ -157,7 +168,9 @@ hierarchy -top X; proc; flatten; opt_clean; write_json /tmp/out.json' \
                 typer.echo(proc.stdout.rstrip(), err=True)
             raise typer.Exit(code=2)
 
-        code = _analyze_and_report(tmp_json, sdc_path, waivers_path, fmt, output_path)
+        code = _analyze_and_report(
+            tmp_json, sdc_path, waivers_path, fmt, output_path, sync_depth
+        )
         if code != 0:
             raise typer.Exit(code=code)
     finally:
@@ -197,6 +210,7 @@ def _analyze_and_report(
     waivers_path: Path | None,
     fmt: OutputFormat,
     output_path: Path | None,
+    sync_depth: int = 2,
 ) -> int:
     """Run the analyzer on a netlist JSON and dispatch to the chosen
     reporter. Returns a process-style exit code: 0 = clean (or no SDC
@@ -213,7 +227,9 @@ def _analyze_and_report(
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
         async_crossings = _filter_async(crossings, spec)
-        violations = run_all_rules(module, async_crossings, spec)
+        violations = run_all_rules(
+            module, async_crossings, spec, required_depth=sync_depth
+        )
 
     suppressed = []
     if waivers_path is not None:
