@@ -97,7 +97,7 @@ def test_sarif_minimum_shape(result: AnalysisResult) -> None:
 def test_cli_format_dispatch_to_file(tmp_path: Path) -> None:
     """`--format json --output <file>` writes valid JSON to the file."""
     out = tmp_path / "report.json"
-    code = _analyze_and_report(JSON_PATH, SDC_PATH, OutputFormat.json, out)
+    code = _analyze_and_report(JSON_PATH, SDC_PATH, None, OutputFormat.json, out)
     assert code == 1  # one CDC-001 violation
     payload = json.loads(out.read_text())
     assert payload["summary"]["violations"] == 1

@@ -11,7 +11,7 @@ from typing import IO
 
 import typer
 
-from rtl_buddy_cdc import netlist, reporter, sdc as sdc_mod
+from rtl_buddy_cdc import netlist, reporter, sdc as sdc_mod, waivers as waivers_mod
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
 from rtl_buddy_cdc.reporter import AnalysisResult
 from rtl_buddy_cdc.rules import run_all as run_all_rules
@@ -60,11 +60,21 @@ def analyze(
         readable=True,
         help="SDC file. Optional, but rule checks need it.",
     ),
+    waivers_path: Path | None = typer.Option(
+        None,
+        "--waivers",
+        "-w",
+        exists=True,
+        readable=True,
+        help="Optional waiver file (one `waive <rule|*> <regex> [reason]` "
+        "per line). Suppressed violations are still reported but don't "
+        "drive the exit code.",
+    ),
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
-    code = _analyze_and_report(netlist_path, sdc_path, fmt, output_path)
+    code = _analyze_and_report(netlist_path, sdc_path, waivers_path, fmt, output_path)
     if code != 0:
         raise typer.Exit(code=code)
 
@@ -96,6 +106,14 @@ def lint(
         None,
         "--yosys",
         help="Path to the yosys binary (default: first `yosys` on PATH).",
+    ),
+    waivers_path: Path | None = typer.Option(
+        None,
+        "--waivers",
+        "-w",
+        exists=True,
+        readable=True,
+        help="Optional waiver file (see `analyze --help`).",
     ),
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
@@ -139,7 +157,7 @@ hierarchy -top X; proc; flatten; opt_clean; write_json /tmp/out.json' \
                 typer.echo(proc.stdout.rstrip(), err=True)
             raise typer.Exit(code=2)
 
-        code = _analyze_and_report(tmp_json, sdc_path, fmt, output_path)
+        code = _analyze_and_report(tmp_json, sdc_path, waivers_path, fmt, output_path)
         if code != 0:
             raise typer.Exit(code=code)
     finally:
@@ -176,12 +194,15 @@ def version() -> None:
 def _analyze_and_report(
     netlist_path: Path,
     sdc_path: Path | None,
+    waivers_path: Path | None,
     fmt: OutputFormat,
     output_path: Path | None,
 ) -> int:
     """Run the analyzer on a netlist JSON and dispatch to the chosen
     reporter. Returns a process-style exit code: 0 = clean (or no SDC
-    so rule checks were skipped), 1 = at least one rule violation."""
+    so rule checks were skipped), 1 = at least one *unsuppressed* rule
+    violation. Waived findings are still reported but don't fail the
+    run."""
     module = netlist.load(netlist_path)
     domains = assign_domains(module)
     crossings = find_crossings(module)
@@ -194,6 +215,11 @@ def _analyze_and_report(
         async_crossings = _filter_async(crossings, spec)
         violations = run_all_rules(module, async_crossings, spec)
 
+    suppressed = []
+    if waivers_path is not None:
+        waivers = waivers_mod.parse_file(waivers_path)
+        violations, suppressed = waivers_mod.apply(violations, waivers)
+
     result = AnalysisResult(
         module=module,
         domains=domains,
@@ -201,6 +227,7 @@ def _analyze_and_report(
         async_crossings=async_crossings,
         spec=spec,
         violations=list(violations),
+        suppressed=list(suppressed),
     )
 
     out: IO[str]

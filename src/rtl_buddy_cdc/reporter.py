@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import IO
 
 from rtl_buddy_cdc.domain import Crossing, FlopDomain
 from rtl_buddy_cdc.netlist import Module
 from rtl_buddy_cdc.rules import Violation
 from rtl_buddy_cdc.sdc import ClockSpec
+from rtl_buddy_cdc.waivers import SuppressedViolation
 
 TOOL_NAME = "rtl-buddy-cdc"
 TOOL_VERSION = "0.1.0"
@@ -38,6 +39,7 @@ class AnalysisResult:
     async_crossings: list[Crossing]
     spec: ClockSpec | None
     violations: list[Violation]
+    suppressed: list[SuppressedViolation] = field(default_factory=list)
 
 
 # --- text -------------------------------------------------------------------
@@ -78,13 +80,21 @@ def render_text(result: AnalysisResult, out: IO[str]) -> None:
     out.write(
         f"  async crossings (per SDC clock groups): {len(result.async_crossings)}\n"
     )
-    if not result.violations:
+    if result.violations:
+        out.write(f"  {len(result.violations)} violation(s):\n")
+        for v in result.violations:
+            out.write(f"    [{v.rule_id}] {v.severity}: {v.message}\n")
+    else:
         out.write("  no rule violations.\n")
-        return
 
-    out.write(f"  {len(result.violations)} violation(s):\n")
-    for v in result.violations:
-        out.write(f"    [{v.rule_id}] {v.severity}: {v.message}\n")
+    if result.suppressed:
+        out.write(f"  {len(result.suppressed)} suppressed by waivers:\n")
+        for s in result.suppressed:
+            reason = s.waiver.reason or "(no reason given)"
+            out.write(
+                f"    [{s.violation.rule_id}] suppressed: {reason} "
+                f"(waiver line {s.waiver.source_line})\n"
+            )
 
 
 # --- json -------------------------------------------------------------------
@@ -101,12 +111,25 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             "crossings": len(result.crossings),
             "async_crossings": len(result.async_crossings),
             "violations": len(result.violations),
+            "suppressed": len(result.suppressed),
         },
         "domains": [
             {"flop": fd.flop.cell.name, "clock": fd.clock} for fd in result.domains
         ],
         "crossings": [_crossing_to_dict(c) for c in result.crossings],
         "violations": [_violation_to_dict(v, result.module) for v in result.violations],
+        "suppressed": [
+            {
+                **_violation_to_dict(s.violation, result.module),
+                "waiver": {
+                    "rule_pattern": s.waiver.rule_pattern,
+                    "regex": s.waiver.regex.pattern,
+                    "reason": s.waiver.reason,
+                    "source_line": s.waiver.source_line,
+                },
+            }
+            for s in result.suppressed
+        ],
     }
     json.dump(payload, out, indent=2)
     out.write("\n")
@@ -179,6 +202,19 @@ def render_sarif(result: AnalysisResult, out: IO[str]) -> None:
     ]
 
     sarif_results = [_violation_to_sarif(v, result.module) for v in result.violations]
+    # Suppressed findings are still reported, with a SARIF
+    # ``suppressions`` field so consumers (e.g. GitHub Code Scanning)
+    # know they were intentionally hushed.
+    for s in result.suppressed:
+        entry = _violation_to_sarif(s.violation, result.module)
+        entry["suppressions"] = [
+            {
+                "kind": "external",
+                "status": "accepted",
+                "justification": s.waiver.reason or "waived",
+            }
+        ]
+        sarif_results.append(entry)
 
     sarif = {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
