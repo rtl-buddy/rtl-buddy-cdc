@@ -68,6 +68,52 @@ def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str, int]]:
 _OUTPUT_PINS: frozenset[str] = frozenset({"Y", "Q"})
 
 
+def _backward_fanin(
+    module: Module,
+    start_bits: tuple[Bit, ...],
+    drivers: dict[Bit, tuple[str, str, int]],
+    max_depth: int = 12,
+) -> tuple[set[str], set[str]]:
+    """Reverse-BFS through combinational cells.
+
+    Returns ``(flop_cell_names, input_port_names)`` — every flop ``Q``
+    and every top-level *input* port reached. Useful when a rule needs
+    to distinguish "the upstream is a registered flop" from "the
+    upstream is an external pin".
+    """
+    flops: set[str] = set()
+    ports: set[str] = set()
+    seen: set[Bit] = set()
+    frontier: list[tuple[Bit, int]] = [(b, 0) for b in start_bits if isinstance(b, int)]
+    while frontier:
+        nxt: list[tuple[Bit, int]] = []
+        for bit, depth in frontier:
+            if bit in seen:
+                continue
+            seen.add(bit)
+            drv = drivers.get(bit)
+            if drv is None:
+                port = module.port_of_bit(bit)
+                if port is not None and port.direction == "input":
+                    ports.add(port.name)
+                continue
+            cell_name, port_name, _idx = drv
+            cell = module.cells[cell_name]
+            if port_name == "Q":
+                flops.add(cell_name)
+                continue
+            if depth >= max_depth:
+                continue
+            for in_port, in_bits in cell.connections.items():
+                if in_port in _OUTPUT_PINS:
+                    continue
+                for b in in_bits:
+                    if isinstance(b, int):
+                        nxt.append((b, depth + 1))
+        frontier = nxt
+    return flops, ports
+
+
 def _backward_flop_fanin(
     module: Module,
     start_bits: tuple[Bit, ...],
@@ -490,6 +536,69 @@ def check_cdc_005(
     return violations
 
 
+def check_cdc_006(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+) -> list[Violation]:
+    """CDC-006 — Glitchy combinational source on a control crossing.
+
+    Fires when a synchronizer first stage's ``D`` pin traces back —
+    through combinational logic only — to one or more top-level input
+    ports without an intervening source-domain flop. The synchronizer
+    can therefore sample a transient comb-output value that never
+    represented a stable input state.
+
+    A "synchronizer first stage" here is a flop with chain depth >= 2
+    in its own clock domain (so CDC-001 doesn't already cover the
+    case). Top-level ports declared as clocks in the SDC are
+    intentionally ignored — they aren't logic data, just a clock
+    signal whose level is irrelevant to data correctness.
+    """
+    violations: list[Violation] = []
+    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    q_to_flop = _q_to_flop(module)
+    drivers = _bit_drivers(module)
+    reader_counts = _bit_reader_count(module)
+
+    clock_ports: set[str] = set()
+    if clock_spec is not None:
+        for clk in clock_spec.clocks.values():
+            clock_ports.update(clk.ports)
+
+    for f in find_flops(module):
+        my_clk = domains.get(f.cell.name)
+        if my_clk is None:
+            continue
+        # We only fire on flops that are bona fide synchronizer first
+        # stages — i.e. the chain on the destination side is >= 2.
+        depth = _sync_chain_depth(module, f, my_clk, domains, q_to_flop, reader_counts)
+        if depth < 2:
+            continue
+        fanin_flops, fanin_ports = _backward_fanin(module, f.d, drivers)
+        # If a real source-domain flop exists in the fanin, this
+        # crossing is already covered by CDC-001/-002/-003 logic.
+        if fanin_flops:
+            continue
+        ungated_ports = sorted(p for p in fanin_ports if p not in clock_ports)
+        if not ungated_ports:
+            continue
+        violations.append(
+            Violation(
+                rule_id="CDC-006",
+                severity="error",
+                message=(
+                    f"glitchy combinational source on synchronizer "
+                    f"{f.cell.name} (clk={my_clk}): D pin is driven "
+                    f"by combinational logic with no registering flop, "
+                    f"reaching unregistered top-level port(s): "
+                    f"{', '.join(ungated_ports)}"
+                ),
+            )
+        )
+    return violations
+
+
 def check_cdc_007(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -560,6 +669,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-003": check_cdc_003,
     "CDC-004": check_cdc_004,
     "CDC-005": check_cdc_005,
+    "CDC-006": check_cdc_006,
     "CDC-007": check_cdc_007,
 }
 
