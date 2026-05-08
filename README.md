@@ -14,6 +14,8 @@ CDC bugs are notoriously hard to catch in simulation and devastating in silicon.
 
 ## Architecture
 
+For the full reference (data model, pipeline, rule helpers, extension points), see [`docs/architecture.md`](docs/architecture.md). The summary below is the elevator pitch.
+
 `rtl-buddy-cdc` is a **pure analyzer**. It does not invoke Yosys itself in its primary mode — elaboration and netlist generation are the caller's responsibility. The standalone `lint` wrapper does shell out to yosys for convenience, but the core `analyze` entry point takes a pre-elaborated netlist as input.
 
 ```
