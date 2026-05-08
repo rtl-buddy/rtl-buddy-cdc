@@ -9,6 +9,7 @@ done.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
@@ -427,6 +428,68 @@ def check_cdc_004(
     return violations
 
 
+def check_cdc_005(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+) -> list[Violation]:
+    """CDC-005 — Reconvergent synchronizers.
+
+    Fires when a single source-domain flop fans out to two or more
+    *independent* synchronizer chains in the same destination domain.
+    Each chain individually filters metastability, but their resolution
+    times can differ by a destination cycle, so any downstream logic
+    that recombines the synchronized outputs may observe a value pair
+    that was never simultaneously true at the source.
+
+    The MVP detection is purely structural: it groups single-bit
+    crossings by ``(src_flop, dst_clock)`` and reports when a single
+    source feeds two-or-more sync first stages. We deliberately don't
+    try (yet) to prove that the recombination actually happens
+    downstream — having the redundant synchronizers is itself a code
+    smell worth surfacing.
+    """
+    violations: list[Violation] = []
+    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    q_to_flop = _q_to_flop(module)
+    reader_counts = _bit_reader_count(module)
+
+    # Group single-bit, properly synchronized crossings by source flop
+    # + destination domain. We require depth>=2 so we don't double-fire
+    # against CDC-001 (the depth==1 cases will be reported there).
+    grouped: dict[tuple[str, str], list[Crossing]] = defaultdict(list)
+    for c in crossings:
+        if c.width != 1:
+            continue
+        depth = _sync_chain_depth(
+            module, c.dst_flop, c.dst_clock, domains, q_to_flop, reader_counts
+        )
+        if depth < 2:
+            continue
+        grouped[(c.src_flop.cell.name, c.dst_clock)].append(c)
+
+    for (src_name, dst_clk), group in grouped.items():
+        if len(group) < 2:
+            continue
+        dst_names = sorted(c.dst_flop.cell.name for c in group)
+        violations.append(
+            Violation(
+                rule_id="CDC-005",
+                severity="warning",
+                message=(
+                    f"reconvergent synchronizers: source flop "
+                    f"{src_name} drives {len(group)} independent sync "
+                    f"chains in domain {dst_clk} (dst flops: "
+                    f"{', '.join(dst_names)}); independent metastability "
+                    f"resolution can produce mismatched synchronized "
+                    f"values when these outputs recombine"
+                ),
+                crossing=group[0],
+            )
+        )
+    return violations
+
+
 def check_cdc_007(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -496,6 +559,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-002": check_cdc_002,
     "CDC-003": check_cdc_003,
     "CDC-004": check_cdc_004,
+    "CDC-005": check_cdc_005,
     "CDC-007": check_cdc_007,
 }
 

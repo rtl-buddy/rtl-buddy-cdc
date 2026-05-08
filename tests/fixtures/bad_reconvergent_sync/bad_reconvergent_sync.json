@@ -1,0 +1,288 @@
+{
+  "creator": "Yosys 0.64 (git sha1 1d5b3aaa2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_reconvergent_sync": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:11.1-53.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$and$tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:51$12": {
+          "hide_name": 1,
+          "type": "$and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:51.20-51.40"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "B": [ 8 ],
+            "Y": [ 6 ]
+          }
+        },
+        "$not$tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:51$11": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:51.31-51.40"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 9 ],
+            "Y": [ 8 ]
+          }
+        },
+        "$procdff$17": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:43.5-46.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 10 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$procdff$22": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:39.5-42.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 11 ],
+            "Q": [ 10 ]
+          }
+        },
+        "$procdff$27": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:35.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 12 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procdff$32": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:31.5-34.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 11 ],
+            "Q": [ 12 ]
+          }
+        },
+        "$procdff$37": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:20.5-23.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 11 ]
+          }
+        }
+      },
+      "netnames": {
+        "$not$tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:51$11_Y": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:51.31-51.40"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:15.18-15.22"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:13.18-13.25"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:16.18-16.23"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:14.18-14.23"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:12.18-12.25"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:19.11-19.16"
+          }
+        },
+        "sync_a_meta": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:29.11-29.22"
+          }
+        },
+        "sync_a_q": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:29.24-29.32"
+          }
+        },
+        "sync_b_meta": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:30.11-30.22"
+          }
+        },
+        "sync_b_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_reconvergent_sync/bad_reconvergent_sync.sv:30.24-30.32"
+          }
+        }
+      }
+    }
+  }
+}
