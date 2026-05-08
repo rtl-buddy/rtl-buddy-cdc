@@ -1,0 +1,39 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/test.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/test.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install test dependencies
+        run: uv sync --group test --python ${{ matrix.python-version }}
+
+      - name: Run pytest
+        run: uv run pytest -q

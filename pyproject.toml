@@ -3,11 +3,12 @@ name = "rtl-buddy-cdc"
 version = "0.1.0"
 description = "CDC (clock domain crossing) linting tool for RTL designs, Yosys-backed, integrates with rtl-buddy."
 readme = "README.md"
-license = { text = "BSD-3-Clause" }
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
 authors = [
     { name = "Loh Zhi-Hern", email = "expsg-hern@users.noreply.github.com" }
 ]
-requires-python = ">=3.14"
 dependencies = [
     "typer>=0.25.1",
 ]
@@ -18,3 +19,26 @@ rtl-buddy-cdc = "rtl_buddy_cdc:main"
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+lint = [
+    "ruff>=0.11.0",
+]
+test = [
+    "pytest>=9.0.3",
+]
+dev = [
+    { include-group = "lint" },
+    { include-group = "test" },
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["F", "E7", "E9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
