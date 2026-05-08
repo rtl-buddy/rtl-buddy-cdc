@@ -4,7 +4,7 @@ Python-based open-source CDC (Clock Domain Crossing) linting tool for RTL design
 
 ## Status
 
-MVP usable. Eight rules implemented (CDC-001 through CDC-008), three output formats (text / JSON / SARIF), waiver-file suppression, and a `(* cdc_sync *)` SV attribute for user-vetted synchronizers. Tested against paired *bad / good* RTL fixtures for each rule.
+MVP usable. Eight rules implemented (CDC-001 through CDC-008), three output formats (text / JSON / SARIF), waiver-file suppression, `(* cdc_sync *)` / `(* cdc_gray *)` SV attributes for user-vetted synchronizers and gray-coded buses, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Tested against paired *bad / good* RTL fixtures for each rule.
 
 Known gaps and roadmap items are tracked at the end of this README.
 
@@ -114,7 +114,7 @@ If no SDC is supplied, the tool prints a structural summary and skips all rule c
 | **CDC-001** | error | Unsynchronized control crossing — destination flop has no second-stage synchronizer (chain depth = 1) |
 | **CDC-002** | warning | Insufficient synchronizer depth — chain present but shorter than the project's `required_depth` (default 2 = silent; configurable for high-speed designs that need 3+ stages) |
 | **CDC-003** | error | Combinational logic between source flop and synchronizer first stage — gate output can glitch and be sampled |
-| **CDC-004** | error | Multi-bit bus crossing without recognized gating or gray-coding |
+| **CDC-004** | error | Multi-bit bus crossing without recognized gating or gray-coding (canonical `g = b ^ (b >> 1)` pattern detected structurally; `(* cdc_gray *)` is the explicit escape hatch) |
 | **CDC-005** | warning | Reconvergent synchronizers — one source flop fans out to multiple sync chains with independent metastability resolution |
 | **CDC-006** | error | Glitchy combinational source — synchronizer is fed by combinational logic with no registering flop, reaching unregistered top-level ports |
 | **CDC-007** | error | Async reset crossing — flop's `ARST` is driven by a flop in a different async clock domain, no reset synchronizer |
@@ -165,35 +165,42 @@ The regex is matched against the offending cell name, the canonical `"src_flop -
 Mark a flop as a user-vetted synchronizer first stage by attaching an attribute to the wire/reg it drives:
 
 ```sv
-(* cdc_sync *) logic dst_q;             // canonical
+(* cdc_sync *) logic dst_q;             // canonical synchronizer first stage
 (* synchronizer *) logic dst_q;         // alias
-(* async_reg = "TRUE" *) logic dst_q;   // Vivado-compatible
+(* async_reg = "TRUE" *) logic dst_q;   // Vivado-compatible alias
+(* cdc_gray *) logic [N-1:0] src_bus;   // source bus is gray-coded
+(* gray_code *) logic [N-1:0] src_bus;  // alias
 ```
 
-Marked flops are skipped by CDC-001, -002, -003, and -006 — the user has taken responsibility for the synchronizer's structure. CDC-004 (bus crossings) and CDC-005 (reconvergence) deliberately keep firing — those failure modes don't depend on individual sync-shape correctness.
+`cdc_sync` / aliases mark a flop as a vetted synchronizer first stage — skipped by CDC-001, -002, -003, and -006. CDC-004 (bus crossings) and CDC-005 (reconvergence) still fire — those failure modes don't depend on individual sync-shape correctness.
+
+`cdc_gray` / `gray_code` mark a source bus as gray-coded so CDC-004 accepts it as a safe multi-bit crossing without needing the structural detector to find the canonical XOR-shift shape.
 
 Yosys preserves SV attributes on the netname rather than the cell, so the analyzer maps tagged bits back to the originating flop's `Q` pin.
 
 ## Integration with rtl-buddy
 
-The intent is for rtl-buddy to own Yosys invocation and feed the resulting netlist JSON to the analyzer. Sketch of the config entry (sibling of the existing synth tool entry in `root_config.yaml`):
+`rtl-buddy` owns Yosys invocation and feeds the resulting netlist JSON to the analyzer. Two subcommands are exposed:
+
+- `rb cdc -c lint/cdc/cdc.yaml` — run all CDC analyses listed in the config.
+- `rb cdc-regression -c lint/cdc/cdc_regression.yaml` — regression-style runner over multiple suites.
+
+A CDC config entry looks like:
 
 ```yaml
-cfg-cdc-tools:
-  - name: "rtl-buddy-cdc"
+# lint/cdc/cdc.yaml
+rtl-buddy-filetype: cdc_config
+analyses:
+  - name: "ip_cdc_handshake_lint"
+    desc: "CDC lint of the handshake IP"
+    model: "ip_cdc_handshake"
+    model_path: "../../design/common/models.yaml"
     tool: "rtl-buddy-cdc"
-    opts:
-      sdc: "constraints.sdc"
-      waivers: "cdc.waivers"
-      sync-depth: 2
+    constraints: "ip_cdc_handshake.sdc"
+    waivers: "ip_cdc_handshake.waivers"   # optional
 ```
 
-The corresponding `rb cdc` subcommand will:
-
-1. Run Yosys (`hierarchy -top <top>; proc; flatten; opt_clean; write_json <out>`) using the same Yosys plumbing as `rb synth`.
-2. Invoke `rtl-buddy-cdc analyze --netlist <out> --sdc <sdc> --waivers <…>` and surface the report.
-
-This integration lives in the [rtl_buddy](https://github.com/rtl-buddy/rtl_buddy) repo and is not yet implemented.
+`rb cdc` resolves the model, runs Yosys (`hierarchy -top <top>; proc; flatten; opt_clean; write_json <out>`) using the same plumbing as `rb synth`, then invokes `rtl-buddy-cdc analyze`. Working examples live under [rtl-buddy-project-template](https://github.com/rtl-buddy/rtl-buddy-project-template/tree/main/lint/cdc).
 
 ## Requirements
 
@@ -237,16 +244,22 @@ Implemented:
 - [x] `lint` standalone wrapper (yosys → analyzer)
 - [x] Text / JSON / SARIF reporters with source locations
 - [x] Waiver file suppression
-- [x] `(* cdc_sync *)` SV-attribute support
+- [x] `(* cdc_sync *)` and `(* cdc_gray *)` SV-attribute support
+- [x] Gray-coded bus recognition for CDC-004 (canonical `g = b ^ (b >> 1)` structural detection + multi-bit 2FF chain at the destination)
 - [x] Paired positive (`good_*`) fixtures for every implemented rule
+- [x] rtl-buddy `rb cdc` / `rb cdc-regression` integration (lives in the rtl_buddy repo)
 
 Not yet:
 
-- [ ] `create_generated_clock`, logically-exclusive groups, false-path-as-async hints
-- [ ] Gray-coded counter recognition for CDC-004 (currently only handshake gating is accepted)
-- [ ] CDC-006 / CDC-007 refinements (multi-source reset synchronizer recognition; comb-source severity tuning)
-- [ ] rtl-buddy `cfg-cdc-tools` config entry + `rb cdc` subcommand (lives in the rtl_buddy repo)
-- [ ] In-RTL `// rtl-buddy-cdc disable-rule …` pragma comments (Spyglass-style block suppression)
+- [ ] Configurable CDC-002 sync depth — `required_depth` is parameterized in code but the CLI and rtl-buddy config entry don't yet expose `--sync-depth` / `sync-depth:`
+- [ ] SDC: `create_generated_clock`, logically-exclusive / physically-exclusive groups, `set_false_path -from/-to` as crossing hints, `set_input_delay` / `set_output_delay` for port-side domain inference
+- [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
+- [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
+- [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
+- [ ] In-RTL pragma comments (`// rtl-buddy-cdc disable-rule …`, Spyglass-style block suppression) for inline waiving without an external file
+- [ ] Hierarchical reporting — group violations by module instance for large designs
+- [ ] Pulse-width / fast-to-slow data-loss checks (CDC-009-class: data on src_clk shorter than one dst_clk period)
+- [ ] Glitch detection on data path through async muxes / clock-gate enables
 
 ## License
 
