@@ -1,11 +1,10 @@
 """Assign each flop to a clock domain and find register-to-register CDC paths.
 
-For an MVP analyzer working on flattened netlists we make a simple but
-load-bearing assumption: every flop's CLK pin connects directly to a
-top-level clock port. This holds for the canonical golden fixture and
-for most hand-written RTL. Real designs can route clocks through gates
-(clock muxes, ICGs) — that's a follow-up: ``trace_clock_root`` is the
-hook where we'll grow that walk.
+The clock-domain assignment walks each flop's ``CLK`` net backward
+through buffers, inverters, integrated clock gates, and clock-divider
+flops to find the originating top-level clock port. Direct
+port-to-flop wiring is the trivial case; everything else uses the
+small heuristic in :func:`trace_clock_root`.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from rtl_buddy_cdc.flops import Flop, find_flops
+from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
 
 
@@ -43,21 +42,131 @@ class Crossing:
     width: int
 
 
-def trace_clock_root(module: Module, bit: Bit) -> str | None:
-    """Resolve a CLK net bit to the top-level port driving it.
+# Cell types that act as a transparent buffer on the clock network —
+# inversion is irrelevant to clock-domain identity.
+_BUFFER_TYPES: frozenset[str] = frozenset(
+    {"$not", "$logic_not", "$buf", "$pos", "$reduce_bool", "$_BUF_", "$_NOT_"}
+)
+# Cell types that combine two clock-network signals (one is the actual
+# clock, the other an enable) — common ICG shapes.
+_GATE_TYPES: frozenset[str] = frozenset(
+    {"$and", "$or", "$logic_and", "$logic_or", "$xor", "$xnor"}
+)
+# Cell types that select one of several clock candidates.
+_MUX_TYPES: frozenset[str] = frozenset({"$mux", "$pmux"})
 
-    Currently only the trivial direct-port case is handled. Cells in the
-    path return ``None``, which the caller treats as "domain unknown".
+
+def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str]]:
+    """Map each net bit to the ``(cell_name, output_port)`` that drives it.
+
+    Yosys combinational primitives emit on ``Y``; FFs emit on ``Q``.
+    Top-level input ports are not represented here — callers fall back
+    to :meth:`Module.port_of_bit` for those.
     """
+    out: dict[Bit, tuple[str, str]] = {}
+    for cell in module.cells.values():
+        for port_name in ("Y", "Q"):
+            for b in cell.connections.get(port_name, ()):
+                if isinstance(b, int):
+                    out[b] = (cell.name, port_name)
+    return out
+
+
+def trace_clock_root(
+    module: Module,
+    bit: Bit,
+    drivers: dict[Bit, tuple[str, str]] | None = None,
+    max_depth: int = 16,
+) -> str | None:
+    """Resolve a CLK net bit to the top-level port that ultimately drives it.
+
+    Handles common clock-network shapes:
+
+    - direct top-level port (the trivial case),
+    - single-input buffers and inverters (transparent),
+    - two-input clock gates (``$and``/``$or``…) where exactly one of
+      the inputs traces back to a clock port — the other is treated
+      as the gate's enable,
+    - clock muxes — both candidate roots are explored, the first one
+      that resolves wins (the analyzer can't statically know which
+      side ``S`` selects),
+    - clock dividers — a flop's ``Q`` is followed back to the flop's
+      own ``CLK`` pin, which is the upstream clock root.
+
+    Returns ``None`` when no candidate root resolves within
+    ``max_depth`` cells; the caller treats that as "domain unknown".
+    """
+    if drivers is None:
+        drivers = _bit_drivers(module)
+    seen: set[Bit] = set()
+    return _trace(module, bit, drivers, seen, max_depth)
+
+
+def _trace(
+    module: Module,
+    bit: Bit,
+    drivers: dict[Bit, tuple[str, str]],
+    seen: set[Bit],
+    depth: int,
+) -> str | None:
+    if not isinstance(bit, int) or depth <= 0 or bit in seen:
+        return None
+    seen.add(bit)
+
     port = module.port_of_bit(bit)
     if port is not None and port.direction == "input":
         return port.name
+
+    drv = drivers.get(bit)
+    if drv is None:
+        return None
+    cell_name, out_port = drv
+    cell = module.cells[cell_name]
+    ctype = cell.type
+
+    # Transparent through single-input cells.
+    if ctype in _BUFFER_TYPES:
+        a = cell.connections.get("A", ())
+        if a:
+            return _trace(module, a[0], drivers, seen, depth - 1)
+        return None
+
+    # Clock gate — look at both inputs; if exactly one resolves to a
+    # clock port, that's our root. If both resolve, the cell is
+    # combining two clock domains and we (conservatively) pick the
+    # first; a stricter check would emit a violation, but we leave
+    # that to a future rule.
+    if ctype in _GATE_TYPES:
+        a = cell.connections.get("A", (None,))
+        b = cell.connections.get("B", (None,))
+        a_root = _trace(module, a[0], drivers, set(seen), depth - 1) if a else None
+        b_root = _trace(module, b[0], drivers, set(seen), depth - 1) if b else None
+        return a_root or b_root
+
+    # Clock mux — return whichever side resolves.
+    if ctype in _MUX_TYPES:
+        for in_port in ("A", "B"):
+            in_bits = cell.connections.get(in_port, ())
+            if in_bits:
+                root = _trace(module, in_bits[0], drivers, set(seen), depth - 1)
+                if root is not None:
+                    return root
+        return None
+
+    # Clock divider — flop Q output. Trace the source flop's CLK back
+    # to its root.
+    if ctype in FF_CELL_TYPES and out_port == "Q":
+        clk_bits = cell.connections.get("CLK", ())
+        if clk_bits:
+            return _trace(module, clk_bits[0], drivers, seen, depth - 1)
+
     return None
 
 
 def assign_domains(module: Module) -> list[FlopDomain]:
+    drivers = _bit_drivers(module)
     return [
-        FlopDomain(flop=f, clock=trace_clock_root(module, f.clk))
+        FlopDomain(flop=f, clock=trace_clock_root(module, f.clk, drivers))
         for f in find_flops(module)
     ]
 

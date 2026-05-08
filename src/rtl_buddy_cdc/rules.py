@@ -599,6 +599,48 @@ def check_cdc_006(
     return violations
 
 
+def _clock_network_cells(
+    module: Module,
+    drivers: dict[Bit, tuple[str, str, int]],
+) -> set[str]:
+    """Cells whose output transitively drives some flop's ``CLK`` pin.
+
+    These cells form the legitimate clock-distribution network
+    (buffers, ICGs, clock muxes, dividers, etc.); reading a clock
+    signal on one of their input pins is *expected*, not a bug.
+    Used by CDC-008 to suppress false positives on intentional clock
+    gating / muxing structures.
+    """
+    cells: set[str] = set()
+    seen_bits: set[Bit] = set()
+    frontier: list[Bit] = []
+    for f in find_flops(module):
+        if isinstance(f.clk, int):
+            frontier.append(f.clk)
+    while frontier:
+        nxt: list[Bit] = []
+        for bit in frontier:
+            if bit in seen_bits:
+                continue
+            seen_bits.add(bit)
+            drv = drivers.get(bit)
+            if drv is None:
+                continue
+            cell_name, _out_port, _idx = drv
+            if cell_name in cells:
+                continue
+            cells.add(cell_name)
+            cell = module.cells[cell_name]
+            for in_port, in_bits in cell.connections.items():
+                if in_port in _OUTPUT_PINS:
+                    continue
+                for b in in_bits:
+                    if isinstance(b, int):
+                        nxt.append(b)
+        frontier = nxt
+    return cells
+
+
 def check_cdc_008(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -608,14 +650,15 @@ def check_cdc_008(
 
     Fires when a bit that drives any flop's ``CLK`` pin (or that's
     declared as a clock in the SDC) is also wired into a non-clock
-    pin: a flop ``D``/``ARST``, a combinational input, etc.
+    pin on a cell that isn't part of the clock-distribution network.
 
     Clocks ride on dedicated low-skew networks; sampling them as data
     delivers the high-frequency edge toggle, breaks STA, and almost
-    always indicates a wiring mistake. Reading a clock on its own CLK
-    pin is fine — that's what clock pins are for. Driving a top-level
-    *output* with a clock (e.g. forwarding it off-chip) is also fine
-    and intentionally not flagged here.
+    always indicates a wiring mistake. The CLK pin itself, cells on
+    the clock network (buffers, ICGs, clock muxes, dividers — anything
+    whose output transitively drives a flop CLK), and top-level
+    *output* ports (forwarding a clock off-chip) are intentionally
+    not flagged.
     """
     violations: list[Violation] = []
 
@@ -644,12 +687,19 @@ def check_cdc_008(
         port = module.port_of_bit(bit)
         return port.name if port is not None else f"net@{bit}"
 
+    # Compute the clock-distribution network once: every cell whose
+    # output eventually feeds some flop CLK is exempt.
+    drivers = _bit_drivers(module)
+    clock_net_cells = _clock_network_cells(module, drivers)
+
     # Walk every cell connection and report each (clock_bit, cell, pin)
     # triple where the bit appears on a non-CLK input pin. We dedupe
     # at the (bit, cell, pin) granularity so a multi-bit pin reporting
     # the same clock once doesn't blow up to N violations.
     seen: set[tuple[Bit, str, str]] = set()
     for cell in module.cells.values():
+        if cell.name in clock_net_cells:
+            continue
         for port_name, bits in cell.connections.items():
             if port_name == "CLK" or port_name in _OUTPUT_PINS:
                 continue
