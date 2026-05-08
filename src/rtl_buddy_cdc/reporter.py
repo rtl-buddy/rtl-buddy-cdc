@@ -13,7 +13,10 @@ remain unit-testable in isolation.
 from __future__ import annotations
 
 import json
+import os
 import re
+import textwrap
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import IO
 
@@ -26,6 +29,19 @@ from rtl_buddy_cdc.waivers import SuppressedViolation
 TOOL_NAME = "rtl-buddy-cdc"
 TOOL_VERSION = "0.1.0"
 TOOL_INFO_URI = "https://github.com/rtl-buddy/rtl-buddy-cdc"
+
+# Short-form descriptions per rule. Keep this terse — the long-form
+# message is already attached to each result.
+_RULE_DESCRIPTIONS: dict[str, str] = {
+    "CDC-001": "Unsynchronized control crossing (no second-stage flop)",
+    "CDC-002": "Insufficient synchronizer depth",
+    "CDC-003": "Combinational logic before synchronizer first stage",
+    "CDC-004": "Bus crossing without gating or gray-coding",
+    "CDC-005": "Reconvergent synchronizers",
+    "CDC-006": "Glitchy combinational source on a control crossing",
+    "CDC-007": "Async reset crossing without a reset synchronizer",
+    "CDC-008": "Clock signal used as data",
+}
 
 
 @dataclass(frozen=True)
@@ -44,57 +60,223 @@ class AnalysisResult:
 
 # --- text -------------------------------------------------------------------
 
+# Visual width for the header banner. Picked to fit comfortably in 80-
+# column terminals; longer module names overflow gracefully.
+_HEADER_WIDTH = 80
+# Width to wrap violation message bodies at. The 4-space body indent
+# eats into 80, so we wrap at 76 - 6 = 70.
+_BODY_WIDTH = 70
 
-def render_text(result: AnalysisResult, out: IO[str]) -> None:
-    out.write(f"module: {result.module.name}\n")
-    out.write(f"  ports: {len(result.module.ports)}\n")
-    out.write(f"  cells: {len(result.module.cells)}\n")
-    out.write(f"  flops: {len(result.domains)}\n")
 
+@dataclass(frozen=True)
+class _Style:
+    """ANSI escape sequences (or empty strings when color is disabled).
+
+    Only used by ``render_text``; the JSON / SARIF outputs are color-
+    free by definition. The toggle is a runtime check on the output
+    stream's tty-ness, with a respect for the ``NO_COLOR`` convention
+    (https://no-color.org/) and an explicit ``color`` argument that
+    callers can use to override.
+    """
+
+    bold: str = ""
+    dim: str = ""
+    red: str = ""
+    yellow: str = ""
+    green: str = ""
+    cyan: str = ""
+    reset: str = ""
+
+    @classmethod
+    def for_stream(cls, stream: IO[str], force: bool | None = None) -> "_Style":
+        if force is False:
+            return cls()
+        if force is None:
+            if os.environ.get("NO_COLOR") is not None:
+                return cls()
+            if not getattr(stream, "isatty", lambda: False)():
+                return cls()
+        return cls(
+            bold="\033[1m",
+            dim="\033[2m",
+            red="\033[31m",
+            yellow="\033[33m",
+            green="\033[32m",
+            cyan="\033[36m",
+            reset="\033[0m",
+        )
+
+
+def render_text(
+    result: AnalysisResult,
+    out: IO[str],
+    *,
+    verbose: bool = False,
+    color: bool | None = None,
+) -> None:
+    """Render a human-readable report.
+
+    ``verbose`` enables the per-crossing structural listing (off by
+    default — clean runs print only the design-level summary).
+
+    ``color`` is tri-state:
+        - ``None`` (default): ANSI on a TTY, off otherwise / under
+          ``NO_COLOR``.
+        - ``True`` / ``False``: explicit override.
+    """
+    s = _Style.for_stream(out, force=color)
+    _render_header(result, out, s)
+    _render_design_summary(result, out, s, verbose=verbose)
+    if result.spec is None:
+        out.write(
+            f"\n{s.yellow}No SDC supplied — every cross-clock crossing is "
+            f"treated as synchronous and rule checks are skipped.{s.reset}\n"
+        )
+        return
+    _render_violations(result, out, s)
+    _render_suppressed(result, out, s)
+
+
+def _render_header(result: AnalysisResult, out: IO[str], s: _Style) -> None:
+    has_violations = bool(result.violations)
+    if result.spec is None:
+        verdict = "SKIP"
+        verdict_color = s.yellow
+    elif has_violations:
+        verdict = "FAIL"
+        verdict_color = s.red
+    else:
+        verdict = "PASS"
+        verdict_color = s.green
+    left = f"{TOOL_NAME} {TOOL_VERSION} — {result.module.name}"
+    pad = max(1, _HEADER_WIDTH - len(left) - len(verdict))
+    out.write(
+        f"{s.bold}{left}{s.reset}{' ' * pad}{verdict_color}{s.bold}{verdict}{s.reset}\n"
+    )
+
+
+def _render_design_summary(
+    result: AnalysisResult, out: IO[str], s: _Style, *, verbose: bool
+) -> None:
+    out.write(f"\n{s.bold}Design{s.reset}\n")
+
+    # ports / cells / flops on one compact line; per-domain breakdown
+    # appended in parens.
     by_clock: dict[str | None, int] = {}
     for fd in result.domains:
         by_clock[fd.clock] = by_clock.get(fd.clock, 0) + 1
-    for clk, n in sorted(by_clock.items(), key=lambda x: (x[0] is None, x[0] or "")):
-        label = clk if clk is not None else "<unresolved>"
-        out.write(f"    domain {label}: {n} flop(s)\n")
+    domain_parts = [
+        f"{n} {clk if clk is not None else '<unresolved>'}"
+        for clk, n in sorted(by_clock.items(), key=lambda x: (x[0] is None, x[0] or ""))
+    ]
+    flop_str = f"{len(result.domains)} flops"
+    if domain_parts:
+        flop_str += f" ({', '.join(domain_parts)})"
+    out.write(
+        f"  {len(result.module.ports)} ports · "
+        f"{len(result.module.cells)} cells · {flop_str}\n"
+    )
 
-    out.write(f"  crossings (different clock): {len(result.crossings)}\n")
-    for c in result.crossings:
-        out.write(
-            f"    {c.src_clock} → {c.dst_clock}  "
-            f"({c.src_name} → {c.dst_flop.name}, "
-            f"width={c.width}, min_hops={c.min_hops})\n"
+    # Crossings line.
+    cross_summary = f"{len(result.crossings)} cross-domain crossings detected"
+    if result.spec is not None:
+        cross_summary += f" ({len(result.async_crossings)} async per SDC)"
+    if result.spec is not None:
+        cross_summary += (
+            f" · SDC: {len(result.spec.clocks)} clocks, "
+            f"{len(result.spec.async_groups)} async group"
+            f"{'s' if len(result.spec.async_groups) != 1 else ''}"
         )
+    out.write(f"  {cross_summary}\n")
 
-    if result.spec is None:
-        out.write(
-            "  no SDC supplied — skipping rule checks "
-            "(every cross-clock crossing is treated as synchronous)\n"
-        )
+    if verbose and result.crossings:
+        out.write(f"\n{s.dim}  Crossings:{s.reset}\n")
+        for c in result.crossings:
+            tag = ""
+            if c.is_port_sourced:
+                tag = f" {s.dim}(port-sourced){s.reset}"
+            out.write(
+                f"    {c.src_clock} → {c.dst_clock}  "
+                f"{c.src_name} → {c.dst_flop.name}  "
+                f"{s.dim}width={c.width} hops={c.min_hops}{s.reset}{tag}\n"
+            )
+
+
+def _render_violations(result: AnalysisResult, out: IO[str], s: _Style) -> None:
+    if not result.violations:
+        out.write(f"\n{s.green}No rule violations.{s.reset}\n")
         return
 
-    out.write(
-        f"  sdc: {len(result.spec.clocks)} clock(s), "
-        f"{len(result.spec.async_groups)} async-group statement(s)\n"
-    )
-    out.write(
-        f"  async crossings (per SDC clock groups): {len(result.async_crossings)}\n"
-    )
-    if result.violations:
-        out.write(f"  {len(result.violations)} violation(s):\n")
-        for v in result.violations:
-            out.write(f"    [{v.rule_id}] {v.severity}: {v.message}\n")
-    else:
-        out.write("  no rule violations.\n")
+    counts = _severity_counts(result.violations)
+    summary_parts: list[str] = []
+    if counts["error"]:
+        summary_parts.append(f"{s.red}{counts['error']} error{s.reset}")
+    if counts["warning"]:
+        summary_parts.append(f"{s.yellow}{counts['warning']} warning{s.reset}")
+    if counts["info"]:
+        summary_parts.append(f"{s.cyan}{counts['info']} info{s.reset}")
+    out.write(f"\n{s.bold}Violations{s.reset}  ({', '.join(summary_parts)})\n")
 
-    if result.suppressed:
-        out.write(f"  {len(result.suppressed)} suppressed by waivers:\n")
-        for s in result.suppressed:
-            reason = s.waiver.reason or "(no reason given)"
-            out.write(
-                f"    [{s.violation.rule_id}] suppressed: {reason} "
-                f"(waiver line {s.waiver.source_line})\n"
-            )
+    by_rule: dict[str, list[Violation]] = defaultdict(list)
+    for v in result.violations:
+        by_rule[v.rule_id].append(v)
+    for rule_id in sorted(by_rule):
+        vs = by_rule[rule_id]
+        desc = _RULE_DESCRIPTIONS.get(rule_id, "")
+        out.write(f"\n  {s.bold}{rule_id}{s.reset} — {desc}\n")
+        for v in vs:
+            _render_one_violation(v, result.module, out, s)
+
+
+def _render_one_violation(
+    v: Violation, module: Module, out: IO[str], s: _Style
+) -> None:
+    severity_color = {
+        "error": s.red,
+        "warning": s.yellow,
+        "info": s.cyan,
+    }.get(v.severity, "")
+    loc = _source_location(module, v.cell_name)
+    loc_str = ""
+    if loc is not None:
+        line_part = f":{loc['start_line']}" if "start_line" in loc else ""
+        loc_str = f"  {s.dim}{loc['file']}{line_part}{s.reset}"
+    out.write(f"    {severity_color}{v.severity}{s.reset}{loc_str}\n")
+    for line in _wrap_message(v.message):
+        out.write(f"      {line}\n")
+
+
+def _wrap_message(text: str) -> list[str]:
+    """Wrap a violation message at ``_BODY_WIDTH``, preserving the
+    clear visual indent. Long single-line messages from the rule pack
+    have semicolon- or colon-separated segments; we don't try to be
+    clever about that — a generic textwrap.fill is good enough."""
+    return textwrap.wrap(
+        text,
+        width=_BODY_WIDTH,
+        break_long_words=False,
+        break_on_hyphens=False,
+    ) or [""]
+
+
+def _render_suppressed(result: AnalysisResult, out: IO[str], s: _Style) -> None:
+    if not result.suppressed:
+        return
+    out.write(f"\n{s.bold}Suppressed by waivers{s.reset} ({len(result.suppressed)})\n")
+    for sup in result.suppressed:
+        rule_id = sup.violation.rule_id
+        reason = sup.waiver.reason or "(no reason given)"
+        out.write(
+            f"  {s.dim}{rule_id}{s.reset}  {reason}  "
+            f"{s.dim}(waiver line {sup.waiver.source_line}){s.reset}\n"
+        )
+
+
+def _severity_counts(violations: list[Violation]) -> dict[str, int]:
+    counts = {"error": 0, "warning": 0, "info": 0}
+    for v in violations:
+        counts[v.severity] = counts.get(v.severity, 0) + 1
+    return counts
 
 
 # --- json -------------------------------------------------------------------
@@ -168,19 +350,6 @@ def _violation_to_dict(v: Violation, module: Module) -> dict:
 
 # Map our internal severity to SARIF's level enum.
 _SARIF_LEVEL = {"error": "error", "warning": "warning", "info": "note"}
-
-# Short-form descriptions per rule. Keep this terse — the long-form
-# message is already attached to each result.
-_RULE_DESCRIPTIONS: dict[str, str] = {
-    "CDC-001": "Unsynchronized control crossing (no second-stage flop)",
-    "CDC-002": "Insufficient synchronizer depth",
-    "CDC-003": "Combinational logic before synchronizer first stage",
-    "CDC-004": "Bus crossing without gating or gray-coding",
-    "CDC-005": "Reconvergent synchronizers",
-    "CDC-006": "Glitchy combinational source on a control crossing",
-    "CDC-007": "Async reset crossing without a reset synchronizer",
-    "CDC-008": "Clock signal used as data",
-}
 
 
 def render_sarif(result: AnalysisResult, out: IO[str]) -> None:

@@ -98,7 +98,7 @@ def test_cli_waiver_drops_exit_code(tmp_path: Path) -> None:
     code = _analyze_and_report(JSON_PATH, SDC_PATH, waiver_file, OutputFormat.text, out)
     assert code == 0
     text = out.read_text()
-    assert "1 suppressed by waivers:" in text
+    assert "Suppressed by waivers" in text
     assert "reviewed" in text
 
 

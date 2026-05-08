@@ -47,6 +47,18 @@ _SYNC_DEPTH_OPT = typer.Option(
     help="Required synchronizer depth for CDC-002. Default 2 (rule "
     "silent unless raised). Set to 3+ for high-speed / low-MTBF designs.",
 )
+_VERBOSE_OPT = typer.Option(
+    False,
+    "--verbose",
+    "-v",
+    help="Text report only: include the per-crossing structural listing.",
+)
+_COLOR_OPT = typer.Option(
+    None,
+    "--color/--no-color",
+    help="Force color on/off for the text report. Default: auto (color "
+    "when stdout is a TTY and NO_COLOR is unset).",
+)
 
 
 @app.command()
@@ -80,10 +92,19 @@ def analyze(
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
     sync_depth: int = _SYNC_DEPTH_OPT,
+    verbose: bool = _VERBOSE_OPT,
+    color: bool | None = _COLOR_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
     code = _analyze_and_report(
-        netlist_path, sdc_path, waivers_path, fmt, output_path, sync_depth
+        netlist_path,
+        sdc_path,
+        waivers_path,
+        fmt,
+        output_path,
+        sync_depth,
+        verbose=verbose,
+        color=color,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -128,6 +149,8 @@ def lint(
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
     sync_depth: int = _SYNC_DEPTH_OPT,
+    verbose: bool = _VERBOSE_OPT,
+    color: bool | None = _COLOR_OPT,
 ) -> None:
     """Convenience wrapper: run yosys to produce a flattened netlist,
     then analyze it. Equivalent to ``yosys -p 'read_verilog ...; \
@@ -169,7 +192,14 @@ hierarchy -top X; proc; flatten; opt_clean; write_json /tmp/out.json' \
             raise typer.Exit(code=2)
 
         code = _analyze_and_report(
-            tmp_json, sdc_path, waivers_path, fmt, output_path, sync_depth
+            tmp_json,
+            sdc_path,
+            waivers_path,
+            fmt,
+            output_path,
+            sync_depth,
+            verbose=verbose,
+            color=color,
         )
         if code != 0:
             raise typer.Exit(code=code)
@@ -211,6 +241,9 @@ def _analyze_and_report(
     fmt: OutputFormat,
     output_path: Path | None,
     sync_depth: int = 2,
+    *,
+    verbose: bool = False,
+    color: bool | None = None,
 ) -> int:
     """Run the analyzer on a netlist JSON and dispatch to the chosen
     reporter. Returns a process-style exit code: 0 = clean (or no SDC
@@ -260,7 +293,11 @@ def _analyze_and_report(
         close_after = True
     try:
         if fmt is OutputFormat.text:
-            reporter.render_text(result, out)
+            # If we're writing to a file, force color off — ANSI in a
+            # text file looks like garbage. Otherwise honor the
+            # explicit flag (None → auto-detect against stdout).
+            text_color = False if output_path is not None else color
+            reporter.render_text(result, out, verbose=verbose, color=text_color)
         elif fmt is OutputFormat.json:
             reporter.render_json(result, out)
         elif fmt is OutputFormat.sarif:

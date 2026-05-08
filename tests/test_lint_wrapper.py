@@ -43,9 +43,10 @@ def test_lint_golden_clean() -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "no rule violations." in result.output
+    assert "No rule violations." in result.output
     # The analyzer banner should mention the elaborated module.
-    assert "module: ip_cdc_handshake" in result.output
+    assert "ip_cdc_handshake" in result.output
+    assert "PASS" in result.output
 
 
 def test_lint_bad_case_returns_nonzero() -> None:
@@ -64,8 +65,9 @@ def test_lint_bad_case_returns_nonzero() -> None:
         ],
     )
     assert result.exit_code == 1, result.output
-    assert "[CDC-001]" in result.output
+    assert "CDC-001" in result.output
     assert "unsynchronized control crossing" in result.output
+    assert "FAIL" in result.output
 
 
 def test_lint_keep_json(tmp_path: Path) -> None:

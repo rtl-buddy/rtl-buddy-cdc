@@ -55,9 +55,13 @@ def test_text_includes_violation(result: AnalysisResult) -> None:
     buf = io.StringIO()
     render_text(result, buf)
     text = buf.getvalue()
-    assert "module: bad_single_ff_sync" in text
-    assert "[CDC-001]" in text
-    assert "no second-stage synchronizer" in text
+    assert "bad_single_ff_sync" in text
+    assert "CDC-001" in text
+    # Message text may be wrapped across lines; collapse whitespace
+    # before checking for key phrases.
+    collapsed = " ".join(text.split())
+    assert "no second-stage synchronizer" in collapsed
+    assert "FAIL" in text
 
 
 def test_json_is_well_formed(result: AnalysisResult) -> None:
