@@ -1,0 +1,20 @@
+[project]
+name = "rtl-buddy-cdc"
+version = "0.1.0"
+description = "CDC (clock domain crossing) linting tool for RTL designs, Yosys-backed, integrates with rtl-buddy."
+readme = "README.md"
+license = { text = "BSD-3-Clause" }
+authors = [
+    { name = "Loh Zhi-Hern", email = "expsg-hern@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "typer>=0.25.1",
+]
+
+[project.scripts]
+rtl-buddy-cdc = "rtl_buddy_cdc:main"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
