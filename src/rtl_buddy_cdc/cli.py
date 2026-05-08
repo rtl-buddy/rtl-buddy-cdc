@@ -6,8 +6,9 @@ from pathlib import Path
 
 import typer
 
-from rtl_buddy_cdc import netlist
-from rtl_buddy_cdc.domain import assign_domains, find_crossings
+from rtl_buddy_cdc import netlist, sdc as sdc_mod
+from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
+from rtl_buddy_cdc.rules import run_all as run_all_rules
 
 app = typer.Typer(help="CDC linting tool for RTL designs (Yosys-backed).")
 
@@ -55,8 +56,49 @@ def analyze(
             f"width={c.width}, min_hops={c.min_hops})"
         )
 
-    if sdc_path is not None:
-        typer.echo(f"  sdc: {sdc_path} (parser not yet implemented)")
+    if sdc_path is None:
+        typer.echo(
+            "  no SDC supplied — skipping rule checks "
+            "(every cross-clock crossing is treated as synchronous)"
+        )
+        return
+
+    spec = sdc_mod.parse_file(sdc_path)
+    typer.echo(
+        f"  sdc: {len(spec.clocks)} clock(s), "
+        f"{len(spec.async_groups)} async-group statement(s)"
+    )
+
+    async_crossings = _filter_async(crossings, spec)
+    typer.echo(f"  async crossings (per SDC clock groups): {len(async_crossings)}")
+
+    violations = run_all_rules(module, async_crossings)
+    if not violations:
+        typer.echo("  no rule violations.")
+        return
+
+    typer.echo(f"  {len(violations)} violation(s):")
+    for v in violations:
+        typer.echo(f"    [{v.rule_id}] {v.severity}: {v.message}")
+    raise typer.Exit(code=1)
+
+
+def _filter_async(
+    crossings: list[Crossing], spec: "sdc_mod.ClockSpec"
+) -> list[Crossing]:
+    """Keep only crossings whose endpoints are in different async groups.
+
+    The crossing's ``src_clock`` / ``dst_clock`` here are *port names*
+    (per :func:`assign_domains`); we map each to its SDC clock name
+    before consulting the async-group table.
+    """
+    out: list[Crossing] = []
+    for c in crossings:
+        a = spec.clock_for_port(c.src_clock) or c.src_clock
+        b = spec.clock_for_port(c.dst_clock) or c.dst_clock
+        if spec.are_async(a, b):
+            out.append(c)
+    return out
 
 
 @app.command()

@@ -17,14 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from rtl_buddy_cdc import netlist
+from rtl_buddy_cdc import netlist, sdc as sdc_mod
 from rtl_buddy_cdc.domain import assign_domains, find_crossings
+from rtl_buddy_cdc.rules import run_all as run_all_rules
 
 FIXTURE = (
-    Path(__file__).parent
-    / "fixtures"
-    / "ip_cdc_handshake"
-    / "ip_cdc_handshake.json"
+    Path(__file__).parent / "fixtures" / "ip_cdc_handshake" / "ip_cdc_handshake.json"
 )
 
 
@@ -76,3 +74,35 @@ def test_crossings(module) -> None:
     data = next(c for c in src_to_dst if c.width > 1)
     assert data.width == 8
     assert data.min_hops >= 1
+
+
+def test_golden_has_no_cdc002_violations(module) -> None:
+    """The golden ip_cdc_handshake design uses 2FF synchronizers — both
+    control crossings (req sync, ack sync) should pass CDC-002. The
+    8-bit data crossing is intentionally skipped by CDC-002 (handled by
+    a future bus-crossing rule)."""
+    sdc_path = (
+        Path(__file__).parent / "fixtures" / "ip_cdc_handshake" / "ip_cdc_handshake.sdc"
+    )
+    spec = sdc_mod.parse_file(sdc_path)
+    assert spec.are_async("src_clk", "dst_clk")
+
+    crossings = find_crossings(module)
+    async_crossings = [
+        c
+        for c in crossings
+        if spec.are_async(
+            spec.clock_for_port(c.src_clock) or c.src_clock,
+            spec.clock_for_port(c.dst_clock) or c.dst_clock,
+        )
+    ]
+    # SDC marks src_clk and dst_clk as asynchronous, so every detected
+    # crossing should be in scope for rule checks.
+    assert len(async_crossings) == 3
+
+    violations = run_all_rules(module, async_crossings)
+    cdc_002 = [v for v in violations if v.rule_id == "CDC-002"]
+    assert cdc_002 == [], (
+        f"unexpected CDC-002 violations on golden fixture: "
+        f"{[v.message for v in cdc_002]}"
+    )
