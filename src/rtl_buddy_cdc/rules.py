@@ -201,9 +201,58 @@ def check_cdc_002(
     return violations
 
 
+def check_cdc_003(module: Module, crossings: list[Crossing]) -> list[Violation]:
+    """CDC-003 — Combinational logic on the way to a synchronizer.
+
+    Fires when a single-bit crossing reaches a destination synchronizer
+    (chain depth >= 2, so CDC-001/-002 don't already cover it) but the
+    path from the source flop to the synchronizer's first stage passes
+    through one or more combinational cells (``min_hops >= 1``).
+
+    The classic failure mode: two source-domain flops are combined by a
+    gate (AND/OR/MUX) and the gate output is sampled by the
+    synchronizer. The two source flops can transition on different src
+    clock cycles, producing a glitch on the gate output that a 2FF
+    synchronizer cannot reliably filter — the destination may sample
+    a transient value that never existed as a real source state.
+    """
+    violations: list[Violation] = []
+    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    q_to_flop = _q_to_flop(module)
+    reader_counts = _bit_reader_count(module)
+
+    for c in crossings:
+        if c.width != 1:
+            continue
+        if c.min_hops < 1:
+            continue
+        depth = _sync_chain_depth(
+            module, c.dst_flop, c.dst_clock, domains, q_to_flop, reader_counts
+        )
+        if depth < 2:
+            # CDC-001 covers this crossing already; don't double-fire.
+            continue
+        violations.append(
+            Violation(
+                rule_id="CDC-003",
+                severity="error",
+                message=(
+                    f"combinational logic between source flop and "
+                    f"synchronizer on {c.src_clock} → {c.dst_clock} "
+                    f"crossing: {c.min_hops} cell(s) on path "
+                    f"(src flop: {c.src_flop.name}, "
+                    f"sync first stage: {c.dst_flop.name})"
+                ),
+                crossing=c,
+            )
+        )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
+    "CDC-003": check_cdc_003,
 }
 
 
