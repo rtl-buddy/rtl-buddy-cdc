@@ -4,133 +4,40 @@ Python-based open-source CDC (Clock Domain Crossing) linting tool for RTL design
 
 ## Status
 
-Early scaffolding. Not yet usable.
+MVP usable. Eight rules implemented (CDC-001 through CDC-008), three output formats (text / JSON / SARIF), waiver-file suppression, and a `(* cdc_sync *)` SV attribute for user-vetted synchronizers. Tested against paired *bad / good* RTL fixtures for each rule.
+
+Known gaps and roadmap items are tracked at the end of this README.
 
 ## Why
 
-CDC bugs are notoriously hard to catch in simulation and devastating in silicon. Commercial CDC tools (Spyglass, Questa CDC, VC SpyGlass) are excellent but expensive and closed. The open-source EDA stack has strong synthesis (Yosys) and STA (OpenSTA) but lacks a dedicated CDC linter. `rtl-buddy-cdc` aims to fill that gap with a pragmatic ruleset, fast iteration, and a Python codebase that's easy to extend.
+CDC bugs are notoriously hard to catch in simulation and devastating in silicon. Commercial CDC tools (Spyglass, Questa CDC, VC SpyGlass) are excellent but expensive and closed. The open-source EDA stack has strong synthesis (Yosys) and STA (OpenSTA) but lacks a dedicated CDC linter. `rtl-buddy-cdc` fills that gap with a pragmatic ruleset, fast iteration, and a Python codebase that's easy to extend.
 
 ## Architecture
 
-`rtl-buddy-cdc` is a **pure analyzer**. It does not invoke Yosys itself. Elaboration and netlist generation are owned by the caller (typically rtl-buddy as a preprocessing step), so the tool's input is an already-flattened netlist plus an SDC file.
+`rtl-buddy-cdc` is a **pure analyzer**. It does not invoke Yosys itself in its primary mode — elaboration and netlist generation are the caller's responsibility. The standalone `lint` wrapper does shell out to yosys for convenience, but the core `analyze` entry point takes a pre-elaborated netlist as input.
 
 ```
-  ┌────────────┐    yosys hierarchy;proc;flatten;write_json    ┌────────────┐
-  │ rtl-buddy  │ ──────────────────────────────────────────▶  │ netlist.json│
-  └────────────┘                                                └─────┬──────┘
-                                                                      │
-                              design.sdc ────────────────────┐        │
-                                                             ▼        ▼
+  ┌────────────┐    yosys hierarchy;proc;flatten;write_json    ┌──────────────┐
+  │ rtl-buddy  │ ─────────────────────────────────────────▶   │ netlist.json │
+  └────────────┘                                                └──────┬───────┘
+                                                                       │
+                              design.sdc ─────────────────────┐        │
+                              cdc.waivers (optional) ─────┐   │        │
+                                                          ▼   ▼        ▼
                                                        ┌──────────────────┐
                                                        │  rtl-buddy-cdc   │
                                                        │  (pure Python)   │
                                                        └────────┬─────────┘
                                                                 ▼
-                                                          violations.{json,sarif,txt}
+                                                          report.{txt,json,sarif}
 ```
 
 Why this split:
 
-- **Single responsibility** — the tool is a graph analyzer, not a build orchestrator.
+- **Single responsibility** — the analyzer is a graph walker, not a build orchestrator.
 - **No duplication** — rtl-buddy already invokes Yosys for synthesis; the same plumbing (paths, caching, error handling) is reused.
 - **Frontend-swappable** — any tool that emits a compatible netlist JSON is a valid input source.
 - **Faster iteration** — rule changes don't re-elaborate the design.
-
-A thin convenience wrapper (`rtl-buddy-cdc lint --sources ... --top ...`) is provided for standalone use; it shells out to `yosys` to produce the netlist JSON and then calls the analyzer. The primary supported entry point, however, is `rtl-buddy-cdc analyze --netlist out.json --sdc design.sdc`.
-
-## Inputs
-
-Primary mode (`analyze`):
-
-| Input | Required | Purpose |
-|---|---|---|
-| Yosys netlist JSON | yes | Flattened design (output of `write_json`) |
-| **SDC** (`.sdc`) | yes (recommended) | Clock declarations + async/exclusive groups |
-| Clock-spec YAML (alternative) | optional | Lightweight alternative for users without SDC |
-
-Convenience wrapper (`lint`, standalone use only):
-
-| Input | Required | Purpose |
-|---|---|---|
-| Verilog / SystemVerilog sources | yes | Design under analysis |
-| Top module name | yes | Elaboration root |
-| Filelist (`.f`) | optional | For large designs |
-
-### SDC support
-
-SDC is the primary mechanism for telling the tool which clocks exist and which pairs are asynchronous. The tool parses a focused subset of SDC sufficient for CDC analysis — STA-only commands are accepted and silently ignored.
-
-Supported (initial target):
-
-- `create_clock -name <name> -period <p> [get_ports <port>]`
-- `create_generated_clock -name <name> -source <src> [-divide_by N | -multiply_by N | -edges {…}] <pin>`
-- `set_clock_groups -asynchronous -group {…} -group {…}` — **central to CDC**: domains in different async groups are treated as crossing
-- `set_clock_groups -logically_exclusive -group {…} -group {…}` — treated as not-crossing for data, optional warn
-- `set_false_path -from [get_clocks A] -to [get_clocks B]` — used as crossing hints when no `set_clock_groups` is present
-- `set_input_delay` / `set_output_delay` — used only to identify primary clocks on top-level ports
-
-Ignored (parsed, not used):
-
-- `set_max_delay`, `set_min_delay`, `set_load`, `set_drive`, `set_disable_timing`, `set_case_analysis`, etc. (timing-only)
-
-If no SDC is supplied, the tool falls back to:
-
-1. Heuristic detection of clock signals (signals driving the clock pin of registers post-elaboration).
-2. A user-provided YAML clock-spec.
-3. Single-domain assumption (all flops on one clock) — emits a warning that no CDC analysis is meaningful.
-
-## What it checks
-
-Initial ruleset (will expand):
-
-- **CDC-001** — Unsynchronized data crossing (single-flop on destination clock).
-- **CDC-002** — Insufficient synchronizer depth (`<2FF` for default; configurable per-port).
-- **CDC-003** — Combinational logic between source flop and synchronizer first stage.
-- **CDC-004** — Multi-bit data crossing without gray-coding or handshake (bus crossing).
-- **CDC-005** — Reconvergent synchronizers (multiple synchronizers fed by signals from the same source domain that re-converge on the destination side).
-- **CDC-006** — Glitch on a control crossing (combinational source).
-- **CDC-007** — Reset crossing without async-assert / sync-deassert pattern.
-- **CDC-008** — Clock used as data (clock signal in a non-clock pin).
-
-Each violation reports: rule ID, source/destination clocks, source flop, destination flop, hierarchical path, suggested fix.
-
-## How
-
-The analyzer pipeline (no Yosys interaction inside the tool):
-
-1. **Ingest netlist** — load Yosys `write_json` output; build an in-memory cell/net graph.
-2. **Parse SDC** — extract clocks, generated clocks, and async/exclusive groups. Build the *clock domain graph*.
-3. **Annotate domains** — propagate clock annotations from primary clocks through generated-clock pins to every register.
-4. **Find crossings** — walk register-to-register fanout cones; flag any path where source and destination domains are in different async groups (or have no group relation).
-5. **Apply rules** — pattern-match on each crossing's logic shape (single FF? 2FF? combinational on the way? bus width? handshake?).
-6. **Report** — text/JSON/SARIF output suitable for CI gating and for `rtl-buddy` integration.
-
-Yosys runs upstream (in rtl-buddy or in the standalone `lint` wrapper) to produce the flattened netlist JSON; the analyzer is otherwise Yosys-agnostic.
-
-## Integration with rtl-buddy
-
-rtl-buddy owns Yosys invocation and feeds the resulting netlist JSON to the analyzer. Sketch of the config entry (sibling of the existing synth tool entry in `root_config.yaml`):
-
-```yaml
-cfg-cdc-tools:
-  - name: "rtl-buddy-cdc"
-    tool: "rtl-buddy-cdc"
-    opts:
-      sdc: "constraints.sdc"
-      sync-depth: 2
-```
-
-The corresponding `rb cdc` subcommand will:
-
-1. Run Yosys (`hierarchy -top <top>; proc; flatten; write_json <out>`) using the same Yosys plumbing as `rb synth`.
-2. Invoke `rtl-buddy-cdc analyze --netlist <out> --sdc <sdc>` and surface the report.
-
-## Requirements
-
-- Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/) for environment management
-- A Yosys-produced netlist JSON (`write_json`); Yosys itself is **not** a runtime dependency of the analyzer.
-- A working `yosys` binary on `PATH` is only needed if you use the standalone `lint` wrapper. This workspace ships one at `../yosys/yosys`.
 
 ## Quick start
 
@@ -139,33 +46,207 @@ uv sync
 uv run rtl-buddy-cdc --help
 
 # Primary entry: analyze a pre-elaborated netlist
-uv run rtl-buddy-cdc analyze --netlist build/design.json --sdc design.sdc
+uv run rtl-buddy-cdc analyze \
+    --netlist build/design.json \
+    --sdc design.sdc
 
-# Convenience wrapper: shells out to yosys for elaboration
-uv run rtl-buddy-cdc lint --top top design/*.v --sdc design.sdc
+# Standalone wrapper: shells out to yosys for elaboration
+uv run rtl-buddy-cdc lint \
+    --top my_top \
+    --sdc design.sdc \
+    rtl/*.sv
+
+# Machine-readable output (JSON or SARIF)
+uv run rtl-buddy-cdc analyze \
+    --netlist build/design.json --sdc design.sdc \
+    --format sarif --output cdc.sarif
+
+# With a waiver file for hand-reviewed exceptions
+uv run rtl-buddy-cdc analyze \
+    --netlist build/design.json --sdc design.sdc \
+    --waivers cdc.waivers
 ```
+
+Exit codes:
+- `0` — clean, or every violation suppressed by a waiver
+- `1` — at least one unsuppressed rule violation
+- `2` — `lint` only: yosys elaboration failed
+
+## Inputs
+
+Primary mode (`analyze`):
+
+| Input | Required | Purpose |
+|---|---|---|
+| Yosys netlist JSON | yes | Flattened design (output of `write_json`) |
+| **SDC** (`.sdc`) | recommended | Clock declarations + async groups; without it, rule checks are skipped and the run is just a structural summary |
+| Waiver file | optional | Per-violation suppression with reason (see [Waivers](#waivers)) |
+
+Standalone wrapper (`lint`):
+
+| Input | Required | Purpose |
+|---|---|---|
+| Verilog / SystemVerilog sources | yes | Design under analysis |
+| Top module name (`--top`) | yes | Elaboration root |
+| `--yosys PATH` | optional | Override the default yosys binary lookup |
+| `--keep-json PATH` | optional | Save the intermediate netlist for debugging or re-runs |
+
+## SDC support
+
+The parser is a focused subset — STA-only commands (`set_max_delay`, `set_min_delay`, `set_load`, `set_drive`, `set_disable_timing`, `set_case_analysis`, etc.) are silently ignored. CDC-relevant commands recognised today:
+
+- `create_clock -name <name> -period <p> [get_ports <port>]`
+- `set_clock_groups -asynchronous -group {…} -group {…}` — load-bearing for the entire rule pass
+- Comments (`#`), backslash line continuation (`\`)
+
+Roadmap targets (not yet implemented):
+
+- `create_generated_clock`, `set_clock_groups -logically_exclusive`
+- `set_false_path -from [get_clocks A] -to [get_clocks B]` as crossing hints
+- `set_input_delay` / `set_output_delay` for port-side domain inference
+
+If no SDC is supplied, the tool prints a structural summary and skips all rule checks.
+
+## Rules
+
+| ID | Severity | What it catches |
+|---|---|---|
+| **CDC-001** | error | Unsynchronized control crossing — destination flop has no second-stage synchronizer (chain depth = 1) |
+| **CDC-002** | warning | Insufficient synchronizer depth — chain present but shorter than the project's `required_depth` (default 2 = silent; configurable for high-speed designs that need 3+ stages) |
+| **CDC-003** | error | Combinational logic between source flop and synchronizer first stage — gate output can glitch and be sampled |
+| **CDC-004** | error | Multi-bit bus crossing without recognized gating or gray-coding |
+| **CDC-005** | warning | Reconvergent synchronizers — one source flop fans out to multiple sync chains with independent metastability resolution |
+| **CDC-006** | error | Glitchy combinational source — synchronizer is fed by combinational logic with no registering flop, reaching unregistered top-level ports |
+| **CDC-007** | error | Async reset crossing — flop's `ARST` is driven by a flop in a different async clock domain, no reset synchronizer |
+| **CDC-008** | error | Clock signal used as data — clock-network bit reaches a non-CLK input (flop `D`/`ARST`, comb input, etc.); cells that themselves drive a flop CLK are exempted (legitimate ICG / clock muxes / dividers) |
+
+Each violation carries:
+- rule ID and severity
+- a human-readable message
+- the offending crossing (when applicable)
+- a source location (file + line/column) parsed from the cell's `attributes["src"]`
+
+## Pipeline
+
+1. **Ingest netlist** — load Yosys `write_json` output; build an in-memory cell/net graph (`netlist.py`).
+2. **Identify flops** — recognise the 11 Yosys `$dff*` / `$adff*` / `$sdff*` / `$dffsr*` cell variants (`flops.py`).
+3. **Trace clock domains** — for each flop's `CLK` net, walk back through buffers, inverters, integrated clock gates, clock muxes, and clock dividers to find the originating top-level port (`domain.trace_clock_root`).
+4. **Find crossings** — BFS the combinational fanout from each flop's `Q` bits; record every flop→flop path that lands across domains. Group by `(src_flop, dst_flop)` so multi-bit buses and reconvergent fanout collapse to one record with `width` and `min_hops` (`domain.find_crossings`).
+5. **Parse SDC** — extract clocks and async groups. Filter the structural crossings to those in async-grouped pairs.
+6. **Apply rules** — each rule is a small function in `rules.py` registered in the `RULES` dict; new rules are a one-line addition.
+7. **Apply waivers** — split violations into "kept" and "suppressed by waiver" (`waivers.apply`).
+8. **Report** — dispatch to the chosen formatter (`reporter.render_text` / `render_json` / `render_sarif`).
+
+## Output formats
+
+`--format text|json|sarif` (default `text`), `--output PATH` to write to a file.
+
+- **Text** — human-readable summary suitable for terminals and CI logs.
+- **JSON** — structured, includes summary counts, full crossing/violation lists, and source locations. Stable schema for downstream consumers (rtl-buddy itself, custom dashboards).
+- **SARIF 2.1.0** — GitHub-Code-Scanning-compatible. `tool.driver.rules` populated for every rule that fired in the run; results carry `physicalLocation.region`. Suppressed (waived) findings are emitted with a SARIF `suppressions` field so the alert exists but doesn't fail the build.
+
+## Waivers
+
+Per-violation suppression in a small text file (`cdc.waivers` by convention):
+
+```
+# Comments and blank lines are ignored.
+waive CDC-001 .*procdff\$9.*       hand-reviewed by jsmith
+waive CDC-005 .*known_good_sync.*  library cell, see issue #42
+waive *       .*generated_codegen.* tool-emitted
+```
+
+Format: `waive <RULE-ID|*> <regex> [reason ...]`
+
+The regex is matched against the offending cell name, the canonical `"src_flop -> dst_flop"` text (when there's a crossing), and the violation message; a hit on any one suppresses. The first matching waiver wins. Suppressed findings are still reported (with the matching reason and waiver-line number) but don't drive the exit code, so a fully-waived run returns 0.
+
+## SV attributes
+
+Mark a flop as a user-vetted synchronizer first stage by attaching an attribute to the wire/reg it drives:
+
+```sv
+(* cdc_sync *) logic dst_q;             // canonical
+(* synchronizer *) logic dst_q;         // alias
+(* async_reg = "TRUE" *) logic dst_q;   // Vivado-compatible
+```
+
+Marked flops are skipped by CDC-001, -002, -003, and -006 — the user has taken responsibility for the synchronizer's structure. CDC-004 (bus crossings) and CDC-005 (reconvergence) deliberately keep firing — those failure modes don't depend on individual sync-shape correctness.
+
+Yosys preserves SV attributes on the netname rather than the cell, so the analyzer maps tagged bits back to the originating flop's `Q` pin.
+
+## Integration with rtl-buddy
+
+The intent is for rtl-buddy to own Yosys invocation and feed the resulting netlist JSON to the analyzer. Sketch of the config entry (sibling of the existing synth tool entry in `root_config.yaml`):
+
+```yaml
+cfg-cdc-tools:
+  - name: "rtl-buddy-cdc"
+    tool: "rtl-buddy-cdc"
+    opts:
+      sdc: "constraints.sdc"
+      waivers: "cdc.waivers"
+      sync-depth: 2
+```
+
+The corresponding `rb cdc` subcommand will:
+
+1. Run Yosys (`hierarchy -top <top>; proc; flatten; opt_clean; write_json <out>`) using the same Yosys plumbing as `rb synth`.
+2. Invoke `rtl-buddy-cdc analyze --netlist <out> --sdc <sdc> --waivers <…>` and surface the report.
+
+This integration lives in the [rtl_buddy](https://github.com/rtl-buddy/rtl_buddy) repo and is not yet implemented.
+
+## Requirements
+
+- Python 3.11+
+- [`uv`](https://docs.astral.sh/uv/) for environment management
+- For `analyze`: a Yosys-produced netlist JSON (`write_json`); Yosys itself is **not** a runtime dependency of the analyzer.
+- For `lint`: a working `yosys` binary on `PATH` (or via `--yosys`).
 
 ## Layout
 
 ```
 src/rtl_buddy_cdc/
-  cli.py              # Typer entry point
-  __init__.py
-pyproject.toml        # project + uv config
+  cli.py        # Typer entry points (analyze, lint, version)
+  netlist.py    # Yosys write_json loader (Module/Cell/Port/Netname)
+  flops.py      # Recognise the Yosys FF cell zoo
+  domain.py     # Clock-root tracing + flop→flop crossing detection
+  sdc.py        # Minimal SDC parser
+  rules.py      # CDC-001..-008 + RULES registry
+  waivers.py    # Waiver file parser + apply()
+  reporter.py   # text / JSON / SARIF formatters
+tests/
+  fixtures/
+    bad_*/      # negative cases — each rule has at least one
+    good_*/     # paired positive counterparts (textbook fixes)
+    ip_cdc_handshake/    # canonical golden vendored from rtl-buddy-project-template
+    clock_gating/        # ICG positive case
+    marked_user_sync/    # (* cdc_sync *) attribute coverage
+  test_*.py
 ```
 
 ## Roadmap
 
+Implemented:
+
 - [x] Scaffold project (uv, Typer)
-- [ ] Yosys JSON netlist ingestion (analyzer core, primary entry)
-- [ ] SDC parser (subset)
-- [ ] Domain propagation
-- [ ] `lint` standalone wrapper (shells out to yosys)
-- [ ] CDC-001..003 (single-bit crossings)
-- [ ] CDC-004 (bus crossings)
-- [ ] CDC-005..008
-- [ ] SARIF / JSON / text reporters
-- [ ] `rtl-buddy` integration
+- [x] Yosys JSON netlist ingestion
+- [x] SDC parser (`create_clock`, `set_clock_groups -asynchronous`)
+- [x] Clock-domain tracing through buffers / ICGs / clock muxes / dividers
+- [x] Flop→flop crossing detection (single-bit + bus, deduped per pair)
+- [x] CDC-001 through CDC-008
+- [x] `lint` standalone wrapper (yosys → analyzer)
+- [x] Text / JSON / SARIF reporters with source locations
+- [x] Waiver file suppression
+- [x] `(* cdc_sync *)` SV-attribute support
+- [x] Paired positive (`good_*`) fixtures for every implemented rule
+
+Not yet:
+
+- [ ] `create_generated_clock`, logically-exclusive groups, false-path-as-async hints
+- [ ] Gray-coded counter recognition for CDC-004 (currently only handshake gating is accepted)
+- [ ] CDC-006 / CDC-007 refinements (multi-source reset synchronizer recognition; comb-source severity tuning)
+- [ ] rtl-buddy `cfg-cdc-tools` config entry + `rb cdc` subcommand (lives in the rtl_buddy repo)
+- [ ] In-RTL `// rtl-buddy-cdc disable-rule …` pragma comments (Spyglass-style block suppression)
 
 ## License
 
