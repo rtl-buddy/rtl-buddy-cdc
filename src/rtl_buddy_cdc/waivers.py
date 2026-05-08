@@ -98,9 +98,7 @@ def _candidates(v: Violation) -> tuple[str, ...]:
     if v.cell_name:
         parts.append(v.cell_name)
     if v.crossing is not None:
-        parts.append(
-            f"{v.crossing.src_flop.cell.name} -> {v.crossing.dst_flop.cell.name}"
-        )
+        parts.append(f"{v.crossing.src_name} -> {v.crossing.dst_flop.cell.name}")
     parts.append(v.message)
     return tuple(parts)
 

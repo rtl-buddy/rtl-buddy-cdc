@@ -58,11 +58,11 @@ def render_text(result: AnalysisResult, out: IO[str]) -> None:
         label = clk if clk is not None else "<unresolved>"
         out.write(f"    domain {label}: {n} flop(s)\n")
 
-    out.write(f"  crossings (flop→flop, different clock): {len(result.crossings)}\n")
+    out.write(f"  crossings (different clock): {len(result.crossings)}\n")
     for c in result.crossings:
         out.write(
             f"    {c.src_clock} → {c.dst_clock}  "
-            f"({c.src_flop.name} → {c.dst_flop.name}, "
+            f"({c.src_name} → {c.dst_flop.name}, "
             f"width={c.width}, min_hops={c.min_hops})\n"
         )
 
@@ -136,14 +136,18 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
 
 
 def _crossing_to_dict(c: Crossing) -> dict:
-    return {
+    out: dict = {
         "src_clock": c.src_clock,
         "dst_clock": c.dst_clock,
-        "src_flop": c.src_flop.cell.name,
         "dst_flop": c.dst_flop.cell.name,
         "width": c.width,
         "min_hops": c.min_hops,
     }
+    if c.src_flop is not None:
+        out["src_flop"] = c.src_flop.cell.name
+    if c.src_port is not None:
+        out["src_port"] = c.src_port
+    return out
 
 
 def _violation_to_dict(v: Violation, module: Module) -> dict:

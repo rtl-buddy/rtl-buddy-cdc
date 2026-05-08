@@ -40,6 +40,10 @@ GOOD_FIXTURES = [
     # set_input_delay -clock dst_clk types the data ports as same-
     # domain as the destination — CDC-006 must not fire.
     ("good_input_delay_domain", 0),
+    # Typed input port reaching a 2FF synchronizer in the destination
+    # domain — port→flop crossing is recognised and silent because
+    # chain depth ≥ 2.
+    ("good_port_typed_sync", 1),
 ]
 
 
@@ -53,7 +57,7 @@ def test_good_fixture_has_no_violations(name: str, expected_async: int) -> None:
 
     module = netlist.load(json_path)
     spec = sdc_mod.parse_file(sdc_path)
-    crossings = find_crossings(module)
+    crossings = find_crossings(module, port_clock=spec.port_clock)
     async_crossings = []
     for c in crossings:
         a = spec.clock_for_port(c.src_clock) or c.src_clock
@@ -86,7 +90,7 @@ def test_cdc_002_fires_when_required_depth_raised() -> None:
 
     module = netlist.load(json_path)
     spec = sdc_mod.parse_file(sdc_path)
-    crossings = find_crossings(module)
+    crossings = find_crossings(module, port_clock=spec.port_clock)
     async_crossings = [
         c
         for c in crossings

@@ -334,15 +334,19 @@ def check_cdc_001(
             continue  # user vouches for the synchronizer shape
         depth = _sync_chain_depth(module, c.dst_flop, c.dst_clock, domains, q_to_flop)
         if depth < 2:
+            src_desc = (
+                f"flop {c.src_flop.name}" if c.src_flop is not None else c.src_name
+            )
             violations.append(
                 Violation(
                     rule_id="CDC-001",
                     severity="error",
                     message=(
                         f"unsynchronized control crossing "
-                        f"{c.src_clock} → {c.dst_clock}: "
-                        f"destination flop {c.dst_flop.name} has no "
-                        f"second-stage synchronizer (chain depth = {depth})"
+                        f"{c.src_clock} → {c.dst_clock} "
+                        f"(src: {src_desc}): destination flop "
+                        f"{c.dst_flop.name} has no second-stage "
+                        f"synchronizer (chain depth = {depth})"
                     ),
                     crossing=c,
                     cell_name=c.dst_flop.cell.name,
@@ -427,6 +431,10 @@ def check_cdc_003(
             continue
         if c.min_hops < 1:
             continue
+        if c.is_port_sourced:
+            # CDC-006 already covers comb logic from a top-level port
+            # to a synchronizer; don't double-fire.
+            continue
         if c.dst_flop.cell.name in user_syncs:
             continue
         depth = _sync_chain_depth(
@@ -443,7 +451,7 @@ def check_cdc_003(
                     f"combinational logic between source flop and "
                     f"synchronizer on {c.src_clock} → {c.dst_clock} "
                     f"crossing: {c.min_hops} cell(s) on path "
-                    f"(src flop: {c.src_flop.name}, "
+                    f"(src: {c.src_name}, "
                     f"sync first stage: {c.dst_flop.name})"
                 ),
                 crossing=c,
@@ -648,6 +656,12 @@ def check_cdc_004(
     for c in crossings:
         if c.width <= 1:
             continue
+        if c.src_flop is None:
+            # CDC-004 reasons about gray encoding at a register source;
+            # port-sourced crossings can't be gray-encoded by the same
+            # mechanism. Bus crossings from typed ports are vanishingly
+            # rare in practice; defer to user judgment.
+            continue
         if c.src_flop.cell.name in user_grays:
             # Explicit user assertion of gray-coding.
             continue
@@ -711,6 +725,11 @@ def check_cdc_005(
     grouped: dict[tuple[str, str], list[Crossing]] = defaultdict(list)
     for c in crossings:
         if c.width != 1:
+            continue
+        if c.src_flop is None:
+            # Reconvergence is defined by a single source flop fanning
+            # out to multiple sync chains; port sources don't have the
+            # metastability-resolution behaviour the rule is testing.
             continue
         depth = _sync_chain_depth(
             module, c.dst_flop, c.dst_clock, domains, q_to_flop, reader_counts
@@ -999,6 +1018,12 @@ def check_cdc_007(
         cb = clock_spec.clock_for_port(b) or b
         return clock_spec.are_async(ca, cb)
 
+    # Collect ARST → (foreign source flop) edges. Group by
+    # (src_flop_name, dst_clk) so a single async source feeding many
+    # destination flops in the same domain becomes ONE violation that
+    # lists every destination — matches how a real reset distribution
+    # tree is reviewed.
+    edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for f in find_flops(module):
         arst_bits = f.cell.connections.get("ARST", ())
         if not arst_bits:
@@ -1013,20 +1038,36 @@ def check_cdc_007(
                 continue
             if not _async(my_clk, src_clk):
                 continue
-            violations.append(
-                Violation(
-                    rule_id="CDC-007",
-                    severity="error",
-                    message=(
-                        f"async reset crossing: flop {f.cell.name} "
-                        f"(clk={my_clk}) has ARST driven by flop "
-                        f"{src_name} from a different domain "
-                        f"(clk={src_clk}); add a reset synchronizer "
-                        f"in the {my_clk} domain"
-                    ),
-                    cell_name=f.cell.name,
-                )
+            edges[(src_name, src_clk, my_clk)].append(f.cell.name)
+
+    for (src_name, src_clk, dst_clk), dst_flops in edges.items():
+        dsts = sorted(set(dst_flops))
+        # Choose representative cell for source-location reporting:
+        # the first destination (alphabetically) — the source flop's
+        # location would also work, but the destination is what the
+        # user has to fix.
+        repr_cell = dsts[0]
+        if len(dsts) == 1:
+            dst_desc = f"destination flop: {dsts[0]}"
+        else:
+            dst_desc = (
+                f"{len(dsts)} destination flops share this source "
+                f"(reset distribution tree): "
+                f"{', '.join(dsts[:3])}" + (", ..." if len(dsts) > 3 else "")
             )
+        violations.append(
+            Violation(
+                rule_id="CDC-007",
+                severity="error",
+                message=(
+                    f"async reset crossing: flop(s) in clk={dst_clk} "
+                    f"have ARST driven by flop {src_name} from a "
+                    f"different domain (clk={src_clk}); add a reset "
+                    f"synchronizer in the {dst_clk} domain. {dst_desc}"
+                ),
+                cell_name=repr_cell,
+            )
+        )
     return violations
 
 

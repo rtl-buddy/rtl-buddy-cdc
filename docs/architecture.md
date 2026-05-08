@@ -150,24 +150,32 @@ moves between two domains":
 ```python
 @dataclass(frozen=True)
 class Crossing:
-    src_flop: Flop
-    src_clock: str        # top-level port name
+    src_clock: str               # top-level port name (or clock name for typed ports)
     dst_flop: Flop
-    dst_clock: str        # top-level port name
-    min_hops: int         # # comb cells on shortest path
-    width: int            # # distinct dst-D bits reachable from src
+    dst_clock: str
+    min_hops: int                # # comb cells on shortest path
+    width: int                   # # distinct dst-D bits reachable from src
+    src_flop: Flop | None = None # set for register-to-register
+    src_port: str | None = None  # set for typed-port-to-register
 ```
 
-Two design choices matter here:
+Three design choices matter here:
 
-1. **One record per (src_flop, dst_flop) pair**, not per bit. A
-   multi-bit bus crossing collapses to a single `Crossing` with
-   `width = N`. This is how rules like CDC-004 ("multi-bit bus
-   crossing") get a width directly without re-walking.
+1. **One record per (src, dst) pair**, not per bit. A multi-bit bus
+   crossing collapses to a single `Crossing` with `width = N`. This
+   is how rules like CDC-004 ("multi-bit bus crossing") get a width
+   directly without re-walking.
 2. **`min_hops` is the shortest path length in *combinational cells*
-   crossed.** `min_hops == 0` means a direct flop-to-flop wire — the
-   classic sync first stage. `min_hops >= 1` is what CDC-003
-   ("combinational logic before sync") fires on.
+   crossed.** `min_hops == 0` means a direct flop-to-flop (or
+   port-to-flop) wire — the classic sync first stage. `min_hops >= 1`
+   is what CDC-003 ("combinational logic before sync") fires on for
+   flop sources.
+3. **Source endpoint is either a flop or a port.** Exactly one of
+   `src_flop` and `src_port` is set. Port endpoints are emitted by
+   `find_crossings(module, port_clock=...)` when the SDC has typed
+   the port via `set_input_delay -clock <c>`. The convenience
+   property `src_name` returns either the flop name or `"port <p>"`
+   for messages and waiver matching.
 
 ### 4.5 Clock topology
 
@@ -362,16 +370,20 @@ records with `width = 1`.
 
 ### 7.3 What's intentionally excluded
 
-- **Cross-domain port→flop and flop→port crossings as `Crossing`
-  records.** `find_crossings` itself only emits flop→flop pairs.
-  The port→flop case is handled by CDC-006 via a parallel
-  `_backward_fanin` walk that reports unregistered top-level ports
-  reaching synchronizer first stages. When the SDC types the port
-  via `set_input_delay -clock <c>`, CDC-006 consults
-  `ClockSpec.port_clock` and `ClockSpec.resolve` to suppress
-  same-domain ports and name the source clock when it differs.
-  Promoting these to first-class `Crossing` records — so CDC-001/-003
-  can reason about them too — is a future refactor.
+- **Flop→port crossings.** When a flop drives a top-level *output*
+  port directly, no record is emitted. The shape that matters there
+  is "comb logic on the way out" (CDC-006-class) and the
+  responsibility shifts to the consumer of the port; we leave
+  output-side checking to that layer.
+- **Untyped-port crossings.** Ports without `set_input_delay -clock`
+  are not emitted as port-sourced `Crossing` records. The legacy
+  CDC-006 path still fires on them (via `_backward_fanin` walking
+  back from synchronizer first stages), so coverage is preserved —
+  we just don't promote them, since without a typed clock the
+  "is this async?" question has no SDC-grounded answer.
+- **CLK pins as transit bits.** `_build_bit_consumers` filters out
+  clock connections so the data BFS doesn't follow them.
+- **Same-domain crossings.** Filtered out at record-creation time.
 - **CLK pins as transit bits.** `_build_bit_consumers` filters out
   clock connections so the data BFS doesn't follow them.
 - **Same-domain crossings.** Filtered out at record-creation time —

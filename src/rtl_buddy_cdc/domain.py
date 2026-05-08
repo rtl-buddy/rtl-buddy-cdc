@@ -24,22 +24,44 @@ class FlopDomain:
 
 @dataclass(frozen=True)
 class Crossing:
-    """A register-to-register fanout path that crosses domains.
+    """A fanout path that crosses domains, ending at a flop's ``D`` pin.
 
-    ``src_flop`` drives ``dst_flop`` through ``min_hops`` combinational
-    cells in the shortest path between them. ``min_hops == 0`` means a
-    direct flop-to-flop wire — the classic pre-synchronizer first
-    stage. ``width`` is the number of distinct destination D bits
-    reachable from the source flop on this crossing (>1 means a bus
-    crossing).
+    The source endpoint is either a flop (the typical case — register-
+    to-register) or a top-level input port that the SDC has typed with
+    ``set_input_delay -clock <c>``. Exactly one of ``src_flop`` and
+    ``src_port`` is set.
+
+    ``min_hops`` is the shortest combinational-cell count on the path.
+    For flop sources, ``min_hops == 0`` means a direct flop-to-flop
+    wire (the classic synchronizer first stage). For port sources,
+    ``min_hops`` is always ≥ 0 and reflects the depth of comb logic
+    between the port and the destination's ``D`` pin.
+
+    ``width`` is the number of distinct destination ``D`` bits
+    reachable from the source on this crossing (>1 means a bus
+    crossing). Port-sourced crossings are width 1.
     """
 
-    src_flop: Flop
     src_clock: str
     dst_flop: Flop
     dst_clock: str
     min_hops: int
     width: int
+    src_flop: Flop | None = None
+    src_port: str | None = None
+
+    @property
+    def src_name(self) -> str:
+        """Human-readable identifier for the source endpoint."""
+        if self.src_flop is not None:
+            return self.src_flop.name
+        if self.src_port is not None:
+            return f"port {self.src_port}"
+        return "<unknown>"
+
+    @property
+    def is_port_sourced(self) -> bool:
+        return self.src_port is not None
 
 
 # Cell types that act as a transparent buffer on the clock network —
@@ -190,13 +212,26 @@ def _build_bit_consumers(
     return consumers
 
 
-def find_crossings(module: Module, max_hops: int = 4) -> list[Crossing]:
-    """Find every flop→flop path whose endpoints are in different domains.
+def find_crossings(
+    module: Module,
+    max_hops: int = 4,
+    port_clock: dict[str, str] | None = None,
+) -> list[Crossing]:
+    """Find every fanout path whose endpoints are in different domains.
 
     The walk starts from each flop's ``Q`` bits and follows readers up to
     ``max_hops`` combinational cells before giving up. Reaching another
     flop's ``D`` pin produces a :class:`Crossing` if the two flops are in
     distinct, known domains.
+
+    When ``port_clock`` is supplied (typically from
+    :class:`ClockSpec.port_clock`), every top-level input port that the
+    SDC has typed is also walked forward; if the walk lands on a flop's
+    ``D`` pin in a different clock domain than the port's typed clock,
+    a port-sourced :class:`Crossing` is emitted (``src_port`` set,
+    ``src_flop`` left None). The destination's clock is the flop's
+    physical CLK domain; the port's clock is treated as the source
+    domain for the async-pair check.
     """
     domains = {fd.flop.cell.name: fd for fd in assign_domains(module)}
     consumers = _build_bit_consumers(module)
@@ -273,7 +308,7 @@ def find_crossings(module: Module, max_hops: int = 4) -> list[Crossing]:
                             next_frontier.append((ob, new_hops))
             frontier = next_frontier
 
-    return [
+    out_crossings: list[Crossing] = [
         Crossing(
             src_flop=g["src_fd"].flop,  # type: ignore[index]
             src_clock=g["src_fd"].clock,  # type: ignore[index]
@@ -284,6 +319,79 @@ def find_crossings(module: Module, max_hops: int = 4) -> list[Crossing]:
         )
         for g in grouped.values()
     ]
+
+    # Port-sourced crossings: walk forward from each typed input port
+    # and record any flop's D pin reached in a different clock domain.
+    if port_clock:
+        from rtl_buddy_cdc.flops import FF_CELL_TYPES
+
+        port_grouped: dict[tuple[str, str], dict[str, object]] = {}
+        for port_name, port_clk_name in port_clock.items():
+            port = module.ports.get(port_name)
+            if port is None or port.direction != "input":
+                continue
+            seen: dict[Bit, int] = {}
+            frontier: list[tuple[Bit, int]] = [
+                (b, 0) for b in port.bits if isinstance(b, int)
+            ]
+            for b, h in frontier:
+                seen[b] = h
+            while frontier:
+                next_frontier: list[tuple[Bit, int]] = []
+                for bit, hops in frontier:
+                    for dst_flop in flop_by_d_bit.get(bit, ()):
+                        dst_fd = domains[dst_flop.cell.name]
+                        if dst_fd.clock is None:
+                            continue
+                        # Skip when the port's typed clock matches the
+                        # destination's clock domain (no crossing).
+                        if dst_fd.clock == port_clk_name:
+                            continue
+                        key = (port_name, dst_flop.cell.name)
+                        g = port_grouped.get(key)
+                        if g is None:
+                            port_grouped[key] = {
+                                "port": port_name,
+                                "src_clock": port_clk_name,
+                                "dst_fd": dst_fd,
+                                "min_hops": hops,
+                                "bits": {bit},
+                            }
+                        else:
+                            g["bits"].add(bit)  # type: ignore[union-attr]
+                            if hops < g["min_hops"]:  # type: ignore[operator]
+                                g["min_hops"] = hops
+                    if hops >= max_hops:
+                        continue
+                    for cell_name, _port, _idx in consumers.get(bit, ()):
+                        cell = module.cells[cell_name]
+                        if cell.type in {"$scopeinfo"}:
+                            continue
+                        if cell.type in FF_CELL_TYPES:
+                            continue
+                        for ob in _cell_outputs(cell):
+                            if not isinstance(ob, int):
+                                continue
+                            prev = seen.get(ob)
+                            new_hops = hops + 1
+                            if prev is None or new_hops < prev:
+                                seen[ob] = new_hops
+                                next_frontier.append((ob, new_hops))
+                frontier = next_frontier
+
+        for g in port_grouped.values():
+            out_crossings.append(
+                Crossing(
+                    src_clock=g["src_clock"],  # type: ignore[arg-type]
+                    dst_flop=g["dst_fd"].flop,  # type: ignore[index]
+                    dst_clock=g["dst_fd"].clock,  # type: ignore[index]
+                    min_hops=g["min_hops"],  # type: ignore[arg-type]
+                    width=len(g["bits"]),  # type: ignore[arg-type]
+                    src_port=g["port"],  # type: ignore[arg-type]
+                )
+            )
+
+    return out_crossings
 
 
 # --- helpers ----------------------------------------------------------------
