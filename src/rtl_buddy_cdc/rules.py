@@ -599,6 +599,81 @@ def check_cdc_006(
     return violations
 
 
+def check_cdc_008(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+) -> list[Violation]:
+    """CDC-008 — Clock signal used as data.
+
+    Fires when a bit that drives any flop's ``CLK`` pin (or that's
+    declared as a clock in the SDC) is also wired into a non-clock
+    pin: a flop ``D``/``ARST``, a combinational input, etc.
+
+    Clocks ride on dedicated low-skew networks; sampling them as data
+    delivers the high-frequency edge toggle, breaks STA, and almost
+    always indicates a wiring mistake. Reading a clock on its own CLK
+    pin is fine — that's what clock pins are for. Driving a top-level
+    *output* with a clock (e.g. forwarding it off-chip) is also fine
+    and intentionally not flagged here.
+    """
+    violations: list[Violation] = []
+
+    # Build the set of net bits that act as clocks: union of every
+    # flop's CLK pin and every bit covered by an SDC create_clock
+    # port.
+    clock_bits: set[Bit] = set()
+    for f in find_flops(module):
+        if isinstance(f.clk, int):
+            clock_bits.add(f.clk)
+    if clock_spec is not None:
+        for clk in clock_spec.clocks.values():
+            for port_name in clk.ports:
+                port = module.ports.get(port_name)
+                if port is None:
+                    continue
+                for b in port.bits:
+                    if isinstance(b, int):
+                        clock_bits.add(b)
+    if not clock_bits:
+        return violations
+
+    # Map each clock bit to a human-readable label, preferring the
+    # top-level port name where applicable.
+    def _label(bit: Bit) -> str:
+        port = module.port_of_bit(bit)
+        return port.name if port is not None else f"net@{bit}"
+
+    # Walk every cell connection and report each (clock_bit, cell, pin)
+    # triple where the bit appears on a non-CLK input pin. We dedupe
+    # at the (bit, cell, pin) granularity so a multi-bit pin reporting
+    # the same clock once doesn't blow up to N violations.
+    seen: set[tuple[Bit, str, str]] = set()
+    for cell in module.cells.values():
+        for port_name, bits in cell.connections.items():
+            if port_name == "CLK" or port_name in _OUTPUT_PINS:
+                continue
+            for idx, b in enumerate(bits):
+                if not isinstance(b, int) or b not in clock_bits:
+                    continue
+                key = (b, cell.name, port_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                violations.append(
+                    Violation(
+                        rule_id="CDC-008",
+                        severity="error",
+                        message=(
+                            f"clock signal {_label(b)} used as data: "
+                            f"connected to {cell.name}.{port_name}[{idx}] "
+                            f"(cell type {cell.type})"
+                        ),
+                    )
+                )
+    return violations
+
+
 def check_cdc_007(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -671,6 +746,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-005": check_cdc_005,
     "CDC-006": check_cdc_006,
     "CDC-007": check_cdc_007,
+    "CDC-008": check_cdc_008,
 }
 
 
