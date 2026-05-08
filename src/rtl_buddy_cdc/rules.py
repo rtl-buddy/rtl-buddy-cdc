@@ -791,9 +791,37 @@ def check_cdc_006(
         # crossing is already covered by CDC-001/-002/-003 logic.
         if fanin_flops:
             continue
-        ungated_ports = sorted(p for p in fanin_ports if p not in clock_ports)
-        if not ungated_ports:
+        # Drop ports that are top-level clocks (clock leakage into
+        # data paths is a CDC-008 shape, not CDC-006) and ports that
+        # the SDC has explicitly typed into the *same* domain as the
+        # destination flop via `set_input_delay -clock <my_clk>`.
+        my_clock_name: str | None = None
+        if clock_spec is not None:
+            my_clock_name = clock_spec.clock_for_port(my_clk) or my_clk
+        flagged_ports: list[tuple[str, str | None]] = []
+        for p in sorted(fanin_ports):
+            if p in clock_ports:
+                continue
+            port_clk: str | None = None
+            if clock_spec is not None:
+                port_clk = clock_spec.port_clock.get(p)
+            if (
+                port_clk is not None
+                and my_clock_name is not None
+                and clock_spec is not None
+            ):
+                # Both ends typed: only fire when the port's clock
+                # resolves to a different root than the sync's clock.
+                # If they match, the user has asserted same-domain
+                # timing — no CDC issue.
+                if clock_spec.resolve(port_clk) == clock_spec.resolve(my_clock_name):
+                    continue
+            flagged_ports.append((p, port_clk))
+        if not flagged_ports:
             continue
+        port_descs = ", ".join(
+            f"{p}" if pc is None else f"{p} (clock={pc})" for p, pc in flagged_ports
+        )
         violations.append(
             Violation(
                 rule_id="CDC-006",
@@ -803,7 +831,7 @@ def check_cdc_006(
                     f"{f.cell.name} (clk={my_clk}): D pin is driven "
                     f"by combinational logic with no registering flop, "
                     f"reaching unregistered top-level port(s): "
-                    f"{', '.join(ungated_ports)}"
+                    f"{port_descs}"
                 ),
                 cell_name=f.cell.name,
             )

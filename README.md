@@ -118,7 +118,7 @@ If no SDC is supplied, the tool prints a structural summary and skips all rule c
 | **CDC-003** | error | Combinational logic between source flop and synchronizer first stage — gate output can glitch and be sampled |
 | **CDC-004** | error | Multi-bit bus crossing without recognized gating or gray-coding (canonical `g = b ^ (b >> 1)` pattern detected structurally; `(* cdc_gray *)` is the explicit escape hatch) |
 | **CDC-005** | warning | Reconvergent synchronizers — one source flop fans out to multiple sync chains with independent metastability resolution |
-| **CDC-006** | error | Glitchy combinational source — synchronizer is fed by combinational logic with no registering flop, reaching unregistered top-level ports |
+| **CDC-006** | error | Glitchy combinational source — synchronizer is fed by combinational logic with no registering flop, reaching unregistered top-level ports. Suppressed when `set_input_delay -clock <my_clk>` types the port into the destination flop's own clock domain (port is asserted same-domain). |
 | **CDC-007** | error | Async reset crossing — flop's `ARST` is driven by a flop in a different async clock domain, no reset synchronizer |
 | **CDC-008** | error | Clock signal used as data — clock-network bit reaches a non-CLK input (flop `D`/`ARST`, comb input, etc.); cells that themselves drive a flop CLK are exempted (legitimate ICG / clock muxes / dividers) |
 
@@ -252,10 +252,10 @@ Implemented:
 - [x] rtl-buddy `rb cdc` / `rb cdc-regression` integration (lives in the rtl_buddy repo)
 - [x] Configurable CDC-002 sync depth via `--sync-depth N` (also accepted as `sync-depth:` under `cfg-cdc-tools` opts)
 - [x] SDC: `create_generated_clock` (with transitive master resolution), logically/physically-exclusive groups, `set_false_path -from/-to` as async hints, `set_input_delay` / `set_output_delay` for port-side domain inference. End-of-parse warnings for partially-understood CDC-relevant commands.
+- [x] CDC-006 port-side: when `set_input_delay -clock <c>` types a port, CDC-006 suppresses the port if it resolves to the destination flop's own clock and reports the source clock by name when it differs.
 
 Not yet:
 
-- [ ] CDC-006 port-side analyzer integration — `port_clock` is now populated from `set_input_delay` / `set_output_delay` but `find_crossings` still only emits flop→flop pairs; port→flop crossings are a follow-on PR
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma

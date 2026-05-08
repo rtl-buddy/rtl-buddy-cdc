@@ -362,13 +362,16 @@ records with `width = 1`.
 
 ### 7.3 What's intentionally excluded
 
-- **Cross-domain port→flop and flop→port crossings.** These are
-  CDC-006 territory, which today fires on combinational sources
-  reaching unregistered output ports — the BFS itself only emits
-  flop→flop. Adding port endpoints requires emitting `Crossing`
-  records with `src_flop` or `dst_flop` replaced by a port reference;
-  that's tracked in the README roadmap with the SDC port-side delay
-  features.
+- **Cross-domain port→flop and flop→port crossings as `Crossing`
+  records.** `find_crossings` itself only emits flop→flop pairs.
+  The port→flop case is handled by CDC-006 via a parallel
+  `_backward_fanin` walk that reports unregistered top-level ports
+  reaching synchronizer first stages. When the SDC types the port
+  via `set_input_delay -clock <c>`, CDC-006 consults
+  `ClockSpec.port_clock` and `ClockSpec.resolve` to suppress
+  same-domain ports and name the source clock when it differs.
+  Promoting these to first-class `Crossing` records — so CDC-001/-003
+  can reason about them too — is a future refactor.
 - **CLK pins as transit bits.** `_build_bit_consumers` filters out
   clock connections so the data BFS doesn't follow them.
 - **Same-domain crossings.** Filtered out at record-creation time —
