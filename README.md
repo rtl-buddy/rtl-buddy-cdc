@@ -252,7 +252,7 @@ Implemented:
 
 Not yet:
 
-- [ ] SDC: `create_generated_clock`, logically-exclusive / physically-exclusive groups, `set_false_path -from/-to` as crossing hints, `set_input_delay` / `set_output_delay` for port-side domain inference
+- [ ] SDC: `create_generated_clock`, logically-exclusive / physically-exclusive groups, `set_false_path -from/-to` as crossing hints, `set_input_delay` / `set_output_delay` for port-side domain inference. Includes diagnostics: `--verbose` debug log per ignored command, plus an end-of-parse warning when a CDC-relevant command (`set_false_path`, `set_clock_groups`, `set_input_delay`, `set_output_delay`, `create_generated_clock`) was present but couldn't be fully parsed (e.g. `set_false_path -through`, `[get_clocks -filter …]`)
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
