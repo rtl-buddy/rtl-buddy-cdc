@@ -1,0 +1,206 @@
+{
+  "creator": "Yosys 0.64 (git sha1 1d5b3aaa2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_false_path_pair": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:10.1-45.10"
+      },
+      "ports": {
+        "ck_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "ck_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$procdff$13": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:38.5-41.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 7 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$procdff$18": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:32.5-35.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 8 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procdff$23": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:25.5-28.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 9 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$procdff$28": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:19.5-22.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 9 ]
+          }
+        }
+      },
+      "netnames": {
+        "ck_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:11.18-11.22"
+          }
+        },
+        "ck_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:12.18-12.22"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:14.18-14.22"
+          }
+        },
+        "d_in_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "cdc_sync": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:18.26-18.32"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:15.18-15.23"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:13.18-13.23"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:24.11-24.16"
+          }
+        },
+        "sync_meta": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "cdc_sync": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:31.26-31.35"
+          }
+        },
+        "sync_q": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/good_false_path_pair/good_false_path_pair.sv:37.11-37.17"
+          }
+        }
+      }
+    }
+  }
+}

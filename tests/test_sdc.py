@@ -71,3 +71,178 @@ def test_clock_for_port_lookup() -> None:
     spec = parse("create_clock -name src_clk -period 10 [get_ports src_clk_pin]")
     assert spec.clock_for_port("src_clk_pin") == "src_clk"
     assert spec.clock_for_port("missing") is None
+
+
+# ---- create_generated_clock -------------------------------------------------
+
+
+def test_create_generated_clock_div2_resolves_to_master() -> None:
+    spec = parse(
+        """
+        create_clock -name clk -period 10.0 [get_ports clk]
+        create_generated_clock -name clk_div2 -source [get_ports clk] \\
+            -divide_by 2 [get_pins div_q/Q]
+        """
+    )
+    assert spec.clocks["clk_div2"].is_generated
+    # Without -master_clock, master is left None and resolve() returns
+    # the clock's own name. Adding -master_clock would chain.
+    spec2 = parse(
+        """
+        create_clock -name clk -period 10.0 [get_ports clk]
+        create_generated_clock -name clk_div2 -master_clock clk \\
+            -source [get_ports clk] -divide_by 2 [get_pins div_q/Q]
+        """
+    )
+    assert spec2.resolve("clk_div2") == "clk"
+    # Master and divided clock are *not* async by default.
+    assert not spec2.are_async("clk", "clk_div2")
+
+
+def test_generated_clock_async_override_wins() -> None:
+    spec = parse(
+        """
+        create_clock -name clk -period 10.0 [get_ports clk]
+        create_generated_clock -name clk_div2 -master_clock clk \\
+            -source [get_ports clk] -divide_by 2 [get_pins div_q/Q]
+        set_clock_groups -asynchronous -group {clk} -group {clk_div2}
+        """
+    )
+    # Explicit override: SDC says these are async; CDC respects that
+    # even though they share a master.
+    assert spec.are_async("clk", "clk_div2")
+
+
+def test_generated_clock_chain_resolves_transitively() -> None:
+    spec = parse(
+        """
+        create_clock -name clk -period 10.0 [get_ports clk]
+        create_generated_clock -name clk_d2 -master_clock clk \\
+            -source [get_ports clk] -divide_by 2 [get_pins x]
+        create_generated_clock -name clk_d4 -master_clock clk_d2 \\
+            -source [get_pins x] -divide_by 2 [get_pins y]
+        """
+    )
+    assert spec.resolve("clk_d4") == "clk"
+
+
+# ---- set_false_path ---------------------------------------------------------
+
+
+def test_false_path_clock_pair_is_treated_as_async() -> None:
+    spec = parse(
+        """
+        create_clock -name a -period 10 [get_ports a]
+        create_clock -name b -period 7  [get_ports b]
+        set_false_path -from [get_clocks a] -to [get_clocks b]
+        """
+    )
+    assert spec.are_async("a", "b")
+    assert spec.are_async("b", "a")
+
+
+def test_false_path_through_is_partial_warning() -> None:
+    spec = parse(
+        """
+        create_clock -name a -period 10 [get_ports a]
+        create_clock -name b -period 7  [get_ports b]
+        set_false_path -from [get_clocks a] -through [get_pins x] -to [get_clocks b]
+        """
+    )
+    assert not spec.are_async("a", "b")
+    assert any("through" in w for w in spec.partial_warnings)
+
+
+def test_false_path_pin_endpoint_is_partial_warning() -> None:
+    spec = parse(
+        """
+        create_clock -name a -period 10 [get_ports a]
+        set_false_path -from [get_pins inst/Q] -to [get_clocks a]
+        """
+    )
+    assert any("non-clock endpoints" in w for w in spec.partial_warnings)
+
+
+# ---- exclusive groups -------------------------------------------------------
+
+
+def test_logically_exclusive_groups() -> None:
+    spec = parse(
+        """
+        create_clock -name ck0 -period 10 [get_ports ck0]
+        create_clock -name ck1 -period 7  [get_ports ck1]
+        set_clock_groups -logically_exclusive -group {ck0} -group {ck1}
+        """
+    )
+    assert spec.is_unreachable_crossing("ck0", "ck1")
+    # Exclusive ≠ async — they don't coexist, so the rule pack
+    # shouldn't even be asked the question, but the predicate is
+    # nonetheless false.
+    assert not spec.are_async("ck0", "ck1")
+
+
+def test_physically_exclusive_groups() -> None:
+    spec = parse(
+        """
+        create_clock -name ck0 -period 10 [get_ports ck0]
+        create_clock -name ck1 -period 7  [get_ports ck1]
+        set_clock_groups -physically_exclusive -group {ck0} -group {ck1}
+        """
+    )
+    assert spec.is_unreachable_crossing("ck0", "ck1")
+
+
+def test_set_clock_groups_without_kind_warns() -> None:
+    spec = parse(
+        """
+        create_clock -name a -period 10 [get_ports a]
+        create_clock -name b -period 7  [get_ports b]
+        set_clock_groups -group {a} -group {b}
+        """
+    )
+    assert not spec.are_async("a", "b")
+    assert any("missing -asynchronous" in w for w in spec.partial_warnings)
+
+
+# ---- set_input_delay / set_output_delay ------------------------------------
+
+
+def test_set_input_delay_records_port_clock() -> None:
+    spec = parse(
+        """
+        create_clock -name clk -period 10 [get_ports clk]
+        set_input_delay -clock clk 1.5 [get_ports d_in]
+        set_output_delay -clock clk 2.0 [get_ports d_out]
+        """
+    )
+    assert spec.clock_for_port("d_in") == "clk"
+    assert spec.clock_for_port("d_out") == "clk"
+
+
+def test_set_input_delay_overrides_create_clock_port_lookup() -> None:
+    """If a port is named on a create_clock AND a set_input_delay,
+    the set_input_delay mapping wins (it's the more specific user
+    statement of intent)."""
+    spec = parse(
+        """
+        create_clock -name ext -period 10 [get_ports d_in]
+        create_clock -name clk -period 5  [get_ports clk]
+        set_input_delay -clock clk 1.0 [get_ports d_in]
+        """
+    )
+    assert spec.clock_for_port("d_in") == "clk"
+
+
+# ---- diagnostics ------------------------------------------------------------
+
+
+def test_filter_clause_is_partial_warning() -> None:
+    spec = parse(
+        """
+        create_clock -name clk -period 10 \\
+            [get_ports -filter {NAME =~ \\"clk*\\"}]
+        """
+    )
+    # Without filter evaluation the parser may still pick up the
+    # name from -name, but the filter-presence flag should surface.
+    assert any("filter" in w for w in spec.partial_warnings)

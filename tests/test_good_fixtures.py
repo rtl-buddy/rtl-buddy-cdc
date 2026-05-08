@@ -27,6 +27,16 @@ GOOD_FIXTURES = [
     ("good_registered_before_sync", 1),
     ("good_registered_source", 1),
     ("good_reset_sync", 1),
+    # Generated clock: divider Q is a flop, but its CLK traces back to
+    # the master via trace_clock_root, so the analyzer assigns all
+    # flops to the master domain — zero structural crossings.
+    ("good_generated_clock_div2", 0),
+    # Exclusive clocks: structural pass sees 1 ck0→ck1 flop→flop pair,
+    # but _filter_async drops it via is_unreachable_crossing.
+    ("good_exclusive_clock_mux", 0),
+    # set_false_path is equivalent to set_clock_groups -asynchronous
+    # for CDC; 1 async crossing landing in a 2FF synchronizer.
+    ("good_false_path_pair", 1),
 ]
 
 
@@ -41,14 +51,14 @@ def test_good_fixture_has_no_violations(name: str, expected_async: int) -> None:
     module = netlist.load(json_path)
     spec = sdc_mod.parse_file(sdc_path)
     crossings = find_crossings(module)
-    async_crossings = [
-        c
-        for c in crossings
-        if spec.are_async(
-            spec.clock_for_port(c.src_clock) or c.src_clock,
-            spec.clock_for_port(c.dst_clock) or c.dst_clock,
-        )
-    ]
+    async_crossings = []
+    for c in crossings:
+        a = spec.clock_for_port(c.src_clock) or c.src_clock
+        b = spec.clock_for_port(c.dst_clock) or c.dst_clock
+        if spec.is_unreachable_crossing(a, b):
+            continue
+        if spec.are_async(a, b):
+            async_crossings.append(c)
     assert len(async_crossings) == expected_async, (
         f"{name}: expected {expected_async} async crossing(s), "
         f"got {len(async_crossings)} — fixture may have regressed"

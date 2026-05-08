@@ -226,6 +226,9 @@ def _analyze_and_report(
     violations = []
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
+        if spec.partial_warnings and fmt is OutputFormat.text:
+            for w in spec.partial_warnings:
+                typer.echo(f"warning: {sdc_path}: {w}", err=True)
         async_crossings = _filter_async(crossings, spec)
         violations = run_all_rules(
             module, async_crossings, spec, required_depth=sync_depth
@@ -270,11 +273,24 @@ def _analyze_and_report(
 def _filter_async(
     crossings: list[Crossing], spec: "sdc_mod.ClockSpec"
 ) -> list[Crossing]:
-    """Keep only crossings whose endpoints are in different async groups."""
+    """Keep only crossings the rule pack should see.
+
+    A crossing is kept iff:
+      - its endpoints resolve to different clocks (so generated
+        clocks fold back into their masters before comparison), and
+      - the resolved roots aren't in different exclusive groups
+        (logically/physically-exclusive clocks never coexist at
+        runtime, so the path is unreachable), and
+      - the resolved roots are declared asynchronous via
+        ``set_clock_groups -asynchronous`` or ``set_false_path
+        -from/-to``.
+    """
     out: list[Crossing] = []
     for c in crossings:
         a = spec.clock_for_port(c.src_clock) or c.src_clock
         b = spec.clock_for_port(c.dst_clock) or c.dst_clock
+        if spec.is_unreachable_crossing(a, b):
+            continue
         if spec.are_async(a, b):
             out.append(c)
     return out

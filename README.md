@@ -98,14 +98,14 @@ Standalone wrapper (`lint`):
 The parser is a focused subset — STA-only commands (`set_max_delay`, `set_min_delay`, `set_load`, `set_drive`, `set_disable_timing`, `set_case_analysis`, etc.) are silently ignored. CDC-relevant commands recognised today:
 
 - `create_clock -name <name> -period <p> [get_ports <port>]`
+- `create_generated_clock -name <n> -master_clock <m> -source <pin> -divide_by N [get_pins <pin>]` — generated clock is treated as synchronous to its master unless the SDC explicitly overrides via `set_clock_groups -asynchronous`
 - `set_clock_groups -asynchronous -group {…} -group {…}` — load-bearing for the entire rule pass
+- `set_clock_groups -logically_exclusive` / `-physically_exclusive` — clocks in different exclusive groups never coexist at runtime, so the analyzer drops the apparent crossing as unreachable before the rule pack sees it
+- `set_false_path -from [get_clocks A] -to [get_clocks B]` — equivalent to declaring `A` and `B` async for CDC purposes (path-specific `-through` is not interpreted)
+- `set_input_delay -clock <c> [get_ports <p>]` / `set_output_delay -clock <c> [get_ports <p>]` — assigns top-level data ports to a clock domain
 - Comments (`#`), backslash line continuation (`\`)
 
-Roadmap targets (not yet implemented):
-
-- `create_generated_clock`, `set_clock_groups -logically_exclusive`
-- `set_false_path -from [get_clocks A] -to [get_clocks B]` as crossing hints
-- `set_input_delay` / `set_output_delay` for port-side domain inference
+When the parser sees a CDC-relevant command it can't fully understand (e.g. `set_false_path -through`, `[get_clocks -filter …]`), it accumulates a one-line warning and surfaces them all at the end of the run rather than spamming line-by-line. Truly unknown commands (`set_max_delay`, `set_load`, …) are silently dropped at INFO level.
 
 If no SDC is supplied, the tool prints a structural summary and skips all rule checks.
 
@@ -251,10 +251,11 @@ Implemented:
 - [x] Paired positive (`good_*`) fixtures for every implemented rule
 - [x] rtl-buddy `rb cdc` / `rb cdc-regression` integration (lives in the rtl_buddy repo)
 - [x] Configurable CDC-002 sync depth via `--sync-depth N` (also accepted as `sync-depth:` under `cfg-cdc-tools` opts)
+- [x] SDC: `create_generated_clock` (with transitive master resolution), logically/physically-exclusive groups, `set_false_path -from/-to` as async hints, `set_input_delay` / `set_output_delay` for port-side domain inference. End-of-parse warnings for partially-understood CDC-relevant commands.
 
 Not yet:
 
-- [ ] SDC: `create_generated_clock`, logically-exclusive / physically-exclusive groups, `set_false_path -from/-to` as crossing hints, `set_input_delay` / `set_output_delay` for port-side domain inference. Includes diagnostics: `--verbose` debug log per ignored command, plus an end-of-parse warning when a CDC-relevant command (`set_false_path`, `set_clock_groups`, `set_input_delay`, `set_output_delay`, `create_generated_clock`) was present but couldn't be fully parsed (e.g. `set_false_path -through`, `[get_clocks -filter …]`)
+- [ ] CDC-006 port-side analyzer integration — `port_clock` is now populated from `set_input_delay` / `set_output_delay` but `find_crossings` still only emits flop→flop pairs; port→flop crossings are a follow-on PR
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma

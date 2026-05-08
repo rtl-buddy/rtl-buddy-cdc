@@ -176,17 +176,39 @@ Two design choices matter here:
 ```python
 @dataclass
 class ClockSpec:
-    clocks: dict[str, Clock]                   # by name
-    async_groups: list[list[set[str]]]         # one entry per
-                                               # set_clock_groups -asynchronous
+    clocks: dict[str, Clock]                       # by name
+    async_groups: list[list[set[str]]]             # set_clock_groups -asynchronous
+    exclusive_groups: list[list[set[str]]]         # -logically_exclusive / -physically_exclusive
+    false_path_pairs: set[frozenset[str]]          # set_false_path -from -to clock pairs
+    port_clock: dict[str, str]                     # set_input_delay / set_output_delay → port→clock
+    partial_warnings: list[str]                    # diagnostics surfaced once at end-of-parse
 ```
 
-The single consumer-facing predicate is `are_async(a, b)`. Two clocks
-are async iff *some* `set_clock_groups -asynchronous` statement
-places them in *different* groups. Clocks not mentioned in any group
-are conservatively treated as synchronous to everything (zero false
-positives for crossings the user has not declared async). See
-[§6](#6-sdc-parsing) for the parser scope.
+`Clock` carries `master: str | None` and `is_generated: bool` so the
+analyzer can collapse generated clocks (dividers, PLL outputs) back
+to their root master.
+
+Three consumer-facing predicates:
+
+- `are_async(a, b)` — two clocks are async if (1) the SDC explicitly
+  places their **unresolved names** in different groups of the same
+  `set_clock_groups -asynchronous` statement (the explicit override
+  case for generated clocks), OR (2) their resolved roots differ
+  AND `false_path_pairs` lists them OR async groups separate the
+  resolved roots. Step 1 is what lets a project mark `clk_div2` as
+  async to `clk` despite sharing a master.
+- `is_unreachable_crossing(a, b)` — true iff resolved roots are in
+  different `exclusive_groups` entries. Logically/physically-
+  exclusive clocks never coexist at runtime, so a flop→flop
+  "crossing" between them is a static-analysis artifact, not a real
+  path. `_filter_async` consults this **before** `are_async` and
+  drops unreachable crossings entirely.
+- `resolve(name)` — collapses a generated clock to its root master
+  by walking the `master` chain transitively. Cycle-guarded.
+
+Clocks not mentioned in any group remain conservatively synchronous
+to everything (zero false positives for crossings the user has not
+declared async). See [§6](#6-sdc-parsing) for the parser scope.
 
 ### 4.6 Violations
 
@@ -255,40 +277,57 @@ deployment, and add a non-Python dependency to the wheel.
 
 ```text
 create_clock -name <name> -period <p> [get_ports <port> ...]
-set_clock_groups -asynchronous -group {<clk> ...} -group {<clk> ...} ...
+create_generated_clock -name <n> -master_clock <m> \
+    -source <pin-or-port> -divide_by N [get_pins <pin>]
+set_clock_groups -asynchronous          -group {…} -group {…} …
+set_clock_groups -logically_exclusive   -group {…} -group {…} …
+set_clock_groups -physically_exclusive  -group {…} -group {…} …
+set_false_path  -from [get_clocks A] -to [get_clocks B]
+set_input_delay  -clock <name> … [get_ports <port>]
+set_output_delay -clock <name> … [get_ports <port>]
 ```
 
 Plus: `#` comments, `\` line continuation, and a permissive
 flag-skipping pattern for unrecognised options on otherwise-known
 commands (so vendor-specific dialects don't choke).
 
+Generated clocks fold back into their master via `ClockSpec.resolve`
+unless an explicit `set_clock_groups -asynchronous` overrides the
+relationship. `set_false_path -from [get_clocks A] -to [get_clocks B]`
+is treated as a pairwise async hint (equivalent to async groups for
+that specific pair). Exclusive groups drop crossings as unreachable
+in `_filter_async` before any rule sees them.
+
 ### 6.2 What it deliberately ignores
 
-Every other SDC command (`set_max_delay`, `set_input_delay`,
-`set_load`, `set_drive`, etc.) is **silently dropped**. This is by
-design: users should be able to point the tool at their existing
-constraint file without curating a CDC-only subset. The trade-off is
-that genuinely-CDC-relevant commands the parser doesn't yet
-understand (e.g. `set_false_path`) are also dropped silently.
+STA-only commands (`set_max_delay`, `set_min_delay`, `set_load`,
+`set_drive`, `set_disable_timing`, `set_case_analysis`, …) are
+silently dropped at the `logging.DEBUG` level. This is by design:
+users should be able to point the tool at their existing constraint
+file without curating a CDC-only subset.
 
-### 6.3 Roadmap and the diagnostics policy
+The parser is also deliberately *not* a Tcl interpreter (see this
+section's intro). Constructs not supported: command substitution
+beyond `[get_clocks …]` / `[get_ports …]` / `[get_pins …]`, `set`
+variables, `expr`, `-filter` clauses inside collection commands,
+and `set_false_path -through` (path-specific, not a clock-pair
+hint).
 
-The Phase-1 SDC extension (see [`README.md`](../README.md) "Not yet")
-will add `create_generated_clock`, logically/physically-exclusive
-groups, `set_false_path -from/-to`, and `set_input_delay`/
-`set_output_delay`. As part of that work the silent-drop default
-will be tempered by:
+### 6.3 Diagnostics policy
 
-- A `--verbose` debug log line per ignored command, so users can see
-  what was skipped.
-- An end-of-parse warning when a CDC-relevant command (`set_false_path`,
-  `set_clock_groups`, `set_input_delay`, `set_output_delay`,
-  `create_generated_clock`) was present but couldn't be fully parsed
-  (e.g. `set_false_path -through`, `[get_clocks -filter …]`).
+The silent-drop default is tempered by `ClockSpec.partial_warnings`:
+when the parser sees a CDC-relevant command it can't fully
+understand (e.g. `set_false_path -through`, `set_clock_groups`
+without a kind specifier, `[get_clocks -filter …]`, `set_false_path`
+with non-clock endpoints), it appends a one-line description. The
+CLI surfaces these once at the end of parsing (in text mode, to
+stderr) rather than logging line-by-line — keeping the noise floor
+low for the common case while flagging cases where the user might
+assume CDC coverage that isn't there.
 
-This keeps the noise floor low for the common case (real constraints
-files have hundreds of `set_load` lines) while flagging the cases
-where the user might assume CDC coverage that isn't there.
+Truly unrecognised commands (`set_load`, `set_drive`, …) emit only
+a `logging.DEBUG` line so they're visible under `--verbose` but
+don't pollute normal output.
 
 ## 7. Crossing detection
 
