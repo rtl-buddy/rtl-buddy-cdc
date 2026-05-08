@@ -73,6 +73,33 @@ def user_sync_flop_names(module: Module) -> set[str]:
     return out
 
 
+# Companion to USER_SYNC_ATTRS: an explicit gray-coded promise. Attach
+# to the source-side bus wire (the gray counter's output) to suppress
+# CDC-004 false positives when the structural detector can't see the
+# multi-bit sync chain (e.g. across a module boundary that hasn't been
+# flattened, or when the chain is implemented in a non-canonical way).
+USER_GRAY_ATTRS: frozenset[str] = frozenset({"cdc_gray", "gray_code"})
+
+
+def user_gray_flop_names(module: Module) -> set[str]:
+    """Cell names of source flops whose Q is named via a wire annotated
+    with ``(* cdc_gray *)``. CDC-004 treats those bus crossings as safe
+    by fiat (the user is asserting only one bit changes per cycle)."""
+    gray_bits: set[Bit] = set()
+    for nn in module.netnames.values():
+        if USER_GRAY_ATTRS & set(nn.attributes):
+            for b in nn.bits:
+                if isinstance(b, int):
+                    gray_bits.add(b)
+    if not gray_bits:
+        return set()
+    out: set[str] = set()
+    for f in find_flops(module):
+        if any(isinstance(b, int) and b in gray_bits for b in f.q):
+            out.add(f.cell.name)
+    return out
+
+
 def _q_to_flop(module: Module) -> dict[Bit, Flop]:
     """Map each bit driven by a flop's Q pin back to the source flop."""
     out: dict[Bit, Flop] = {}
@@ -477,6 +504,117 @@ def _is_gated_bus_crossing(
     return all(domains.get(name) == dst_clock for name in s_fanin_flops)
 
 
+def _is_gray_encoded_source(
+    module: Module,
+    src_flop: Flop,
+    drivers: dict[Bit, tuple[str, str, int]],
+    max_back_hops: int = 8,
+) -> bool:
+    """Detect the canonical gray-encoding pattern in the source flop's
+    fanin.
+
+    A gray counter computes ``g = b ^ (b >> 1)`` where ``b`` is the
+    binary value. ``b >> 1`` is a logical right-shift of one
+    position, so the shifted operand's bit ``i`` is the unshifted
+    operand's bit ``i+1``. After Yosys flattening the right-shift
+    becomes pure wire-routing — the ``$xor`` cell sees::
+
+        A = (b[0], b[1], ..., b[N-1])
+        B = (b[1], b[2], ..., b[N-1], '0')   # MSB padded with constant
+
+    We walk the source flop's D fanin backward through combinational
+    cells (bounded by ``max_back_hops``) looking for any ``$xor``
+    whose A/B pair satisfies ``A[i+1] == B[i]`` for ``i < N-1`` and
+    ``B[N-1]`` is a constant. That signature is essentially unique to
+    gray encoding and is what async-FIFO pointers produce.
+    """
+    seen: set[Bit] = set()
+    frontier: list[tuple[Bit, int]] = [(b, 0) for b in src_flop.d if isinstance(b, int)]
+    while frontier:
+        nxt: list[tuple[Bit, int]] = []
+        for bit, depth in frontier:
+            if bit in seen or depth > max_back_hops:
+                continue
+            seen.add(bit)
+            drv = drivers.get(bit)
+            if drv is None:
+                continue
+            cell_name, port_name, _idx = drv
+            if port_name == "Q":
+                # Reached a flop — that's another register's output.
+                # Don't traverse into a different domain's logic.
+                continue
+            cell = module.cells[cell_name]
+            if cell.type == "$xor":
+                a_bits = cell.connections.get("A", ())
+                b_bits = cell.connections.get("B", ())
+                n = len(a_bits)
+                if (
+                    n >= 2
+                    and len(b_bits) == n
+                    and all(
+                        isinstance(a_bits[i + 1], int)
+                        and isinstance(b_bits[i], int)
+                        and a_bits[i + 1] == b_bits[i]
+                        for i in range(n - 1)
+                    )
+                    and isinstance(b_bits[n - 1], str)
+                ):
+                    return True
+            for in_port, in_bits in cell.connections.items():
+                if in_port in _OUTPUT_PINS:
+                    continue
+                for b in in_bits:
+                    if isinstance(b, int):
+                        nxt.append((b, depth + 1))
+        frontier = nxt
+    return False
+
+
+def _is_multibit_sync_first_stage(
+    module: Module,
+    dst_flop: Flop,
+    dst_clock: str,
+    domains: dict[str, str | None],
+) -> bool:
+    """Test whether ``dst_flop`` is the first stage of a multi-bit
+    synchronizer chain.
+
+    Canonical shape: a width-N flop whose ``Q`` drives the ``D`` of
+    another width-N flop in the same clock domain, lane-for-lane (so
+    ``Q[i] == nextflop.D[i]`` for every ``i``). This is exactly what
+    ``ip_cdc_sync`` produces for ``WIDTH > 1`` after Yosys flatten —
+    one multi-bit cell per stage, lane-aligned. Async-FIFO pointer
+    crossings use this exact pattern with gray-coded data, which is
+    safe because at most one bit changes per source cycle.
+
+    Lane-wise alignment is what makes this *gray-friendly*: a generic
+    multi-bit sync chain doesn't promise gray-coding in the source,
+    but in practice the only well-known reason to wire one up is for
+    a gray-coded crossing. We therefore accept it as the gray-code
+    structural case; users who want stricter behaviour can keep
+    asserting via ``set_clock_groups`` and the rule pass.
+    """
+    if len(dst_flop.q) < 2:
+        return False
+    width = len(dst_flop.q)
+    if len(dst_flop.d) != width:
+        return False
+    q_bits = tuple(dst_flop.q)
+    if not all(isinstance(b, int) for b in q_bits):
+        return False
+    for f in find_flops(module):
+        if f.cell.name == dst_flop.cell.name:
+            continue
+        if domains.get(f.cell.name) != dst_clock:
+            continue
+        if len(f.d) != width:
+            continue
+        if tuple(f.d) == q_bits:
+            return True
+    return False
+
+
 def check_cdc_004(
     module: Module,
     crossings: list[Crossing],
@@ -487,23 +625,39 @@ def check_cdc_004(
     A multi-bit data path that crosses clock domains needs an extra
     coherence mechanism on top of per-bit synchronization, because
     individual bits can settle on different destination cycles.
-    Acceptable patterns are:
+    Three patterns are accepted:
 
     - **Handshake / load-enable gating** — destination flops only
       sample the bus when a synchronized control signal allows it
       (the golden ``ip_cdc_handshake`` shape).
-    - **Gray-coded counters** — only one bit changes per source cycle
-      (FIFO pointer pattern; not yet recognized by this rule).
-
-    The current implementation accepts handshake-style gating via the
-    ``_is_gated_bus_crossing`` heuristic and flags everything else.
+    - **Gray-coded crossing into a multi-bit sync chain** — the
+      destination is itself a multi-bit synchronizer (e.g. async-FIFO
+      pointer sync), so each lane is independently filtered for
+      metastability. This is correct iff the source actually toggles
+      one bit at a time; gray-coded counters guarantee that.
+    - **User-asserted gray-coding** — the source wire is annotated
+      ``(* cdc_gray *)`` (or ``(* gray_code *)``), telling the
+      analyzer to trust the gray-counter promise even when the
+      structural detector can't see the sync chain.
     """
     violations: list[Violation] = []
     domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
     drivers = _bit_drivers(module)
+    user_grays = user_gray_flop_names(module)
 
     for c in crossings:
         if c.width <= 1:
+            continue
+        if c.src_flop.cell.name in user_grays:
+            # Explicit user assertion of gray-coding.
+            continue
+        if _is_multibit_sync_first_stage(
+            module, c.dst_flop, c.dst_clock, domains
+        ) and _is_gray_encoded_source(module, c.src_flop, drivers):
+            # Structural gray-coded crossing: source has the canonical
+            # gray-encode XOR pattern AND the destination is a
+            # multi-bit synchronizer chain. This is the async-FIFO
+            # pointer shape and is correct by construction.
             continue
         if _is_gated_bus_crossing(module, c, domains, drivers):
             continue
