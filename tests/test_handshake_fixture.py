@@ -19,7 +19,7 @@ import pytest
 
 from rtl_buddy_cdc import netlist, sdc as sdc_mod
 from rtl_buddy_cdc.domain import assign_domains, find_crossings
-from rtl_buddy_cdc.rules import run_all as run_all_rules
+from rtl_buddy_cdc.rules import check_cdc_002, run_all as run_all_rules
 
 FIXTURE = (
     Path(__file__).parent / "fixtures" / "ip_cdc_handshake" / "ip_cdc_handshake.json"
@@ -76,11 +76,11 @@ def test_crossings(module) -> None:
     assert data.min_hops >= 1
 
 
-def test_golden_has_no_cdc002_violations(module) -> None:
-    """The golden ip_cdc_handshake design uses 2FF synchronizers — both
-    control crossings (req sync, ack sync) should pass CDC-002. The
-    8-bit data crossing is intentionally skipped by CDC-002 (handled by
-    a future bus-crossing rule)."""
+def test_golden_passes_all_rules(module) -> None:
+    """The golden ip_cdc_handshake design uses 2FF synchronizers on both
+    control crossings (req sync, ack sync), so CDC-001 should not fire.
+    The 8-bit data crossing is intentionally skipped by CDC-001 — it's
+    a bus crossing, governed by a future CDC-004 rule."""
     sdc_path = (
         Path(__file__).parent / "fixtures" / "ip_cdc_handshake" / "ip_cdc_handshake.sdc"
     )
@@ -101,8 +101,33 @@ def test_golden_has_no_cdc002_violations(module) -> None:
     assert len(async_crossings) == 3
 
     violations = run_all_rules(module, async_crossings)
-    cdc_002 = [v for v in violations if v.rule_id == "CDC-002"]
-    assert cdc_002 == [], (
-        f"unexpected CDC-002 violations on golden fixture: "
-        f"{[v.message for v in cdc_002]}"
+    assert violations == [], (
+        f"unexpected violations on golden fixture: "
+        f"{[(v.rule_id, v.message) for v in violations]}"
     )
+
+
+def test_cdc_002_fires_when_threshold_raised(module) -> None:
+    """The two control crossings have 2-deep synchronizers — silent at
+    the default required_depth=2 (CDC-001 territory only) but should
+    fire CDC-002 once a project requires 3-deep chains."""
+    sdc_path = (
+        Path(__file__).parent / "fixtures" / "ip_cdc_handshake" / "ip_cdc_handshake.sdc"
+    )
+    spec = sdc_mod.parse_file(sdc_path)
+    crossings = find_crossings(module)
+    async_crossings = [
+        c
+        for c in crossings
+        if spec.are_async(
+            spec.clock_for_port(c.src_clock) or c.src_clock,
+            spec.clock_for_port(c.dst_clock) or c.dst_clock,
+        )
+    ]
+
+    raised = check_cdc_002(module, async_crossings, required_depth=3)
+    # Two single-bit control crossings (req sync, ack sync) both have
+    # depth=2 → should each report once when required_depth is 3.
+    assert len(raised) == 2
+    assert all(v.rule_id == "CDC-002" for v in raised)
+    assert all(v.severity == "warning" for v in raised)

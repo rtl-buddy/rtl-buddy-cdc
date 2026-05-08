@@ -1,4 +1,4 @@
-"""Negative-case fixture: single-flop "synchronizer" → CDC-002 fires."""
+"""Negative-case fixture: single-flop "synchronizer" → CDC-001 fires."""
 
 from __future__ import annotations
 
@@ -38,10 +38,19 @@ def test_one_async_crossing(context) -> None:
     assert len(async_crossings) == 1
 
 
-def test_cdc_002_fires(context) -> None:
+def test_cdc_001_fires(context) -> None:
     module, async_crossings = context
     violations = run_all_rules(module, async_crossings)
-    cdc_002 = [v for v in violations if v.rule_id == "CDC-002"]
-    assert len(cdc_002) == 1
-    assert "insufficient synchronizer depth" in cdc_002[0].message
-    assert cdc_002[0].severity == "error"
+    cdc_001 = [v for v in violations if v.rule_id == "CDC-001"]
+    assert len(cdc_001) == 1
+    assert "unsynchronized control crossing" in cdc_001[0].message
+    assert "no second-stage synchronizer" in cdc_001[0].message
+    assert cdc_001[0].severity == "error"
+
+
+def test_no_cdc_002_at_default_depth(context) -> None:
+    """CDC-002 should be silent at the default required_depth = 2 — even
+    though depth here is only 1, that's CDC-001 territory, not CDC-002."""
+    module, async_crossings = context
+    violations = run_all_rules(module, async_crossings)
+    assert [v for v in violations if v.rule_id == "CDC-002"] == []

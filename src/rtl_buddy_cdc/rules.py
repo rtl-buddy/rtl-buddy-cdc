@@ -41,24 +41,52 @@ def _q_to_flop(module: Module) -> dict[Bit, Flop]:
     return out
 
 
+def _bit_reader_count(module: Module) -> dict[Bit, int]:
+    """Count every (cell, port-bit) site that reads each net bit.
+
+    Both flop D and combinational inputs count; flop CLK is excluded
+    because clock connections aren't part of the data fanout. Two reads
+    of the same bit by the same cell on different ports count
+    independently — both are real loads.
+    """
+    counts: dict[Bit, int] = {}
+    for cell in module.cells.values():
+        # Outputs of $-prefixed primitives use the ``Y`` port; flop Q is
+        # also an output. Both are intentionally ignored: we want input
+        # readers, not drivers.
+        for port_name, bits in cell.connections.items():
+            if port_name in {"Y", "Q", "CLK"}:
+                continue
+            for b in bits:
+                if isinstance(b, int):
+                    counts[b] = counts.get(b, 0) + 1
+    return counts
+
+
 def _sync_chain_depth(
     module: Module,
     head: Flop,
     head_clock: str,
     domains: dict[str, str | None],
     q_to_flop: dict[Bit, Flop],
+    reader_counts: dict[Bit, int] | None = None,
 ) -> int:
     """Length of the synchronizer chain that starts at ``head``.
 
     A chain extends to the next flop iff:
 
-    - the next flop is in the same clock domain, and
-    - the next flop's D pin is driven solely by the previous flop's Q
-      bit on the same lane (i.e. ``D[i]`` == previous-flop's ``Q[i]``).
+    - the head's Q bit has *exactly one* reader anywhere in the
+      module (any extra reader — combinational or otherwise — means
+      the synchronized value is already in use; the chain ends),
+    - that reader is a 1-bit flop on its D pin in the same clock
+      domain.
 
     Returns the count of dst-domain flops *including* ``head``. Callers
     typically check ``depth >= 2``.
     """
+    if reader_counts is None:
+        reader_counts = _bit_reader_count(module)
+
     depth = 1
     current = head
     visited = {current.cell.name}
@@ -70,15 +98,19 @@ def _sync_chain_depth(
         next_q = current.q[0]
         if not isinstance(next_q, int):
             break
-        consumers: list[Flop] = []
+        # If the bit is consumed by anything other than a single follow-
+        # on flop D pin, the chain ends here (the value is "in use").
+        if reader_counts.get(next_q, 0) != 1:
+            break
+        nxt: Flop | None = None
         for f in find_flops(module):
             if f.cell.name in visited:
                 continue
-            if next_q in f.d and len(f.d) == 1 and f.d[0] == next_q:
-                consumers.append(f)
-        if len(consumers) != 1:
+            if len(f.d) == 1 and f.d[0] == next_q:
+                nxt = f
+                break
+        if nxt is None:
             break
-        nxt = consumers[0]
         if domains.get(nxt.cell.name) != head_clock:
             break
         depth += 1
@@ -90,13 +122,17 @@ def _sync_chain_depth(
 # --- rules ------------------------------------------------------------------
 
 
-def check_cdc_002(
-    module: Module, crossings: list[Crossing], min_depth: int = 2
-) -> list[Violation]:
-    """CDC-002 — Insufficient synchronizer depth on a control crossing.
+def check_cdc_001(module: Module, crossings: list[Crossing]) -> list[Violation]:
+    """CDC-001 — Unsynchronized control crossing.
 
-    Applies to single-bit crossings only (multi-bit buses use a
-    different correctness pattern — see CDC-004).
+    A single-bit register-to-register CDC where the destination flop has
+    no follow-on synchronizer flop in the same domain. This is the
+    classic "metastability bug": the source-domain signal lands on a
+    single flop and is then used directly, with no second stage to
+    filter metastable values.
+
+    Multi-bit (bus) crossings deliberately bypass this check — their
+    correctness pattern is gating or gray-coding, handled by CDC-004.
     """
     violations: list[Violation] = []
     domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
@@ -107,15 +143,56 @@ def check_cdc_002(
         if c.width != 1:
             continue
         depth = _sync_chain_depth(module, c.dst_flop, c.dst_clock, domains, q_to_flop)
-        if depth < min_depth:
+        if depth < 2:
+            violations.append(
+                Violation(
+                    rule_id="CDC-001",
+                    severity="error",
+                    message=(
+                        f"unsynchronized control crossing "
+                        f"{c.src_clock} → {c.dst_clock}: "
+                        f"destination flop {c.dst_flop.name} has no "
+                        f"second-stage synchronizer (chain depth = {depth})"
+                    ),
+                    crossing=c,
+                )
+            )
+    return violations
+
+
+def check_cdc_002(
+    module: Module,
+    crossings: list[Crossing],
+    required_depth: int = 2,
+) -> list[Violation]:
+    """CDC-002 — Insufficient synchronizer depth.
+
+    Fires when a control crossing has a synchronizer chain present
+    (depth >= 2, so CDC-001 is satisfied) but shorter than the
+    site-required minimum. The default ``required_depth`` of 2 keeps
+    this rule silent unless a project explicitly raises the bar (e.g.
+    3 stages for high-speed/low-MTBF designs).
+    """
+    if required_depth <= 2:
+        return []
+    violations: list[Violation] = []
+    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    q_to_flop = _q_to_flop(module)
+    _ = q_to_flop
+
+    for c in crossings:
+        if c.width != 1:
+            continue
+        depth = _sync_chain_depth(module, c.dst_flop, c.dst_clock, domains, q_to_flop)
+        if 2 <= depth < required_depth:
             violations.append(
                 Violation(
                     rule_id="CDC-002",
-                    severity="error",
+                    severity="warning",
                     message=(
                         f"insufficient synchronizer depth on "
                         f"{c.src_clock} → {c.dst_clock} crossing: "
-                        f"found {depth} flop(s), expected >= {min_depth} "
+                        f"found {depth} flop(s), required >= {required_depth} "
                         f"(dst flop: {c.dst_flop.name})"
                     ),
                     crossing=c,
@@ -125,6 +202,7 @@ def check_cdc_002(
 
 
 RULES: dict[str, RuleFn] = {
+    "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
 }
 
