@@ -41,6 +41,74 @@ def _q_to_flop(module: Module) -> dict[Bit, Flop]:
     return out
 
 
+def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str, int]]:
+    """Map each bit to the (cell_name, output_port, bit_idx) that drives it.
+
+    Yosys $-prefixed combinational cells emit on ``Y``; FFs emit on
+    ``Q``. Bits that originate from a top-level input port aren't
+    listed here — callers should fall back to :meth:`Module.port_of_bit`.
+    """
+    out: dict[Bit, tuple[str, str, int]] = {}
+    for cell in module.cells.values():
+        for port_name in ("Y", "Q"):
+            bits = cell.connections.get(port_name, ())
+            for idx, b in enumerate(bits):
+                if isinstance(b, int):
+                    out[b] = (cell.name, port_name, idx)
+    return out
+
+
+# Pin names whose connections are *outputs* of a cell (so we never walk
+# backward through them). All other pins are treated as inputs for the
+# purpose of fanin walks.
+_OUTPUT_PINS: frozenset[str] = frozenset({"Y", "Q"})
+
+
+def _backward_flop_fanin(
+    module: Module,
+    start_bits: tuple[Bit, ...],
+    drivers: dict[Bit, tuple[str, str, int]],
+    max_depth: int = 12,
+) -> set[str]:
+    """Backward BFS through combinational cells; return the set of flop
+    cell names whose ``Q`` is reached.
+
+    Traversal stops at flop ``Q`` outputs, top-level ports, or constants.
+    The depth bound exists only to keep pathological fanins bounded; for
+    well-structured CDC patterns the answer converges quickly.
+    """
+    flops: set[str] = set()
+    seen: set[Bit] = set()
+    frontier: list[tuple[Bit, int]] = [(b, 0) for b in start_bits if isinstance(b, int)]
+    while frontier:
+        nxt: list[tuple[Bit, int]] = []
+        for bit, depth in frontier:
+            if bit in seen:
+                continue
+            seen.add(bit)
+            drv = drivers.get(bit)
+            if drv is None:
+                # bit comes from a top-level port or is a constant; the
+                # caller will treat it as "untracked source" and decide
+                continue
+            cell_name, port, _idx = drv
+            cell = module.cells[cell_name]
+            if port == "Q":
+                flops.add(cell_name)
+                continue
+            # combinational cell — walk back through every input pin
+            if depth >= max_depth:
+                continue
+            for in_port, in_bits in cell.connections.items():
+                if in_port in _OUTPUT_PINS:
+                    continue
+                for b in in_bits:
+                    if isinstance(b, int):
+                        nxt.append((b, depth + 1))
+        frontier = nxt
+    return flops
+
+
 def _bit_reader_count(module: Module) -> dict[Bit, int]:
     """Count every (cell, port-bit) site that reads each net bit.
 
@@ -249,10 +317,105 @@ def check_cdc_003(module: Module, crossings: list[Crossing]) -> list[Violation]:
     return violations
 
 
+def _is_gated_bus_crossing(
+    module: Module,
+    crossing: Crossing,
+    domains: dict[str, str | None],
+    drivers: dict[Bit, tuple[str, str, int]],
+) -> bool:
+    """Heuristic: the bus crossing is properly gated by a dst-domain
+    handshake (so CDC-004 should not fire).
+
+    The pattern we accept: the cell that directly drives the
+    destination flop's ``D`` pin is a single ``$mux``, and the mux's
+    ``S`` (select) input is driven by combinational/sequential logic
+    whose entire fanin in the netlist sits in the destination clock
+    domain. That matches the golden ``ip_cdc_handshake`` shape and
+    the standard "load on synced req-edge" pattern in textbooks.
+
+    A more rigorous check would also verify that the mux's hold-input
+    is the destination flop's own ``Q`` (proper feedback hold), but we
+    leave that as a follow-up — the current shape catches the bus
+    crossing patterns we care about without false-positives on the
+    golden fixture.
+    """
+    dst_clock = crossing.dst_clock
+    # All D bits should be driven by the same cell for the gating
+    # interpretation to apply. If the bus is split across multiple
+    # drivers, give up and treat as ungated (conservative).
+    driver_cells: set[str] = set()
+    for d_bit in crossing.dst_flop.d:
+        if not isinstance(d_bit, int):
+            continue
+        drv = drivers.get(d_bit)
+        if drv is None:
+            return False
+        driver_cells.add(drv[0])
+    if len(driver_cells) != 1:
+        return False
+    drv_cell = module.cells[next(iter(driver_cells))]
+    if drv_cell.type != "$mux":
+        return False
+    s_bits = drv_cell.connections.get("S", ())
+    if not s_bits:
+        return False
+    s_fanin_flops = _backward_flop_fanin(module, s_bits, drivers)
+    if not s_fanin_flops:
+        return False
+    # Every flop reached in the select-fanin must be in the dst clock
+    # domain. A single src-domain flop in there means the "gate" is
+    # itself a cross-domain signal — not a valid handshake.
+    return all(domains.get(name) == dst_clock for name in s_fanin_flops)
+
+
+def check_cdc_004(module: Module, crossings: list[Crossing]) -> list[Violation]:
+    """CDC-004 — Multi-bit bus crossing without gating or gray-coding.
+
+    A multi-bit data path that crosses clock domains needs an extra
+    coherence mechanism on top of per-bit synchronization, because
+    individual bits can settle on different destination cycles.
+    Acceptable patterns are:
+
+    - **Handshake / load-enable gating** — destination flops only
+      sample the bus when a synchronized control signal allows it
+      (the golden ``ip_cdc_handshake`` shape).
+    - **Gray-coded counters** — only one bit changes per source cycle
+      (FIFO pointer pattern; not yet recognized by this rule).
+
+    The current implementation accepts handshake-style gating via the
+    ``_is_gated_bus_crossing`` heuristic and flags everything else.
+    """
+    violations: list[Violation] = []
+    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    drivers = _bit_drivers(module)
+
+    for c in crossings:
+        if c.width <= 1:
+            continue
+        if _is_gated_bus_crossing(module, c, domains, drivers):
+            continue
+        violations.append(
+            Violation(
+                rule_id="CDC-004",
+                severity="error",
+                message=(
+                    f"unprotected bus crossing on {c.src_clock} → "
+                    f"{c.dst_clock}: {c.width}-bit path with no "
+                    f"recognized gating or gray-coding "
+                    f"(src flop: {c.src_flop.name}, "
+                    f"dst flop: {c.dst_flop.name})"
+                ),
+                crossing=c,
+            )
+        )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
     "CDC-003": check_cdc_003,
+    "CDC-004": check_cdc_004,
 }
 
 
