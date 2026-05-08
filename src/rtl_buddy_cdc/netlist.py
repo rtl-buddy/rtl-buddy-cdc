@@ -34,11 +34,23 @@ class Cell:
 
 
 @dataclass(frozen=True)
+class Netname:
+    """A named wire / reg from the source. Carries any
+    ``(* foo = "bar" *)`` SV attributes the user attached to the
+    declaration — Yosys preserves them on the netname rather than the
+    cell that drives the bits."""
+
+    name: str
+    bits: tuple[Bit, ...]
+    attributes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Module:
     name: str
     ports: dict[str, Port]
     cells: dict[str, Cell]
-    netnames: dict[str, tuple[Bit, ...]]
+    netnames: dict[str, Netname]
 
     def port_of_bit(self, bit: Bit) -> Port | None:
         """Return the top-level port that owns ``bit`` if any."""
@@ -97,5 +109,12 @@ def load(path: str | Path) -> Module:
         )
         for cn, cd in raw.get("cells", {}).items()
     }
-    netnames = {nn: _bits(nd["bits"]) for nn, nd in raw.get("netnames", {}).items()}
+    netnames = {
+        nn: Netname(
+            name=nn,
+            bits=_bits(nd["bits"]),
+            attributes=dict(nd.get("attributes", {})),
+        )
+        for nn, nd in raw.get("netnames", {}).items()
+    }
     return Module(name=name, ports=ports, cells=cells, netnames=netnames)

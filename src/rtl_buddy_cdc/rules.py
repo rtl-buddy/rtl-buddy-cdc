@@ -40,6 +40,39 @@ RuleFn = Callable[[Module, list[Crossing], "ClockSpec | None"], list[Violation]]
 # --- helpers ----------------------------------------------------------------
 
 
+# SV attributes that mark a flop as a user-vetted synchronizer first
+# stage. Attach to the wire/reg declaration the flop drives, e.g.::
+#
+#     (* cdc_sync *) logic dst_q;
+#
+# Yosys preserves the attribute on the *netname* (not the cell), so
+# we map back from a tagged netname's bits to the flop whose Q
+# produces them. Multiple aliases are accepted so projects using
+# Spyglass-style or Vivado-style tags don't have to rename.
+USER_SYNC_ATTRS: frozenset[str] = frozenset({"cdc_sync", "synchronizer", "async_reg"})
+
+
+def user_sync_flop_names(module: Module) -> set[str]:
+    """Return cell names of flops whose Q is named via a wire annotated
+    with one of the :data:`USER_SYNC_ATTRS`. These are treated by
+    CDC-001 / CDC-002 / CDC-003 / CDC-006 as "trust-me, this is a
+    correctly-engineered synchronizer" — the structural rule passes
+    skip them."""
+    sync_bits: set[Bit] = set()
+    for nn in module.netnames.values():
+        if USER_SYNC_ATTRS & set(nn.attributes):
+            for b in nn.bits:
+                if isinstance(b, int):
+                    sync_bits.add(b)
+    if not sync_bits:
+        return set()
+    out: set[str] = set()
+    for f in find_flops(module):
+        if any(isinstance(b, int) and b in sync_bits for b in f.q):
+            out.add(f.cell.name)
+    return out
+
+
 def _q_to_flop(module: Module) -> dict[Bit, Flop]:
     """Map each bit driven by a flop's Q pin back to the source flop."""
     out: dict[Bit, Flop] = {}
@@ -265,10 +298,13 @@ def check_cdc_001(
     domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
     q_to_flop = _q_to_flop(module)
     _ = q_to_flop  # reserved: future rules will need fast Q→flop lookup
+    user_syncs = user_sync_flop_names(module)
 
     for c in crossings:
         if c.width != 1:
             continue
+        if c.dst_flop.cell.name in user_syncs:
+            continue  # user vouches for the synchronizer shape
         depth = _sync_chain_depth(module, c.dst_flop, c.dst_clock, domains, q_to_flop)
         if depth < 2:
             violations.append(
@@ -308,9 +344,12 @@ def check_cdc_002(
     domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
     q_to_flop = _q_to_flop(module)
     _ = q_to_flop
+    user_syncs = user_sync_flop_names(module)
 
     for c in crossings:
         if c.width != 1:
+            continue
+        if c.dst_flop.cell.name in user_syncs:
             continue
         depth = _sync_chain_depth(module, c.dst_flop, c.dst_clock, domains, q_to_flop)
         if 2 <= depth < required_depth:
@@ -354,11 +393,14 @@ def check_cdc_003(
     domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
     q_to_flop = _q_to_flop(module)
     reader_counts = _bit_reader_count(module)
+    user_syncs = user_sync_flop_names(module)
 
     for c in crossings:
         if c.width != 1:
             continue
         if c.min_hops < 1:
+            continue
+        if c.dst_flop.cell.name in user_syncs:
             continue
         depth = _sync_chain_depth(
             module, c.dst_flop, c.dst_clock, domains, q_to_flop, reader_counts
@@ -575,10 +617,15 @@ def check_cdc_006(
     if clock_spec is not None:
         for clk in clock_spec.clocks.values():
             clock_ports.update(clk.ports)
+    user_syncs = user_sync_flop_names(module)
 
     for f in find_flops(module):
         my_clk = domains.get(f.cell.name)
         if my_clk is None:
+            continue
+        # User-marked synchronizers are explicitly trusted regardless
+        # of the input shape.
+        if f.cell.name in user_syncs:
             continue
         # We only fire on flops that are bona fide synchronizer first
         # stages — i.e. the chain on the destination side is >= 2.
