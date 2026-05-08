@@ -1,0 +1,823 @@
+{
+  "creator": "Yosys 0.64 (git sha1 1d5b3aaa2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "ip_cdc_handshake": {
+      "attributes": {
+        "dynports": "00000000000000000000000000000001",
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:15.1-82.10"
+      },
+      "parameter_default_values": {
+        "WIDTH": "00000000000000000000000000001000"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "src_rst_n": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "src_valid": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "src_ready": {
+          "direction": "output",
+          "bits": [ 5 ]
+        },
+        "src_data": {
+          "direction": "input",
+          "bits": [ 6, 7, 8, 9, 10, 11, 12, 13 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 14 ]
+        },
+        "dst_rst_n": {
+          "direction": "input",
+          "bits": [ 15 ]
+        },
+        "dst_valid": {
+          "direction": "output",
+          "bits": [ 16 ]
+        },
+        "dst_data": {
+          "direction": "output",
+          "bits": [ 17, 18, 19, 20, 21, 22, 23, 24 ]
+        }
+      },
+      "cells": {
+        "$eq$tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:60$15": {
+          "hide_name": 1,
+          "type": "$eq",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:60.23-60.44"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 25 ],
+            "B": [ 26 ],
+            "Y": [ 5 ]
+          }
+        },
+        "$flatten\\u_sync_ack.$procdff$84": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:22.3-29.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 2 ],
+            "D": [ 27 ],
+            "Q": [ 28 ]
+          }
+        },
+        "$flatten\\u_sync_ack.$procdff$89": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:22.3-29.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 2 ],
+            "D": [ 28 ],
+            "Q": [ 26 ]
+          }
+        },
+        "$flatten\\u_sync_req.$procdff$84": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:22.3-29.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 15 ],
+            "CLK": [ 14 ],
+            "D": [ 25 ],
+            "Q": [ 29 ]
+          }
+        },
+        "$flatten\\u_sync_req.$procdff$89": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:22.3-29.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 15 ],
+            "CLK": [ 14 ],
+            "D": [ 29 ],
+            "Q": [ 30 ]
+          }
+        },
+        "$logic_and$tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:55$13": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:55.18-55.40"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "B": [ 5 ],
+            "Y": [ 31 ]
+          }
+        },
+        "$ne$tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71$18": {
+          "hide_name": 1,
+          "type": "$ne",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71.11-71.35"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 30 ],
+            "B": [ 32 ],
+            "Y": [ 33 ]
+          }
+        },
+        "$not$tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:56$14": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:56.22-56.30"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 25 ],
+            "Y": [ 34 ]
+          }
+        },
+        "$procdff$42": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:63.3-80.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 15 ],
+            "CLK": [ 14 ],
+            "D": [ 35 ],
+            "Q": [ 16 ]
+          }
+        },
+        "$procdff$47": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "00000000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:63.3-80.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 15 ],
+            "CLK": [ 14 ],
+            "D": [ 36, 37, 38, 39, 40, 41, 42, 43 ],
+            "Q": [ 17, 18, 19, 20, 21, 22, 23, 24 ]
+          }
+        },
+        "$procdff$52": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:63.3-80.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 15 ],
+            "CLK": [ 14 ],
+            "D": [ 30 ],
+            "Q": [ 32 ]
+          }
+        },
+        "$procdff$57": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:63.3-80.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 15 ],
+            "CLK": [ 14 ],
+            "D": [ 44 ],
+            "Q": [ 27 ]
+          }
+        },
+        "$procdff$62": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:51.3-59.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 2 ],
+            "D": [ 45 ],
+            "Q": [ 25 ]
+          }
+        },
+        "$procdff$67": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "00000000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:51.3-59.6"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 2 ],
+            "D": [ 46, 47, 48, 49, 50, 51, 52, 53 ],
+            "Q": [ 54, 55, 56, 57, 58, 59, 60, 61 ]
+          }
+        },
+        "$procmux$26": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71.11-71.35|tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71.7-78.10"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "0" ],
+            "B": [ "1" ],
+            "S": [ 33 ],
+            "Y": [ 35 ]
+          }
+        },
+        "$procmux$29": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71.11-71.35|tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71.7-78.10"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 27 ],
+            "B": [ 30 ],
+            "S": [ 33 ],
+            "Y": [ 44 ]
+          }
+        },
+        "$procmux$32": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71.11-71.35|tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71.7-78.10"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 17, 18, 19, 20, 21, 22, 23, 24 ],
+            "B": [ 54, 55, 56, 57, 58, 59, 60, 61 ],
+            "S": [ 33 ],
+            "Y": [ 36, 37, 38, 39, 40, 41, 42, 43 ]
+          }
+        },
+        "$procmux$34": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:55.18-55.40|tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:55.14-58.8"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 54, 55, 56, 57, 58, 59, 60, 61 ],
+            "B": [ 6, 7, 8, 9, 10, 11, 12, 13 ],
+            "S": [ 31 ],
+            "Y": [ 46, 47, 48, 49, 50, 51, 52, 53 ]
+          }
+        },
+        "$procmux$36": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:55.18-55.40|tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:55.14-58.8"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 25 ],
+            "B": [ 34 ],
+            "S": [ 31 ],
+            "Y": [ 45 ]
+          }
+        },
+        "u_sync_ack": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:46.40-48.4",
+            "module": "$paramod$3a60f47c0d38c845717b76847acd7e2fa5ab0dff\\ip_cdc_sync",
+            "module_dynports": "00000000000000000000000000000001",
+            "module_hdlname": "ip_cdc_sync",
+            "module_src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:9.1-33.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_sync_req": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:43.40-45.4",
+            "module": "$paramod$3a60f47c0d38c845717b76847acd7e2fa5ab0dff\\ip_cdc_sync",
+            "module_dynports": "00000000000000000000000000000001",
+            "module_hdlname": "ip_cdc_sync",
+            "module_src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:9.1-33.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        }
+      },
+      "netnames": {
+        "$0\\dst_ack[0:0]": {
+          "hide_name": 1,
+          "bits": [ 44 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:63.3-80.6"
+          }
+        },
+        "$0\\dst_data[7:0]": {
+          "hide_name": 1,
+          "bits": [ 36, 37, 38, 39, 40, 41, 42, 43 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:63.3-80.6"
+          }
+        },
+        "$0\\dst_valid[0:0]": {
+          "hide_name": 1,
+          "bits": [ 35 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:63.3-80.6"
+          }
+        },
+        "$0\\src_payload[7:0]": {
+          "hide_name": 1,
+          "bits": [ 46, 47, 48, 49, 50, 51, 52, 53 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:51.3-59.6"
+          }
+        },
+        "$0\\src_req[0:0]": {
+          "hide_name": 1,
+          "bits": [ 45 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:51.3-59.6"
+          }
+        },
+        "$logic_and$tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:55$13_Y": {
+          "hide_name": 1,
+          "bits": [ 31 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:55.18-55.40"
+          }
+        },
+        "$ne$tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71$18_Y": {
+          "hide_name": 1,
+          "bits": [ 33 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:71.11-71.35"
+          }
+        },
+        "$not$tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:56$14_Y": {
+          "hide_name": 1,
+          "bits": [ 34 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:56.22-56.30"
+          }
+        },
+        "ack_in_src": {
+          "hide_name": 0,
+          "bits": [ 26 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:35.22-35.32"
+          }
+        },
+        "dst_ack": {
+          "hide_name": 0,
+          "bits": [ 27 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:40.22-40.29"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:26.29-26.36"
+          }
+        },
+        "dst_data": {
+          "hide_name": 0,
+          "bits": [ 17, 18, 19, 20, 21, 22, 23, 24 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:29.29-29.37"
+          }
+        },
+        "dst_req_d1": {
+          "hide_name": 0,
+          "bits": [ 32 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:39.22-39.32"
+          }
+        },
+        "dst_rst_n": {
+          "hide_name": 0,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:27.29-27.38"
+          }
+        },
+        "dst_valid": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:28.29-28.38"
+          }
+        },
+        "req_in_dst": {
+          "hide_name": 0,
+          "bits": [ 30 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:38.22-38.32"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:19.29-19.36"
+          }
+        },
+        "src_data": {
+          "hide_name": 0,
+          "bits": [ 6, 7, 8, 9, 10, 11, 12, 13 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:23.29-23.37"
+          }
+        },
+        "src_payload": {
+          "hide_name": 0,
+          "bits": [ 54, 55, 56, 57, 58, 59, 60, 61 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:34.22-34.33"
+          }
+        },
+        "src_ready": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:22.29-22.38"
+          }
+        },
+        "src_req": {
+          "hide_name": 0,
+          "bits": [ 25 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:33.22-33.29"
+          }
+        },
+        "src_rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:20.29-20.38"
+          }
+        },
+        "src_valid": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv:21.29-21.38"
+          }
+        },
+        "u_sync_ack.clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "u_sync_ack clk",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:14.28-14.31"
+          }
+        },
+        "u_sync_ack.d": {
+          "hide_name": 0,
+          "bits": [ 27 ],
+          "attributes": {
+            "hdlname": "u_sync_ack d",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:16.28-16.29"
+          }
+        },
+        "u_sync_ack.q": {
+          "hide_name": 0,
+          "bits": [ 26 ],
+          "attributes": {
+            "hdlname": "u_sync_ack q",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:17.28-17.29"
+          }
+        },
+        "u_sync_ack.rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_sync_ack rst_n",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:15.28-15.33"
+          }
+        },
+        "u_sync_ack.sync_chain[0]": {
+          "hide_name": 0,
+          "bits": [ 28 ],
+          "attributes": {
+            "hdlname": "u_sync_ack sync_chain[0]",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:20.21-20.31"
+          }
+        },
+        "u_sync_ack.sync_chain[1]": {
+          "hide_name": 0,
+          "bits": [ 26 ],
+          "attributes": {
+            "hdlname": "u_sync_ack sync_chain[1]",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:20.21-20.31"
+          }
+        },
+        "u_sync_req.clk": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "hdlname": "u_sync_req clk",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:14.28-14.31"
+          }
+        },
+        "u_sync_req.d": {
+          "hide_name": 0,
+          "bits": [ 25 ],
+          "attributes": {
+            "hdlname": "u_sync_req d",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:16.28-16.29"
+          }
+        },
+        "u_sync_req.q": {
+          "hide_name": 0,
+          "bits": [ 30 ],
+          "attributes": {
+            "hdlname": "u_sync_req q",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:17.28-17.29"
+          }
+        },
+        "u_sync_req.rst_n": {
+          "hide_name": 0,
+          "bits": [ 15 ],
+          "attributes": {
+            "hdlname": "u_sync_req rst_n",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:15.28-15.33"
+          }
+        },
+        "u_sync_req.sync_chain[0]": {
+          "hide_name": 0,
+          "bits": [ 29 ],
+          "attributes": {
+            "hdlname": "u_sync_req sync_chain[0]",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:20.21-20.31"
+          }
+        },
+        "u_sync_req.sync_chain[1]": {
+          "hide_name": 0,
+          "bits": [ 30 ],
+          "attributes": {
+            "hdlname": "u_sync_req sync_chain[1]",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv:20.21-20.31"
+          }
+        }
+      }
+    }
+  }
+}
