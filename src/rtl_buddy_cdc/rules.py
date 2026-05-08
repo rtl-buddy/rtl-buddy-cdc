@@ -15,6 +15,7 @@ from typing import Callable
 from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.sdc import ClockSpec
 
 
 @dataclass(frozen=True)
@@ -22,10 +23,12 @@ class Violation:
     rule_id: str
     severity: str  # "error" | "warning" | "info"
     message: str
-    crossing: Crossing
+    # Most rules attach the data crossing they fired on; rules that
+    # operate on a different shape (e.g. reset crossings) leave it None.
+    crossing: Crossing | None = None
 
 
-RuleFn = Callable[[Module, list[Crossing]], list[Violation]]
+RuleFn = Callable[[Module, list[Crossing], "ClockSpec | None"], list[Violation]]
 
 
 # --- helpers ----------------------------------------------------------------
@@ -190,7 +193,11 @@ def _sync_chain_depth(
 # --- rules ------------------------------------------------------------------
 
 
-def check_cdc_001(module: Module, crossings: list[Crossing]) -> list[Violation]:
+def check_cdc_001(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+) -> list[Violation]:
     """CDC-001 — Unsynchronized control crossing.
 
     A single-bit register-to-register CDC where the destination flop has
@@ -231,6 +238,7 @@ def check_cdc_001(module: Module, crossings: list[Crossing]) -> list[Violation]:
 def check_cdc_002(
     module: Module,
     crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
     required_depth: int = 2,
 ) -> list[Violation]:
     """CDC-002 — Insufficient synchronizer depth.
@@ -269,7 +277,11 @@ def check_cdc_002(
     return violations
 
 
-def check_cdc_003(module: Module, crossings: list[Crossing]) -> list[Violation]:
+def check_cdc_003(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+) -> list[Violation]:
     """CDC-003 — Combinational logic on the way to a synchronizer.
 
     Fires when a single-bit crossing reaches a destination synchronizer
@@ -368,7 +380,11 @@ def _is_gated_bus_crossing(
     return all(domains.get(name) == dst_clock for name in s_fanin_flops)
 
 
-def check_cdc_004(module: Module, crossings: list[Crossing]) -> list[Violation]:
+def check_cdc_004(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+) -> list[Violation]:
     """CDC-004 — Multi-bit bus crossing without gating or gray-coding.
 
     A multi-bit data path that crosses clock domains needs an extra
@@ -411,16 +427,85 @@ def check_cdc_004(module: Module, crossings: list[Crossing]) -> list[Violation]:
     return violations
 
 
+def check_cdc_007(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+) -> list[Violation]:
+    """CDC-007 — Reset crossing without a reset synchronizer.
+
+    Fires when a flop's asynchronous reset pin (``ARST``) is driven by
+    another flop sitting in a *different* asynchronous clock domain.
+    The classic safe pattern is "async-assert, sync-deassert": the
+    reset is asserted immediately but its deassertion is filtered
+    through a 2FF chain on the destination clock — and crucially, the
+    reset signal itself originates from a top-level pin or from a
+    reset synchronizer in the *destination* domain, not from a flop in
+    a foreign domain.
+
+    Reset signals coming from top-level ports are intentionally
+    accepted (they're the user's responsibility to drive correctly,
+    e.g. the reset synchronizer's ARST input).
+    """
+    violations: list[Violation] = []
+    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    drivers = _bit_drivers(module)
+
+    def _async(a: str, b: str) -> bool:
+        # If the user supplied an SDC, defer to its clock-groups
+        # statement. Without an SDC every distinct domain is treated
+        # as asynchronous (conservative — surfaces possible issues).
+        if clock_spec is None:
+            return a != b
+        ca = clock_spec.clock_for_port(a) or a
+        cb = clock_spec.clock_for_port(b) or b
+        return clock_spec.are_async(ca, cb)
+
+    for f in find_flops(module):
+        arst_bits = f.cell.connections.get("ARST", ())
+        if not arst_bits:
+            continue
+        my_clk = domains.get(f.cell.name)
+        if my_clk is None:
+            continue
+        fanin_flops = _backward_flop_fanin(module, arst_bits, drivers)
+        for src_name in fanin_flops:
+            src_clk = domains.get(src_name)
+            if src_clk is None or src_clk == my_clk:
+                continue
+            if not _async(my_clk, src_clk):
+                continue
+            violations.append(
+                Violation(
+                    rule_id="CDC-007",
+                    severity="error",
+                    message=(
+                        f"async reset crossing: flop {f.cell.name} "
+                        f"(clk={my_clk}) has ARST driven by flop "
+                        f"{src_name} from a different domain "
+                        f"(clk={src_clk}); add a reset synchronizer "
+                        f"in the {my_clk} domain"
+                    ),
+                )
+            )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
     "CDC-003": check_cdc_003,
     "CDC-004": check_cdc_004,
+    "CDC-007": check_cdc_007,
 }
 
 
-def run_all(module: Module, crossings: list[Crossing]) -> list[Violation]:
+def run_all(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+) -> list[Violation]:
     out: list[Violation] = []
     for rule in RULES.values():
-        out.extend(rule(module, crossings))
+        out.extend(rule(module, crossings, clock_spec))
     return out

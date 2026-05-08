@@ -72,7 +72,7 @@ def analyze(
     async_crossings = _filter_async(crossings, spec)
     typer.echo(f"  async crossings (per SDC clock groups): {len(async_crossings)}")
 
-    violations = run_all_rules(module, async_crossings)
+    violations = run_all_rules(module, async_crossings, spec)
     if not violations:
         typer.echo("  no rule violations.")
         return
