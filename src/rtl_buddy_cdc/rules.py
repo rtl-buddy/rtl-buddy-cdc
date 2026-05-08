@@ -27,6 +27,11 @@ class Violation:
     # Most rules attach the data crossing they fired on; rules that
     # operate on a different shape (e.g. reset crossings) leave it None.
     crossing: Crossing | None = None
+    # The single cell most directly responsible — used by structured
+    # reporters (JSON/SARIF) to surface a source location via the
+    # cell's ``attributes["src"]`` field. Falls back to the crossing's
+    # dst flop if not set.
+    cell_name: str | None = None
 
 
 RuleFn = Callable[[Module, list[Crossing], "ClockSpec | None"], list[Violation]]
@@ -277,6 +282,7 @@ def check_cdc_001(
                         f"second-stage synchronizer (chain depth = {depth})"
                     ),
                     crossing=c,
+                    cell_name=c.dst_flop.cell.name,
                 )
             )
     return violations
@@ -319,6 +325,7 @@ def check_cdc_002(
                         f"(dst flop: {c.dst_flop.name})"
                     ),
                     crossing=c,
+                    cell_name=c.dst_flop.cell.name,
                 )
             )
     return violations
@@ -371,6 +378,7 @@ def check_cdc_003(
                     f"sync first stage: {c.dst_flop.name})"
                 ),
                 crossing=c,
+                cell_name=c.dst_flop.cell.name,
             )
         )
     return violations
@@ -469,6 +477,7 @@ def check_cdc_004(
                     f"dst flop: {c.dst_flop.name})"
                 ),
                 crossing=c,
+                cell_name=c.dst_flop.cell.name,
             )
         )
     return violations
@@ -531,6 +540,7 @@ def check_cdc_005(
                     f"values when these outputs recombine"
                 ),
                 crossing=group[0],
+                cell_name=src_name,
             )
         )
     return violations
@@ -594,6 +604,7 @@ def check_cdc_006(
                     f"reaching unregistered top-level port(s): "
                     f"{', '.join(ungated_ports)}"
                 ),
+                cell_name=f.cell.name,
             )
         )
     return violations
@@ -719,6 +730,7 @@ def check_cdc_008(
                             f"connected to {cell.name}.{port_name}[{idx}] "
                             f"(cell type {cell.type})"
                         ),
+                        cell_name=cell.name,
                     )
                 )
     return violations
@@ -783,6 +795,7 @@ def check_cdc_007(
                         f"(clk={src_clk}); add a reset synchronizer "
                         f"in the {my_clk} domain"
                     ),
+                    cell_name=f.cell.name,
                 )
             )
     return violations

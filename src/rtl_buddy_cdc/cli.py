@@ -3,16 +3,43 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
+from enum import Enum
 from pathlib import Path
+from typing import IO
 
 import typer
 
-from rtl_buddy_cdc import netlist, sdc as sdc_mod
+from rtl_buddy_cdc import netlist, reporter, sdc as sdc_mod
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
+from rtl_buddy_cdc.reporter import AnalysisResult
 from rtl_buddy_cdc.rules import run_all as run_all_rules
 
 app = typer.Typer(help="CDC linting tool for RTL designs (Yosys-backed).")
+
+
+class OutputFormat(str, Enum):
+    text = "text"
+    json = "json"
+    sarif = "sarif"
+
+
+_FORMAT_OPT = typer.Option(
+    OutputFormat.text,
+    "--format",
+    "-f",
+    case_sensitive=False,
+    help="Report format. text (default) is human-readable; json is "
+    "structured for downstream consumers; sarif targets GitHub "
+    "code-scanning annotations.",
+)
+_OUTPUT_OPT = typer.Option(
+    None,
+    "--output",
+    "-o",
+    help="Write the report to this file (default: stdout).",
+)
 
 
 @app.command()
@@ -33,9 +60,11 @@ def analyze(
         readable=True,
         help="SDC file. Optional, but rule checks need it.",
     ),
+    fmt: OutputFormat = _FORMAT_OPT,
+    output_path: Path | None = _OUTPUT_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
-    code = _analyze_and_report(netlist_path, sdc_path)
+    code = _analyze_and_report(netlist_path, sdc_path, fmt, output_path)
     if code != 0:
         raise typer.Exit(code=code)
 
@@ -68,6 +97,8 @@ def lint(
         "--yosys",
         help="Path to the yosys binary (default: first `yosys` on PATH).",
     ),
+    fmt: OutputFormat = _FORMAT_OPT,
+    output_path: Path | None = _OUTPUT_OPT,
 ) -> None:
     """Convenience wrapper: run yosys to produce a flattened netlist,
     then analyze it. Equivalent to ``yosys -p 'read_verilog ...; \
@@ -87,10 +118,13 @@ hierarchy -top X; proc; flatten; opt_clean; write_json /tmp/out.json' \
             f"proc; flatten; opt_clean; "
             f"write_json {shlex.quote(str(tmp_json))}"
         )
-        typer.echo(f"yosys: {yosys}")
-        typer.echo(f"top:   {top}")
-        for s in sources:
-            typer.echo(f"src:   {s}")
+        if fmt is OutputFormat.text:
+            # Only print preamble in text mode — structured output
+            # mustn't contain non-payload preamble.
+            typer.echo(f"yosys: {yosys}")
+            typer.echo(f"top:   {top}")
+            for s in sources:
+                typer.echo(f"src:   {s}")
 
         proc = subprocess.run(
             [yosys, "-q", "-p", script],
@@ -105,14 +139,15 @@ hierarchy -top X; proc; flatten; opt_clean; write_json /tmp/out.json' \
                 typer.echo(proc.stdout.rstrip(), err=True)
             raise typer.Exit(code=2)
 
-        code = _analyze_and_report(tmp_json, sdc_path)
+        code = _analyze_and_report(tmp_json, sdc_path, fmt, output_path)
         if code != 0:
             raise typer.Exit(code=code)
     finally:
         if keep_json is not None:
             try:
                 shutil.copy(tmp_json, keep_json)
-                typer.echo(f"netlist JSON kept at: {keep_json}")
+                if fmt is OutputFormat.text:
+                    typer.echo(f"netlist JSON kept at: {keep_json}")
             except OSError as e:
                 typer.echo(f"warning: could not save --keep-json: {e}", err=True)
         try:
@@ -138,69 +173,61 @@ def version() -> None:
 # --- shared analysis path ---------------------------------------------------
 
 
-def _analyze_and_report(netlist_path: Path, sdc_path: Path | None) -> int:
-    """Run the analyzer on a netlist JSON. Prints the report; returns
-    a process-style exit code (0 = clean / informational, 1 = at least
-    one rule violation)."""
+def _analyze_and_report(
+    netlist_path: Path,
+    sdc_path: Path | None,
+    fmt: OutputFormat,
+    output_path: Path | None,
+) -> int:
+    """Run the analyzer on a netlist JSON and dispatch to the chosen
+    reporter. Returns a process-style exit code: 0 = clean (or no SDC
+    so rule checks were skipped), 1 = at least one rule violation."""
     module = netlist.load(netlist_path)
-    typer.echo(f"module: {module.name}")
-    typer.echo(f"  ports: {len(module.ports)}")
-    typer.echo(f"  cells: {len(module.cells)}")
-
     domains = assign_domains(module)
-    typer.echo(f"  flops: {len(domains)}")
-    by_clock: dict[str | None, int] = {}
-    for fd in domains:
-        by_clock[fd.clock] = by_clock.get(fd.clock, 0) + 1
-    for clk, n in sorted(by_clock.items(), key=lambda x: (x[0] is None, x[0] or "")):
-        label = clk if clk is not None else "<unresolved>"
-        typer.echo(f"    domain {label}: {n} flop(s)")
-
     crossings = find_crossings(module)
-    typer.echo(f"  crossings (flop→flop, different clock): {len(crossings)}")
-    for c in crossings:
-        typer.echo(
-            f"    {c.src_clock} → {c.dst_clock}  "
-            f"({c.src_flop.name} → {c.dst_flop.name}, "
-            f"width={c.width}, min_hops={c.min_hops})"
-        )
 
-    if sdc_path is None:
-        typer.echo(
-            "  no SDC supplied — skipping rule checks "
-            "(every cross-clock crossing is treated as synchronous)"
-        )
-        return 0
+    spec: sdc_mod.ClockSpec | None = None
+    async_crossings: list[Crossing] = []
+    violations = []
+    if sdc_path is not None:
+        spec = sdc_mod.parse_file(sdc_path)
+        async_crossings = _filter_async(crossings, spec)
+        violations = run_all_rules(module, async_crossings, spec)
 
-    spec = sdc_mod.parse_file(sdc_path)
-    typer.echo(
-        f"  sdc: {len(spec.clocks)} clock(s), "
-        f"{len(spec.async_groups)} async-group statement(s)"
+    result = AnalysisResult(
+        module=module,
+        domains=domains,
+        crossings=crossings,
+        async_crossings=async_crossings,
+        spec=spec,
+        violations=list(violations),
     )
 
-    async_crossings = _filter_async(crossings, spec)
-    typer.echo(f"  async crossings (per SDC clock groups): {len(async_crossings)}")
+    out: IO[str]
+    close_after = False
+    if output_path is None:
+        out = sys.stdout
+    else:
+        out = output_path.open("w")
+        close_after = True
+    try:
+        if fmt is OutputFormat.text:
+            reporter.render_text(result, out)
+        elif fmt is OutputFormat.json:
+            reporter.render_json(result, out)
+        elif fmt is OutputFormat.sarif:
+            reporter.render_sarif(result, out)
+    finally:
+        if close_after:
+            out.close()
 
-    violations = run_all_rules(module, async_crossings, spec)
-    if not violations:
-        typer.echo("  no rule violations.")
-        return 0
-
-    typer.echo(f"  {len(violations)} violation(s):")
-    for v in violations:
-        typer.echo(f"    [{v.rule_id}] {v.severity}: {v.message}")
-    return 1
+    return 1 if violations else 0
 
 
 def _filter_async(
     crossings: list[Crossing], spec: "sdc_mod.ClockSpec"
 ) -> list[Crossing]:
-    """Keep only crossings whose endpoints are in different async groups.
-
-    The crossing's ``src_clock`` / ``dst_clock`` here are *port names*
-    (per :func:`assign_domains`); we map each to its SDC clock name
-    before consulting the async-group table.
-    """
+    """Keep only crossings whose endpoints are in different async groups."""
     out: list[Crossing] = []
     for c in crossings:
         a = spec.clock_for_port(c.src_clock) or c.src_clock
