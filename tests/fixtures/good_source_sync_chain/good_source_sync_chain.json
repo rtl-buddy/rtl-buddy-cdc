@@ -1,0 +1,1023 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_source_sync_chain": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:103.1-138.10"
+      },
+      "ports": {
+        "ck_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "ck_b0": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "ck_b1": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "ck_c0": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "ck_c1": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 7 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 8 ]
+        },
+        "q_out_c0": {
+          "direction": "output",
+          "bits": [ 9 ]
+        },
+        "q_out_c1": {
+          "direction": "output",
+          "bits": [ 10 ]
+        },
+        "ck_a_fwd": {
+          "direction": "output",
+          "bits": [ 2 ]
+        },
+        "ck_b0_fwd": {
+          "direction": "output",
+          "bits": [ 3 ]
+        },
+        "ck_b1_fwd": {
+          "direction": "output",
+          "bits": [ 4 ]
+        }
+      },
+      "cells": {
+        "$flatten\\u_a.$auto$proc_dff.cc:220:proc_dff$17": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 11 ]
+          }
+        },
+        "$flatten\\u_a.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:44$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:44.13-44.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 12 ]
+          }
+        },
+        "$flatten\\u_a.$procdff$21": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:43.5-46.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 8 ],
+            "Q": [ 13 ]
+          }
+        },
+        "$flatten\\u_b0.$auto$proc_dff.cc:220:proc_dff$12": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$flatten\\u_b0.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:70$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:70.13-70.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 15 ]
+          }
+        },
+        "$flatten\\u_b0.$procdff$16": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:69.5-72.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 3 ],
+            "D": [ 13 ],
+            "Q": [ 16 ]
+          }
+        },
+        "$flatten\\u_b1.$auto$proc_dff.cc:220:proc_dff$12": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 17 ]
+          }
+        },
+        "$flatten\\u_b1.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:70$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:70.13-70.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 18 ]
+          }
+        },
+        "$flatten\\u_b1.$procdff$16": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:69.5-72.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 4 ],
+            "D": [ 13 ],
+            "Q": [ 19 ]
+          }
+        },
+        "$flatten\\u_c0.$auto$proc_dff.cc:220:proc_dff$7": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 20 ]
+          }
+        },
+        "$flatten\\u_c0.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:93$6": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:93.13-93.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 21 ]
+          }
+        },
+        "$flatten\\u_c0.$procdff$11": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:92.5-95.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 5 ],
+            "D": [ 16 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$flatten\\u_c1.$auto$proc_dff.cc:220:proc_dff$7": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 22 ]
+          }
+        },
+        "$flatten\\u_c1.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:93$6": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:93.13-93.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 23 ]
+          }
+        },
+        "$flatten\\u_c1.$procdff$11": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:92.5-95.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 6 ],
+            "D": [ 19 ],
+            "Q": [ 10 ]
+          }
+        },
+        "u_a": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:124.13-125.57",
+            "module": "block_a",
+            "module_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:35.1-56.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_b0": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:126.13-127.58",
+            "module": "block_b",
+            "module_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:61.1-78.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_b1": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:128.13-129.58",
+            "module": "block_b",
+            "module_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:61.1-78.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_c0": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:130.13-131.58",
+            "module": "block_c",
+            "module_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:84.1-101.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_c1": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:132.13-133.58",
+            "module": "block_c",
+            "module_src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:84.1-101.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        }
+      },
+      "netnames": {
+        "$flatten\\u_a.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:43.5-46.8"
+          }
+        },
+        "$flatten\\u_a.$auto$rtlil.cc:3255:Not$18": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_a.$auto$rtlil.cc:3259:ReduceOr$20": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_a.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:44$2_Y": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:44.13-44.19"
+          }
+        },
+        "$flatten\\u_b0.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:69.5-72.8"
+          }
+        },
+        "$flatten\\u_b0.$auto$rtlil.cc:3255:Not$13": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_b0.$auto$rtlil.cc:3259:ReduceOr$15": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_b0.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:70$4_Y": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:70.13-70.19"
+          }
+        },
+        "$flatten\\u_b1.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:69.5-72.8"
+          }
+        },
+        "$flatten\\u_b1.$auto$rtlil.cc:3255:Not$13": {
+          "hide_name": 1,
+          "bits": [ 17 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_b1.$auto$rtlil.cc:3259:ReduceOr$15": {
+          "hide_name": 1,
+          "bits": [ 17 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_b1.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:70$4_Y": {
+          "hide_name": 1,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:70.13-70.19"
+          }
+        },
+        "$flatten\\u_c0.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:92.5-95.8"
+          }
+        },
+        "$flatten\\u_c0.$auto$rtlil.cc:3255:Not$8": {
+          "hide_name": 1,
+          "bits": [ 20 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_c0.$auto$rtlil.cc:3259:ReduceOr$10": {
+          "hide_name": 1,
+          "bits": [ 20 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_c0.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:93$6_Y": {
+          "hide_name": 1,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:93.13-93.19"
+          }
+        },
+        "$flatten\\u_c1.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:92.5-95.8"
+          }
+        },
+        "$flatten\\u_c1.$auto$rtlil.cc:3255:Not$8": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_c1.$auto$rtlil.cc:3259:ReduceOr$10": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_c1.$logic_not$tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:93$6_Y": {
+          "hide_name": 1,
+          "bits": [ 23 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:93.13-93.19"
+          }
+        },
+        "a_q": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:121.11-121.14"
+          }
+        },
+        "b0_q": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:121.16-121.20"
+          }
+        },
+        "b1_q": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:121.22-121.26"
+          }
+        },
+        "c0_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:121.28-121.32"
+          }
+        },
+        "c1_q": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:121.34-121.38"
+          }
+        },
+        "ck_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:104.18-104.22"
+          }
+        },
+        "ck_a_fwd": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:116.18-116.26"
+          }
+        },
+        "ck_b0": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:105.18-105.23"
+          }
+        },
+        "ck_b0_fwd": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:117.18-117.27"
+          }
+        },
+        "ck_b1": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:106.18-106.23"
+          }
+        },
+        "ck_b1_fwd": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:118.18-118.27"
+          }
+        },
+        "ck_c0": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:107.18-107.23"
+          }
+        },
+        "ck_c0_fwd_unused": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:122.11-122.27"
+          }
+        },
+        "ck_c1": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:108.18-108.23"
+          }
+        },
+        "ck_c1_fwd_unused": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:122.29-122.45"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:110.18-110.22"
+          }
+        },
+        "q_out_c0": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:111.18-111.26"
+          }
+        },
+        "q_out_c1": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:112.18-112.26"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:109.18-109.23"
+          }
+        },
+        "u_a.a_q": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "hdlname": "u_a a_q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:40.18-40.21"
+          }
+        },
+        "u_a.clk_buf": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "u_a clk_buf",
+            "keep": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:53.21-53.28"
+          }
+        },
+        "u_a.clk_in": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "u_a clk_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:36.18-36.24"
+          }
+        },
+        "u_a.clk_out": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "u_a clk_out",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:37.18-37.25"
+          }
+        },
+        "u_a.d_in": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "hdlname": "u_a d_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:39.18-39.22"
+          }
+        },
+        "u_a.q": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "hdlname": "u_a q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:42.11-42.12"
+          }
+        },
+        "u_a.rst_n": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "hdlname": "u_a rst_n",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:38.18-38.23"
+          }
+        },
+        "u_b0.b_q": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "hdlname": "u_b0 b_q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:66.18-66.21"
+          }
+        },
+        "u_b0.clk_buf": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_b0 clk_buf",
+            "keep": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:75.21-75.28"
+          }
+        },
+        "u_b0.clk_in": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_b0 clk_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:62.18-62.24"
+          }
+        },
+        "u_b0.clk_out": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_b0 clk_out",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:63.18-63.25"
+          }
+        },
+        "u_b0.d_in": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "hdlname": "u_b0 d_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:65.18-65.22"
+          }
+        },
+        "u_b0.q": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "hdlname": "u_b0 q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:68.11-68.12"
+          }
+        },
+        "u_b0.rst_n": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "hdlname": "u_b0 rst_n",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:64.18-64.23"
+          }
+        },
+        "u_b1.b_q": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "hdlname": "u_b1 b_q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:66.18-66.21"
+          }
+        },
+        "u_b1.clk_buf": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "hdlname": "u_b1 clk_buf",
+            "keep": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:75.21-75.28"
+          }
+        },
+        "u_b1.clk_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "hdlname": "u_b1 clk_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:62.18-62.24"
+          }
+        },
+        "u_b1.clk_out": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "hdlname": "u_b1 clk_out",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:63.18-63.25"
+          }
+        },
+        "u_b1.d_in": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "hdlname": "u_b1 d_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:65.18-65.22"
+          }
+        },
+        "u_b1.q": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "hdlname": "u_b1 q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:68.11-68.12"
+          }
+        },
+        "u_b1.rst_n": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "hdlname": "u_b1 rst_n",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:64.18-64.23"
+          }
+        },
+        "u_c0.c_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "hdlname": "u_c0 c_q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:89.18-89.21"
+          }
+        },
+        "u_c0.clk_buf": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "hdlname": "u_c0 clk_buf",
+            "keep": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:98.21-98.28"
+          }
+        },
+        "u_c0.clk_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "hdlname": "u_c0 clk_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:85.18-85.24"
+          }
+        },
+        "u_c0.clk_out": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "hdlname": "u_c0 clk_out",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:86.18-86.25"
+          }
+        },
+        "u_c0.d_in": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "hdlname": "u_c0 d_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:88.18-88.22"
+          }
+        },
+        "u_c0.q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "hdlname": "u_c0 q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:91.11-91.12"
+          }
+        },
+        "u_c0.rst_n": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "hdlname": "u_c0 rst_n",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:87.18-87.23"
+          }
+        },
+        "u_c1.c_q": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "hdlname": "u_c1 c_q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:89.18-89.21"
+          }
+        },
+        "u_c1.clk_buf": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "hdlname": "u_c1 clk_buf",
+            "keep": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:98.21-98.28"
+          }
+        },
+        "u_c1.clk_in": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "hdlname": "u_c1 clk_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:85.18-85.24"
+          }
+        },
+        "u_c1.clk_out": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "hdlname": "u_c1 clk_out",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:86.18-86.25"
+          }
+        },
+        "u_c1.d_in": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "hdlname": "u_c1 d_in",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:88.18-88.22"
+          }
+        },
+        "u_c1.q": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "hdlname": "u_c1 q",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:91.11-91.12"
+          }
+        },
+        "u_c1.rst_n": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "hdlname": "u_c1 rst_n",
+            "src": "tests/fixtures/good_source_sync_chain/good_source_sync_chain.sv:87.18-87.23"
+          }
+        }
+      }
+    }
+  }
+}

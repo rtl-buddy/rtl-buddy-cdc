@@ -44,6 +44,11 @@ GOOD_FIXTURES = [
     # domain — port→flop crossing is recognised and silent because
     # chain depth ≥ 2.
     ("good_port_typed_sync", 1),
+    # Source-synchronous chain (A→B0, A→B1, B0→C0, B1→C1): four raw
+    # flop→flop crossings, but every clock pair shares a master via
+    # create_generated_clock so are_async() returns False and the
+    # analyzer drops them all.
+    ("good_source_sync_chain", 0),
 ]
 
 
