@@ -14,7 +14,7 @@ schema or the CLI surface is a downstream-breaking change — see
 
 ## Read first
 
-- [`docs/architecture.md`](docs/architecture.md) — full reference for
+- [`wiki/raw/articles/rtl-buddy-cdc-architecture.md`](wiki/raw/articles/rtl-buddy-cdc-architecture.md) — full reference for
   the data model, pipeline, rule helpers, extension points. Read
   before changing anything in `domain.py`, `rules.py`, `sdc.py`, or
   the reporter contract.
@@ -112,7 +112,7 @@ both locally before pushing.
 3. Register: add `"CDC-NNN": check_cdc_NNN` to `RULES`. If the rule
    takes a configuration parameter, special-case it in `run_all`
    (CDC-002 / `required_depth` is the reference).
-4. Pick severity per [`docs/architecture.md`](docs/architecture.md)
+4. Pick severity per [`wiki/raw/articles/rtl-buddy-cdc-architecture.md`](wiki/raw/articles/rtl-buddy-cdc-architecture.md)
    §8.2: `error` for unambiguous bugs, `warning` for
    review-or-waive patterns.
 5. Add a paired fixture (see next section).
@@ -163,7 +163,7 @@ pairing is the regression net for false positives.
 The parser is intentionally `shlex`-based, **not** a Tcl
 interpreter. Don't pull in `tkinter.Tcl()` or a third-party Tcl host
 without first opening an issue — the design choice is documented in
-`docs/architecture.md` §6.
+`wiki/raw/articles/rtl-buddy-cdc-architecture.md` §6.
 
 When adding a new SDC command:
 
