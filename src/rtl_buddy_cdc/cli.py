@@ -251,7 +251,6 @@ def _analyze_and_report(
     violation. Waived findings are still reported but don't fail the
     run."""
     module = netlist.load(netlist_path)
-    domains = assign_domains(module)
 
     spec: sdc_mod.ClockSpec | None = None
     async_crossings: list[Crossing] = []
@@ -261,12 +260,16 @@ def _analyze_and_report(
         if spec.partial_warnings and fmt is OutputFormat.text:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)
-        crossings = find_crossings(module, port_clock=spec.port_clock)
+        domains = assign_domains(module, pin_clocks=spec.pin_clocks)
+        crossings = find_crossings(
+            module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+        )
         async_crossings = _filter_async(crossings, spec)
         violations = run_all_rules(
             module, async_crossings, spec, required_depth=sync_depth
         )
     else:
+        domains = assign_domains(module)
         crossings = find_crossings(module)
 
     suppressed = []

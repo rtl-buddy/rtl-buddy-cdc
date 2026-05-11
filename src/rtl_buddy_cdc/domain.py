@@ -99,6 +99,7 @@ def trace_clock_root(
     bit: Bit,
     drivers: dict[Bit, tuple[str, str]] | None = None,
     max_depth: int = 16,
+    bit_to_clock: dict[Bit, str] | None = None,
 ) -> str | None:
     """Resolve a CLK net bit to the top-level port that ultimately drives it.
 
@@ -115,13 +116,20 @@ def trace_clock_root(
     - clock dividers — a flop's ``Q`` is followed back to the flop's
       own ``CLK`` pin, which is the upstream clock root.
 
+    When ``bit_to_clock`` is provided (typically derived from
+    ``ClockSpec.pin_clocks``), the walk *stops* at any bit that is part
+    of a net named as a ``create_generated_clock`` target and returns
+    that generated clock's name rather than continuing back to the top
+    input port. This is what models SoC clock-forwarding chains where
+    each block declares its forwarded clock at an internal pin.
+
     Returns ``None`` when no candidate root resolves within
     ``max_depth`` cells; the caller treats that as "domain unknown".
     """
     if drivers is None:
         drivers = _bit_drivers(module)
     seen: set[Bit] = set()
-    return _trace(module, bit, drivers, seen, max_depth)
+    return _trace(module, bit, drivers, seen, max_depth, bit_to_clock or {})
 
 
 def _trace(
@@ -130,10 +138,17 @@ def _trace(
     drivers: dict[Bit, tuple[str, str]],
     seen: set[Bit],
     depth: int,
+    bit_to_clock: dict[Bit, str],
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
     seen.add(bit)
+
+    # Stop at a generated clock declared on an internal pin: this bit
+    # belongs to the net where the new clock identity takes over.
+    pin_clk = bit_to_clock.get(bit)
+    if pin_clk is not None:
+        return pin_clk
 
     port = module.port_of_bit(bit)
     if port is not None and port.direction == "input":
@@ -150,7 +165,7 @@ def _trace(
     if ctype in _BUFFER_TYPES:
         a = cell.connections.get("A", ())
         if a:
-            return _trace(module, a[0], drivers, seen, depth - 1)
+            return _trace(module, a[0], drivers, seen, depth - 1, bit_to_clock)
         return None
 
     # Clock gate — look at both inputs; if exactly one resolves to a
@@ -161,8 +176,16 @@ def _trace(
     if ctype in _GATE_TYPES:
         a = cell.connections.get("A", (None,))
         b = cell.connections.get("B", (None,))
-        a_root = _trace(module, a[0], drivers, set(seen), depth - 1) if a else None
-        b_root = _trace(module, b[0], drivers, set(seen), depth - 1) if b else None
+        a_root = (
+            _trace(module, a[0], drivers, set(seen), depth - 1, bit_to_clock)
+            if a
+            else None
+        )
+        b_root = (
+            _trace(module, b[0], drivers, set(seen), depth - 1, bit_to_clock)
+            if b
+            else None
+        )
         return a_root or b_root
 
     # Clock mux — return whichever side resolves.
@@ -170,7 +193,9 @@ def _trace(
         for in_port in ("A", "B"):
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
-                root = _trace(module, in_bits[0], drivers, set(seen), depth - 1)
+                root = _trace(
+                    module, in_bits[0], drivers, set(seen), depth - 1, bit_to_clock
+                )
                 if root is not None:
                     return root
         return None
@@ -180,15 +205,48 @@ def _trace(
     if ctype in FF_CELL_TYPES and out_port == "Q":
         clk_bits = cell.connections.get("CLK", ())
         if clk_bits:
-            return _trace(module, clk_bits[0], drivers, seen, depth - 1)
+            return _trace(module, clk_bits[0], drivers, seen, depth - 1, bit_to_clock)
 
     return None
 
 
-def assign_domains(module: Module) -> list[FlopDomain]:
+def _build_bit_to_clock(
+    module: Module, pin_clocks: dict[str, str] | None
+) -> dict[Bit, str]:
+    """Expand SDC pin-target paths (``u_a/clk_out``) to a bit→clock map.
+
+    Yosys' flattened netlist preserves hierarchical wire names with
+    ``.`` as separator (e.g. ``u_a.clk_out``). The SDC convention is
+    ``/``. We normalise the SDC form to match before looking up the
+    netname and harvesting its bits.
+    """
+    out: dict[Bit, str] = {}
+    if not pin_clocks:
+        return out
+    for pin_path, clk_name in pin_clocks.items():
+        nn_key = pin_path.replace("/", ".")
+        nn = module.netnames.get(nn_key)
+        if nn is None:
+            continue
+        for b in nn.bits:
+            if isinstance(b, int):
+                # First writer wins. If two generated clocks target
+                # the same net, the SDC is internally inconsistent;
+                # we don't try to repair it here.
+                out.setdefault(b, clk_name)
+    return out
+
+
+def assign_domains(
+    module: Module, pin_clocks: dict[str, str] | None = None
+) -> list[FlopDomain]:
     drivers = _bit_drivers(module)
+    bit_to_clock = _build_bit_to_clock(module, pin_clocks)
     return [
-        FlopDomain(flop=f, clock=trace_clock_root(module, f.clk, drivers))
+        FlopDomain(
+            flop=f,
+            clock=trace_clock_root(module, f.clk, drivers, bit_to_clock=bit_to_clock),
+        )
         for f in find_flops(module)
     ]
 
@@ -216,6 +274,7 @@ def find_crossings(
     module: Module,
     max_hops: int = 4,
     port_clock: dict[str, str] | None = None,
+    pin_clocks: dict[str, str] | None = None,
 ) -> list[Crossing]:
     """Find every fanout path whose endpoints are in different domains.
 
@@ -233,7 +292,7 @@ def find_crossings(
     physical CLK domain; the port's clock is treated as the source
     domain for the async-pair check.
     """
-    domains = {fd.flop.cell.name: fd for fd in assign_domains(module)}
+    domains = {fd.flop.cell.name: fd for fd in assign_domains(module, pin_clocks)}
     consumers = _build_bit_consumers(module)
     flop_by_d_bit: dict[Bit, list[Flop]] = defaultdict(list)
     for fd in domains.values():

@@ -49,6 +49,13 @@ GOOD_FIXTURES = [
     # create_generated_clock so are_async() returns False and the
     # analyzer drops them all.
     ("good_source_sync_chain", 0),
+    # Same topology, but the forwarded clocks are wired internally
+    # rather than re-exposed as top-level ports. The good SDC declares
+    # each generated clock at the internal pin where it originates
+    # (``[get_pins u_a/clk_out_b0]`` etc.); trace_clock_root must stop
+    # at those pins to give each block a distinct clock name, then
+    # resolve() collapses them back to ck_a so no crossings remain.
+    ("good_source_sync_internal", 0),
 ]
 
 
@@ -62,7 +69,9 @@ def test_good_fixture_has_no_violations(name: str, expected_async: int) -> None:
 
     module = netlist.load(json_path)
     spec = sdc_mod.parse_file(sdc_path)
-    crossings = find_crossings(module, port_clock=spec.port_clock)
+    crossings = find_crossings(
+        module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+    )
     async_crossings = []
     for c in crossings:
         a = spec.clock_for_port(c.src_clock) or c.src_clock
