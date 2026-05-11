@@ -23,3 +23,10 @@
   - `concepts/cdc-testing-strategy.md`
 - All pages cross-referenced with [[wikilinks]] (minimum 2 outbound links each)
 - index.md populated with all 9 pages
+
+## [2026-05-11] update | Internal-pin `create_generated_clock` support
+- Issue: rtl-buddy/rtl-buddy-cdc#1
+- Updated `concepts/clock-domain-tracing.md` — new "Internal-Pin Generated Clocks" section covering `bit_to_clock`, `_build_bit_to_clock`, and the `/`→`.` netname normalisation
+- Updated `concepts/sdc-parsing.md` — `pin_clocks` behavior + shlex-tolerant `-source` parsing
+- Updated `concepts/cdc-data-model.md` — `ClockSpec.pin_clocks` field
+- Updated `raw/articles/rtl-buddy-cdc-architecture.md` — new §5.1, expanded §6.1, `ClockSpec` field list

@@ -61,8 +61,11 @@ class ClockSpec:
     exclusive_groups: list[list[set[str]]]         # -logically_exclusive / -physically_exclusive
     false_path_pairs: set[frozenset[str]]          # set_false_path -from -to clock pairs
     port_clock: dict[str, str]                     # port→clock mapping
+    pin_clocks: dict[str, str]                     # internal-pin → generated clock name
     partial_warnings: list[str]                    # parser diagnostics
 ```
+
+`pin_clocks` is populated when `create_generated_clock`'s target is `[get_pins <hier_pin>]` rather than a top-level port. The clock-trace pass keys on this map to stop walking at the pin where a forwarded clock originates, so each block in an internally-wired clock-forwarding chain gets a distinct clock identity that still resolves back to its master via `resolve()`. See [[clock-domain-tracing]] for the trace-side mechanics.
 
 `Clock` carries `master: str | None` and `is_generated: bool` for collapsing generated clocks to their root master.
 

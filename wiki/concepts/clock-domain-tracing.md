@@ -29,6 +29,16 @@ The walker recognizes four categories of clock-network cells:
 - **`max_depth` = 16** (default) — intentionally low; clock networks rarely exceed a handful of hops, and deep walks are more likely following data than clock
 - **`_bit_drivers`** is precomputed once and shared across all `trace_clock_root` calls
 
+## Internal-Pin Generated Clocks
+
+The walker also accepts an optional `bit_to_clock: dict[Bit, str]` short-circuit map, supplied by `assign_domains(module, pin_clocks=...)` and built from `ClockSpec.pin_clocks` via `_build_bit_to_clock`. When the walk lands on a bit that's in the map, it returns that clock name immediately instead of continuing back to a top-level port.
+
+This is what models SoC clock-forwarding chains where each block declares its forwarded clock with `create_generated_clock` at an internal pin (e.g. `[get_pins u_a/clk_out]`). Without this hop, every flop downstream of `u_a`'s clock buffer would collapse to whichever top input port feeds `u_a` — and the SDC's per-block clock declarations would be inert at integration scope.
+
+`_build_bit_to_clock` normalises the SDC pin convention (`u_a/clk_out`, `/`-separated) to Yosys' flattened netname convention (`u_a.clk_out`, `.`-separated) before looking up the netname's bits. If two generated clocks target the same net, first-writer-wins via `setdefault` — the SDC is internally inconsistent and we don't try to repair it.
+
+The returned clock name is a generated-clock identity (e.g. `ck_b0`), not a top-level port. Downstream consumers (`_filter_async`, `are_async`) handle this transparently because `ClockSpec.resolve()` already collapses generated clocks back to their root master.
+
 ## Role in CDC-008
 
 CDC-008 uses the same walker to compute the set of cells that drive a flop CLK (`_clock_network_cells()`). Cells flagged as clock-network are **exempt** from CDC-008 ("clock signal used as data") because legitimate ICGs, clock muxes, and dividers all read clocks as inputs.

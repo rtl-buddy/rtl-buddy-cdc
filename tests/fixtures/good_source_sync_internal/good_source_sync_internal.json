@@ -1,0 +1,1007 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_source_sync_internal": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "good_source_sync_internal.sv:80.1-107.10"
+      },
+      "ports": {
+        "ck_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "q_out_c0": {
+          "direction": "output",
+          "bits": [ 5 ]
+        },
+        "q_out_c1": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$flatten\\u_a.$auto$proc_dff.cc:220:proc_dff$17": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 7 ]
+          }
+        },
+        "$flatten\\u_a.$logic_not$good_source_sync_internal.sv:29$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_source_sync_internal.sv:29.13-29.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 8 ]
+          }
+        },
+        "$flatten\\u_a.$procdff$21": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:28.5-31.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$flatten\\u_b0.$auto$proc_dff.cc:220:proc_dff$12": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 10 ]
+          }
+        },
+        "$flatten\\u_b0.$logic_not$good_source_sync_internal.sv:56$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_source_sync_internal.sv:56.13-56.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 11 ]
+          }
+        },
+        "$flatten\\u_b0.$procdff$16": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:55.5-58.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 12 ],
+            "D": [ 9 ],
+            "Q": [ 13 ]
+          }
+        },
+        "$flatten\\u_b1.$auto$proc_dff.cc:220:proc_dff$12": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$flatten\\u_b1.$logic_not$good_source_sync_internal.sv:56$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_source_sync_internal.sv:56.13-56.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 15 ]
+          }
+        },
+        "$flatten\\u_b1.$procdff$16": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:55.5-58.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 16 ],
+            "D": [ 9 ],
+            "Q": [ 17 ]
+          }
+        },
+        "$flatten\\u_c0.$auto$proc_dff.cc:220:proc_dff$7": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 18 ]
+          }
+        },
+        "$flatten\\u_c0.$logic_not$good_source_sync_internal.sv:74$6": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_source_sync_internal.sv:74.13-74.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 19 ]
+          }
+        },
+        "$flatten\\u_c0.$procdff$11": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:73.5-76.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 20 ],
+            "D": [ 13 ],
+            "Q": [ 5 ]
+          }
+        },
+        "$flatten\\u_c1.$auto$proc_dff.cc:220:proc_dff$7": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 21 ]
+          }
+        },
+        "$flatten\\u_c1.$logic_not$good_source_sync_internal.sv:74$6": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_source_sync_internal.sv:74.13-74.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 22 ]
+          }
+        },
+        "$flatten\\u_c1.$procdff$11": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:73.5-76.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 23 ],
+            "D": [ 17 ],
+            "Q": [ 6 ]
+          }
+        },
+        "u_a": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "good_source_sync_internal.sv:92.17-94.61",
+            "module": "block_a_int",
+            "module_src": "good_source_sync_internal.sv:19.1-45.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_a.u_buf_b0": {
+          "hide_name": 0,
+          "type": "\\$_BUF_",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u_a u_buf_b0",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:41.12-41.51"
+          },
+          "connections": {
+            "A": [ 2 ],
+            "Y": [ 12 ]
+          }
+        },
+        "u_a.u_buf_b1": {
+          "hide_name": 0,
+          "type": "\\$_BUF_",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u_a u_buf_b1",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:42.12-42.51"
+          },
+          "connections": {
+            "A": [ 2 ],
+            "Y": [ 16 ]
+          }
+        },
+        "u_b0": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "good_source_sync_internal.sv:95.17-96.62",
+            "module": "block_b_int",
+            "module_src": "good_source_sync_internal.sv:47.1-64.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_b0.u_buf": {
+          "hide_name": 0,
+          "type": "\\$_BUF_",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u_b0 u_buf",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:62.12-62.45"
+          },
+          "connections": {
+            "A": [ 12 ],
+            "Y": [ 20 ]
+          }
+        },
+        "u_b1": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "good_source_sync_internal.sv:97.17-98.62",
+            "module": "block_b_int",
+            "module_src": "good_source_sync_internal.sv:47.1-64.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_b1.u_buf": {
+          "hide_name": 0,
+          "type": "\\$_BUF_",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u_b1 u_buf",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:62.12-62.45"
+          },
+          "connections": {
+            "A": [ 16 ],
+            "Y": [ 23 ]
+          }
+        },
+        "u_c0": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "good_source_sync_internal.sv:99.17-100.62",
+            "module": "block_c_int",
+            "module_src": "good_source_sync_internal.sv:66.1-78.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_c1": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "good_source_sync_internal.sv:101.17-102.62",
+            "module": "block_c_int",
+            "module_src": "good_source_sync_internal.sv:66.1-78.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        }
+      },
+      "netnames": {
+        "$flatten\\u_a.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:28.5-31.8"
+          }
+        },
+        "$flatten\\u_a.$auto$rtlil.cc:3255:Not$18": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_a.$auto$rtlil.cc:3259:ReduceOr$20": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_a.$logic_not$good_source_sync_internal.sv:29$2_Y": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:29.13-29.19"
+          }
+        },
+        "$flatten\\u_b0.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:55.5-58.8"
+          }
+        },
+        "$flatten\\u_b0.$auto$rtlil.cc:3255:Not$13": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_b0.$auto$rtlil.cc:3259:ReduceOr$15": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_b0.$logic_not$good_source_sync_internal.sv:56$4_Y": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:56.13-56.19"
+          }
+        },
+        "$flatten\\u_b1.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:55.5-58.8"
+          }
+        },
+        "$flatten\\u_b1.$auto$rtlil.cc:3255:Not$13": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_b1.$auto$rtlil.cc:3259:ReduceOr$15": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_b1.$logic_not$good_source_sync_internal.sv:56$4_Y": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:56.13-56.19"
+          }
+        },
+        "$flatten\\u_c0.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:73.5-76.8"
+          }
+        },
+        "$flatten\\u_c0.$auto$rtlil.cc:3255:Not$8": {
+          "hide_name": 1,
+          "bits": [ 18 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_c0.$auto$rtlil.cc:3259:ReduceOr$10": {
+          "hide_name": 1,
+          "bits": [ 18 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_c0.$logic_not$good_source_sync_internal.sv:74$6_Y": {
+          "hide_name": 1,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:74.13-74.19"
+          }
+        },
+        "$flatten\\u_c1.$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:73.5-76.8"
+          }
+        },
+        "$flatten\\u_c1.$auto$rtlil.cc:3255:Not$8": {
+          "hide_name": 1,
+          "bits": [ 21 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_c1.$auto$rtlil.cc:3259:ReduceOr$10": {
+          "hide_name": 1,
+          "bits": [ 21 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_c1.$logic_not$good_source_sync_internal.sv:74$6_Y": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:74.13-74.19"
+          }
+        },
+        "a_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:88.11-88.14"
+          }
+        },
+        "b0_q": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:88.16-88.20"
+          }
+        },
+        "b1_q": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:88.22-88.26"
+          }
+        },
+        "c0_q": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:88.28-88.32"
+          }
+        },
+        "c1_q": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:88.34-88.38"
+          }
+        },
+        "ck_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:81.18-81.22"
+          }
+        },
+        "ck_b0_int": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "keep": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:90.21-90.30"
+          }
+        },
+        "ck_b1_int": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "keep": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:90.32-90.41"
+          }
+        },
+        "ck_c0_int": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "keep": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:90.43-90.52"
+          }
+        },
+        "ck_c1_int": {
+          "hide_name": 0,
+          "bits": [ 23 ],
+          "attributes": {
+            "keep": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:90.54-90.63"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:83.18-83.22"
+          }
+        },
+        "q_out_c0": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:84.18-84.26"
+          }
+        },
+        "q_out_c1": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:85.18-85.26"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "good_source_sync_internal.sv:82.18-82.23"
+          }
+        },
+        "u_a.a_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "hdlname": "u_a a_q",
+            "src": "good_source_sync_internal.sv:25.18-25.21"
+          }
+        },
+        "u_a.clk_in": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "u_a clk_in",
+            "src": "good_source_sync_internal.sv:20.18-20.24"
+          }
+        },
+        "u_a.clk_out_b0": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "hdlname": "u_a clk_out_b0",
+            "src": "good_source_sync_internal.sv:21.18-21.28"
+          }
+        },
+        "u_a.clk_out_b0_w": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "hdlname": "u_a clk_out_b0_w",
+            "keep": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:40.21-40.33"
+          }
+        },
+        "u_a.clk_out_b1": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "hdlname": "u_a clk_out_b1",
+            "src": "good_source_sync_internal.sv:22.18-22.28"
+          }
+        },
+        "u_a.clk_out_b1_w": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "hdlname": "u_a clk_out_b1_w",
+            "keep": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:40.35-40.47"
+          }
+        },
+        "u_a.d_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "hdlname": "u_a d_in",
+            "src": "good_source_sync_internal.sv:24.18-24.22"
+          }
+        },
+        "u_a.q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "hdlname": "u_a q",
+            "src": "good_source_sync_internal.sv:27.11-27.12"
+          }
+        },
+        "u_a.rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_a rst_n",
+            "src": "good_source_sync_internal.sv:23.18-23.23"
+          }
+        },
+        "u_b0.b_q": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "hdlname": "u_b0 b_q",
+            "src": "good_source_sync_internal.sv:52.18-52.21"
+          }
+        },
+        "u_b0.clk_in": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "hdlname": "u_b0 clk_in",
+            "src": "good_source_sync_internal.sv:48.18-48.24"
+          }
+        },
+        "u_b0.clk_out": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "hdlname": "u_b0 clk_out",
+            "src": "good_source_sync_internal.sv:49.18-49.25"
+          }
+        },
+        "u_b0.clk_out_w": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "hdlname": "u_b0 clk_out_w",
+            "keep": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:61.21-61.30"
+          }
+        },
+        "u_b0.d_in": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "hdlname": "u_b0 d_in",
+            "src": "good_source_sync_internal.sv:51.18-51.22"
+          }
+        },
+        "u_b0.q": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "hdlname": "u_b0 q",
+            "src": "good_source_sync_internal.sv:54.11-54.12"
+          }
+        },
+        "u_b0.rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_b0 rst_n",
+            "src": "good_source_sync_internal.sv:50.18-50.23"
+          }
+        },
+        "u_b1.b_q": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "hdlname": "u_b1 b_q",
+            "src": "good_source_sync_internal.sv:52.18-52.21"
+          }
+        },
+        "u_b1.clk_in": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "hdlname": "u_b1 clk_in",
+            "src": "good_source_sync_internal.sv:48.18-48.24"
+          }
+        },
+        "u_b1.clk_out": {
+          "hide_name": 0,
+          "bits": [ 23 ],
+          "attributes": {
+            "hdlname": "u_b1 clk_out",
+            "src": "good_source_sync_internal.sv:49.18-49.25"
+          }
+        },
+        "u_b1.clk_out_w": {
+          "hide_name": 0,
+          "bits": [ 23 ],
+          "attributes": {
+            "hdlname": "u_b1 clk_out_w",
+            "keep": "00000000000000000000000000000001",
+            "src": "good_source_sync_internal.sv:61.21-61.30"
+          }
+        },
+        "u_b1.d_in": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "hdlname": "u_b1 d_in",
+            "src": "good_source_sync_internal.sv:51.18-51.22"
+          }
+        },
+        "u_b1.q": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "hdlname": "u_b1 q",
+            "src": "good_source_sync_internal.sv:54.11-54.12"
+          }
+        },
+        "u_b1.rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_b1 rst_n",
+            "src": "good_source_sync_internal.sv:50.18-50.23"
+          }
+        },
+        "u_c0.c_q": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "hdlname": "u_c0 c_q",
+            "src": "good_source_sync_internal.sv:70.18-70.21"
+          }
+        },
+        "u_c0.clk_in": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "hdlname": "u_c0 clk_in",
+            "src": "good_source_sync_internal.sv:67.18-67.24"
+          }
+        },
+        "u_c0.d_in": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "hdlname": "u_c0 d_in",
+            "src": "good_source_sync_internal.sv:69.18-69.22"
+          }
+        },
+        "u_c0.q": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "hdlname": "u_c0 q",
+            "src": "good_source_sync_internal.sv:72.11-72.12"
+          }
+        },
+        "u_c0.rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_c0 rst_n",
+            "src": "good_source_sync_internal.sv:68.18-68.23"
+          }
+        },
+        "u_c1.c_q": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "hdlname": "u_c1 c_q",
+            "src": "good_source_sync_internal.sv:70.18-70.21"
+          }
+        },
+        "u_c1.clk_in": {
+          "hide_name": 0,
+          "bits": [ 23 ],
+          "attributes": {
+            "hdlname": "u_c1 clk_in",
+            "src": "good_source_sync_internal.sv:67.18-67.24"
+          }
+        },
+        "u_c1.d_in": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "hdlname": "u_c1 d_in",
+            "src": "good_source_sync_internal.sv:69.18-69.22"
+          }
+        },
+        "u_c1.q": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "hdlname": "u_c1 q",
+            "src": "good_source_sync_internal.sv:72.11-72.12"
+          }
+        },
+        "u_c1.rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_c1 rst_n",
+            "src": "good_source_sync_internal.sv:68.18-68.23"
+          }
+        }
+      }
+    }
+  }
+}

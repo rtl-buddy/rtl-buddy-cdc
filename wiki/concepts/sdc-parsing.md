@@ -31,6 +31,8 @@ Plus: `#` comments, `\` line continuation, and permissive flag-skipping for unre
 ## Key Behaviors
 
 - **Generated clocks** fold back into their master via `ClockSpec.resolve` unless `set_clock_groups -asynchronous` explicitly overrides
+- **Internal-pin generated clocks** — when a `create_generated_clock` target is `[get_pins <hier_pin>]` rather than a top-level port, the pin path is stored in `ClockSpec.pin_clocks` and consumed by `trace_clock_root` to give each block in an internally-wired clock-forwarding chain a distinct clock identity. Pin paths use SDC convention (`u_a/clk_out`); the consumer normalises to Yosys' flattened netname (`u_a.clk_out`)
+- **`-source` parsing** is shlex-tolerant: the bracketed expression after `-source` is consumed forward to the next `-` flag, so `-source [get_ports ck_a]` (split by shlex into two tokens) doesn't leak `ck_a]` into the trailing target list
 - **`set_false_path`** between clocks is treated as a pairwise async hint
 - **Exclusive groups** (`-logically_exclusive`, `-physically_exclusive`) drop crossings as unreachable in `_filter_async` before any rule sees them
 

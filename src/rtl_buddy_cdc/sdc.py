@@ -70,6 +70,15 @@ class ClockSpec:
     # domain to data ports that aren't reached by any flop's CLK
     # tracing.
     port_clock: dict[str, str] = field(default_factory=dict)
+    # Internal pin path (e.g. ``"u_a/clk_out"``) → generated clock name,
+    # populated when a ``create_generated_clock`` target is a
+    # ``[get_pins …]`` expression rather than a top-level port. The
+    # clock-trace pass consults this to stop walking back through the
+    # netlist at the point where a generated clock takes over, instead
+    # of collapsing every flop to whichever top input port feeds the
+    # chain. The pin path uses SDC convention (``/`` separator); the
+    # consumer normalises to Yosys' flattened netname (``.`` separator).
+    pin_clocks: dict[str, str] = field(default_factory=dict)
     # Diagnostics accumulated during parse. Each entry is a single
     # human-readable sentence describing a CDC-relevant command the
     # parser couldn't fully understand. Surfaced once at the end of
@@ -296,6 +305,7 @@ def _handle_create_generated_clock(spec: ClockSpec, args: list[str]) -> None:
     multiply_by = 1
     period: float | None = None
     targets: list[str] = []
+    target_is_pin = False
     saw_filter = False
 
     i = 0
@@ -307,12 +317,18 @@ def _handle_create_generated_clock(spec: ClockSpec, args: list[str]) -> None:
         elif tok == "-master_clock" and i + 1 < len(args):
             master = _strip_get_clocks(args[i + 1])
             i += 2
-        elif tok == "-source" and i + 1 < len(args):
-            # Source can be a pin/port name, possibly bracketed; we
-            # only use it as a fallback for master clock identity if
-            # -master_clock is absent. Resolve later via clock_for_port
-            # in the consumer if needed; for now record the raw token.
-            i += 2
+        elif tok == "-source":
+            # The source expression is bracketed (``[get_ports ck_a]``
+            # or ``[get_pins u_a/clk_out]``) and shlex splits the
+            # opening bracket from the trailing ``]``-suffixed name —
+            # so we consume forward until the next ``-`` flag rather
+            # than a fixed token count. The source is currently used
+            # only as documentation; the master identity comes from
+            # ``-master_clock``.
+            j = i + 1
+            while j < len(args) and not args[j].startswith("-"):
+                j += 1
+            i = j
         elif tok == "-divide_by" and i + 1 < len(args):
             try:
                 divide_by = int(args[i + 1])
@@ -342,6 +358,8 @@ def _handle_create_generated_clock(spec: ClockSpec, args: list[str]) -> None:
             else:
                 i += 1
         else:
+            target_blob = " ".join(args[i:])
+            target_is_pin = "get_pins" in target_blob
             targets_chunk, saw_filter_chunk = _extract_ports_or_pins(args[i:])
             targets.extend(targets_chunk)
             saw_filter = saw_filter or saw_filter_chunk
@@ -369,10 +387,22 @@ def _handle_create_generated_clock(spec: ClockSpec, args: list[str]) -> None:
             f"create_generated_clock {name}: ignored unsupported -filter clause"
         )
 
+    # Pin-targeted generated clocks (e.g. ``[get_pins u_a/clk_out]``)
+    # don't belong in ``Clock.ports`` — that field is reserved for
+    # top-level port names so ``clock_for_port`` can do a clean port→
+    # clock lookup. Pin targets land in ``spec.pin_clocks`` instead,
+    # consumed by the clock-trace pass.
+    if target_is_pin:
+        clock_ports: tuple[str, ...] = ()
+        for t in targets:
+            spec.pin_clocks[t] = name
+    else:
+        clock_ports = tuple(targets)
+
     spec.clocks[name] = Clock(
         name=name,
         period=period,
-        ports=tuple(targets),
+        ports=clock_ports,
         master=master,
         is_generated=True,
     )

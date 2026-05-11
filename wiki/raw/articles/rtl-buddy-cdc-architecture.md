@@ -195,8 +195,16 @@ class ClockSpec:
     exclusive_groups: list[list[set[str]]]         # -logically_exclusive / -physically_exclusive
     false_path_pairs: set[frozenset[str]]          # set_false_path -from -to clock pairs
     port_clock: dict[str, str]                     # set_input_delay / set_output_delay → port→clock
+    pin_clocks: dict[str, str]                     # internal-pin target → generated clock name
     partial_warnings: list[str]                    # diagnostics surfaced once at end-of-parse
 ```
+
+`pin_clocks` is populated when a `create_generated_clock` target is a
+`[get_pins <hier_pin>]` expression rather than a top-level port. It is
+consumed by `trace_clock_root` (§5) to stop the clock walk at the pin
+where a forwarded clock takes over, so each block in a source-sync
+chain wired through internal nets gets a distinct clock identity that
+still resolves back to its master via `resolve()`.
 
 `Clock` carries `master: str | None` and `is_generated: bool` so the
 analyzer can collapse generated clocks (dividers, PLL outputs) back
@@ -273,6 +281,41 @@ terminate cleanly. The depth budget is intentionally low — clock
 networks rarely exceed a handful of hops, and a deep walk is more
 likely to be following data than clock.
 
+### 5.1 Internal-pin generated clocks
+
+`trace_clock_root` accepts an optional `bit_to_clock` short-circuit
+map. When the walk lands on a bit in the map, it returns that clock
+name immediately instead of continuing back to a top-level port.
+
+The map is built by `_build_bit_to_clock(module, pin_clocks)` from
+`ClockSpec.pin_clocks` (§4.5): for each SDC pin path (e.g.
+`u_a/clk_out`), the helper normalises `/`→`.` to match Yosys'
+flattened netname convention, looks up the netname, and harvests
+every integer bit of that net. `assign_domains(module,
+pin_clocks=...)` and `find_crossings(module, ..., pin_clocks=...)`
+build and thread the map automatically when invoked from the CLI.
+
+This models SoC clock-forwarding chains where each block declares its
+forwarded clock with `create_generated_clock` at an internal pin.
+Without it, every flop downstream of the forwarding block's clock
+buffer would collapse to whichever top input port feeds the chain,
+making the per-block SDC declarations inert. The returned name is a
+generated-clock identity (`ck_b0`), not a port; downstream consumers
+handle this transparently because `resolve()` already collapses
+generated clocks to their root master, so async-pair checks behave
+identically whether the clock identity came from a port or a pin.
+
+A practical gotcha when building fixtures: Yosys' Verilog frontend
+algebraically aliases trivial assign chains (`assign x = y; assign z
+= ~~x;`), so a pin like `u_a/clk_out` declared on the output of a
+soft buffer can end up sharing a net bit with the upstream port — at
+which point the pin map collapses to a single bit and every flop in
+the design traces to whichever clock won the `setdefault` race.
+Forcing a real gate-level cell (`$_BUF_`, `$_NOT_` pair, or an
+attribute-kept primitive) on the forwarding path keeps each forwarded
+clock at a distinct bit identity. The `good_source_sync_internal`
+fixture uses `$_BUF_` primitives for this reason.
+
 This is also what CDC-008 uses to compute "the set of cells that
 drive a flop CLK": the structural detection of clock-network cells.
 Cells flagged by `_clock_network_cells()` are exempt from CDC-008
@@ -307,10 +350,21 @@ commands (so vendor-specific dialects don't choke).
 
 Generated clocks fold back into their master via `ClockSpec.resolve`
 unless an explicit `set_clock_groups -asynchronous` overrides the
-relationship. `set_false_path -from [get_clocks A] -to [get_clocks B]`
-is treated as a pairwise async hint (equivalent to async groups for
-that specific pair). Exclusive groups drop crossings as unreachable
-in `_filter_async` before any rule sees them.
+relationship. When a `create_generated_clock` target is a `[get_pins
+<hier_pin>]` expression rather than a top-level port, the pin path is
+recorded in `ClockSpec.pin_clocks` and consumed by the clock walker
+(§5.1) — that's the integration point for SoC clock-forwarding
+chains. `set_false_path -from [get_clocks A] -to [get_clocks B]` is
+treated as a pairwise async hint (equivalent to async groups for that
+specific pair). Exclusive groups drop crossings as unreachable in
+`_filter_async` before any rule sees them.
+
+The `-source` argument is consumed by scanning forward to the next
+`-` flag rather than skipping a fixed token count, because shlex
+splits `[get_ports ck_a]` into two tokens (`[get_ports` and `ck_a]`).
+A fixed skip would leak the trailing-`]` half into the target list
+and silently mis-attribute the generated clock to whichever name fell
+out of the bracket parsing.
 
 ### 6.2 What it deliberately ignores
 
