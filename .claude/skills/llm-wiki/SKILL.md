@@ -34,13 +34,7 @@ Use this skill when the user:
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `~/.hermes/.env`).
-
-If unset, defaults to `~/wiki`.
-
-```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
-```
+**Location:** `./wiki` in this project
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
 any editor. No database, no special tooling required.
@@ -76,28 +70,20 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ② **Read `index.md`** — learn what pages exist and their summaries.
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
-```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
-# Orientation reads at session start — use the Read tool:
-#   Read "$WIKI/SCHEMA.md"
-#   Read "$WIKI/index.md"
-#   Read "$WIKI/log.md" (last 30 lines)
-```
-
 Only after orientation should you ingest, query, or lint. This prevents:
 - Creating duplicate pages for entities that already exist
 - Missing cross-references to existing content
 - Contradicting the schema's conventions
 - Repeating work already logged
 
-For large wikis (100+ pages), also run a quick `grep -rl "<topic>" "$WIKI"` for the topic
+For large wikis (100+ pages), also run a quick `grep -rl "<topic>" `./wiki/` for the topic
 at hand before creating anything new.
 
 ## Initializing a New Wiki
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
+1. Determine the wiki path: `./wiki/' in the project repo
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)
@@ -304,7 +290,7 @@ and desired — it's the compounding effect.
 When the user asks a question about the wiki's domain:
 
 ① **Read `index.md`** to identify relevant pages.
-② **For wikis with 100+ pages**, also `grep -rl "<term>" "$WIKI" --include="*.md"`
+② **For wikis with 100+ pages**, also `grep -rl "<term>" "./wiki" --include="*.md"`
    for key terms — the index alone may miss relevant content.
 ③ **Read the relevant pages** using the `Read` tool.
 ④ **Synthesize an answer** from the compiled knowledge. Cite the wiki pages
@@ -321,7 +307,7 @@ When the user asks to lint, health-check, or audit the wiki:
 **Quick path:** Use the reusable script (saves writing from scratch):
 
 ```bash
-python <skill_dir>/scripts/wiki-lint.py "$WIKI"
+python <skill_dir>/scripts/wiki-lint.py "./wiki"
 ```
 
 It runs all 11 checks below in one pass and prints a severity-grouped report.
@@ -400,13 +386,13 @@ pages actually use.
 
 ```bash
 # Find pages by content
-grep -rl "transformer" "$WIKI" --include="*.md"
+grep -rl "transformer" "./wiki" --include="*.md"
 
 # Find pages by filename
-find "$WIKI" -name "*.md" | sort
+find "./wiki" -name "*.md" | sort
 
 # Find pages by tag
-grep -rl "tags:.*alignment" "$WIKI" --include="*.md"
+grep -rl "tags:.*alignment" "./wiki" --include="*.md"
 
 # Recent activity — use the Read tool on the last 20 lines of log.md
 ```
