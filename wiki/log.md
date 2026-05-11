@@ -30,3 +30,16 @@
 - Updated `concepts/sdc-parsing.md` — `pin_clocks` behavior + shlex-tolerant `-source` parsing
 - Updated `concepts/cdc-data-model.md` — `ClockSpec.pin_clocks` field
 - Updated `raw/articles/rtl-buddy-cdc-architecture.md` — new §5.1, expanded §6.1, `ClockSpec` field list
+
+## [2026-05-11] update | docs/source consistency audit
+- README.md / AGENTS.md — retarget `docs/architecture.md` link to `wiki/raw/articles/rtl-buddy-cdc-architecture.md` (the doc moved during the wiki ingest)
+- README.md — fix log-level claim: unknown SDC commands are dropped at DEBUG, not INFO (matches `sdc.py:221`)
+- `entities/rtl-buddy-cdc.md`, `raw/articles/rtl-buddy-cdc-architecture.md` — `__init__.py` is not empty; it exposes a `main()` shim to `cli.app`
+- `concepts/clock-domain-tracing.md`, `raw/articles/rtl-buddy-cdc-architecture.md` §5.1 — correct the claim that CDC-008 "uses the same walker"; `_clock_network_cells` is a separate reverse-BFS in `rules.py` that mirrors the same cell-type taxonomy but doesn't share code with `trace_clock_root`
+- `concepts/cdc-data-model.md` — annotate that `Crossing.src_clock` may be a generated clock name (not only a top-level port) since the pin_clocks work
+- `concepts/cdc-testing-strategy.md` — replace dangling `§8.1` ref with `[[cdc-rule-pack]]` wikilink
+
+## [2026-05-11] update | source-sync internal fixtures + trace signature
+- New paired fixtures in `tests/fixtures/{good,bad}_source_sync_internal/` exercise internal-pin `create_generated_clock` end-to-end; covered by `tests/test_bad_source_sync_internal.py` and a new entry in `test_good_fixtures.py`
+- `trace_clock_root` signature gained `bit_to_clock: dict[Bit, str] | None = None`; `assign_domains` and `find_crossings` gained `pin_clocks: dict[str, str] | None = None`
+- `sdc.py` `_handle_create_generated_clock` now consumes `-source [get_*]` by scanning forward to the next `-` flag (fixes shlex-split leak of `]`-suffixed name into the trailing target list)

@@ -38,7 +38,7 @@ yosys -p 'read_verilog -sv path/to/design.sv; \
 
 Where the analyzer is designed to be extended without architectural churn:
 
-- **New rules.** Add `check_<rule>` in `rules.py` + one line in `RULES`. Reuse helpers from §8.1
+- **New rules.** Add `check_<rule>` in `rules.py` + one line in `RULES`. Reuse helpers documented in [[cdc-rule-pack]]
 - **New SV attributes.** Define a frozenset + `user_<x>_flop_names(module)` helper; consult in relevant rules
 - **New SDC commands.** Add handler in `sdc.py`, extend `ClockSpec` if needed
 - **New output formats.** Add `render_<fmt>` in `reporter.py`, wire into `OutputFormat` and `cli._analyze_and_report`

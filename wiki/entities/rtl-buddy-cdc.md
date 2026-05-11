@@ -38,7 +38,7 @@ A Python-based CDC (clock-domain-crossing) linter that consumes a flattened Yosy
 | `reporter.py` | Format an `AnalysisResult` as text / JSON / SARIF | `AnalysisResult`, `render_text`, `render_json`, `render_sarif` |
 | `cli.py` | Typer entry points; orchestrates the pipeline | `analyze`, `lint`, `version` |
 
-`__init__.py` is intentionally empty. The package has no public API beyond these modules.
+`__init__.py` exposes a thin `main()` shim that delegates to `cli.app` (used by the console-script entry point). No other public API beyond these modules.
 
 ## Integration with rtl-buddy
 

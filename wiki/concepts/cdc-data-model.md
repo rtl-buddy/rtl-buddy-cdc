@@ -35,7 +35,7 @@ A `Crossing` is the canonical unit of "one signal moves between two domains":
 ```python
 @dataclass(frozen=True)
 class Crossing:
-    src_clock: str               # top-level port name
+    src_clock: str               # top-level port name, or generated clock name when pin_clocks resolved it
     dst_flop: Flop
     dst_clock: str
     min_hops: int                # comb cells on shortest path
