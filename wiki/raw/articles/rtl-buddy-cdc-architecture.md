@@ -1,3 +1,9 @@
+---
+source_url: docs/architecture.md
+ingested: 2026-05-11
+sha256: 07ac9423f55be20477749f1c5055877b23d7f5bdfe2925f8f38a57ced0e08d87
+---
+
 # rtl-buddy-cdc Architecture
 
 A reference description of how `rtl-buddy-cdc` analyzes a flattened
@@ -381,9 +387,6 @@ records with `width = 1`.
   back from synchronizer first stages), so coverage is preserved —
   we just don't promote them, since without a typed clock the
   "is this async?" question has no SDC-grounded answer.
-- **CLK pins as transit bits.** `_build_bit_consumers` filters out
-  clock connections so the data BFS doesn't follow them.
-- **Same-domain crossings.** Filtered out at record-creation time.
 - **CLK pins as transit bits.** `_build_bit_consumers` filters out
   clock connections so the data BFS doesn't follow them.
 - **Same-domain crossings.** Filtered out at record-creation time —

@@ -1,0 +1,59 @@
+---
+title: Waivers and Reporting
+created: 2026-05-11
+updated: 2026-05-11
+type: concept
+tags: [waivers, reporting, cli, sarif, testing]
+sources: [raw/articles/rtl-buddy-cdc-architecture.md]
+confidence: high
+---
+
+# Waivers and Reporting
+
+## Waivers
+
+`waivers.py` implements a minimal waiver-file format. One statement per line:
+
+```
+waive <RULE-ID|*> <regex> [reason ...]
+```
+
+### Matching Order
+
+The matcher tries the regex against three strings per violation, most specific → least:
+
+1. The violation's `cell_name`
+2. The canonical `"src_flop -> dst_flop"` text (when there's a crossing)
+3. The violation's `message`
+
+A hit on any of the three suppresses. First matching waiver wins (top-down).
+
+### Behavior
+
+- Suppressed findings are **kept in the report** (with matching reason and waiver line number), not silently dropped
+- They appear in JSON output and in SARIF as `suppressions`
+- They **don't drive the exit code** — a fully-waived run returns 0
+- Deliberately mimics Spyglass `.swl` workflow at a smaller surface: no scope qualifiers, severity overrides, or expiry dates
+
+## Reporting
+
+Three formatters share the same `AnalysisResult` input. Format selection is purely a CLI flag (`--format text|json|sarif`); the analyzer pipeline runs the same regardless.
+
+### `render_text`
+Human-readable. Module summary, domain counts, crossing list, then violations grouped by severity. Designed for terminal and CI-log review.
+
+### `render_json`
+Full structured output with a stable schema. Used by `rb cdc` to extract violation counts and by custom dashboards. The downstream contract: `summary.violations` (int), `summary.suppressed` (int), `summary.crossings` (int).
+
+### `render_sarif`
+SARIF 2.1.0, GitHub Code Scanning compatible. Populates `tool.driver.rules` for every rule that fired. Each result carries `physicalLocation.region` parsed from `cell.attributes["src"]`. Suppressed findings emit with a `suppressions` field so the alert exists but doesn't fail the build.
+
+## The Reporter Contract
+
+`AnalysisResult` is the immutable struct at the boundary between analyzer and presentation. It contains: `module`, `domains`, `crossings` (all), `async_crossings` (post-SDC filter), `spec`, `violations` (kept), `suppressed`. **No formatter does additional analysis.**
+
+## Related Pages
+
+- [[cdc-data-model]] — `AnalysisResult` and `Violation` dataclasses
+- [[cdc-rule-pack]] — rules that produce the violations
+- [[rtl-buddy-cdc]] — CLI flags and exit codes
