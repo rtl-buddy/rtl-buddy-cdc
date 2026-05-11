@@ -58,7 +58,7 @@ def find_wiki_pages(wiki_root):
                         fm = {"_parse_error": parts[1][:80]}
 
             # Extract [[wikilinks]] (including [[page#anchor]] and [[page|alias]])
-            wikilinks = re.findall(r'\[\[([^\]|]+)(?:\|[^\]]+)?\]\]', content)
+            wikilinks = re.findall(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", content)
             tags = fm.get("tags", []) if isinstance(fm.get("tags"), list) else []
 
             pages[rel_path] = {
@@ -103,7 +103,7 @@ def load_schema_tags(wiki_root):
             if line.strip().startswith("## "):
                 break
             # Match lines like `- Category: tag1, tag2, tag3`
-            match = re.match(r'\s*-\s+\w+\s*:\s*(.+)', line)
+            match = re.match(r"\s*-\s+\w+\s*:\s*(.+)", line)
             if match:
                 for t in match.group(1).split(","):
                     t = t.strip()
@@ -123,7 +123,6 @@ def lint_wiki(wiki_root):
     # Build inbound link map
     inbound = defaultdict(set)
     for rel_path, info in pages.items():
-        my_slug = os.path.splitext(os.path.basename(rel_path))[0]
         for link in info["wikilinks"]:
             # Separate [[page#anchor]] into page part and anchor part
             link_page = link.split("#")[0]
@@ -154,12 +153,12 @@ def lint_wiki(wiki_root):
 
         # --- 1. Orphans ---
         if len(inbound[rel_path]) == 0:
-            issues["orphan"].append((f"Zero inbound [[wikilinks]]", rel_path))
+            issues["orphan"].append(("Zero inbound [[wikilinks]]", rel_path))
 
         # --- 3. Index completeness ---
         if rel_path not in ("index.md", "SCHEMA.md", "log.md"):
             if f"[[{slug}" not in index_content:
-                issues["index"].append((f"Missing from index.md", rel_path))
+                issues["index"].append(("Missing from index.md", rel_path))
 
         # --- 4. Frontmatter validation ---
         required = ["title", "created", "updated", "type", "tags", "sources"]
@@ -200,9 +199,7 @@ def lint_wiki(wiki_root):
 
         # --- 6. Contradictions ---
         if fm.get("contested"):
-            issues["contradiction"].append(
-                (f"contested=true — needs review", rel_path)
-            )
+            issues["contradiction"].append(("contested=true — needs review", rel_path))
         if fm.get("contradictions"):
             issues["contradiction"].append(
                 (f"contradictions={fm['contradictions']}", rel_path)
@@ -212,12 +209,14 @@ def lint_wiki(wiki_root):
         confidence = fm.get("confidence")
         sources = fm.get("sources", [])
         if confidence == "low":
+            issues["quality"].append(("confidence=low (needs corroboration)", rel_path))
+        elif (
+            confidence is None
+            and not sources
+            and slug not in ("SCHEMA", "index", "log")
+        ):
             issues["quality"].append(
-                (f"confidence=low (needs corroboration)", rel_path)
-            )
-        elif confidence is None and not sources and slug not in ("SCHEMA", "index", "log"):
-            issues["quality"].append(
-                (f"Single-source page, no confidence field set", rel_path)
+                ("Single-source page, no confidence field set", rel_path)
             )
 
         # --- 9. Page size ---
@@ -260,7 +259,10 @@ def lint_wiki(wiki_root):
         unused = [t for t in sorted(schema_tags) if t not in used_tags]
         if unused:
             issues["tag-audit"].append(
-                (f"Tags in schema but never used: {', '.join(unused[:15])}", "SCHEMA.md")
+                (
+                    f"Tags in schema but never used: {', '.join(unused[:15])}",
+                    "SCHEMA.md",
+                )
             )
 
     # --- 11. Log rotation ---
@@ -268,7 +270,7 @@ def lint_wiki(wiki_root):
     if os.path.exists(log_path):
         with open(log_path, encoding="utf-8") as f:
             log_content = f.read()
-        entry_count = len(re.findall(r'^## \[', log_content, re.MULTILINE))
+        entry_count = len(re.findall(r"^## \[", log_content, re.MULTILINE))
         if entry_count > 500:
             issues["log-rotation"].append(
                 (f"{entry_count} entries — exceeds 500, needs rotation", "log.md")
@@ -295,7 +297,7 @@ def print_report(issues):
 
     total = sum(len(issues[key]) for key, _, _ in severity_order)
 
-    print(f"=== Wiki Lint Report ===\n")
+    print("=== Wiki Lint Report ===\n")
     print(f"Total issues: {total}\n")
 
     for key, title, _ in severity_order:
