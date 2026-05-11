@@ -14,7 +14,7 @@ CDC bugs are notoriously hard to catch in simulation and devastating in silicon.
 
 ## Architecture
 
-For the full reference (data model, pipeline, rule helpers, extension points), see [`docs/architecture.md`](docs/architecture.md). The summary below is the elevator pitch.
+For the full reference (data model, pipeline, rule helpers, extension points), see [`wiki/raw/articles/rtl-buddy-cdc-architecture.md`](wiki/raw/articles/rtl-buddy-cdc-architecture.md). The summary below is the elevator pitch.
 
 `rtl-buddy-cdc` is a **pure analyzer**. It does not invoke Yosys itself in its primary mode — elaboration and netlist generation are the caller's responsibility. The standalone `lint` wrapper does shell out to yosys for convenience, but the core `analyze` entry point takes a pre-elaborated netlist as input.
 
@@ -105,7 +105,7 @@ The parser is a focused subset — STA-only commands (`set_max_delay`, `set_min_
 - `set_input_delay -clock <c> [get_ports <p>]` / `set_output_delay -clock <c> [get_ports <p>]` — assigns top-level data ports to a clock domain
 - Comments (`#`), backslash line continuation (`\`)
 
-When the parser sees a CDC-relevant command it can't fully understand (e.g. `set_false_path -through`, `[get_clocks -filter …]`), it accumulates a one-line warning and surfaces them all at the end of the run rather than spamming line-by-line. Truly unknown commands (`set_max_delay`, `set_load`, …) are silently dropped at INFO level.
+When the parser sees a CDC-relevant command it can't fully understand (e.g. `set_false_path -through`, `[get_clocks -filter …]`), it accumulates a one-line warning and surfaces them all at the end of the run rather than spamming line-by-line. Truly unknown commands (`set_max_delay`, `set_load`, …) are silently dropped at DEBUG level.
 
 If no SDC is supplied, the tool prints a structural summary and skips all rule checks.
 
@@ -227,6 +227,8 @@ tests/
   fixtures/
     bad_*/      # negative cases — each rule has at least one
     good_*/     # paired positive counterparts (textbook fixes)
+    {good,bad}_source_sync_chain/     # source-sync methodology (separate clk_in per block)
+    {good,bad}_source_sync_internal/  # source-sync with internal-pin create_generated_clock
     ip_cdc_handshake/    # canonical golden vendored from rtl-buddy-project-template
     clock_gating/        # ICG positive case
     marked_user_sync/    # (* cdc_sync *) attribute coverage

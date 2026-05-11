@@ -103,8 +103,9 @@ without one the tool prints the structural summary and exits 0.
 | `reporter.py` | Format an `AnalysisResult` as text / JSON / SARIF | `AnalysisResult`, `render_text`, `render_json`, `render_sarif` |
 | `cli.py` | Typer entry points; orchestrates the pipeline | `analyze`, `lint`, `version` |
 
-`__init__.py` is intentionally empty. The package has no public API
-beyond these modules.
+`__init__.py` exposes a thin `main()` shim that calls `cli.app` (used
+by the console-script entry point). No other public API beyond these
+modules.
 
 ## 4. Data model
 
@@ -316,11 +317,18 @@ attribute-kept primitive) on the forwarding path keeps each forwarded
 clock at a distinct bit identity. The `good_source_sync_internal`
 fixture uses `$_BUF_` primitives for this reason.
 
-This is also what CDC-008 uses to compute "the set of cells that
-drive a flop CLK": the structural detection of clock-network cells.
-Cells flagged by `_clock_network_cells()` are exempt from CDC-008
-("clock signal used as data") because legitimate ICGs, clock muxes,
-and dividers all read clocks as inputs.
+CDC-008 ("clock signal used as data") asks a closely related
+question — *which cells form the legitimate clock-distribution
+network?* — and answers it with its own helper,
+`rules._clock_network_cells`. That helper is a separate reverse-BFS
+from each flop's CLK pin (different drivers-map shape, different
+visit shape) but conceptually mirrors the buffer/ICG/mux/divider
+categories above. Cells flagged by it are exempt from CDC-008
+because legitimate ICGs, clock muxes, and dividers all read clocks
+as inputs. The two walkers live in different modules deliberately —
+`domain.py` is responsible for clock identity, `rules.py` for the
+rule's own structural detection — and any change to the clock-cell
+taxonomy needs to land in both.
 
 ## 6. SDC parsing
 

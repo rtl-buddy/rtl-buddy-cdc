@@ -41,10 +41,10 @@ The returned clock name is a generated-clock identity (e.g. `ck_b0`), not a top-
 
 ## Role in CDC-008
 
-CDC-008 uses the same walker to compute the set of cells that drive a flop CLK (`_clock_network_cells()`). Cells flagged as clock-network are **exempt** from CDC-008 ("clock signal used as data") because legitimate ICGs, clock muxes, and dividers all read clocks as inputs.
+CDC-008 ("clock signal used as data") asks a related question — *which cells form the legitimate clock-distribution network?* — and answers it with its own helper, `rules._clock_network_cells`. That helper is a separate reverse-BFS from each flop's CLK pin (different drivers map shape, different visit shape) but conceptually mirrors `trace_clock_root`'s buffer/ICG/mux/divider categories. Cells flagged by it are **exempt** from CDC-008 because legitimate ICGs, clock muxes, and dividers all read clocks as inputs. If you change the clock-network cell taxonomy here, change it there too.
 
 ## Related Pages
 
 - [[cdc-data-model]] — `FlopDomain` dataclass produced by tracing
 - [[crossing-detection]] — BFS that consumes domain assignments
-- [[cdc-rule-pack]] — CDC-008's use of `_clock_network_cells()`
+- [[cdc-rule-pack]] — CDC-008's `_clock_network_cells()` (separate but parallel reverse-BFS)
