@@ -126,6 +126,35 @@ def test_cdc_006_fires_on_bad_input_delay_cross_domain() -> None:
     assert _run("bad_input_delay_cross_domain") == ["CDC-006"]
 
 
+def test_cdc_001_fires_on_4_module_hierarchy() -> None:
+    """bad_source_sync_chain — 4-module design with a source-sync
+    topology (A → B0/B1 → C0/C1) and a deliberately-broken SDC that
+    groups every clock asynchronous. The recursive instance walker
+    must flatten 5 child instances into one ``Module`` and preserve
+    net identity across each port boundary (so flop A's Q is also
+    flop B0's D); otherwise CDC-001 doesn't see the crossings."""
+    rules = _run("bad_source_sync_chain")
+    assert rules == ["CDC-001"]
+
+
+def test_hierarchical_module_cell_names_use_dotted_prefix() -> None:
+    """Cells emitted from a child instance should carry the dotted
+    instance path so they're distinguishable in waiver regexes and
+    diagnostic output (matches Yosys-flatten convention)."""
+    fix = FIX / "bad_source_sync_chain"
+    module = elaborate(
+        sorted(fix.glob("*.sv")),
+        "bad_source_sync_chain",
+        frontend=Frontend.slang,
+    )
+    flop_names = sorted(
+        c.name for c in module.cells.values() if c.type in {"$dff", "$adff"}
+    )
+    assert any(n.startswith("u_a.") for n in flop_names)
+    assert any(n.startswith("u_b0.") for n in flop_names)
+    assert any(n.startswith("u_c1.") for n in flop_names)
+
+
 def test_cdc_007_groups_reset_tree_violations() -> None:
     """4-bit register written per-bit by 4 ``always_ff`` blocks, all
     using a foreign-domain flop as ``ARST``. Exercises the

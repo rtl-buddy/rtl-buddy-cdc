@@ -3,14 +3,14 @@ Yosys-shape :class:`netlist.Module` consumable by the rule pack.
 
 Status
 ------
-**Stage 2 (third slice).** Single-module designs reach parity with
-the Yosys frontend on 24 of 25 SDC-equipped fixtures, including the
-combinational shapes (CDC-003 / CDC-006) and multi-bit LHS
-bit-selects (``q[0] <= ...``). The only remaining gap is cross-
-module flattening (``bad_source_sync_chain`` is a 4-module design);
-the two fixtures that exercise pre-synthesis Yosys primitives
-(``$_BUF_`` / ``$_NOT_``) are correctly rejected by slang as not
-being legal SV. See issue #5 for the broader plan.
+**Stage 2 (fourth slice — full fixture parity).** All 25
+SDC-equipped fixtures reach parity with the Yosys frontend,
+covering register-to-register CDC, combinational shapes,
+multi-bit LHS bit-selects, and now multi-module hierarchies.
+The two ``*_source_sync_internal`` fixtures that embed Yosys-
+internal ``$_BUF_`` primitives in SV source are correctly
+rejected by slang as not being legal SystemVerilog and stay
+Yosys-frontend-only by design.
 
 Rule parity matrix (today)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -30,6 +30,7 @@ bad_input_delay_cross_domain        CDC-006
 bad_reset_crossing                  CDC-007
 bad_reset_tree                      CDC-007 (grouped)
 bad_clock_as_data                   CDC-008
+bad_source_sync_chain               CDC-001 × 4 (4-module hierarchy)
 good_2ff_sync                       (none)
 good_gray_counter_crossing          (none)
 good_registered_before_sync         (none)
@@ -57,20 +58,32 @@ What currently works
   emit ``$adff`` cells with ``CLK``/``D``/``Q``/``ARST`` connections.
   Plain ``always_ff @(posedge clk) q <= d;`` emits ``$dff``.
 - Direct ``port = var`` continuous assigns are aliased into the
-  source variable's bits (matches Yosys post-``opt_clean``).
+  source variable's bits (matches Yosys post-``opt_clean``). The
+  aliasing is propagated globally: every entry in the bit-id maps
+  that holds the old tuple is rewritten, so chains across the
+  hierarchy boundary (parent ``a_q`` ← child ``q``) collapse to a
+  single net rather than leaving stale aliases.
+- Multi-module hierarchies — child :class:`InstanceSymbol`s are
+  walked recursively; their flops, comb cells, and netnames land
+  in the same flat ``Module`` with dotted prefixes (``u_b0.q``,
+  ``u_b0.$slang$adff$3``) matching Yosys-flatten output. Port
+  connections are the wiring step: each child internal variable
+  backing a port is aliased to the parent's connection expression
+  bits, so flop A's Q in one instance and flop B's D in the next
+  resolve to the same net.
+- Combinational primitive lowering: see :meth:`_lower_binary`
+  / :meth:`_lower_unary` / :meth:`_lower_conditional`. Pyslang
+  expression operators round-trip to the Yosys cell zoo
+  (``$and``/``$or``/``$xor``/``$mux``/…), so the rule pack walks
+  the comb cone correctly.
+- LHS bit-selects (``q[0] <= ...``) and contiguous ranges
+  (``bus[3:0] <= ...``) — see :meth:`_lvalue_bits`.
 - Fatal pyslang diagnostics are surfaced through
   ``TextDiagnosticClient`` with file:line:col + caret summaries —
   the usual compiler-error format users already recognise.
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- **Multi-instance / cross-module flattening.** Only the top
-  :class:`InstanceSymbol`'s direct body is walked. Child instances
-  exist as opaque symbols; their contents don't contribute flops or
-  comb. Designs that span modules need a recursive walker that emits
-  every leaf instance's flops into the same flat ``Module`` (matches
-  what Yosys ``flatten`` produces). Blocks ``bad_source_sync_chain``
-  / ``good_source_sync_chain`` (4-module designs).
 - **Concat / part-select / replication on the RHS.** Today these
   fall through :meth:`_bits_of_expression` and the caller emits a
   ``$_UNKNOWN_`` placeholder driver. Real lowering needs
@@ -207,24 +220,60 @@ class _ModuleBuilder:
         self._cells: dict[str, Cell] = {}
         self._netnames: dict[str, Netname] = {}
         self._cell_counters: dict[str, int] = {}
+        # Stack of dotted hierarchy prefixes used by ``_fresh_cell_name``
+        # so cells emitted while walking a child instance carry the
+        # ``u_child.`` prefix matching Yosys-flatten output. ``""`` at
+        # the top level. Push/pop bracket each ``_walk_instance`` call.
+        self._hier_stack: list[str] = [""]
 
     # -- public ----------------------------------------------------------
 
     def build(self) -> Module:
-        # Order matters: variables get IDs first so flops/assigns can
-        # reference them without ambiguity.
-        for member in self.top.body:
-            self._collect_variable(member)
-        for member in self.top.body:
-            self._collect_port(member)
-        for member in self.top.body:
-            self._emit_for_member(member)
+        # The top instance's ports become the flat ``Module``'s ports;
+        # child instances contribute flops / comb / netnames into the
+        # same flat namespace, hierarchically prefixed (``u_b0.q``).
+        self._walk_instance(self.top, hier_prefix="", bound_internals=frozenset())
         return Module(
             name=self.top.name,
             ports=self._ports,
             cells=self._cells,
             netnames=self._netnames,
         )
+
+    def _walk_instance(
+        self,
+        inst: Any,
+        hier_prefix: str,
+        bound_internals: frozenset[Any],
+    ) -> None:
+        """Walk an :class:`InstanceSymbol`'s body in three passes —
+        variables, ports (top only), then cells / continuous assigns /
+        child instances.
+
+        ``hier_prefix`` is the dotted instance path (``""`` at the top,
+        ``"u_a."`` one level in, ``"u_top.u_a."`` two levels) used to
+        namespace netname keys and emitted cell names. ``bound_internals``
+        is the set of port-internal variables this instance has already
+        had its bits aliased to a parent expression — they get skipped
+        in pass 1 so we don't allocate fresh bits for them.
+        """
+        self._hier_stack.append(hier_prefix)
+        try:
+            for member in inst.body:
+                if (
+                    self._kind_name(member) == "VariableSymbol"
+                    and member not in bound_internals
+                ):
+                    self._collect_variable(member, hier_prefix)
+            # Only the top module exposes ports in the flat ``Module``;
+            # child ports get folded into their parents' connections.
+            if hier_prefix == "":
+                for member in inst.body:
+                    self._collect_port(member)
+            for member in inst.body:
+                self._emit_for_member(member, hier_prefix)
+        finally:
+            self._hier_stack.pop()
 
     # -- helpers ---------------------------------------------------------
 
@@ -276,10 +325,14 @@ class _ModuleBuilder:
     def _fresh_cell_name(self, type_str: str) -> str:
         # Yosys autogen names look like "$procdff$3" — we don't need
         # bit-exact parity, but a stable prefix-and-counter keeps
-        # waiver regexes that target the cell name readable.
+        # waiver regexes that target the cell name readable. The
+        # current hierarchy prefix (e.g. ``u_b0.``) matches what
+        # Yosys ``flatten`` would produce for cells inside a child
+        # instance.
         n = self._cell_counters.get(type_str, 0) + 1
         self._cell_counters[type_str] = n
-        return f"$slang${type_str.strip('$')}${n}"
+        prefix = self._hier_stack[-1] if self._hier_stack else ""
+        return f"{prefix}$slang${type_str.strip('$')}${n}"
 
     def _kind_name(self, sym: Any) -> str:
         """Class-name shortcut. pyslang exposes ``__class__.__name__``
@@ -289,7 +342,7 @@ class _ModuleBuilder:
 
     # -- pass 1: variables ----------------------------------------------
 
-    def _collect_variable(self, member: Any) -> None:
+    def _collect_variable(self, member: Any, hier_prefix: str = "") -> None:
         if self._kind_name(member) != "VariableSymbol":
             return
         bits = self._alloc_bits(member)
@@ -307,13 +360,13 @@ class _ModuleBuilder:
                 continue
             val = getattr(attr, "value", None)
             attrs[name] = str(val) if val is not None else "1"
-        # Skip if a netname with this name already exists (e.g. a port
-        # shares the name with its internal variable). Ports take
-        # precedence in the port table; the variable still owns the
-        # netname so attributes attached to the wire/reg survive.
-        self._netnames[member.name] = Netname(
-            name=member.name, bits=bits, attributes=attrs
-        )
+        # Hierarchical name matches Yosys-flatten output: ``u_b0.q``,
+        # ``u_top.u_b0.q``, etc. At the top level ``hier_prefix`` is
+        # empty so the bare name is used. The rule pack consults
+        # netname attributes via the bits→netname reverse-lookup, so
+        # the name is only consulted for debug / source-location use.
+        full_name = f"{hier_prefix}{member.name}"
+        self._netnames[full_name] = Netname(name=full_name, bits=bits, attributes=attrs)
 
     # -- pass 2: ports ---------------------------------------------------
 
@@ -339,21 +392,82 @@ class _ModuleBuilder:
 
     # -- pass 3: cells + continuous assigns -----------------------------
 
-    def _emit_for_member(self, member: Any) -> None:
+    def _emit_for_member(self, member: Any, hier_prefix: str = "") -> None:
         kind = self._kind_name(member)
         if kind == "ProceduralBlockSymbol":
-            self._emit_procedural_block(member)
+            self._emit_procedural_block(member, hier_prefix)
         elif kind == "ContinuousAssignSymbol":
             self._emit_continuous_assign(member)
-        # InstanceSymbol (child instances), GenerateBlockSymbol, etc.
-        # are deliberately ignored in this slice — the roadmap covers
-        # them. Silently skipping is preferable to crashing; the lack
-        # of flops in the resulting module will be visible in `analyze`
-        # output and surfaces the gap loudly to anyone running it.
+        elif kind == "InstanceSymbol":
+            self._emit_child_instance(member, hier_prefix)
+        # GenerateBlockSymbol and other unmodelled kinds fall through
+        # silently — the lack of expected flops will be visible in
+        # `analyze` output, which is a better failure mode than
+        # crashing on an unrecognised member kind.
+
+    def _emit_child_instance(self, child: Any, parent_prefix: str) -> None:
+        """Inline a child instance's body into the flat ``Module``.
+
+        Port connections are the load-bearing wiring step: the child's
+        internal variables backing each port get their bits aliased to
+        the parent's connection expression so net identity is preserved
+        across the hierarchy boundary. After that, the child body is
+        walked exactly like the top.
+        """
+        bound: set[Any] = set()
+        for pc in getattr(child, "portConnections", []) or []:
+            port = pc.port
+            internal = getattr(port, "internalSymbol", None)
+            if internal is None:
+                continue
+            parent_bits = self._port_connection_bits(pc)
+            if parent_bits is None:
+                continue
+            # Alias the child's internal-variable bits to the parent's
+            # wire. ``_alloc_bits`` keys on the internal Symbol identity
+            # which is unique per elaborated instance, so two
+            # instantiations of the same module don't share bits.
+            self._var_bits[self._canonical_var(internal)] = parent_bits
+            bound.add(internal)
+
+        child_prefix = f"{parent_prefix}{child.name}."
+        self._walk_instance(
+            child, hier_prefix=child_prefix, bound_internals=frozenset(bound)
+        )
+
+    def _port_connection_bits(self, pc: Any) -> tuple[Bit, ...] | None:
+        """Resolve a :class:`PortConnection` to the parent-side bits.
+
+        Three shapes appear in practice:
+        - **Input port**: ``pc.expression`` is the parent-side driver
+          expression (typically a :class:`NamedValueExpression`).
+          Just lower it.
+        - **Output port**: ``pc.expression`` is an
+          :class:`AssignmentExpression` whose ``.left`` is the
+          parent's capturing variable. ``.right`` is an
+          :class:`EmptyArgumentExpression` placeholder. Use the LHS.
+        - **Unconnected port**: ``pc.expression`` is None — nothing
+          to alias to. Return None so the child's internal allocates
+          its own fresh bits.
+        """
+        ex = pc.expression
+        if ex is None:
+            return None
+        kind = type(ex).__name__
+        if kind == "AssignmentExpression":
+            return self._lvalue_bits(ex.left)
+        if kind == "EmptyArgumentExpression":
+            return None
+        return self._bits_of_expression(ex)
 
     # -- always_ff lowering ----------------------------------------------
 
-    def _emit_procedural_block(self, block: Any) -> None:
+    def _emit_procedural_block(self, block: Any, hier_prefix: str = "") -> None:
+        # hier_prefix is read indirectly through ``_hier_stack`` which
+        # the walker keeps in sync via the ``_walk_instance`` push/pop;
+        # accept it on the signature for symmetry with the other
+        # ``_emit_*`` callbacks.
+        del hier_prefix
         kind_name = str(block.procedureKind).rsplit(".", 1)[-1]
         if kind_name == "AlwaysComb":
             self._emit_always_comb(block)
@@ -870,12 +984,7 @@ class _ModuleBuilder:
         rhs_bits = self._bits_of_expression(expr.right)
         if rhs_bits is None:
             return
-        canonical = self._canonical_var(expr.left.symbol)
-        existing = self._var_bits.get(canonical)
-        self._var_bits[canonical] = rhs_bits
-        if existing is not None:
-            self._rewrite_bits_in_ports(existing, rhs_bits)
-            self._rewrite_bits_in_netname(canonical, rhs_bits)
+        self._rewrite_aliased(expr.left, rhs_bits)
 
     # -- continuous assigns ---------------------------------------------
 
@@ -894,27 +1003,40 @@ class _ModuleBuilder:
         # the RHS's bits so any reader of the LHS sees the RHS source
         # directly. This matches Yosys' post-opt_clean output for
         # ``assign out = sig`` and means we don't need a $buf cell.
+        self._rewrite_aliased(lhs, rhs_bits)
+
+    def _rewrite_aliased(self, lhs: Any, rhs_bits: tuple[Bit, ...]) -> None:
+        """Make every alias that currently holds ``lhs``'s bits point at
+        ``rhs_bits`` instead.
+
+        Crossing the hierarchy boundary, a single net (the parent's
+        ``a_q`` wire, say) is represented by several aliased entries:
+        the parent's :class:`VariableSymbol`, the child instance's
+        :class:`PortSymbol`-internal variable, and any local wires
+        that capture it. When ``assign a_q = q`` runs inside the child,
+        every one of those aliases needs to follow — not just the
+        child's own a_q entry — or the parent's reader sees stale bits.
+
+        We do the cheap thing: scan ``_var_bits`` / ``_ports`` /
+        ``_netnames`` for entries whose bits equal the old tuple and
+        rewrite them. O(n) per assign, fine for the design sizes the
+        analyzer targets.
+        """
         canonical = self._canonical_var(lhs.symbol)
-        existing = self._var_bits.get(canonical)
+        old_bits = self._var_bits.get(canonical)
         self._var_bits[canonical] = rhs_bits
-        # Update any Port that already pointed at the old bits.
-        if existing is not None:
-            self._rewrite_bits_in_ports(existing, rhs_bits)
-            self._rewrite_bits_in_netname(canonical, rhs_bits)
-
-    def _rewrite_bits_in_ports(
-        self, old: tuple[Bit, ...], new: tuple[Bit, ...]
-    ) -> None:
-        for name, port in list(self._ports.items()):
-            if port.bits == old:
-                self._ports[name] = Port(
-                    name=port.name, direction=port.direction, bits=new
-                )
-
-    def _rewrite_bits_in_netname(self, var_sym: Any, new: tuple[Bit, ...]) -> None:
-        nn = self._netnames.get(var_sym.name)
-        if nn is None:
+        if old_bits is None or old_bits == rhs_bits:
             return
-        self._netnames[var_sym.name] = Netname(
-            name=nn.name, bits=new, attributes=nn.attributes
-        )
+        for sym, bits in list(self._var_bits.items()):
+            if bits == old_bits:
+                self._var_bits[sym] = rhs_bits
+        for name, port in list(self._ports.items()):
+            if port.bits == old_bits:
+                self._ports[name] = Port(
+                    name=port.name, direction=port.direction, bits=rhs_bits
+                )
+        for name, nn in list(self._netnames.items()):
+            if nn.bits == old_bits:
+                self._netnames[name] = Netname(
+                    name=nn.name, bits=rhs_bits, attributes=nn.attributes
+                )
