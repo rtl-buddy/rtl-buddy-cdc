@@ -30,6 +30,19 @@ TOOL_NAME = "rtl-buddy-cdc"
 TOOL_VERSION = "0.1.0"
 TOOL_INFO_URI = "https://github.com/rtl-buddy/rtl-buddy-cdc"
 
+# JSON output schema contract — these dotted keys are PUBLIC API.
+# Downstream ``rtl_buddy`` (sibling repo) parses them out of the JSON
+# report to populate its ``CdcResults`` summary. Renaming any key,
+# changing its type, or removing it from the payload is a
+# downstream-breaking change. Anything *else* in the JSON can evolve
+# freely. See AGENTS.md § "Cross-repo coupling" and
+# ``tests/test_reporter.py::test_json_contract_keys_are_stable``.
+JSON_CONTRACT: dict[str, type] = {
+    "summary.violations": int,
+    "summary.suppressed": int,
+    "summary.crossings": int,
+}
+
 # Short-form descriptions per rule. Keep this terse — the long-form
 # message is already attached to each result.
 _RULE_DESCRIPTIONS: dict[str, str] = {

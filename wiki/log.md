@@ -65,3 +65,9 @@
 - `README.md` — "MVP usable" framing → "Usable on IP-block-sized designs" with explicit mention of two frontends at parity; intro line names the slang frontend; refreshed Architecture ASCII diagram to show the `frontend.elaborate` factory with both backends (yosys + slang); new SARIF local-inspection pointer (VS Code SARIF Viewer + Microsoft's web component) at the end of the Output formats section
 - `pyproject.toml` — `description` rephrased from "Yosys-backed" to "with pluggable Yosys or slang (pyslang) frontend" (visible PyPI listing copy)
 - `src/rtl_buddy_cdc/cli.py` — `--frontend` Typer help no longer says slang is "in development — see issue #5"; replaced with the actual install hint (`pip install 'rtl-buddy-cdc[slang]'`)
+
+## [2026-05-14] update | JSON output schema contract pinned in code (#13)
+- New `reporter.JSON_CONTRACT` mapping (`summary.violations` / `summary.suppressed` / `summary.crossings` → `int`). Names the three load-bearing keys the rtl-buddy ↔ rtl-buddy-cdc subprocess boundary depends on — previously documented only in prose in AGENTS.md.
+- New tests in `tests/test_reporter.py`: `test_json_contract_keys_present_and_typed` (every contract key resolves to the declared type), `test_json_contract_includes_waived_run` (a waivered run exercises both `summary.violations` and `summary.suppressed` in the same render, catching value-swap regressions the first test alone would miss), `test_sarif_suppression_shape` (SARIF `suppressions: [{kind:external, status:accepted, justification:…}]` payload).
+- `concepts/waivers-and-reporting.md` — `render_json` section now cross-references the new constant + test.
+- `AGENTS.md` § "Cross-repo coupling" — JSON-schema bullet now points at the constant + test so a contributor changing the reporter knows where the contract is encoded.

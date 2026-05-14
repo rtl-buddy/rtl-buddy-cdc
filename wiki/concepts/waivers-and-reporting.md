@@ -1,7 +1,7 @@
 ---
 title: Waivers and Reporting
 created: 2026-05-11
-updated: 2026-05-11
+updated: 2026-05-14
 type: concept
 tags: [waivers, reporting, cli, sarif, testing]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
@@ -43,7 +43,7 @@ Three formatters share the same `AnalysisResult` input. Format selection is pure
 Human-readable. Module summary, domain counts, crossing list, then violations grouped by severity. Designed for terminal and CI-log review.
 
 ### `render_json`
-Full structured output with a stable schema. Used by `rb cdc` to extract violation counts and by custom dashboards. The downstream contract: `summary.violations` (int), `summary.suppressed` (int), `summary.crossings` (int).
+Full structured output with a stable schema. Used by `rb cdc` to extract violation counts and by custom dashboards. The downstream contract: `summary.violations` (int), `summary.suppressed` (int), `summary.crossings` (int). These three keys are pinned in code by `reporter.JSON_CONTRACT` and a paired test that fails on rename or retype — see `tests/test_reporter.py::test_json_contract_keys_present_and_typed`.
 
 ### `render_sarif`
 SARIF 2.1.0, GitHub Code Scanning compatible. Populates `tool.driver.rules` for every rule that fired. Each result carries `physicalLocation.region` parsed from `cell.attributes["src"]`. Suppressed findings emit with a `suppressions` field so the alert exists but doesn't fail the build.
