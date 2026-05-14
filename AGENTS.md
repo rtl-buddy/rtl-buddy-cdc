@@ -31,6 +31,10 @@ authority — update it in the same PR if you change the contract.
 src/rtl_buddy_cdc/
 ├── __init__.py        # exposes main()
 ├── cli.py             # Typer entry points (analyze / lint / version) + orchestration
+├── frontend.py        # Frontend enum + elaborate() factory (dispatches by name)
+├── frontends/
+│   ├── yosys.py       # Yosys frontend: shell out + netlist.load
+│   └── slang.py       # slang frontend (in development, issue #5) — lazy pyslang import
 ├── netlist.py         # Yosys write_json loader (Module / Cell / Port / Netname)
 ├── flops.py           # FF cell zoo (FF_CELL_TYPES) + Flop dataclass
 ├── domain.py          # trace_clock_root + find_crossings (BFS) + Crossing
@@ -65,12 +69,15 @@ tests/
 - The analyzer is a chain of **pure functions**. Side effects belong
   in `cli.py` (file I/O) and the reporter (writing to a file-like).
   Don't sneak I/O into `domain.py` / `rules.py` / `sdc.py`.
-- The standalone `lint` wrapper shells out to Yosys; the primary
-  `analyze` path must never invoke Yosys. This split is deliberate —
-  the Python core has no Yosys runtime dependency.
+- The `lint` wrapper drives a frontend (Yosys subprocess or pyslang)
+  to elaborate sources; the primary `analyze` path must never invoke
+  a frontend — it consumes a pre-elaborated Yosys JSON via
+  `netlist.load`. This split is deliberate — the rule pack has no
+  toolchain runtime dependency.
 - No new top-level dependencies without strong reason. The package
-  ships with **only `typer`** as a runtime dep; lint/test groups are
-  the place for tooling.
+  ships with **only `typer`** as a runtime dep; the slang frontend
+  is gated behind the `[slang]` optional extra so default installs
+  stay typer-only. Lint/test groups are the place for tooling.
 
 ## Validation commands
 
