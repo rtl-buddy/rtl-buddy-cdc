@@ -1,9 +1,9 @@
 ---
 title: CDC Data Model
 created: 2026-05-11
-updated: 2026-05-11
+updated: 2026-05-14
 type: concept
-tags: [data-model, netlist, cdc, flops, clock-domain, crossing, sdc]
+tags: [data-model, netlist, cdc, flops, clock-domain, crossing, sdc, frontend]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
 confidence: high
 ---
@@ -12,17 +12,19 @@ confidence: high
 
 The analyzer is structured as a sequence of pure functions producing immutable dataclasses. Frozen dataclasses are used everywhere except `ClockSpec`'s parser-built collections.
 
+The `Module` shape described here is the **contract every [[elaboration-frontends|frontend]] must produce**. Whether `Module` comes from Yosys `write_json` or from a pyslang elaboration, the downstream pipeline sees the same dataclasses with the same conventions.
+
 ## Netlist Layer
 
 A `Module` is a flat namespace of `ports`, `cells`, and `netnames`, each indexed by name.
 
-**`Bit`** — the fundamental connection type. Either an `int` (Yosys net ID) or one of the constant strings `"0"`, `"1"`, `"x"`, `"z"`. The integer-vs-string distinction is load-bearing — every walker ignores constant bits because they can't propagate driver identity.
+**`Bit`** — the fundamental connection type. Either an `int` (net ID, originating from Yosys IDs or from the slang frontend's sequential allocator) or one of the constant strings `"0"`, `"1"`, `"x"`, `"z"`. The integer-vs-string distinction is load-bearing — every walker ignores constant bits because they can't propagate driver identity.
 
-**`Netname`** — the wire/reg name as it appeared in the source, with any SV `(* attr = "value" *)` annotations attached. Yosys preserves attributes on the netname rather than the driving cell, so the rule pack maps from tagged netname bits back to the upstream flop.
+**`Netname`** — the wire/reg name as it appeared in the source, with any SV `(* attr = "value" *)` annotations attached. Yosys preserves attributes on the netname rather than the driving cell (and the slang frontend matches this convention by pulling attributes via `Compilation.getAttributes(symbol)`), so the rule pack maps from tagged netname bits back to the upstream flop uniformly.
 
 ## Flop Recognition
 
-`FF_CELL_TYPES` enumerates the 11 Yosys FF variants: `$dff`, `$dffe`, `$adff`, `$adffe`, `$aldff`, `$aldffe`, `$sdff`, `$sdffe`, `$sdffce`, `$dffsr`, `$dffsre`. Each has different reset/enable plumbing, but **CLK / D / Q are universal** — the only pins needed for domain assignment and fanout walks.
+`FF_CELL_TYPES` enumerates the 11 Yosys FF variants: `$dff`, `$dffe`, `$adff`, `$adffe`, `$aldff`, `$aldffe`, `$sdff`, `$sdffe`, `$sdffce`, `$dffsr`, `$dffsre`. Each has different reset/enable plumbing, but **CLK / D / Q are universal** — the only pins needed for domain assignment and fanout walks. The slang frontend emits the subset that corresponds to recognised `always_ff` shapes (`$dff` for plain `posedge clk`, `$adff` for the canonical `always_ff @(posedge clk or negedge rst_n)` async-reset shape).
 
 ## Domain Assignment
 
@@ -93,6 +95,7 @@ The immutable struct at the boundary between analyzer and presentation. Contains
 ## Related Pages
 
 - [[cdc-analysis-pipeline]] — how these types flow through the pipeline
+- [[elaboration-frontends]] — the frontend layer that produces `Module` instances satisfying this contract
 - [[clock-domain-tracing]] — `FlopDomain` and `trace_clock_root`
 - [[crossing-detection]] — how `Crossing` records are created
 - [[sdc-parsing]] — how `ClockSpec` is populated

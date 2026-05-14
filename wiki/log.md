@@ -43,3 +43,11 @@
 - New paired fixtures in `tests/fixtures/{good,bad}_source_sync_internal/` exercise internal-pin `create_generated_clock` end-to-end; covered by `tests/test_bad_source_sync_internal.py` and a new entry in `test_good_fixtures.py`
 - `trace_clock_root` signature gained `bit_to_clock: dict[Bit, str] | None = None`; `assign_domains` and `find_crossings` gained `pin_clocks: dict[str, str] | None = None`
 - `sdc.py` `_handle_create_generated_clock` now consumes `-source [get_*]` by scanning forward to the next `-` flag (fixes shlex-split leak of `]`-suffixed name into the trailing target list)
+
+## [2026-05-14] update | slang frontend documentation catchup
+- Issue: rtl-buddy/rtl-buddy-cdc#5 (Stage 2)
+- New concept page `concepts/elaboration-frontends.md` — the Yosys + slang frontend layer behind `--frontend`, the `Module` contract every frontend must produce, parity status, and how to add a new frontend
+- Updated `entities/rtl-buddy-cdc.md` — tags grow `slang` + `frontend`; intro says "consumes a `Module` from a Yosys or slang frontend" rather than "consumes a flattened Yosys netlist"; non-goals updated so the `lint` wrapper isn't "convenience-only" (it drives a frontend by choice); module map adds `frontend.py`, `frontends/yosys.py`, `frontends/slang.py`; exit-code-2 description generalised from "Yosys elaboration failure" to "frontend-elaboration failure"
+- Updated `concepts/cdc-analysis-pipeline.md` — pipeline now starts at stage 0 (`frontend.elaborate`), then stages 1–8 are the existing pipeline; ASCII diagram updated; design-properties bullet on "no Yosys runtime dependency" generalised to "no toolchain runtime dependency on the rule pack"
+- Updated `concepts/cdc-data-model.md` — note the `Module` shape is the contract every frontend produces; `Bit` integer IDs originate from either Yosys IDs or the slang frontend's sequential allocator; attribute propagation works uniformly because the slang frontend pulls via `Compilation.getAttributes(symbol)`
+- Updated `index.md` — page count 9 → 10; entity summary mentions both frontends; new `[[elaboration-frontends]]` concept entry; testing-strategy summary extended with "frontends" extension point
