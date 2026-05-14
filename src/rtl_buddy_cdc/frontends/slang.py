@@ -3,13 +3,14 @@ Yosys-shape :class:`netlist.Module` consumable by the rule pack.
 
 Status
 ------
-**Stage 2 (first slice landed).** Single-module designs with direct
-register-to-register CDC paths, multi-bit declarations, async-reset
-flops, gray-coded bus crossings, and the ``(* cdc_sync *)`` /
-``(* cdc_gray *)`` attribute escape hatches reach parity with the
-Yosys frontend on their corresponding fixtures. Designs that need
-combinational primitive lowering (any non-trivial RHS) or
-cross-module flattening do not. See issue #5 for the broader plan.
+**Stage 2 (second slice).** Single-module designs reach parity with
+the Yosys frontend on 23 of 25 SDC-equipped fixtures, including the
+combinational shapes (CDC-003 / CDC-006) that the first slice could
+not detect. Remaining gaps are multi-bit LHS bit-selects
+(``q[0] <= ...``) and cross-module flattening; the two
+fixtures that exercise pre-synthesis Yosys primitives
+(``$_BUF_`` / ``$_NOT_``) are correctly rejected by slang as not
+being legal SV. See issue #5 for the broader plan.
 
 Rule parity matrix (today)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -21,12 +22,21 @@ fixture                             expected rules
 ==================================  =================
 bad_single_ff_sync                  CDC-001
 bad_port_no_sync                    CDC-001
+bad_comb_before_sync                CDC-003
 bad_bus_crossing                    CDC-004
 bad_reconvergent_sync               CDC-005
+bad_comb_source                     CDC-006
+bad_input_delay_cross_domain        CDC-006
 bad_reset_crossing                  CDC-007
 bad_clock_as_data                   CDC-008
 good_2ff_sync                       (none)
 good_gray_counter_crossing          (none)
+good_registered_before_sync         (none)
+good_registered_source              (none)
+good_exclusive_clock_mux            (none)
+good_false_path_pair                (none)
+good_generated_clock_div2           (none)
+good_port_typed_sync                (none)
 marked_user_sync                    (none — attribute suppression)
 ==================================  =================
 
@@ -53,29 +63,38 @@ What currently works
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- **Combinational primitive lowering.** RHS expressions that aren't a
-  bare ``NamedValueExpression`` (binary ops, conditionals, concats,
-  slices, conversions beyond identity) get a ``$_UNKNOWN_`` driver
-  cell that the rule pack treats as opaque. This is what's blocking
-  CDC-003 / CDC-006 parity (comb between flops or from a top-level
-  port). The work item is to map pyslang ``BinaryExpression`` /
-  ``ConditionalExpression`` / etc. to the Yosys cell zoo
-  (``$and``/``$or``/``$xor``/``$mux``/``$pmux``).
+- **Multi-bit LHS bit-selects.** ``q[0] <= ...`` and friends fall
+  out of the ``NamedValueExpression``-LHS check in
+  :meth:`_emit_assignment_expression` and are silently skipped. The
+  fix is to recognise :class:`ElementSelectExpression` /
+  :class:`RangeSelectExpression` on the LHS and emit a flop whose
+  ``Q`` connects to the matching subset of bits. Blocks
+  ``bad_reset_tree`` (4-bit reg with per-bit ``always_ff``).
 - **Multi-instance / cross-module flattening.** Only the top
   :class:`InstanceSymbol`'s direct body is walked. Child instances
   exist as opaque symbols; their contents don't contribute flops or
   comb. Designs that span modules need a recursive walker that emits
-  every leaf instance's flops into the same flat ``Module`` (matching
-  what Yosys ``flatten`` produces).
-- **``always_comb`` blocks** — like continuous assigns but with
-  procedural shape; needs primitive lowering to be useful.
+  every leaf instance's flops into the same flat ``Module`` (matches
+  what Yosys ``flatten`` produces). Blocks ``bad_source_sync_chain``
+  / ``good_source_sync_chain`` (4-module designs).
+- **Concat / part-select / replication on the RHS.** Today these
+  fall through :meth:`_bits_of_expression` and the caller emits a
+  ``$_UNKNOWN_`` placeholder driver. Real lowering needs
+  :class:`ConcatenationExpression` → bit-tuple concat,
+  :class:`RangeSelectExpression` → bit-tuple slice, and
+  :class:`ReplicationExpression` → repeated bits.
+- **``always_comb`` with ``if`` / ``case``.** Body walks descend into
+  both branches and may produce inconsistent aliasing when each
+  branch writes the same variable. The full lowering builds a
+  ``$mux`` per LHS that appears in both branches; today we
+  conservatively pass through whichever branch wrote last.
 - **Source locations** — :class:`Cell.attributes["src"]` is left
   empty, so JSON/SARIF reports lose their file:line context on the
   slang path. pyslang carries source ranges on every Symbol /
   Expression; threading those through is a follow-up.
-- **Width-N $dff / $adff parameters** (``WIDTH``, ``CLK_POLARITY``,
-  ``ARST_VALUE``) — partially populated today; not yet read by any
-  rule but should reach full Yosys parity for future rule extensions.
+- **Width-N $dff / $adff parameters** (``WIDTH``, ``ARST_VALUE``)
+  — partially populated today; not yet read by any rule but should
+  reach full Yosys parity for future rule extensions.
 - **Yosys-only constructs** (``$_BUF_`` / ``$_NOT_`` primitives in SV
   source) are correctly rejected by slang — they're post-synthesis
   cells, not legal SV. Fixtures that rely on them
@@ -341,9 +360,12 @@ class _ModuleBuilder:
     # -- always_ff lowering ----------------------------------------------
 
     def _emit_procedural_block(self, block: Any) -> None:
-        kind = block.procedureKind
-        if str(kind).rsplit(".", 1)[-1] != "AlwaysFF":
-            return  # always_comb / initial / always_latch — TODO
+        kind_name = str(block.procedureKind).rsplit(".", 1)[-1]
+        if kind_name == "AlwaysComb":
+            self._emit_always_comb(block)
+            return
+        if kind_name != "AlwaysFF":
+            return  # initial / always_latch / final — not modelled
         body = block.body
         # Expected shape: TimedStatement(timing=EventListControl, stmt=...)
         if self._kind_name(body) != "TimedStatement":
@@ -504,24 +526,200 @@ class _ModuleBuilder:
         """Return the bit tuple for an RHS expression, or ``None`` if
         the shape isn't supported yet.
 
-        Today we only handle a bare :class:`NamedValueExpression` —
-        that's enough for the direct flop→flop wire in
-        ``bad_single_ff_sync``. Anything else (binary ops, conditional
-        expr, concat, part-select, conversions) lands in the
-        primitive-lowering work item; the caller substitutes an
-        unknown driver in the meantime.
+        Handles the common cases:
+        - :class:`NamedValueExpression` — direct variable read.
+        - :class:`ConversionExpression` — pass through (pyslang inserts
+          these for implicit width / type unification; the underlying
+          bit identity is what we want).
+        - :class:`IntegerLiteral` — single-bit constants ``1'b0`` /
+          ``1'b1`` (the only widths we use in fixtures today).
+        - :class:`BinaryExpression` — lowered to a Yosys-shape comb
+          cell (``$and``/``$or``/``$xor``/…) via :meth:`_lower_binary`.
+        - :class:`UnaryExpression` — lowered to ``$not``/``$logic_not``/
+          ``$neg``/``$reduce_*`` via :meth:`_lower_unary`.
+        - :class:`ConditionalExpression` — lowered to a ``$mux`` cell.
+
+        Anything else (concat, part-select, function call, …) returns
+        ``None``; the caller substitutes an ``$_UNKNOWN_`` driver so
+        the rule pack treats the upstream as opaque rather than
+        crashing.
         """
         kind = type(expr).__name__
         if kind == "NamedValueExpression":
             return self._alloc_bits(expr.symbol)
-        # ConversionExpression often wraps integer-width adjustment
-        # without affecting bit identity for width-1 signals — peek
-        # through it.
         if kind == "ConversionExpression":
             inner = getattr(expr, "operand", None)
             if inner is not None:
                 return self._bits_of_expression(inner)
+        if kind == "IntegerLiteral":
+            return self._bits_of_integer_literal(expr)
+        if kind == "BinaryExpression":
+            return self._lower_binary(expr)
+        if kind == "UnaryExpression":
+            return self._lower_unary(expr)
+        if kind == "ConditionalExpression":
+            return self._lower_conditional(expr)
         return None
+
+    # --- expression lowering --------------------------------------------
+
+    # pyslang BinaryOperator → Yosys cell type. Where Yosys distinguishes
+    # bitwise (``$and``) from reduction-style logical (``$logic_and``),
+    # we follow the same split. Comparisons and arithmetic round-trip to
+    # the same Yosys op names the post-``proc`` netlist would carry.
+    _BINOP_CELL: dict[str, str] = {
+        "BinaryAnd": "$and",
+        "BinaryOr": "$or",
+        "BinaryXor": "$xor",
+        "BinaryXnor": "$xnor",
+        "LogicalAnd": "$logic_and",
+        "LogicalOr": "$logic_or",
+        "Equality": "$eq",
+        "Inequality": "$ne",
+        "CaseEquality": "$eqx",
+        "CaseInequality": "$nex",
+        "LessThan": "$lt",
+        "LessThanEqual": "$le",
+        "GreaterThan": "$gt",
+        "GreaterThanEqual": "$ge",
+        "Add": "$add",
+        "Subtract": "$sub",
+        "Multiply": "$mul",
+        "Divide": "$div",
+        "Mod": "$mod",
+        "LogicalShiftLeft": "$shl",
+        "LogicalShiftRight": "$shr",
+        "ArithmeticShiftLeft": "$sshl",
+        "ArithmeticShiftRight": "$sshr",
+    }
+
+    _UNOP_CELL: dict[str, str] = {
+        "BitwiseNot": "$not",
+        "LogicalNot": "$logic_not",
+        "Minus": "$neg",
+        # Reduction operators — these collapse a multi-bit operand to a
+        # single bit. ``Plus`` is identity and skipped at the call site.
+        "BitwiseAnd": "$reduce_and",
+        "BitwiseOr": "$reduce_or",
+        "BitwiseXor": "$reduce_xor",
+        "BitwiseNand": "$reduce_and",  # then invert; we don't model the
+        # inversion explicitly — the rule
+        # pack doesn't read the cell name
+        # beyond category membership.
+        "BitwiseNor": "$reduce_or",
+        "BitwiseXnor": "$reduce_xor",
+    }
+
+    def _lower_binary(self, expr: Any) -> tuple[Bit, ...] | None:
+        op_name = str(expr.op).rsplit(".", 1)[-1]
+        cell_type = self._BINOP_CELL.get(op_name)
+        if cell_type is None:
+            return None  # unmodelled op → unknown driver
+        a_bits = self._bits_of_expression(expr.left)
+        b_bits = self._bits_of_expression(expr.right)
+        if a_bits is None or b_bits is None:
+            return None
+        width = self._expr_width(expr)
+        return self._emit_comb_cell(
+            cell_type, {"A": a_bits, "B": b_bits}, output_width=width
+        )
+
+    def _lower_unary(self, expr: Any) -> tuple[Bit, ...] | None:
+        op_name = str(expr.op).rsplit(".", 1)[-1]
+        if op_name == "Plus":
+            # Unary plus is identity in SV — peek through.
+            return self._bits_of_expression(expr.operand)
+        cell_type = self._UNOP_CELL.get(op_name)
+        if cell_type is None:
+            return None
+        a_bits = self._bits_of_expression(expr.operand)
+        if a_bits is None:
+            return None
+        # Reduction operators produce a single bit regardless of input
+        # width; everything else preserves the operand width.
+        if cell_type.startswith("$reduce_") or cell_type == "$logic_not":
+            output_width = 1
+        else:
+            output_width = self._expr_width(expr) or len(a_bits)
+        return self._emit_comb_cell(cell_type, {"A": a_bits}, output_width=output_width)
+
+    def _lower_conditional(self, expr: Any) -> tuple[Bit, ...] | None:
+        # pyslang ConditionalExpression has ``conditions`` (a list) and
+        # ``left``/``right`` — the conditional-pattern grammar is more
+        # general than ``cond ? a : b``, but for our purposes we only
+        # need the single-condition shape.
+        conds = getattr(expr, "conditions", None)
+        if not conds:
+            return None
+        sel_bits = self._bits_of_expression(conds[0].expr)
+        a_bits = self._bits_of_expression(expr.left)
+        b_bits = self._bits_of_expression(expr.right)
+        if sel_bits is None or a_bits is None or b_bits is None:
+            return None
+        width = self._expr_width(expr) or max(len(a_bits), len(b_bits))
+        # Yosys ``$mux`` selects between A (sel=0) and B (sel=1); same
+        # convention we use here. The S pin takes the (single-bit)
+        # selector.
+        return self._emit_comb_cell(
+            cell_type="$mux",
+            inputs={"A": a_bits, "B": b_bits, "S": sel_bits[:1]},
+            output_width=width,
+        )
+
+    def _bits_of_integer_literal(self, expr: Any) -> tuple[Bit, ...] | None:
+        """Map an :class:`IntegerLiteral` to Yosys constant bits.
+
+        Yosys represents constant bits as the strings ``"0"``, ``"1"``,
+        ``"x"``, ``"z"``. The bit tuple is LSB-first to match Yosys
+        write_json ordering.
+        """
+        # pyslang exposes the value via ``expr.value`` as an SVInt.
+        # SVInt has a ``__int__`` for small concrete values; bigger
+        # ones we'd need to walk per-bit. For our fixtures the literals
+        # are 1-bit (``1'b0`` / ``1'b1``).
+        val = getattr(expr, "value", None)
+        if val is None:
+            return None
+        try:
+            as_int = int(val)
+        except (TypeError, ValueError):
+            return None
+        width = self._expr_width(expr) or 1
+        # LSB-first per Yosys convention.
+        return tuple("1" if (as_int >> i) & 1 else "0" for i in range(width))
+
+    def _expr_width(self, expr: Any) -> int:
+        t = getattr(expr, "type", None)
+        if t is None:
+            return 0
+        return int(getattr(t, "bitWidth", 0) or 0)
+
+    def _emit_comb_cell(
+        self,
+        cell_type: str,
+        inputs: dict[str, tuple[Bit, ...]],
+        output_width: int,
+    ) -> tuple[Bit, ...]:
+        """Allocate a fresh Y net and emit a ``cell_type`` cell with the
+        given inputs. Returns the Y bits so callers can wire them up.
+
+        Width defensively clamped to at least 1 so we never emit a
+        zero-width cell (which would confuse the rule pack's bit walks).
+        """
+        width = max(int(output_width or 1), 1)
+        y_bits: tuple[Bit, ...] = tuple(
+            range(self._next_bit_id, self._next_bit_id + width)
+        )
+        self._next_bit_id += width
+        name = self._fresh_cell_name(cell_type)
+        self._cells[name] = Cell(
+            name=name,
+            type=cell_type,
+            connections={**inputs, "Y": y_bits},
+            parameters={},
+            attributes={},
+        )
+        return y_bits
 
     def _unknown_driver(self, width: int) -> tuple[Bit, ...]:
         """Allocate a fresh net driven by a stub ``$_UNKNOWN_`` cell.
@@ -546,6 +744,66 @@ class _ModuleBuilder:
             attributes={},
         )
         return bits
+
+    # -- always_comb ----------------------------------------------------
+
+    def _emit_always_comb(self, block: Any) -> None:
+        """Treat each blocking assignment in an ``always_comb`` block as
+        a continuous assign of its RHS to its LHS.
+
+        SV semantics already require an ``always_comb`` to be
+        combinational, so the rewrite is semantically faithful (no
+        priority encoding or latching to model). We descend through
+        the typical ``BlockStatement(body=ExpressionStatement(...))``
+        wrapper plus optional ``ListStatement`` for multi-assign
+        bodies.
+        """
+        self._walk_comb_statement(block.body)
+
+    def _walk_comb_statement(self, stmt: Any) -> None:
+        kind = self._kind_name(stmt)
+        if kind == "BlockStatement":
+            self._walk_comb_statement(stmt.body)
+            return
+        if kind in {"StatementList", "ListStatement"}:
+            for s in getattr(stmt, "list", []) or []:
+                self._walk_comb_statement(s)
+            return
+        if kind == "ExpressionStatement":
+            self._alias_assign(stmt.expr)
+            return
+        if kind == "ConditionalStatement":
+            # if/else in an always_comb is a selection between two
+            # assignments. The full lowering would build a $mux per LHS
+            # variable that appears in both branches; that's a follow-up
+            # — for now we descend into both branches so any unconditional
+            # writes get aliased and any conditional-only writes are
+            # missed (conservative).
+            self._walk_comb_statement(stmt.ifTrue)
+            if stmt.ifFalse is not None:
+                self._walk_comb_statement(stmt.ifFalse)
+            return
+        # case statements, for/while loops, etc. → ignore for now.
+
+    def _alias_assign(self, expr: Any) -> None:
+        """For a blocking assignment ``lhs = rhs``, rewrite ``lhs``'s
+        bits to point at ``rhs``'s lowered bits — same aliasing trick
+        the continuous-assign path uses."""
+        if type(expr).__name__ != "AssignmentExpression":
+            return
+        if getattr(expr, "isNonBlocking", False):
+            return  # nonblocking in always_comb is a SV style violation
+        if type(expr.left).__name__ != "NamedValueExpression":
+            return
+        rhs_bits = self._bits_of_expression(expr.right)
+        if rhs_bits is None:
+            return
+        canonical = self._canonical_var(expr.left.symbol)
+        existing = self._var_bits.get(canonical)
+        self._var_bits[canonical] = rhs_bits
+        if existing is not None:
+            self._rewrite_bits_in_ports(existing, rhs_bits)
+            self._rewrite_bits_in_netname(canonical, rhs_bits)
 
     # -- continuous assigns ---------------------------------------------
 

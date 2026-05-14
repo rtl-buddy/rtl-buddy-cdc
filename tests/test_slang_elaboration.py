@@ -102,6 +102,42 @@ def test_cdc_004_silent_on_good_gray_counter_crossing() -> None:
     assert _run("good_gray_counter_crossing") == []
 
 
+# --- Combinational lowering parity (Stage 2.2) -----------------------------
+
+
+def test_cdc_003_fires_on_bad_comb_before_sync() -> None:
+    """Comb logic (`src_q1 & src_q2`) feeding the synchronizer's first
+    stage. Exercises the BinaryExpression → ``$and`` lowering; without
+    it the comb output is opaque and CDC-003 cannot see the source
+    flops."""
+    assert _run("bad_comb_before_sync") == ["CDC-003"]
+
+
+def test_cdc_006_fires_on_bad_comb_source() -> None:
+    """Synchronizer fed directly by comb of top-level inputs
+    (``a & b``) with no registering flop. Confirms the lowering also
+    works inside an ``always_ff`` body's D-side expression."""
+    assert _run("bad_comb_source") == ["CDC-006"]
+
+
+def test_cdc_006_fires_on_bad_input_delay_cross_domain() -> None:
+    """Input delay typed to a different clock domain than the flop's
+    own — port-sourced CDC-006 path through the comb cone."""
+    assert _run("bad_input_delay_cross_domain") == ["CDC-006"]
+
+
+def test_paired_positives_stay_silent() -> None:
+    """The good_* counterparts to the bad_* cases above. Together with
+    the bad_* tests these confirm the comb lowering doesn't introduce
+    false positives — the rule pack only fires where it should."""
+    assert _run("good_registered_before_sync") == []
+    assert _run("good_registered_source") == []
+    assert _run("good_exclusive_clock_mux") == []
+    assert _run("good_false_path_pair") == []
+    assert _run("good_generated_clock_div2") == []
+    assert _run("good_port_typed_sync") == []
+
+
 # --- SV-attribute pass-through ---------------------------------------------
 
 
