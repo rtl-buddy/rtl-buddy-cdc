@@ -1,9 +1,9 @@
 ---
 title: CDC Testing Strategy
 created: 2026-05-11
-updated: 2026-05-11
+updated: 2026-05-14
 type: concept
-tags: [testing, cdc, architecture, extension-point]
+tags: [testing, cdc, architecture, extension-point, frontend]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
 confidence: high
 ---
@@ -20,9 +20,17 @@ Each CDC rule has at least one **bad fixture** (designed to fire it) and one **g
 |---|---|
 | `test_good_fixtures.py` | Parametrized sweep over all good fixtures asserting zero violations |
 | `test_bad_*.py` | One file per bad fixture asserting the expected rule fires and no other rule false-fires |
-| `test_waivers.py` | Waiver parsing and matching |
-| `test_sdc.py` | SDC parser corners |
-| `test_reporter.py` | Each output format's contract |
+| `test_handshake_fixture.py` | The `ip_cdc_handshake` golden — full pipeline + CDC-002 threshold behaviour |
+| `test_clock_gating.py` | ICG positive case — clock-network cells must not trip CDC-008 |
+| `test_marked_user_sync.py` | `(* cdc_sync *)` / `(* synchronizer *)` / `(* async_reg *)` attribute paths |
+| `test_waivers.py` | Waiver parsing, matching, end-to-end CLI exit-code suppression |
+| `test_sdc.py` | SDC parser corners (generated clocks, false-paths, exclusive groups, set_input_delay) |
+| `test_reporter.py` | Each output format's contract (text/JSON/SARIF) |
+| `test_lint_wrapper.py` | End-to-end `lint` CLI invocation (skipped when no `yosys` on PATH) |
+| `test_frontend.py` | Frontend factory dispatch + install-hint path for the slang `[slang]` extra |
+| `test_slang_elaboration.py` | Rule-parity tests for the [[elaboration-frontends\|slang frontend]] on every SDC-equipped fixture |
+| `test_slang_lowering.py` | Operator-coverage tests for slang lowering (binary/unary/conditional/concat/replication/`always_comb`) |
+| `test_smoke.py` | `--help` and `version` CLI smoke |
 
 ### JSON Fixtures
 
@@ -43,14 +51,15 @@ Where the analyzer is designed to be extended without architectural churn:
 - **New SDC commands.** Add handler in `sdc.py`, extend `ClockSpec` if needed
 - **New output formats.** Add `render_<fmt>` in `reporter.py`, wire into `OutputFormat` and `cli._analyze_and_report`
 - **New clock-network shapes.** Add cell-type set to `_BUFFER_TYPES`, `_GATE_TYPES`, or `_MUX_TYPES` in `domain.py`
+- **New elaboration frontends.** Add a submodule under `frontends/`, register in the `Frontend` enum, and produce the Yosys-shape `Module` contract — see [[elaboration-frontends]]
 
 ### Not Extensible (by design)
 
-- **Netlist front-end.** Only Yosys `write_json` is supported. A different front-end needs a `Module`-shaped adapter, not an abstraction
 - **Hierarchy.** Today's pipeline assumes flatten. Hierarchical analysis is a major design change, not an extension point
 
 ## Related Pages
 
 - [[cdc-rule-pack]] — the rules being tested
 - [[cdc-analysis-pipeline]] — the pipeline under test
+- [[elaboration-frontends]] — the two frontends (Yosys / slang) whose parity the slang-specific test files gate
 - [[rtl-buddy-cdc]] — the tool and its module map

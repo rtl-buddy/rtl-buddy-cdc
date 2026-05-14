@@ -135,7 +135,8 @@ def lint(
         help="Elaboration frontend. 'yosys' (default) shells out to "
         "`yosys` and runs hierarchy/proc/flatten/opt_clean before "
         "analysis. 'slang' elaborates via pyslang directly with no "
-        "synth step (in development — see issue #5).",
+        "synth step; install the optional extra with "
+        "`pip install 'rtl-buddy-cdc[slang]'`.",
     ),
     keep_json: Path | None = typer.Option(
         None,

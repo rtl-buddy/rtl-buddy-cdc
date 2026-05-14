@@ -1,7 +1,7 @@
 ---
 title: CDC Rule Pack
 created: 2026-05-11
-updated: 2026-05-11
+updated: 2026-05-14
 type: concept
 tags: [cdc, synchronization, crossing, clock-domain, algorithm, extension-point]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
@@ -38,15 +38,37 @@ CDC-002 is the only rule that takes a configuration parameter (`required_depth`,
 
 Several rules depend on the same structural detectors, all free functions in `rules.py`:
 
+### Index helpers (precompute once, share across rules)
+
 | Helper | Used by | Purpose |
 |---|---|---|
-| `_sync_chain_depth` | CDC-001, -002, -003 | Walk forward from flop Q lane-wise; count chain length of single-reader same-domain flops |
+| `_q_to_flop` | CDC-001, -002, -003, -005, -006 | Map every bit driven by a flop's Q pin back to its source `Flop` |
+| `_bit_drivers` | CDC-003, -004, -006, -007, -008 | Map each bit to the `(cell_name, output_port, bit_idx)` that drives it |
+| `_bit_reader_count` | CDC-001, -003, -005, -006 | Count reader sites per bit — anchors the "exactly one reader" rule in `_sync_chain_depth` |
+
+### Structural walks
+
+| Helper | Used by | Purpose |
+|---|---|---|
+| `_sync_chain_depth` | CDC-001, -002, -003, -006 | Walk forward from flop Q lane-wise; count chain length of single-reader same-domain flops |
+| `_backward_fanin` | CDC-006 | Reverse-BFS through comb cells; returns the set of flop `Q`s and top-level input ports reached |
+| `_backward_flop_fanin` | CDC-004 (mux select), CDC-007 (ARST) | Reverse-BFS through comb cells; returns only flop `Q`s reached (ignores port endpoints) |
 | `_is_multibit_sync_first_stage` | CDC-004 | Verify destination is width-N flop whose Q equals another same-domain flop's D lane-wise |
 | `_is_gray_encoded_source` | CDC-004 | Backward-walk from src D for canonical `g = b ^ (b >> 1)` XOR pattern |
 | `_is_gated_bus_crossing` | CDC-004 | Recognise handshake gating — D updates only when enable from dst domain is synchronized |
 | `_clock_network_cells` | CDC-008 | Identify cells driving any flop CLK; exempted from "clock as data" |
-| `user_sync_flop_names` | CDC-001..-003, -006 | Flops annotated `(* cdc_sync *)` |
-| `user_gray_flop_names` | CDC-004 | Source-side flops annotated `(* cdc_gray *)` |
+
+### Attribute lookups
+
+| Helper | Used by | Purpose |
+|---|---|---|
+| `user_sync_flop_names` | CDC-001, -002, -003, -006 | Flops annotated `(* cdc_sync *)` / `(* synchronizer *)` / `(* async_reg *)` |
+| `user_gray_flop_names` | CDC-004 | Source-side flops annotated `(* cdc_gray *)` / `(* gray_code *)` |
+
+### Rule-internal grouping logic
+
+- **CDC-005** groups single-bit, depth≥2 crossings by `(src_flop_name, dst_clock)` and fires only when one source flop drives ≥2 sync chains.
+- **CDC-007** collects ARST → foreign-domain-flop edges grouped by `(src_flop_name, src_clk, dst_clk)` so one async reset source feeding many destinations becomes a single "reset distribution tree" violation listing every destination. The `_async(a, b)` closure inside the rule defers to `clock_spec.are_async()` when an SDC is present and falls back to "distinct domains are async" otherwise.
 
 ## Severity Policy
 
