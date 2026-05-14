@@ -3,12 +3,12 @@ Yosys-shape :class:`netlist.Module` consumable by the rule pack.
 
 Status
 ------
-**Stage 2 (second slice).** Single-module designs reach parity with
-the Yosys frontend on 23 of 25 SDC-equipped fixtures, including the
-combinational shapes (CDC-003 / CDC-006) that the first slice could
-not detect. Remaining gaps are multi-bit LHS bit-selects
-(``q[0] <= ...``) and cross-module flattening; the two
-fixtures that exercise pre-synthesis Yosys primitives
+**Stage 2 (third slice).** Single-module designs reach parity with
+the Yosys frontend on 24 of 25 SDC-equipped fixtures, including the
+combinational shapes (CDC-003 / CDC-006) and multi-bit LHS
+bit-selects (``q[0] <= ...``). The only remaining gap is cross-
+module flattening (``bad_source_sync_chain`` is a 4-module design);
+the two fixtures that exercise pre-synthesis Yosys primitives
 (``$_BUF_`` / ``$_NOT_``) are correctly rejected by slang as not
 being legal SV. See issue #5 for the broader plan.
 
@@ -28,6 +28,7 @@ bad_reconvergent_sync               CDC-005
 bad_comb_source                     CDC-006
 bad_input_delay_cross_domain        CDC-006
 bad_reset_crossing                  CDC-007
+bad_reset_tree                      CDC-007 (grouped)
 bad_clock_as_data                   CDC-008
 good_2ff_sync                       (none)
 good_gray_counter_crossing          (none)
@@ -63,13 +64,6 @@ What currently works
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- **Multi-bit LHS bit-selects.** ``q[0] <= ...`` and friends fall
-  out of the ``NamedValueExpression``-LHS check in
-  :meth:`_emit_assignment_expression` and are silently skipped. The
-  fix is to recognise :class:`ElementSelectExpression` /
-  :class:`RangeSelectExpression` on the LHS and emit a flop whose
-  ``Q`` connects to the matching subset of bits. Blocks
-  ``bad_reset_tree`` (4-bit reg with per-bit ``always_ff``).
 - **Multi-instance / cross-module flattening.** Only the top
   :class:`InstanceSymbol`'s direct body is walked. Child instances
   exist as opaque symbols; their contents don't contribute flops or
@@ -480,13 +474,14 @@ class _ModuleBuilder:
             return
         lhs = expr.left
         rhs = expr.right
-        # We need a bare register reference on the LHS so we know which
-        # variable's bits become Q. Anything more complex (slice, part-
-        # select, struct member) → skip for now.
-        if type(lhs).__name__ != "NamedValueExpression":
+        # Resolve the LHS to the subset of a variable's bits that the
+        # flop's Q should drive. Supports bare ``NamedValueExpression``
+        # (full width), ``ElementSelectExpression`` (single bit), and
+        # ``RangeSelectExpression`` (a contiguous range). Other LHS
+        # shapes (struct member, hierarchical reference, …) are skipped.
+        q_bits = self._lvalue_bits(lhs)
+        if q_bits is None:
             return
-        q_var = lhs.symbol
-        q_bits = self._alloc_bits(q_var)
         d_bits = self._bits_of_expression(rhs)
         if d_bits is None:
             # RHS isn't a bare named value yet — we'd need primitive
@@ -521,6 +516,79 @@ class _ModuleBuilder:
             parameters=parameters,
             attributes={},
         )
+
+    def _lvalue_bits(self, expr: Any) -> tuple[Bit, ...] | None:
+        """Resolve an LHS expression to the variable-bit subset it
+        writes."""
+        kind = type(expr).__name__
+        if kind == "NamedValueExpression":
+            return self._alloc_bits(expr.symbol)
+        if kind == "ElementSelectExpression":
+            return self._element_select_bits(expr)
+        if kind == "RangeSelectExpression":
+            return self._range_select_bits(expr)
+        return None
+
+    def _element_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
+        """``var[i]`` — return the single-bit subset of ``var``'s bits.
+
+        Falls back to ``None`` when the underlying value isn't a bare
+        named variable (e.g. nested selects, slices of expressions),
+        and when the selector isn't a constant integer — dynamic
+        indexing would require muxing across all possible bits, which
+        no rule today is worth.
+        """
+        inner = expr.value
+        if type(inner).__name__ != "NamedValueExpression":
+            return None
+        idx = self._const_int(getattr(expr, "selector", None))
+        if idx is None:
+            return None
+        var_bits = self._alloc_bits(inner.symbol)
+        if not (0 <= idx < len(var_bits)):
+            return None
+        return (var_bits[idx],)
+
+    def _range_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
+        """``var[hi:lo]`` — return the contiguous bit subset.
+
+        Yosys stores bits LSB-first, so ``var[3:0]`` returns
+        ``var_bits[0:4]``. Non-constant ranges and indexed parts
+        (``var[i+:N]``) return ``None``.
+        """
+        inner = expr.value
+        if type(inner).__name__ != "NamedValueExpression":
+            return None
+        left = self._const_int(getattr(expr, "left", None))
+        right = self._const_int(getattr(expr, "right", None))
+        if left is None or right is None:
+            return None
+        lo, hi = min(left, right), max(left, right)
+        var_bits = self._alloc_bits(inner.symbol)
+        if lo < 0 or hi >= len(var_bits):
+            return None
+        return tuple(var_bits[lo : hi + 1])
+
+    @staticmethod
+    def _const_int(expr: Any) -> int | None:
+        """Best-effort: extract an ``int`` from a constant pyslang
+        expression. Returns ``None`` if the expression isn't a
+        compile-time constant — selectors on the LHS need to be
+        static for the flop-shape model to work."""
+        if expr is None:
+            return None
+        # pyslang exposes ``.constant`` (an SVInt) on most expressions
+        # once compilation has folded the operand; an IntegerLiteral
+        # additionally has ``.value``.
+        for attr in ("constant", "value"):
+            v = getattr(expr, attr, None)
+            if v is None:
+                continue
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     def _bits_of_expression(self, expr: Any) -> tuple[Bit, ...] | None:
         """Return the bit tuple for an RHS expression, or ``None`` if
@@ -559,6 +627,10 @@ class _ModuleBuilder:
             return self._lower_unary(expr)
         if kind == "ConditionalExpression":
             return self._lower_conditional(expr)
+        if kind == "ElementSelectExpression":
+            return self._element_select_bits(expr)
+        if kind == "RangeSelectExpression":
+            return self._range_select_bits(expr)
         return None
 
     # --- expression lowering --------------------------------------------

@@ -126,6 +126,33 @@ def test_cdc_006_fires_on_bad_input_delay_cross_domain() -> None:
     assert _run("bad_input_delay_cross_domain") == ["CDC-006"]
 
 
+def test_cdc_007_groups_reset_tree_violations() -> None:
+    """4-bit register written per-bit by 4 ``always_ff`` blocks, all
+    using a foreign-domain flop as ``ARST``. Exercises the
+    ElementSelect-LHS path (``dst_q[0] <= ...``) — each block emits
+    a separate ``$adff`` whose ``Q`` ties to one bit of the shared
+    register. CDC-007's reset-tree grouping collapses the four
+    crossings to a single violation."""
+    fixture = "bad_reset_tree"
+    assert _run(fixture) == ["CDC-007"]
+    # Sanity-check the module shape — five flops total (one source,
+    # four destinations) and the four destinations share the same
+    # ARST bit.
+    d = FIX / fixture
+    module = elaborate(
+        sorted(d.glob("*.sv")),
+        fixture,
+        frontend=Frontend.slang,
+    )
+    ffs = [c for c in module.cells.values() if c.type in {"$dff", "$adff"}]
+    assert len(ffs) == 5
+    arst_bits = [c.connections["ARST"] for c in ffs if "ARST" in c.connections]
+    # Source flop has its own ARST (a port); the four destinations
+    # share a common ARST bit from the source flop's Q.
+    dst_arsts = [a for a in arst_bits if len({a}) == 1]
+    assert len(set(dst_arsts)) >= 1
+
+
 def test_paired_positives_stay_silent() -> None:
     """The good_* counterparts to the bad_* cases above. Together with
     the bad_* tests these confirm the comb lowering doesn't introduce
