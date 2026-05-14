@@ -258,3 +258,74 @@ def test_elaborated_module_has_expected_yosys_shape() -> None:
                 # Constant bits would be the string "0" / "1" / "x"
                 # / "z"; the canonical case here is all-integer.
                 assert isinstance(bit, (int, str))
+
+
+# --- Issue #15 regression: child-port netnames preserved as aliases --------
+
+
+def test_child_instance_port_netnames_emitted() -> None:
+    """Regression guard for issue #15: a child instance's output port
+    must appear in ``module.netnames`` keyed as ``<inst>.<port>``, even
+    when the port is driven by a continuous-assign aliasing pass that
+    collapses it to an internal variable's bits.
+
+    Without this, SDC pin paths like ``[get_pins u_c/clk_out]`` —
+    used by ``create_generated_clock`` declarations on internal pins —
+    silently miss the netname lookup in
+    :func:`rtl_buddy_cdc.domain._build_bit_to_clock`, every downstream
+    flop traces back to the master clock, and the analyzer reports
+    zero crossings on a design that should have several.
+    """
+    fix = FIX / "good_gen_clock_internal_pin"
+    module = elaborate(
+        [fix / "good_gen_clock_internal_pin.sv"],
+        "good_gen_clock_internal_pin",
+        frontend=Frontend.slang,
+    )
+    # The child's output port must be queryable as u_c.clk_out.
+    assert "u_c.clk_out" in module.netnames, sorted(module.netnames)
+    # And it must alias the inner driver bits — the whole point of
+    # preserving the netname is that the bits resolve to the same
+    # net the SDC declared the gen-clock on.
+    assert module.netnames["u_c.clk_out"].bits == module.netnames["u_c.div"].bits
+
+
+def test_internal_pin_gen_clock_resolves_under_slang() -> None:
+    """End-to-end: the same fixture + an SDC with a
+    ``create_generated_clock`` at the internal pin must reach the
+    domain assignment so that crossings are correctly identified.
+
+    Pre-fix slang would report 0 crossings here (all flops collapse
+    to ``ck_in``). Post-fix it must agree with yosys: 3 flops
+    distributed across 2 domains, 2 crossings, 0 violations
+    (synchronous via ``-master_clock`` chain — same-domain crossings
+    after resolve)."""
+    from rtl_buddy_cdc.domain import assign_domains, find_crossings
+
+    fix = FIX / "good_gen_clock_internal_pin"
+    module = elaborate(
+        [fix / "good_gen_clock_internal_pin.sv"],
+        "good_gen_clock_internal_pin",
+        frontend=Frontend.slang,
+    )
+    spec = sdc_mod.parse_file(fix / "good_gen_clock_internal_pin.sdc")
+    domains = assign_domains(module, pin_clocks=spec.pin_clocks)
+    # ``assign_domains`` returns the *top-level port name* for plain
+    # traces and the *gen-clock SDC name* when a tagged bit halts the
+    # walk. The SDC names the port `clk` as `ck_in`, but the trace
+    # surfaces the port name. The load-bearing assertion is that
+    # `ck_div` shows up at all — pre-fix, every flop collapsed to
+    # the port name and `ck_div` never appeared.
+    clocks = sorted({fd.clock for fd in domains})
+    assert clocks == ["ck_div", "clk"], clocks
+    # 3 flops: 2 inside u_c on the port-name domain, 1 on ck_div
+    # for the parent's q_out flop.
+    by_clock = {c: sum(1 for fd in domains if fd.clock == c) for c in clocks}
+    assert by_clock == {"ck_div": 1, "clk": 2}, by_clock
+    crossings = find_crossings(
+        module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+    )
+    assert len(crossings) == 2, [(c.src_clock, c.dst_clock) for c in crossings]
+    # Synchronous via the gen-clock chain back to ck_in — no rule
+    # violations expected.
+    assert run_all(module, _filter_async(crossings, spec), spec) == []
