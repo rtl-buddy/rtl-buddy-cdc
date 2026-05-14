@@ -59,6 +59,11 @@ Procedural and expression shapes lower to Yosys-shape cells:
 - `BinaryExpression` / `UnaryExpression` / `ConditionalExpression` → `$and` / `$or` / `$xor` / `$mux` / `$not` / `$reduce_*` / etc. with the Yosys A/B/Y/S pin convention.
 - `always_comb` blocks alias their LHS variables to the lowered RHS bits.
 - `ElementSelectExpression` / `RangeSelectExpression` on either side → bit subset of the underlying variable.
+- `ConcatenationExpression` (`{a, b, c}`) and `ReplicationExpression` (`{N{x}}`) on the RHS — pure bit-tuple aliasing in LSB-first order, no cell emitted (matches Yosys post-`opt_clean`). Constant replication counts only.
+
+### Source Locations
+
+Every emitted cell carries `attributes["src"]` formatted as `"file:line.col-line.col"` — the same convention Yosys writes after `flatten`. The helper resolves a usable range in priority order: the node's `syntax.sourceRange` (best — spans the whole `always_ff` block for `ProceduralBlockSymbol`, which has no useful `.sourceRange` directly), then `node.sourceRange` (Expression-level nodes have this), then a degenerate range from `node.location`. Returns `None` and skips the attribute when nothing usable is available — matches Yosys' behaviour for sourceless transformations. The JSON / SARIF reporters surface these as clickable file:line locations without a frontend-specific branch.
 
 ### Cross-Module Flattening
 

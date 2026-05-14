@@ -51,3 +51,9 @@
 - Updated `concepts/cdc-analysis-pipeline.md` — pipeline now starts at stage 0 (`frontend.elaborate`), then stages 1–8 are the existing pipeline; ASCII diagram updated; design-properties bullet on "no Yosys runtime dependency" generalised to "no toolchain runtime dependency on the rule pack"
 - Updated `concepts/cdc-data-model.md` — note the `Module` shape is the contract every frontend produces; `Bit` integer IDs originate from either Yosys IDs or the slang frontend's sequential allocator; attribute propagation works uniformly because the slang frontend pulls via `Compilation.getAttributes(symbol)`
 - Updated `index.md` — page count 9 → 10; entity summary mentions both frontends; new `[[elaboration-frontends]]` concept entry; testing-strategy summary extended with "frontends" extension point
+
+## [2026-05-14] update | slang frontend polish: concat / replication / source locations
+- PR: rtl-buddy/rtl-buddy-cdc#8 (stacked on rtl-buddy/rtl-buddy-cdc#7)
+- Updated `concepts/elaboration-frontends.md` — RHS lowering bullets now list `ConcatenationExpression` + `ReplicationExpression` (pure LSB-first bit-tuple aliasing, no cell emitted); new "Source Locations" subsection covering `_src_attr`'s priority chain (`node.syntax.sourceRange` → `node.sourceRange` → degenerate point from `node.location`) and the Yosys `"file:line.col-line.col"` output convention
+- Updated `raw/articles/rtl-buddy-cdc-architecture.md` §3.1 — Frontend Layer paragraph expanded to enumerate the expression-lowering coverage (binary / unary / conditional / select / concat / replication) and the `src` attribute the frontend now attaches to every emitted cell
+- Updated `README.md` Roadmap — "slang frontend" Implemented entry mentions concatenation / replication and the Yosys-style `src` source-location attributes surfaced via JSON / SARIF reporters
