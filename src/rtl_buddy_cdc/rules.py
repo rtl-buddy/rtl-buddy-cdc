@@ -34,7 +34,87 @@ class Violation:
     cell_name: str | None = None
 
 
-RuleFn = Callable[[Module, list[Crossing], "ClockSpec | None"], list[Violation]]
+# ``ctx`` is keyword-only on every rule; using ``Callable[..., ...]`` because
+# typing.Callable can't express a kw-only argument without a Protocol.
+RuleFn = Callable[..., list[Violation]]
+
+
+# --- shared rule context ----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _RuleContext:
+    """Structural views every rule wants. Computed once in :func:`run_all`
+    and threaded into each ``check_cdc_NNN`` via the keyword-only
+    ``ctx=`` argument; rules called standalone (a test invoking
+    ``check_cdc_002`` directly) lazy-build their own context.
+
+    The cache exists because the rule pack used to recompute these
+    views per-rule. ``assign_domains`` ran 7×, ``find_flops`` ran
+    transitively many more times, and ``_sync_chain_depth``'s inner
+    loop called ``find_flops`` every chain-extension step (O(N) per
+    step). On a 90-flop block the overhead is invisible; the moment
+    rule fan-out crosses a few hundred flops it dominates.
+    """
+
+    module: Module
+    clock_spec: ClockSpec | None
+    flops: tuple[Flop, ...]
+    domains: dict[str, str | None]
+    bit_drivers: dict[Bit, tuple[str, str, int]]
+    reader_counts: dict[Bit, int]
+    user_syncs: frozenset[str]
+    user_grays: frozenset[str]
+    # Reverse index used by ``_sync_chain_depth``: for every flop whose
+    # ``D`` is exactly one bit wide, map that bit to the flop. The
+    # chain walker previously did ``for f in find_flops(module):`` per
+    # step; this turns each step into an O(1) lookup.
+    d_bit_to_single_bit_flop: dict[Bit, Flop]
+
+
+def _build_context(module: Module, clock_spec: ClockSpec | None) -> _RuleContext:
+    """Compute the per-``run_all`` cached views in one pass.
+
+    Pure function of ``(module, clock_spec)``; safe to call multiple
+    times but pointless — the whole point is amortising the work
+    across rules.
+    """
+    flops = tuple(find_flops(module))
+    flop_domains = assign_domains(module)
+    domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
+
+    bit_drivers: dict[Bit, tuple[str, str, int]] = {}
+    for cell in module.cells.values():
+        for port_name in ("Y", "Q"):
+            for idx, b in enumerate(cell.connections.get(port_name, ())):
+                if isinstance(b, int):
+                    bit_drivers[b] = (cell.name, port_name, idx)
+
+    reader_counts: dict[Bit, int] = {}
+    for cell in module.cells.values():
+        for port_name, bits in cell.connections.items():
+            if port_name in {"Y", "Q", "CLK"}:
+                continue
+            for b in bits:
+                if isinstance(b, int):
+                    reader_counts[b] = reader_counts.get(b, 0) + 1
+
+    d_bit_to_single_bit_flop: dict[Bit, Flop] = {}
+    for f in flops:
+        if len(f.d) == 1 and isinstance(f.d[0], int):
+            d_bit_to_single_bit_flop[f.d[0]] = f
+
+    return _RuleContext(
+        module=module,
+        clock_spec=clock_spec,
+        flops=flops,
+        domains=domains,
+        bit_drivers=bit_drivers,
+        reader_counts=reader_counts,
+        user_syncs=frozenset(user_sync_flop_names(module)),
+        user_grays=frozenset(user_gray_flop_names(module)),
+        d_bit_to_single_bit_flop=d_bit_to_single_bit_flop,
+    )
 
 
 # --- helpers ----------------------------------------------------------------
@@ -97,33 +177,6 @@ def user_gray_flop_names(module: Module) -> set[str]:
     for f in find_flops(module):
         if any(isinstance(b, int) and b in gray_bits for b in f.q):
             out.add(f.cell.name)
-    return out
-
-
-def _q_to_flop(module: Module) -> dict[Bit, Flop]:
-    """Map each bit driven by a flop's Q pin back to the source flop."""
-    out: dict[Bit, Flop] = {}
-    for f in find_flops(module):
-        for b in f.q:
-            if isinstance(b, int):
-                out[b] = f
-    return out
-
-
-def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str, int]]:
-    """Map each bit to the (cell_name, output_port, bit_idx) that drives it.
-
-    Yosys $-prefixed combinational cells emit on ``Y``; FFs emit on
-    ``Q``. Bits that originate from a top-level input port aren't
-    listed here — callers should fall back to :meth:`Module.port_of_bit`.
-    """
-    out: dict[Bit, tuple[str, str, int]] = {}
-    for cell in module.cells.values():
-        for port_name in ("Y", "Q"):
-            bits = cell.connections.get(port_name, ())
-            for idx, b in enumerate(bits):
-                if isinstance(b, int):
-                    out[b] = (cell.name, port_name, idx)
     return out
 
 
@@ -251,8 +304,9 @@ def _sync_chain_depth(
     head: Flop,
     head_clock: str,
     domains: dict[str, str | None],
-    q_to_flop: dict[Bit, Flop],
     reader_counts: dict[Bit, int] | None = None,
+    *,
+    d_bit_to_single_bit_flop: dict[Bit, Flop] | None = None,
 ) -> int:
     """Length of the synchronizer chain that starts at ``head``.
 
@@ -266,9 +320,21 @@ def _sync_chain_depth(
 
     Returns the count of dst-domain flops *including* ``head``. Callers
     typically check ``depth >= 2``.
+
+    When ``d_bit_to_single_bit_flop`` is supplied (from
+    :class:`_RuleContext`), the chain extension step is an O(1) dict
+    lookup instead of an O(N) ``find_flops`` scan. The argument is
+    optional so callers that haven't built a context still work
+    (the lazy-build path in each rule when ``ctx=None``).
     """
     if reader_counts is None:
         reader_counts = _bit_reader_count(module)
+    if d_bit_to_single_bit_flop is None:
+        d_bit_to_single_bit_flop = {
+            f.d[0]: f
+            for f in find_flops(module)
+            if len(f.d) == 1 and isinstance(f.d[0], int)
+        }
 
     depth = 1
     current = head
@@ -285,14 +351,8 @@ def _sync_chain_depth(
         # on flop D pin, the chain ends here (the value is "in use").
         if reader_counts.get(next_q, 0) != 1:
             break
-        nxt: Flop | None = None
-        for f in find_flops(module):
-            if f.cell.name in visited:
-                continue
-            if len(f.d) == 1 and f.d[0] == next_q:
-                nxt = f
-                break
-        if nxt is None:
+        nxt = d_bit_to_single_bit_flop.get(next_q)
+        if nxt is None or nxt.cell.name in visited:
             break
         if domains.get(nxt.cell.name) != head_clock:
             break
@@ -309,6 +369,8 @@ def check_cdc_001(
     module: Module,
     crossings: list[Crossing],
     clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-001 — Unsynchronized control crossing.
 
@@ -321,18 +383,23 @@ def check_cdc_001(
     Multi-bit (bus) crossings deliberately bypass this check — their
     correctness pattern is gating or gray-coding, handled by CDC-004.
     """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
-    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
-    q_to_flop = _q_to_flop(module)
-    _ = q_to_flop  # reserved: future rules will need fast Q→flop lookup
-    user_syncs = user_sync_flop_names(module)
 
     for c in crossings:
         if c.width != 1:
             continue
-        if c.dst_flop.cell.name in user_syncs:
+        if c.dst_flop.cell.name in ctx.user_syncs:
             continue  # user vouches for the synchronizer shape
-        depth = _sync_chain_depth(module, c.dst_flop, c.dst_clock, domains, q_to_flop)
+        depth = _sync_chain_depth(
+            module,
+            c.dst_flop,
+            c.dst_clock,
+            ctx.domains,
+            ctx.reader_counts,
+            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        )
         if depth < 2:
             src_desc = (
                 f"flop {c.src_flop.name}" if c.src_flop is not None else c.src_name
@@ -360,6 +427,8 @@ def check_cdc_002(
     crossings: list[Crossing],
     clock_spec: ClockSpec | None = None,  # noqa: ARG001
     required_depth: int = 2,
+    *,
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-002 — Insufficient synchronizer depth.
 
@@ -371,18 +440,23 @@ def check_cdc_002(
     """
     if required_depth <= 2:
         return []
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
-    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
-    q_to_flop = _q_to_flop(module)
-    _ = q_to_flop
-    user_syncs = user_sync_flop_names(module)
 
     for c in crossings:
         if c.width != 1:
             continue
-        if c.dst_flop.cell.name in user_syncs:
+        if c.dst_flop.cell.name in ctx.user_syncs:
             continue
-        depth = _sync_chain_depth(module, c.dst_flop, c.dst_clock, domains, q_to_flop)
+        depth = _sync_chain_depth(
+            module,
+            c.dst_flop,
+            c.dst_clock,
+            ctx.domains,
+            ctx.reader_counts,
+            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        )
         if 2 <= depth < required_depth:
             violations.append(
                 Violation(
@@ -405,6 +479,8 @@ def check_cdc_003(
     module: Module,
     crossings: list[Crossing],
     clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-003 — Combinational logic on the way to a synchronizer.
 
@@ -420,11 +496,9 @@ def check_cdc_003(
     synchronizer cannot reliably filter — the destination may sample
     a transient value that never existed as a real source state.
     """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
-    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
-    q_to_flop = _q_to_flop(module)
-    reader_counts = _bit_reader_count(module)
-    user_syncs = user_sync_flop_names(module)
 
     for c in crossings:
         if c.width != 1:
@@ -435,10 +509,15 @@ def check_cdc_003(
             # CDC-006 already covers comb logic from a top-level port
             # to a synchronizer; don't double-fire.
             continue
-        if c.dst_flop.cell.name in user_syncs:
+        if c.dst_flop.cell.name in ctx.user_syncs:
             continue
         depth = _sync_chain_depth(
-            module, c.dst_flop, c.dst_clock, domains, q_to_flop, reader_counts
+            module,
+            c.dst_flop,
+            c.dst_clock,
+            ctx.domains,
+            ctx.reader_counts,
+            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
         )
         if depth < 2:
             # CDC-001 covers this crossing already; don't double-fire.
@@ -627,6 +706,8 @@ def check_cdc_004(
     module: Module,
     crossings: list[Crossing],
     clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-004 — Multi-bit bus crossing without gating or gray-coding.
 
@@ -648,10 +729,9 @@ def check_cdc_004(
       analyzer to trust the gray-counter promise even when the
       structural detector can't see the sync chain.
     """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
-    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
-    drivers = _bit_drivers(module)
-    user_grays = user_gray_flop_names(module)
 
     for c in crossings:
         if c.width <= 1:
@@ -662,18 +742,18 @@ def check_cdc_004(
             # mechanism. Bus crossings from typed ports are vanishingly
             # rare in practice; defer to user judgment.
             continue
-        if c.src_flop.cell.name in user_grays:
+        if c.src_flop.cell.name in ctx.user_grays:
             # Explicit user assertion of gray-coding.
             continue
         if _is_multibit_sync_first_stage(
-            module, c.dst_flop, c.dst_clock, domains
-        ) and _is_gray_encoded_source(module, c.src_flop, drivers):
+            module, c.dst_flop, c.dst_clock, ctx.domains
+        ) and _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers):
             # Structural gray-coded crossing: source has the canonical
             # gray-encode XOR pattern AND the destination is a
             # multi-bit synchronizer chain. This is the async-FIFO
             # pointer shape and is correct by construction.
             continue
-        if _is_gated_bus_crossing(module, c, domains, drivers):
+        if _is_gated_bus_crossing(module, c, ctx.domains, ctx.bit_drivers):
             continue
         violations.append(
             Violation(
@@ -697,6 +777,8 @@ def check_cdc_005(
     module: Module,
     crossings: list[Crossing],
     clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-005 — Reconvergent synchronizers.
 
@@ -714,10 +796,9 @@ def check_cdc_005(
     downstream — having the redundant synchronizers is itself a code
     smell worth surfacing.
     """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
-    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
-    q_to_flop = _q_to_flop(module)
-    reader_counts = _bit_reader_count(module)
 
     # Group single-bit, properly synchronized crossings by source flop
     # + destination domain. We require depth>=2 so we don't double-fire
@@ -732,7 +813,12 @@ def check_cdc_005(
             # metastability-resolution behaviour the rule is testing.
             continue
         depth = _sync_chain_depth(
-            module, c.dst_flop, c.dst_clock, domains, q_to_flop, reader_counts
+            module,
+            c.dst_flop,
+            c.dst_clock,
+            ctx.domains,
+            ctx.reader_counts,
+            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
         )
         if depth < 2:
             continue
@@ -765,6 +851,8 @@ def check_cdc_006(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
     clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-006 — Glitchy combinational source on a control crossing.
 
@@ -780,32 +868,36 @@ def check_cdc_006(
     intentionally ignored — they aren't logic data, just a clock
     signal whose level is irrelevant to data correctness.
     """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
-    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
-    q_to_flop = _q_to_flop(module)
-    drivers = _bit_drivers(module)
-    reader_counts = _bit_reader_count(module)
 
     clock_ports: set[str] = set()
     if clock_spec is not None:
         for clk in clock_spec.clocks.values():
             clock_ports.update(clk.ports)
-    user_syncs = user_sync_flop_names(module)
 
-    for f in find_flops(module):
-        my_clk = domains.get(f.cell.name)
+    for f in ctx.flops:
+        my_clk = ctx.domains.get(f.cell.name)
         if my_clk is None:
             continue
         # User-marked synchronizers are explicitly trusted regardless
         # of the input shape.
-        if f.cell.name in user_syncs:
+        if f.cell.name in ctx.user_syncs:
             continue
         # We only fire on flops that are bona fide synchronizer first
         # stages — i.e. the chain on the destination side is >= 2.
-        depth = _sync_chain_depth(module, f, my_clk, domains, q_to_flop, reader_counts)
+        depth = _sync_chain_depth(
+            module,
+            f,
+            my_clk,
+            ctx.domains,
+            ctx.reader_counts,
+            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        )
         if depth < 2:
             continue
-        fanin_flops, fanin_ports = _backward_fanin(module, f.d, drivers)
+        fanin_flops, fanin_ports = _backward_fanin(module, f.d, ctx.bit_drivers)
         # If a real source-domain flop exists in the fanin, this
         # crossing is already covered by CDC-001/-002/-003 logic.
         if fanin_flops:
@@ -904,6 +996,8 @@ def check_cdc_008(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
     clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-008 — Clock signal used as data.
 
@@ -919,13 +1013,15 @@ def check_cdc_008(
     *output* ports (forwarding a clock off-chip) are intentionally
     not flagged.
     """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
 
     # Build the set of net bits that act as clocks: union of every
     # flop's CLK pin and every bit covered by an SDC create_clock
     # port.
     clock_bits: set[Bit] = set()
-    for f in find_flops(module):
+    for f in ctx.flops:
         if isinstance(f.clk, int):
             clock_bits.add(f.clk)
     if clock_spec is not None:
@@ -948,8 +1044,7 @@ def check_cdc_008(
 
     # Compute the clock-distribution network once: every cell whose
     # output eventually feeds some flop CLK is exempt.
-    drivers = _bit_drivers(module)
-    clock_net_cells = _clock_network_cells(module, drivers)
+    clock_net_cells = _clock_network_cells(module, ctx.bit_drivers)
 
     # Walk every cell connection and report each (clock_bit, cell, pin)
     # triple where the bit appears on a non-CLK input pin. We dedupe
@@ -988,6 +1083,8 @@ def check_cdc_007(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
     clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-007 — Reset crossing without a reset synchronizer.
 
@@ -1004,9 +1101,9 @@ def check_cdc_007(
     accepted (they're the user's responsibility to drive correctly,
     e.g. the reset synchronizer's ARST input).
     """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
-    domains = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
-    drivers = _bit_drivers(module)
 
     def _async(a: str, b: str) -> bool:
         # If the user supplied an SDC, defer to its clock-groups
@@ -1024,16 +1121,16 @@ def check_cdc_007(
     # lists every destination — matches how a real reset distribution
     # tree is reviewed.
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
-    for f in find_flops(module):
+    for f in ctx.flops:
         arst_bits = f.cell.connections.get("ARST", ())
         if not arst_bits:
             continue
-        my_clk = domains.get(f.cell.name)
+        my_clk = ctx.domains.get(f.cell.name)
         if my_clk is None:
             continue
-        fanin_flops = _backward_flop_fanin(module, arst_bits, drivers)
+        fanin_flops = _backward_flop_fanin(module, arst_bits, ctx.bit_drivers)
         for src_name in fanin_flops:
-            src_clk = domains.get(src_name)
+            src_clk = ctx.domains.get(src_name)
             if src_clk is None or src_clk == my_clk:
                 continue
             if not _async(my_clk, src_clk):
@@ -1089,10 +1186,19 @@ def run_all(
     clock_spec: ClockSpec | None = None,
     required_depth: int = 2,
 ) -> list[Violation]:
+    # Build the cached structural views once and thread them through
+    # every rule. See :class:`_RuleContext` for the motivation —
+    # before this change, ``assign_domains`` / ``find_flops`` /
+    # ``_bit_drivers`` were each rebuilt per rule, with
+    # ``_sync_chain_depth`` re-scanning every flop per chain-extension
+    # step (the worst hot path).
+    ctx = _build_context(module, clock_spec)
     out: list[Violation] = []
     for rule_id, rule in RULES.items():
         if rule_id == "CDC-002":
-            out.extend(check_cdc_002(module, crossings, clock_spec, required_depth))
+            out.extend(
+                check_cdc_002(module, crossings, clock_spec, required_depth, ctx=ctx)
+            )
         else:
-            out.extend(rule(module, crossings, clock_spec))
+            out.extend(rule(module, crossings, clock_spec, ctx=ctx))
     return out
