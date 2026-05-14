@@ -176,6 +176,15 @@ to the parent's connection expression bits so net identity is
 preserved across the hierarchy boundary; aliasing rewrites
 propagate globally across `_var_bits` / `_ports` / `_netnames` so
 chains like parent `a_q` ← child `q` collapse to a single net.
+Expression shapes lower to the Yosys cell zoo (binary →
+`$and`/`$or`/`$xor`/…; unary → `$not`/`$logic_not`/`$neg`/
+`$reduce_*`; conditional → `$mux`; element- and range-select →
+bit subsets; concat and replication → pure LSB-first bit-tuple
+aliasing, no cell emitted to match Yosys post-`opt_clean`).
+Every emitted cell carries an `attributes["src"]` string formatted
+as Yosys' `"file:line.col-line.col"` convention, so the JSON /
+SARIF reporters surface clickable source locations without a
+frontend-specific branch.
 Reaches parity with the Yosys frontend on every SDC-equipped
 fixture in the regression suite; the per-fixture matrix lives in
 the `frontends/slang.py` module docstring.
