@@ -209,18 +209,11 @@ def test_physically_exclusive_groups() -> None:
     assert spec.is_unreachable_crossing("ck0", "ck1")
 
 
-def test_set_clock_groups_brace_with_spaces_inside() -> None:
-    """When braces have spaces inside (``{ ck0 } -group { ck1 }``)
-    shlex splits ``{`` and ``ck0`` into separate tokens. The handler's
-    brace-split re-glob fallback (sdc.py ``_extract_clock_list(args[i+1]
-    + " " + args[i+2])``) recovers the clock name from the next token
-    instead of dropping the group (issue #14, gap 4).
-
-    Note: today the fallback recovers only the *first* clock when a
-    multi-clock group has internal spaces (``{ ck0 ck1 }``); that
-    quirk is a parser limitation, not a target of this regression
-    sentinel. This test pins the single-clock case the fallback was
-    written for."""
+def test_set_clock_groups_brace_with_spaces_inside_single_clock() -> None:
+    """Single-clock brace groups with internal whitespace
+    (``-group { ck0 } -group { ck1 }``) tokenise into five tokens via
+    ``shlex`` — the handler must slurp through them and reassemble
+    the clock name."""
     spec = parse(
         """
         create_clock -name ck0 -period 10 [get_ports ck0]
@@ -228,10 +221,58 @@ def test_set_clock_groups_brace_with_spaces_inside() -> None:
         set_clock_groups -asynchronous -group { ck0 } -group { ck1 }
         """
     )
-    # Both clocks declared and async-grouped despite the brace-padding
-    # that splits the tokens. Without the re-glob fallback, both groups
-    # would collapse to empty and `are_async` would return False.
     assert spec.are_async("ck0", "ck1")
+
+
+def test_set_clock_groups_brace_with_spaces_inside_multi_clock() -> None:
+    """Multi-clock brace groups with internal whitespace
+    (``-group { ck0 ck1 } -group { ck2 ck3 }``). Tokenises into ten
+    tokens; the handler's slurp-until-next-flag loop must capture
+    every clock in each group (issue #23).
+
+    Pre-fix behaviour was: only the first clock per group survived,
+    silently giving up on the rest. The reproducer from #23 lives
+    here verbatim — all four cross-group pairs must be async."""
+    spec = parse(
+        """
+        create_clock -name ck0 -period 10 [get_ports ck0]
+        create_clock -name ck1 -period 10 [get_ports ck1]
+        create_clock -name ck2 -period 10 [get_ports ck2]
+        create_clock -name ck3 -period 10 [get_ports ck3]
+        set_clock_groups -asynchronous -group { ck0 ck1 } -group { ck2 ck3 }
+        """
+    )
+    # All four pairs across the two groups must be async.
+    assert spec.are_async("ck0", "ck2")
+    assert spec.are_async("ck1", "ck2")
+    assert spec.are_async("ck0", "ck3")
+    assert spec.are_async("ck1", "ck3")
+    # And the groups themselves should each contain both clocks.
+    assert len(spec.async_groups) == 1
+    groups = spec.async_groups[0]
+    assert any(g == {"ck0", "ck1"} for g in groups)
+    assert any(g == {"ck2", "ck3"} for g in groups)
+
+
+def test_set_clock_groups_brace_no_spaces_multi_clock() -> None:
+    """No-space form (``-group {ck0 ck1}``) was already working before
+    issue #23 — pinning it here so the rewrite of
+    ``_handle_set_clock_groups`` doesn't silently regress the case
+    most SDC files actually use."""
+    spec = parse(
+        """
+        create_clock -name ck0 -period 10 [get_ports ck0]
+        create_clock -name ck1 -period 10 [get_ports ck1]
+        create_clock -name ck2 -period 10 [get_ports ck2]
+        create_clock -name ck3 -period 10 [get_ports ck3]
+        set_clock_groups -asynchronous -group {ck0 ck1} -group {ck2 ck3}
+        """
+    )
+    assert spec.are_async("ck0", "ck2")
+    assert spec.are_async("ck1", "ck3")
+    groups = spec.async_groups[0]
+    assert any(g == {"ck0", "ck1"} for g in groups)
+    assert any(g == {"ck2", "ck3"} for g in groups)
 
 
 def test_set_clock_groups_without_kind_warns() -> None:

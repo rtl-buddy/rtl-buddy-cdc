@@ -478,22 +478,24 @@ def _handle_set_clock_groups(spec: ClockSpec, args: list[str]) -> None:
         )
         return
 
+    # Slurp every non-flag token after each ``-group`` and let
+    # ``_extract_clock_list`` strip braces wholesale. Matches the
+    # pattern ``_handle_set_false_path`` already uses for its endpoint
+    # flags. This is the form that survives ``shlex`` splitting
+    # ``-group { ck0 ck1 }`` into five tokens — see issue #23 for the
+    # earlier bug where the previous "re-glob the next token" fallback
+    # only recovered the first clock.
     groups: list[set[str]] = []
     i = 0
     while i < len(args):
-        if args[i] == "-group" and i + 1 < len(args):
-            members = _extract_clock_list(args[i + 1])
-            if not members and i + 2 < len(args):
-                # ``-group {a b}`` may have been split by shlex if
-                # braces weren't paired; re-glob the next token.
-                members = _extract_clock_list(args[i + 1] + " " + args[i + 2])
-                if members:
-                    i += 3
-                    groups.append(set(members))
-                    continue
+        if args[i] == "-group":
+            j = i + 1
+            while j < len(args) and not args[j].startswith("-"):
+                j += 1
+            members = _extract_clock_list(" ".join(args[i + 1 : j]))
             if members:
                 groups.append(set(members))
-            i += 2
+            i = j
         else:
             i += 1
 
