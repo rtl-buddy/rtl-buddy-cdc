@@ -78,3 +78,12 @@
 - New tests in `tests/test_reporter.py`: `test_json_contract_keys_present_and_typed` (every contract key resolves to the declared type), `test_json_contract_includes_waived_run` (a waivered run exercises both `summary.violations` and `summary.suppressed` in the same render, catching value-swap regressions the first test alone would miss), `test_sarif_suppression_shape` (SARIF `suppressions: [{kind:external, status:accepted, justification:…}]` payload).
 - `concepts/waivers-and-reporting.md` — `render_json` section now cross-references the new constant + test.
 - `AGENTS.md` § "Cross-repo coupling" — JSON-schema bullet now points at the constant + test so a contributor changing the reporter knows where the contract is encoded.
+
+## [2026-05-14] update | targeted coverage for rule-pack corners (#14)
+- New `tests/test_waivers.py::test_cli_waiver_drops_exit_code_json` + `..._sarif` — end-to-end CLI plumbing for waivered runs in JSON and SARIF formats. The pre-existing text-format test left both dispatches unverified; a swap or drop of the `suppressed[]` / `suppressions` payload would have slipped through.
+- New `tests/test_rule_corners.py` (file added) — hand-built synthetic `Module`s exercising:
+  - **CDC-006's clock-port suppression** (rules.py `if p in clock_ports: continue`): a clock signal reaches a synchronizer's D pin through a `$buf`; CDC-008 fires, CDC-006 must stay quiet. Verified before commit that the test goes red if the suppression branch is bypassed (manually re-ran with an empty `ClockSpec` and observed a CDC-006 false-positive).
+  - **`find_crossings` hop budget**: three boundary cases — 5-buffer chain hidden at default `max_hops=4`, revealed at `max_hops=5`, exact-match at `max_hops=4` with a 4-buffer chain (inclusive boundary).
+- New `tests/test_sdc.py::test_false_path_rise_from_fall_to_recognized` — `_ENDPOINT_FLAGS` covers `-rise_from` / `-fall_from` / `-rise_to` / `-fall_to` but no test exercised the edge-qualified variants.
+- New `tests/test_sdc.py::test_set_clock_groups_brace_with_spaces_inside` — pins the brace-split re-glob fallback in `_handle_set_clock_groups` (the `_extract_clock_list(args[i+1] + " " + args[i+2])` path) for the single-clock case it currently handles. The fallback's multi-clock case has a known limitation (only the first clock survives) documented in the test docstring — separate concern.
+- `concepts/cdc-testing-strategy.md` — Test Files table extended with `test_rule_corners.py` and `test_rules_perf.py` (the latter was added in #12 but missed in the table refresh).

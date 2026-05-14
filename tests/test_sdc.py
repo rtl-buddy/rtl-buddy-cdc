@@ -163,6 +163,23 @@ def test_false_path_pin_endpoint_is_partial_warning() -> None:
     assert any("non-clock endpoints" in w for w in spec.partial_warnings)
 
 
+def test_false_path_rise_from_fall_to_recognized() -> None:
+    """``-rise_from`` and ``-fall_to`` are recognised endpoint flags
+    (sdc.py ``_ENDPOINT_FLAGS``). A path declared via the edge-specific
+    variants must produce the same async pair as plain ``-from``/``-to``
+    — the rule pack doesn't model edge phase, so the edge qualifier is
+    informational only (issue #14, gap 4)."""
+    spec = parse(
+        """
+        create_clock -name a -period 10 [get_ports a]
+        create_clock -name b -period 7  [get_ports b]
+        set_false_path -rise_from [get_clocks a] -fall_to [get_clocks b]
+        """
+    )
+    assert spec.are_async("a", "b")
+    assert spec.are_async("b", "a")
+
+
 # ---- exclusive groups -------------------------------------------------------
 
 
@@ -190,6 +207,31 @@ def test_physically_exclusive_groups() -> None:
         """
     )
     assert spec.is_unreachable_crossing("ck0", "ck1")
+
+
+def test_set_clock_groups_brace_with_spaces_inside() -> None:
+    """When braces have spaces inside (``{ ck0 } -group { ck1 }``)
+    shlex splits ``{`` and ``ck0`` into separate tokens. The handler's
+    brace-split re-glob fallback (sdc.py ``_extract_clock_list(args[i+1]
+    + " " + args[i+2])``) recovers the clock name from the next token
+    instead of dropping the group (issue #14, gap 4).
+
+    Note: today the fallback recovers only the *first* clock when a
+    multi-clock group has internal spaces (``{ ck0 ck1 }``); that
+    quirk is a parser limitation, not a target of this regression
+    sentinel. This test pins the single-clock case the fallback was
+    written for."""
+    spec = parse(
+        """
+        create_clock -name ck0 -period 10 [get_ports ck0]
+        create_clock -name ck1 -period 7  [get_ports ck1]
+        set_clock_groups -asynchronous -group { ck0 } -group { ck1 }
+        """
+    )
+    # Both clocks declared and async-grouped despite the brace-padding
+    # that splits the tokens. Without the re-glob fallback, both groups
+    # would collapse to empty and `are_async` would return False.
+    assert spec.are_async("ck0", "ck1")
 
 
 def test_set_clock_groups_without_kind_warns() -> None:
