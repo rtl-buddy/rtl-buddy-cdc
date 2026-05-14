@@ -1,10 +1,10 @@
 # rtl-buddy-cdc
 
-Python-based open-source CDC (Clock Domain Crossing) linting tool for RTL designs, built on top of [Yosys](https://yosyshq.net/yosys/) and designed to integrate with [rtl-buddy](https://github.com/rtl-buddy/rtl_buddy).
+Python-based open-source CDC (Clock Domain Crossing) linting tool for RTL designs, with a pluggable elaboration frontend ([Yosys](https://yosyshq.net/yosys/) or [slang](https://github.com/MikePopoloski/slang) via [pyslang](https://pypi.org/project/pyslang/)). Designed to integrate with [rtl-buddy](https://github.com/rtl-buddy/rtl_buddy).
 
 ## Status
 
-MVP usable. Eight rules implemented (CDC-001 through CDC-008), three output formats (text / JSON / SARIF), waiver-file suppression, `(* cdc_sync *)` / `(* cdc_gray *)` SV attributes for user-vetted synchronizers and gray-coded buses, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Tested against paired *bad / good* RTL fixtures for each rule.
+Usable on IP-block-sized designs. Eight rules implemented (CDC-001 through CDC-008), three output formats (text / JSON / SARIF), waiver-file suppression, `(* cdc_sync *)` / `(* cdc_gray *)` SV attributes for user-vetted synchronizers and gray-coded buses, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule.
 
 Known gaps and roadmap items are tracked at the end of this README.
 
@@ -16,29 +16,39 @@ CDC bugs are notoriously hard to catch in simulation and devastating in silicon.
 
 For the full reference (data model, pipeline, rule helpers, extension points), see [`wiki/raw/articles/rtl-buddy-cdc-architecture.md`](wiki/raw/articles/rtl-buddy-cdc-architecture.md). The summary below is the elevator pitch.
 
-`rtl-buddy-cdc` is a **pure analyzer**. It does not invoke Yosys itself in its primary mode — elaboration and netlist generation are the caller's responsibility. The standalone `lint` wrapper does shell out to yosys for convenience, but the core `analyze` entry point takes a pre-elaborated netlist as input.
+`rtl-buddy-cdc` is a **pure analyzer**. The core `analyze` entry point takes a pre-elaborated netlist (an in-memory `Module`) — elaboration is not part of the analyzer's primary responsibility. The standalone `lint` wrapper drives a pluggable frontend (Yosys subprocess **or** pyslang in-process) for source-to-analysis convenience.
 
 ```
-  ┌────────────┐    yosys hierarchy;proc;flatten;write_json    ┌──────────────┐
-  │ rtl-buddy  │ ─────────────────────────────────────────▶   │ netlist.json │
-  └────────────┘                                                └──────┬───────┘
-                                                                       │
-                              design.sdc ─────────────────────┐        │
-                              cdc.waivers (optional) ─────┐   │        │
-                                                          ▼   ▼        ▼
-                                                       ┌──────────────────┐
-                                                       │  rtl-buddy-cdc   │
-                                                       │  (pure Python)   │
-                                                       └────────┬─────────┘
-                                                                ▼
-                                                          report.{txt,json,sarif}
+  SV sources + --top              pre-elaborated
+        │                          netlist.json
+        ▼                                │
+  ┌─────────────────┐                    │
+  │ frontend.elaborate                   │
+  │   ├─ yosys (default)                 │
+  │   │   hierarchy;proc;flatten;        │
+  │   │   write_json                     │
+  │   └─ slang (pyslang)                 │
+  │       elaborate in-process           │
+  └────────┬────────┘                    │
+           ▼                              ▼
+                      Module (in-memory)
+                            │
+       design.sdc ──────────┤
+       cdc.waivers (opt) ───┤
+                            ▼
+                  ┌──────────────────┐
+                  │  rtl-buddy-cdc   │
+                  │  (pure Python)   │
+                  └────────┬─────────┘
+                           ▼
+                  report.{txt,json,sarif}
 ```
 
 Why this split:
 
-- **Single responsibility** — the analyzer is a graph walker, not a build orchestrator.
-- **No duplication** — rtl-buddy already invokes Yosys for synthesis; the same plumbing (paths, caching, error handling) is reused.
-- **Frontend-swappable** — any tool that emits a compatible netlist JSON is a valid input source.
+- **Single responsibility** — the rule pack is a graph walker, not a build orchestrator.
+- **Frontend-pluggable** — any tool that produces a Yosys-shape `Module` is a valid input source. Two frontends ship today; adding a third (e.g. Verilator-based) is a localised change. See [`wiki/concepts/elaboration-frontends.md`](wiki/concepts/elaboration-frontends.md).
+- **No duplication** — when called via `rb cdc`, rtl-buddy's existing Yosys plumbing (paths, caching) is reused.
 - **Faster iteration** — rule changes don't re-elaborate the design.
 
 ## Quick start
@@ -149,6 +159,8 @@ Each violation carries:
 - **Text** — human-readable summary suitable for terminals and CI logs.
 - **JSON** — structured, includes summary counts, full crossing/violation lists, and source locations. Stable schema for downstream consumers (rtl-buddy itself, custom dashboards).
 - **SARIF 2.1.0** — GitHub-Code-Scanning-compatible. `tool.driver.rules` populated for every rule that fired in the run; results carry `physicalLocation.region`. Suppressed (waived) findings are emitted with a SARIF `suppressions` field so the alert exists but doesn't fail the build.
+
+To inspect SARIF locally without uploading, the easiest paths are the [SARIF Viewer VS Code extension](https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer) or the browser-based [Microsoft SARIF web viewer](https://microsoft.github.io/sarif-web-component/).
 
 ## Waivers
 
