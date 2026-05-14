@@ -21,14 +21,17 @@ read that.
 **Goals.** Catch the eight classic CDC bug shapes (CDC-001 through
 CDC-008) in flattened RTL with reasonable false-positive and false-
 negative rates, surface findings in formats that drop into existing
-review and CI workflows (text / JSON / SARIF), and stay small enough
-to fork and extend in a sitting.
+review and CI workflows (text / JSON / SARIF), stay small enough to
+fork and extend in a sitting, and keep the elaboration frontend
+swappable so the rule pack doesn't depend on a specific toolchain.
 
 **Explicit non-goals.**
 
-- Not a synthesis tool. The analyzer never invokes Yosys on its
-  primary path — the netlist is an input. The standalone `lint`
-  wrapper is convenience-only.
+- Not a synthesis tool. The rule pack never invokes a synthesizer on
+  its primary path — it consumes an in-memory `Module` produced by a
+  frontend (see [§3.1](#31-frontend-layer)). The `analyze` command
+  takes a pre-elaborated Yosys JSON; the `lint` wrapper drives a
+  frontend (Yosys or slang) for source-to-analysis convenience.
 - Not a timing tool. SDC is parsed for **clock topology and async
   partitioning only**; numeric delays and slack are ignored.
 - Not a Tcl interpreter. The SDC parser is a deliberate `shlex`-based
@@ -40,12 +43,21 @@ to fork and extend in a sitting.
 ## 2. Pipeline at a glance
 
 ```
-                 ┌──────────────┐
-                 │ netlist.json │   (Yosys write_json output)
-                 └──────┬───────┘
-                        ▼
+        SV sources + --top                     pre-elaborated
+              │                                  netlist.json
+              ▼                                       │
+   ┌─────────────────────┐                            │
+   │ frontend.elaborate  │  (Frontend.{yosys,slang})  │
+   │  └─ yosys: shell    │                            │
+   │     out + write_json│                            │
+   │  └─ slang: pyslang  │                            │
+   └────────────┬────────┘                            │
+                ▼                                     ▼
         ┌──────────────────────────────────┐
         │ netlist.load        (1)          │  schema → Module / Cell / Port / Netname
+        │  (yosys-frontend path only;      │
+        │   slang frontend builds Module   │
+        │   in-process)                    │
         └──────────────────────────────────┘
                         ▼
         ┌──────────────────────────────────┐
@@ -94,6 +106,9 @@ without one the tool prints the structural summary and exits 0.
 
 | Module | Responsibility | Key types |
 |---|---|---|
+| `frontend.py` | Frontend factory: pick a frontend by name, dispatch to its `elaborate` | `Frontend`, `elaborate` |
+| `frontends/yosys.py` | Yosys frontend: shell out to `yosys` then `netlist.load` the JSON | `elaborate`, `YosysError` |
+| `frontends/slang.py` | slang frontend: elaborate SystemVerilog via pyslang directly | `elaborate`, `SlangFrontendUnavailable`, `SlangElaborationError` |
 | `netlist.py` | Parse Yosys `write_json` output into typed structs | `Module`, `Cell`, `Port`, `Netname` |
 | `flops.py` | Recognise the 11 Yosys FF cell variants and extract CLK / D / Q | `Flop`, `FF_CELL_TYPES` |
 | `domain.py` | Trace clock roots, find flop→flop crossings | `FlopDomain`, `Crossing`, `trace_clock_root`, `find_crossings` |
@@ -104,8 +119,60 @@ without one the tool prints the structural summary and exits 0.
 | `cli.py` | Typer entry points; orchestrates the pipeline | `analyze`, `lint`, `version` |
 
 `__init__.py` exposes a thin `main()` shim that calls `cli.app` (used
-by the console-script entry point). No other public API beyond these
-modules.
+by the console-script entry point). The other public API is
+`frontend.Frontend` + `frontend.elaborate(sources, top, frontend=…)`,
+which `cli.lint` consumes when the user supplies SV sources.
+
+### 3.1 Frontend layer
+
+`netlist.Module` is the contract every rule walks. How a module gets
+built is pluggable:
+
+- **Yosys frontend** (`frontends/yosys.py`) — runs `yosys -p
+  'read_verilog ...; hierarchy -top X; proc; flatten; opt_clean;
+  write_json /tmp/out.json'`, then loads the JSON via `netlist.load`.
+  This is the historical primary path and remains the default for
+  `lint --frontend yosys` / `analyze --netlist file.json`.
+- **slang frontend** (`frontends/slang.py`) — in development (see
+  issue #5). Will elaborate SV sources via the
+  [pyslang](https://pypi.org/project/pyslang/) binding to
+  [slang](https://github.com/MikePopoloski/slang) and build a
+  `Module` directly from the elaborated `Compilation` — no
+  synthesis subprocess, no `flatten` step. Opt-in via the
+  `[slang]` install extra (`pip install 'rtl-buddy-cdc[slang]'`);
+  the default install stays `typer`-only. The current scaffolding
+  raises `SlangFrontendUnavailable` (with an install hint) when
+  pyslang is missing, and `NotImplementedError` once it's present
+  until the elaboration lands.
+
+The factory in `frontend.py` is the only orchestration:
+
+```python
+def elaborate(sources, top, frontend=Frontend.yosys, **kw) -> Module: ...
+```
+
+Frontends produce a `Module` shape that satisfies the rule pack's
+contract:
+
+- Yosys-style cell types (`$dff`, `$adff`, `$and`, `$xor`, `$mux`, …)
+- pin names `CLK` / `D` / `Q` / `ARST` on flops, `A` / `B` / `Y` on
+  comb cells, etc.
+- integer bit IDs for nets, with the four constant chars `"0"` /
+  `"1"` / `"x"` / `"z"` reserved.
+- SV `(* attr *)` declarations propagated onto the corresponding
+  `Netname`.
+
+Rules don't know which frontend produced a `Module` — the shape is
+the only coupling. New frontends only need to produce that shape;
+no other module changes.
+
+The slang frontend's elaboration lands in a follow-up PR (Stage 2
+of issue #5); this PR is the abstraction layer, the `--frontend`
+CLI flag, and the optional install extra only. The roadmap in
+`frontends/slang.py` covers the implementation chunks: elaboration
+setup, instance-tree walk, flop inference, net-bit allocation,
+primitive lowering, attribute propagation, and cross-instance
+flattening.
 
 ## 4. Data model
 
@@ -604,12 +671,15 @@ churn:
 - **New clock-network shapes.** Add the cell-type set to one of the
   category constants in `domain.py` (`_BUFFER_TYPES`, `_GATE_TYPES`,
   `_MUX_TYPES`) — the walker is data-driven from those.
+- **New elaboration frontends.** Add a submodule under `frontends/`
+  exposing `elaborate(sources, top, **kw) -> Module`, register it in
+  the `Frontend` enum in `frontend.py`, and dispatch in
+  `frontend.elaborate`. The frontend must produce the Yosys-style
+  `Module` contract documented in [§3.1](#31-frontend-layer); the
+  rule pack consumes that contract regardless of source.
 
 Where the analyzer is **not** trying to be extensible:
 
-- Netlist front-end: only Yosys `write_json` is supported. A
-  different front-end would need a `Module`-shaped adapter, not an
-  abstraction.
 - Hierarchy: today's pipeline assumes flatten. Hierarchical analysis
   is a major design change, not an extension point.
 
