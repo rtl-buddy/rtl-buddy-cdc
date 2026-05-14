@@ -133,17 +133,16 @@ built is pluggable:
   write_json /tmp/out.json'`, then loads the JSON via `netlist.load`.
   This is the historical primary path and remains the default for
   `lint --frontend yosys` / `analyze --netlist file.json`.
-- **slang frontend** (`frontends/slang.py`) — in development (see
-  issue #5). Will elaborate SV sources via the
-  [pyslang](https://pypi.org/project/pyslang/) binding to
-  [slang](https://github.com/MikePopoloski/slang) and build a
+- **slang frontend** (`frontends/slang.py`) — elaborates SV sources
+  via the [pyslang](https://pypi.org/project/pyslang/) binding to
+  [slang](https://github.com/MikePopoloski/slang) and builds a
   `Module` directly from the elaborated `Compilation` — no
-  synthesis subprocess, no `flatten` step. Opt-in via the
-  `[slang]` install extra (`pip install 'rtl-buddy-cdc[slang]'`);
-  the default install stays `typer`-only. The current scaffolding
-  raises `SlangFrontendUnavailable` (with an install hint) when
-  pyslang is missing, and `NotImplementedError` once it's present
-  until the elaboration lands.
+  synthesis subprocess, no `flatten` step. Opt-in via the `[slang]`
+  install extra (`pip install 'rtl-buddy-cdc[slang]'`); the default
+  install stays `typer`-only. When pyslang is missing the frontend
+  raises `SlangFrontendUnavailable` with an install hint; fatal
+  pyslang diagnostics surface through a `TextDiagnosticClient`
+  (file:line:col + caret summaries — the usual compiler-error UX).
 
 The factory in `frontend.py` is the only orchestration:
 
@@ -166,13 +165,20 @@ Rules don't know which frontend produced a `Module` — the shape is
 the only coupling. New frontends only need to produce that shape;
 no other module changes.
 
-The slang frontend's elaboration lands in a follow-up PR (Stage 2
-of issue #5); this PR is the abstraction layer, the `--frontend`
-CLI flag, and the optional install extra only. The roadmap in
-`frontends/slang.py` covers the implementation chunks: elaboration
-setup, instance-tree walk, flop inference, net-bit allocation,
-primitive lowering, attribute propagation, and cross-instance
-flattening.
+The slang frontend's elaborator is the `_ModuleBuilder` inside
+`frontends/slang.py`. It walks the elaborated top instance in three
+passes (variables → ports → cells / continuous assigns / child
+instances), lowers procedural / continuous / expression shapes to
+Yosys-shape cells, and recurses into child `InstanceSymbol`s with
+hierarchical name prefixes (`u_b0.q`) that match Yosys-flatten
+output. Port connections alias the child's internal-port variables
+to the parent's connection expression bits so net identity is
+preserved across the hierarchy boundary; aliasing rewrites
+propagate globally across `_var_bits` / `_ports` / `_netnames` so
+chains like parent `a_q` ← child `q` collapse to a single net.
+Reaches parity with the Yosys frontend on every SDC-equipped
+fixture in the regression suite; the per-fixture matrix lives in
+the `frontends/slang.py` module docstring.
 
 ## 4. Data model
 
