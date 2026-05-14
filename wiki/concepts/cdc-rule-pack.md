@@ -36,15 +36,19 @@ CDC-002 is the only rule that takes a configuration parameter (`required_depth`,
 
 ## Shared Helpers
 
-Several rules depend on the same structural detectors, all free functions in `rules.py`:
+Several rules depend on the same structural detectors, all free functions in `rules.py`. The index helpers are precomputed once per `run_all` invocation by `_build_context()` and threaded into each rule via the keyword-only `ctx=` parameter — see [Rule context](#rule-context) below.
 
-### Index helpers (precompute once, share across rules)
+### Index helpers (precomputed in `_RuleContext`)
 
-| Helper | Used by | Purpose |
+| Field on `_RuleContext` | Used by | Purpose |
 |---|---|---|
-| `_q_to_flop` | CDC-001, -002, -003, -005, -006 | Map every bit driven by a flop's Q pin back to its source `Flop` |
-| `_bit_drivers` | CDC-003, -004, -006, -007, -008 | Map each bit to the `(cell_name, output_port, bit_idx)` that drives it |
-| `_bit_reader_count` | CDC-001, -003, -005, -006 | Count reader sites per bit — anchors the "exactly one reader" rule in `_sync_chain_depth` |
+| `flops` | CDC-006, -007, -008 | Frozen tuple of every `Flop` in the module |
+| `domains` | CDC-001..-007 | `cell_name → clock-port` mapping (the rule-pack view of `assign_domains`) |
+| `bit_drivers` | CDC-003, -004, -006, -007, -008 | `bit → (cell_name, output_port, bit_idx)` map of every driver |
+| `reader_counts` | CDC-001, -003, -005, -006 (via `_sync_chain_depth`) | Per-bit reader count — anchors the "exactly one reader" predicate |
+| `d_bit_to_single_bit_flop` | CDC-001, -002, -003, -005, -006 (via `_sync_chain_depth`) | `bit → Flop` reverse index for single-bit-D flops, turning `_sync_chain_depth`'s chain-extension step into an O(1) lookup |
+| `user_syncs` | CDC-001, -002, -003, -006 | Cell names of flops annotated `(* cdc_sync *)` |
+| `user_grays` | CDC-004 | Cell names of source-side flops annotated `(* cdc_gray *)` |
 
 ### Structural walks
 
@@ -58,12 +62,16 @@ Several rules depend on the same structural detectors, all free functions in `ru
 | `_is_gated_bus_crossing` | CDC-004 | Recognise handshake gating — D updates only when enable from dst domain is synchronized |
 | `_clock_network_cells` | CDC-008 | Identify cells driving any flop CLK; exempted from "clock as data" |
 
-### Attribute lookups
+### Attribute lookups (called by `_build_context`)
 
 | Helper | Used by | Purpose |
 |---|---|---|
-| `user_sync_flop_names` | CDC-001, -002, -003, -006 | Flops annotated `(* cdc_sync *)` / `(* synchronizer *)` / `(* async_reg *)` |
-| `user_gray_flop_names` | CDC-004 | Source-side flops annotated `(* cdc_gray *)` / `(* gray_code *)` |
+| `user_sync_flop_names` | populates `ctx.user_syncs` | Flops annotated `(* cdc_sync *)` / `(* synchronizer *)` / `(* async_reg *)` |
+| `user_gray_flop_names` | populates `ctx.user_grays` | Source-side flops annotated `(* cdc_gray *)` / `(* gray_code *)` |
+
+## Rule context
+
+`_RuleContext` is a frozen dataclass holding the precomputed views above. `run_all` builds one per invocation and passes it to every `check_cdc_NNN` as a keyword-only argument; standalone test invocations of an individual rule lazy-build their own context when `ctx=None`. The motivation is that prior to this caching the rule pack rebuilt `assign_domains` 7× per `run_all`, and `_sync_chain_depth`'s inner loop re-scanned every flop per chain-extension step — invisible on IP-block fixtures, dominant on anything larger. See `tests/test_rules_perf.py` for the synthetic-500-flop regression sentinel.
 
 ### Rule-internal grouping logic
 
