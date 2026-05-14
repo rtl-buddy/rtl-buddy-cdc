@@ -83,7 +83,7 @@ tests/
 
 ```bash
 # from repo root
-uv sync                        # set up env (Python 3.14)
+uv sync                        # set up env (Python 3.13; see .python-version)
 uv run ruff check              # lint (must pass)
 uv run ruff format --check     # format check (CI enforces this)
 uv run pytest -q               # full unit suite
