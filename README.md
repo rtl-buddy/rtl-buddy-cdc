@@ -90,8 +90,11 @@ Standalone wrapper (`lint`):
 |---|---|---|
 | Verilog / SystemVerilog sources | yes | Design under analysis |
 | Top module name (`--top`) | yes | Elaboration root |
-| `--yosys PATH` | optional | Override the default yosys binary lookup |
-| `--keep-json PATH` | optional | Save the intermediate netlist for debugging or re-runs |
+| `--frontend {yosys,slang}` | optional | Elaboration frontend. `yosys` (default) shells out to `yosys` and runs `hierarchy; proc; flatten; opt_clean`. `slang` elaborates via the [pyslang](https://pypi.org/project/pyslang/) binding directly — no synth step, no Yosys runtime dependency. **Status:** slang frontend is in development (see [issue #5](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/5)); the Yosys path is the supported one today. |
+| `--yosys PATH` | optional | Yosys frontend only: override the default yosys binary lookup |
+| `--keep-json PATH` | optional | Yosys frontend only: save the intermediate netlist for debugging or re-runs |
+
+The slang frontend is an opt-in extra. Install it alongside the package with `pip install 'rtl-buddy-cdc[slang]'` (or `uv add 'rtl-buddy-cdc[slang]'`); the default install stays Yosys-only.
 
 ## SDC support
 
@@ -260,6 +263,7 @@ Implemented:
 
 Not yet:
 
+- [ ] **slang frontend** — elaborate SystemVerilog via [pyslang](https://pypi.org/project/pyslang/) as a peer to the Yosys frontend, swappable via `lint --frontend slang`. Scaffolding (factory + flag + optional `[slang]` install extra) is in place; the actual elaboration is unimplemented and the CLI rejects the flag with an actionable error today. Tracked in [issue #5](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/5).
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
