@@ -102,6 +102,63 @@ def test_cli_waiver_drops_exit_code(tmp_path: Path) -> None:
     assert "reviewed" in text
 
 
+def test_cli_waiver_drops_exit_code_json(tmp_path: Path) -> None:
+    """End-to-end with ``--format json`` (issue #14, gap 1).
+
+    The text-format equivalent above doesn't exercise the JSON dispatch
+    branch in ``cli._analyze_module_and_report`` or the JSON reporter's
+    ``suppressed[]`` array — a regression that swapped the json/text
+    dispatch or dropped the ``waiver`` payload would slip through with
+    only the text test in place.
+    """
+    if not JSON_PATH.exists():
+        pytest.skip(f"fixture not built: {JSON_PATH}")
+    import json as _json
+
+    waiver_file = tmp_path / "cdc.waivers"
+    waiver_file.write_text("waive CDC-001 procdff\\$9 reviewed\n")
+    out = tmp_path / "report.json"
+    code = _analyze_and_report(JSON_PATH, SDC_PATH, waiver_file, OutputFormat.json, out)
+    assert code == 0  # fully waived → exit 0 same as text path
+    payload = _json.loads(out.read_text())
+    assert payload["summary"]["violations"] == 0
+    assert payload["summary"]["suppressed"] == 1
+    assert len(payload["suppressed"]) == 1
+    assert payload["suppressed"][0]["rule_id"] == "CDC-001"
+    assert payload["suppressed"][0]["waiver"]["reason"] == "reviewed"
+
+
+def test_cli_waiver_drops_exit_code_sarif(tmp_path: Path) -> None:
+    """End-to-end with ``--format sarif`` (issue #14, gap 1).
+
+    SARIF consumers (GitHub Code Scanning, etc.) key off the
+    ``suppressions`` field to decide whether an alert fails the
+    build. This test pins the CLI plumbing: a waiver matching the only
+    violation should leave the alert in the SARIF output but flag it as
+    suppressed, and drive the exit code to 0.
+    """
+    if not JSON_PATH.exists():
+        pytest.skip(f"fixture not built: {JSON_PATH}")
+    import json as _json
+
+    waiver_file = tmp_path / "cdc.waivers"
+    waiver_file.write_text("waive CDC-001 procdff\\$9 reviewed by team\n")
+    out = tmp_path / "report.sarif"
+    code = _analyze_and_report(
+        JSON_PATH, SDC_PATH, waiver_file, OutputFormat.sarif, out
+    )
+    assert code == 0
+    data = _json.loads(out.read_text())
+    results = data["runs"][0]["results"]
+    assert len(results) == 1
+    entry = results[0]
+    assert entry["ruleId"] == "CDC-001"
+    assert "suppressions" in entry
+    assert entry["suppressions"][0]["kind"] == "external"
+    assert entry["suppressions"][0]["status"] == "accepted"
+    assert entry["suppressions"][0]["justification"] == "reviewed by team"
+
+
 def test_cli_no_waiver_still_fails(tmp_path: Path) -> None:
     if not JSON_PATH.exists():
         pytest.skip(f"fixture not built: {JSON_PATH}")
