@@ -86,20 +86,6 @@ def test_cli_lint_slang_frontend_errors_cleanly_when_missing() -> None:
     assert "rtl-buddy-cdc[slang]" in result.output
 
 
-@pytest.mark.skipif(
-    not PYSLANG_INSTALLED,
-    reason="pyslang not installed — stub-raises-NotImplemented path needs it",
-)
-def test_slang_frontend_stub_raises_not_implemented() -> None:
-    """When pyslang IS installed, the slang frontend should still raise
-    :class:`NotImplementedError` (the elaboration is unimplemented),
-    not silently succeed or hide behind the install-hint path."""
-    with pytest.raises(
-        NotImplementedError, match="slang frontend is a work in progress"
-    ):
-        elaborate([Path("x.sv")], "top", frontend=Frontend.slang)
-
-
 YOSYS = shutil.which("yosys")
 
 

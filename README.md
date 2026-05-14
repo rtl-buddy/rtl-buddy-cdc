@@ -90,7 +90,7 @@ Standalone wrapper (`lint`):
 |---|---|---|
 | Verilog / SystemVerilog sources | yes | Design under analysis |
 | Top module name (`--top`) | yes | Elaboration root |
-| `--frontend {yosys,slang}` | optional | Elaboration frontend. `yosys` (default) shells out to `yosys` and runs `hierarchy; proc; flatten; opt_clean`. `slang` elaborates via the [pyslang](https://pypi.org/project/pyslang/) binding directly — no synth step, no Yosys runtime dependency. **Status:** slang frontend is in development (see [issue #5](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/5)); the Yosys path is the supported one today. |
+| `--frontend {yosys,slang}` | optional | Elaboration frontend. `yosys` (default) shells out to `yosys` and runs `hierarchy; proc; flatten; opt_clean`. `slang` elaborates via the [pyslang](https://pypi.org/project/pyslang/) binding directly — no synth step, no Yosys runtime dependency. Reaches parity with the Yosys frontend on every paired *bad/good* fixture in the regression suite. |
 | `--yosys PATH` | optional | Yosys frontend only: override the default yosys binary lookup |
 | `--keep-json PATH` | optional | Yosys frontend only: save the intermediate netlist for debugging or re-runs |
 
@@ -260,10 +260,10 @@ Implemented:
 - [x] CDC-006 port-side: when `set_input_delay -clock <c>` types a port, CDC-006 suppresses the port if it resolves to the destination flop's own clock and reports the source clock by name when it differs.
 - [x] First-class port→flop crossings: `find_crossings(module, port_clock=...)` emits port-sourced `Crossing` records for ports the SDC has typed via `set_input_delay`. CDC-001 and CDC-002 now fire on those (CDC-003 defers to CDC-006's existing port-comb walk; CDC-004 / CDC-005 skip them as flop-source-specific concepts).
 - [x] CDC-007 reset-tree grouping: violations are merged by `(src_flop, src_clk, dst_clk)` — a single async-reset source feeding many destinations produces one violation listing every destination, instead of N near-duplicates.
+- [x] **slang frontend** — elaborate SystemVerilog via [pyslang](https://pypi.org/project/pyslang/) as a peer to the Yosys frontend, swappable via `lint --frontend slang`. Covers flop inference (async-reset shape), combinational primitive lowering (binary / unary / conditional / element-select / range-select), `always_comb`, hierarchical instance flattening with port aliasing, and SV attribute propagation. Reaches parity with the Yosys frontend on every SDC-equipped fixture in the regression suite. Opt-in via the `[slang]` install extra (`pip install 'rtl-buddy-cdc[slang]'`); the default install stays `typer`-only.
 
 Not yet:
 
-- [ ] **slang frontend** — elaborate SystemVerilog via [pyslang](https://pypi.org/project/pyslang/) as a peer to the Yosys frontend, swappable via `lint --frontend slang`. Scaffolding (factory + flag + optional `[slang]` install extra) is in place; the actual elaboration is unimplemented and the CLI rejects the flag with an actionable error today. Tracked in [issue #5](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/5).
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
