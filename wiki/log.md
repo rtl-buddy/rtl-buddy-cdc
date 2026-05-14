@@ -72,3 +72,9 @@
 - Removed two now-dead module-level helpers `_q_to_flop` / `_bit_drivers` (their work moved into `_build_context`); dropped unused `q_to_flop` parameter from `_sync_chain_depth`'s signature; `RuleFn` type alias loosened to `Callable[..., list[Violation]]` so the kw-only ctx is expressible.
 - Updated `concepts/cdc-rule-pack.md` — "Index helpers" table reframed around `_RuleContext` fields (since they're no longer free functions); new "Rule context" subsection explaining lazy-build + the perf motivation; cross-link to the new sentinel test.
 - New `tests/test_rules_perf.py` — synthetic 500-flop / 250-crossing module asserts `run_all` completes in <1s. Future regression sentinel for the structural-context caching.
+
+## [2026-05-14] update | JSON output schema contract pinned in code (#13)
+- New `reporter.JSON_CONTRACT` mapping (`summary.violations` / `summary.suppressed` / `summary.crossings` → `int`). Names the three load-bearing keys the rtl-buddy ↔ rtl-buddy-cdc subprocess boundary depends on — previously documented only in prose in AGENTS.md.
+- New tests in `tests/test_reporter.py`: `test_json_contract_keys_present_and_typed` (every contract key resolves to the declared type), `test_json_contract_includes_waived_run` (a waivered run exercises both `summary.violations` and `summary.suppressed` in the same render, catching value-swap regressions the first test alone would miss), `test_sarif_suppression_shape` (SARIF `suppressions: [{kind:external, status:accepted, justification:…}]` payload).
+- `concepts/waivers-and-reporting.md` — `render_json` section now cross-references the new constant + test.
+- `AGENTS.md` § "Cross-repo coupling" — JSON-schema bullet now points at the constant + test so a contributor changing the reporter knows where the contract is encoded.

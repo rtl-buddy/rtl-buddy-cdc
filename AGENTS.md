@@ -198,7 +198,9 @@ subprocess. The contract:
 - **JSON schema consumed today**: `summary.violations` (int),
   `summary.suppressed` (int), `summary.crossings` (int). Other
   fields can evolve freely; these three must keep their names and
-  types.
+  types. The contract is pinned in code by `reporter.JSON_CONTRACT`
+  plus `tests/test_reporter.py::test_json_contract_keys_present_and_typed`
+  — a rename or retype on either key fails the test.
 - **Exit codes**: 0 = clean (or fully waived), 1 = at least one
   unsuppressed violation, 2 = `lint`-only (yosys elaboration
   failed). The wrapper treats {0, 1} as "ran successfully" and
