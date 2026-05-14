@@ -486,6 +486,23 @@ class _ModuleBuilder:
             # instantiations of the same module don't share bits.
             self._var_bits[self._canonical_var(internal)] = parent_bits
             bound.add(internal)
+            # Also emit a netname for the port at ``<child_prefix><port_name>``
+            # so SDC pin paths like ``[get_pins u_a/clk_out_b0]`` resolve
+            # in domain.py's ``_build_bit_to_clock``. Yosys-flatten +
+            # opt_clean preserves both the port netname and the driving
+            # variable's netname as aliases of the same bits; without
+            # this, ``create_generated_clock`` declarations on internal
+            # pins are silently dropped (see issue #15).
+            #
+            # Bits are the parent-side connection bits at this point; if
+            # the body's continuous-assign aliasing later rewrites them
+            # (e.g. ``assign clk_out = div`` collapses both to ``div``'s
+            # freshly-allocated bits), ``_rewrite_aliased`` walks
+            # ``_netnames`` and updates this entry too.
+            port_netname = f"{parent_prefix}{child.name}.{port.name}"
+            self._netnames[port_netname] = Netname(
+                name=port_netname, bits=parent_bits, attributes={}
+            )
 
         child_prefix = f"{parent_prefix}{child.name}."
         self._walk_instance(
