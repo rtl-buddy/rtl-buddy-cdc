@@ -77,28 +77,29 @@ What currently works
   (``$and``/``$or``/``$xor``/``$mux``/…), so the rule pack walks
   the comb cone correctly.
 - LHS bit-selects (``q[0] <= ...``) and contiguous ranges
-  (``bus[3:0] <= ...``) — see :meth:`_lvalue_bits`.
+  (``bus[3:0] <= ...``) — see :meth:`_lvalue_bits`. Same shapes
+  accepted on the RHS via :meth:`_bits_of_expression`.
+- Concatenation (``{a, b, c}``) and replication (``{N{x}}``) on the
+  RHS — see :meth:`_lower_concatenation` and
+  :meth:`_lower_replication`. Pure bit-tuple aliasing, no Yosys
+  cell is emitted; matches Yosys post-``opt_clean`` behaviour.
+- Source locations propagated into ``Cell.attributes["src"]`` in
+  Yosys' ``"file:line.col-line.col"`` format. The ``$dff`` /
+  ``$adff`` src spans the whole ``always_ff`` block; comb cells
+  span the operator expression. JSON / SARIF reporters surface
+  these as clickable file:line locations without a
+  frontend-specific branch.
 - Fatal pyslang diagnostics are surfaced through
   ``TextDiagnosticClient`` with file:line:col + caret summaries —
   the usual compiler-error format users already recognise.
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- **Concat / part-select / replication on the RHS.** Today these
-  fall through :meth:`_bits_of_expression` and the caller emits a
-  ``$_UNKNOWN_`` placeholder driver. Real lowering needs
-  :class:`ConcatenationExpression` → bit-tuple concat,
-  :class:`RangeSelectExpression` → bit-tuple slice, and
-  :class:`ReplicationExpression` → repeated bits.
 - **``always_comb`` with ``if`` / ``case``.** Body walks descend into
   both branches and may produce inconsistent aliasing when each
   branch writes the same variable. The full lowering builds a
   ``$mux`` per LHS that appears in both branches; today we
   conservatively pass through whichever branch wrote last.
-- **Source locations** — :class:`Cell.attributes["src"]` is left
-  empty, so JSON/SARIF reports lose their file:line context on the
-  slang path. pyslang carries source ranges on every Symbol /
-  Expression; threading those through is a follow-up.
 - **Width-N $dff / $adff parameters** (``WIDTH``, ``ARST_VALUE``)
   — partially populated today; not yet read by any rule but should
   reach full Yosys parity for future rule extensions.
@@ -297,6 +298,62 @@ class _ModuleBuilder:
         self._var_bits[var_sym] = bits
         return bits
 
+    def _src_attr(self, node: Any) -> str | None:
+        """Format ``node``'s pyslang source range as a Yosys-style
+        ``"file:line.col-line.col"`` string for ``Cell.attributes["src"]``.
+
+        Yosys's flatten output puts this attribute on every emitted
+        cell so JSON / SARIF reporters can surface a clickable source
+        location. Matching the same format means the reporter doesn't
+        need a frontend-specific branch.
+
+        Three places we look, in priority order:
+        1. ``node.syntax.sourceRange`` — the full SV-level range
+           (e.g. ``always_ff`` to the end of the body). This is what
+           we want; ProceduralBlockSymbol and ContinuousAssignSymbol
+           don't have a useful ``sourceRange`` directly, but their
+           syntax does.
+        2. ``node.sourceRange`` — Expression-level nodes (binary /
+           unary / conditional) carry this directly.
+        3. ``node.location`` — a single point. Falls back to a
+           degenerate ``line.col-line.col`` range.
+
+        Returns ``None`` when the node has no usable location at all
+        — non-fatal: the cell still emits without the attribute
+        (matching Yosys's behaviour for sourceless transformations).
+        """
+        sm = self.comp.sourceManager
+
+        def _fmt_range(start: Any, end: Any) -> str | None:
+            try:
+                fn = sm.getFileName(start)
+                s_ln = sm.getLineNumber(start)
+                s_col = sm.getColumnNumber(start)
+                e_ln = sm.getLineNumber(end)
+                e_col = sm.getColumnNumber(end)
+            except Exception:
+                return None
+            if not fn:
+                return None
+            return f"{fn}:{s_ln}.{s_col}-{e_ln}.{e_col}"
+
+        syntax = getattr(node, "syntax", None)
+        if syntax is not None:
+            sr = getattr(syntax, "sourceRange", None)
+            if sr is not None:
+                fmt = _fmt_range(sr.start, sr.end)
+                if fmt is not None:
+                    return fmt
+        sr = getattr(node, "sourceRange", None)
+        if sr is not None:
+            fmt = _fmt_range(sr.start, sr.end)
+            if fmt is not None:
+                return fmt
+        loc = getattr(node, "location", None)
+        if loc is not None:
+            return _fmt_range(loc, loc)
+        return None
+
     @staticmethod
     def _canonical_var(sym: Any) -> Any:
         """Resolve a port symbol to its backing variable symbol.
@@ -489,6 +546,10 @@ class _ModuleBuilder:
         #   (a) ConditionalStatement: if (<reset_check>) q <= 0;
         #                             else                q <= d;
         #   (b) ExpressionStatement: q <= d;   (no async reset)
+        # The whole always_ff block is the natural source-range anchor
+        # for every flop cell it produces — matches Yosys's $procdff
+        # ``src`` attribute, which spans the block too.
+        src_node = block
         if self._kind_name(inner) == "ConditionalStatement":
             # The if-condition's variable IS the reset signal — confirm
             # against the event-list-derived candidate, but trust the
@@ -500,10 +561,16 @@ class _ModuleBuilder:
             data_branch = inner.ifFalse
             if data_branch is None:
                 return  # no else → no data assignment to model
-            self._emit_assignments_in(data_branch, clk_sym, reset_sym, reset_active_low)
+            self._emit_assignments_in(
+                data_branch, clk_sym, reset_sym, reset_active_low, src_node
+            )
         elif self._kind_name(inner) == "ExpressionStatement":
             self._emit_assignment_expression(
-                inner.expr, clk_sym, reset_sym=None, reset_active_low=False
+                inner.expr,
+                clk_sym,
+                reset_sym=None,
+                reset_active_low=False,
+                src_node=src_node,
             )
 
     def _analyse_event_list(self, timing: Any) -> tuple[Any | None, Any | None, bool]:
@@ -554,6 +621,7 @@ class _ModuleBuilder:
         clk_sym: Any,
         reset_sym: Any | None,
         reset_active_low: bool,
+        src_node: Any = None,
     ) -> None:
         """Find every nonblocking assignment inside ``statement`` (a
         BlockStatement or single ExpressionStatement) and emit a flop
@@ -564,14 +632,20 @@ class _ModuleBuilder:
             kind = self._kind_name(statement)
         if kind == "ExpressionStatement":
             self._emit_assignment_expression(
-                statement.expr, clk_sym, reset_sym, reset_active_low
+                statement.expr,
+                clk_sym,
+                reset_sym,
+                reset_active_low,
+                src_node=src_node,
             )
             return
         if kind in {"StatementList", "ListStatement"}:
             # Older pyslang names; included defensively. Real walk is
             # via the .list attribute when present.
             for s in getattr(statement, "list", []) or []:
-                self._emit_assignments_in(s, clk_sym, reset_sym, reset_active_low)
+                self._emit_assignments_in(
+                    s, clk_sym, reset_sym, reset_active_low, src_node
+                )
 
     def _emit_assignment_expression(
         self,
@@ -579,6 +653,7 @@ class _ModuleBuilder:
         clk_sym: Any,
         reset_sym: Any | None,
         reset_active_low: bool,
+        src_node: Any = None,
     ) -> None:
         if type(expr).__name__ != "AssignmentExpression":
             return
@@ -622,13 +697,23 @@ class _ModuleBuilder:
         }
         if reset_sym is not None:
             parameters["ARST_POLARITY"] = "0" if reset_active_low else "1"
+        # Attach the source range so reporters can surface file:line.
+        # Fall back to the assignment itself when the caller didn't
+        # thread a block-level node through (continuous-assign-ish
+        # shapes).
+        attrs: dict[str, str] = {}
+        src = self._src_attr(src_node) if src_node is not None else None
+        if src is None:
+            src = self._src_attr(expr)
+        if src is not None:
+            attrs["src"] = src
         name = self._fresh_cell_name(cell_type)
         self._cells[name] = Cell(
             name=name,
             type=cell_type,
             connections=connections,
             parameters=parameters,
-            attributes={},
+            attributes=attrs,
         )
 
     def _lvalue_bits(self, expr: Any) -> tuple[Bit, ...] | None:
@@ -713,18 +798,25 @@ class _ModuleBuilder:
         - :class:`ConversionExpression` — pass through (pyslang inserts
           these for implicit width / type unification; the underlying
           bit identity is what we want).
-        - :class:`IntegerLiteral` — single-bit constants ``1'b0`` /
-          ``1'b1`` (the only widths we use in fixtures today).
+        - :class:`IntegerLiteral` — constants encoded as Yosys constant
+          chars (``"0"`` / ``"1"``) in LSB-first order.
         - :class:`BinaryExpression` — lowered to a Yosys-shape comb
           cell (``$and``/``$or``/``$xor``/…) via :meth:`_lower_binary`.
         - :class:`UnaryExpression` — lowered to ``$not``/``$logic_not``/
           ``$neg``/``$reduce_*`` via :meth:`_lower_unary`.
         - :class:`ConditionalExpression` — lowered to a ``$mux`` cell.
+        - :class:`ElementSelectExpression` / :class:`RangeSelectExpression`
+          — return the matching bit subset of the underlying variable.
+        - :class:`ConcatenationExpression` — concatenate operand bit
+          tuples in MSB→LSB SV order, producing a single LSB-first
+          tuple. See :meth:`_lower_concatenation`.
+        - :class:`ReplicationExpression` — ``{N{x}}`` repeats the inner
+          concat's bits ``N`` times. See :meth:`_lower_replication`.
 
-        Anything else (concat, part-select, function call, …) returns
-        ``None``; the caller substitutes an ``$_UNKNOWN_`` driver so
-        the rule pack treats the upstream as opaque rather than
-        crashing.
+        Anything else (part-select, function call, struct member access,
+        …) returns ``None``; the caller substitutes an ``$_UNKNOWN_``
+        driver so the rule pack treats the upstream as opaque rather
+        than crashing.
         """
         kind = type(expr).__name__
         if kind == "NamedValueExpression":
@@ -745,7 +837,52 @@ class _ModuleBuilder:
             return self._element_select_bits(expr)
         if kind == "RangeSelectExpression":
             return self._range_select_bits(expr)
+        if kind == "ConcatenationExpression":
+            return self._lower_concatenation(expr)
+        if kind == "ReplicationExpression":
+            return self._lower_replication(expr)
         return None
+
+    def _lower_concatenation(self, expr: Any) -> tuple[Bit, ...] | None:
+        """``{a, b, c}`` — return a single LSB-first bit tuple.
+
+        SV concatenation lists operands MSB-first (``{a, b}`` has ``a``
+        in the upper bits and ``b`` in the lower bits). Yosys stores
+        bit tuples LSB-first, so we **reverse the operand order** and
+        flatten — the last operand's LSB-first bits land at the start
+        of the result tuple.
+
+        Returns ``None`` if any operand can't be lowered, so the
+        caller can fall back to the ``$_UNKNOWN_`` placeholder
+        instead of emitting partial garbage.
+        """
+        operand_bits: list[tuple[Bit, ...]] = []
+        for op in expr.operands:
+            bits = self._bits_of_expression(op)
+            if bits is None:
+                return None
+            operand_bits.append(bits)
+        result: list[Bit] = []
+        for bits in reversed(operand_bits):
+            result.extend(bits)
+        return tuple(result)
+
+    def _lower_replication(self, expr: Any) -> tuple[Bit, ...] | None:
+        """``{N{x}}`` — repeat the inner pattern ``N`` times.
+
+        pyslang wraps the replicated expression in a
+        :class:`ConcatenationExpression` accessible via ``.concat``,
+        so ``{N{a}}`` and ``{N{a, b}}`` go through the same path.
+        ``N`` (the ``.count`` attribute) must be a compile-time
+        constant; dynamic replication counts return ``None``.
+        """
+        count = self._const_int(getattr(expr, "count", None))
+        if count is None or count < 0:
+            return None
+        pattern = self._bits_of_expression(expr.concat)
+        if pattern is None:
+            return None
+        return tuple(pattern) * count
 
     # --- expression lowering --------------------------------------------
 
@@ -807,7 +944,7 @@ class _ModuleBuilder:
             return None
         width = self._expr_width(expr)
         return self._emit_comb_cell(
-            cell_type, {"A": a_bits, "B": b_bits}, output_width=width
+            cell_type, {"A": a_bits, "B": b_bits}, output_width=width, src_node=expr
         )
 
     def _lower_unary(self, expr: Any) -> tuple[Bit, ...] | None:
@@ -827,7 +964,9 @@ class _ModuleBuilder:
             output_width = 1
         else:
             output_width = self._expr_width(expr) or len(a_bits)
-        return self._emit_comb_cell(cell_type, {"A": a_bits}, output_width=output_width)
+        return self._emit_comb_cell(
+            cell_type, {"A": a_bits}, output_width=output_width, src_node=expr
+        )
 
     def _lower_conditional(self, expr: Any) -> tuple[Bit, ...] | None:
         # pyslang ConditionalExpression has ``conditions`` (a list) and
@@ -850,6 +989,7 @@ class _ModuleBuilder:
             cell_type="$mux",
             inputs={"A": a_bits, "B": b_bits, "S": sel_bits[:1]},
             output_width=width,
+            src_node=expr,
         )
 
     def _bits_of_integer_literal(self, expr: Any) -> tuple[Bit, ...] | None:
@@ -885,12 +1025,16 @@ class _ModuleBuilder:
         cell_type: str,
         inputs: dict[str, tuple[Bit, ...]],
         output_width: int,
+        src_node: Any = None,
     ) -> tuple[Bit, ...]:
         """Allocate a fresh Y net and emit a ``cell_type`` cell with the
         given inputs. Returns the Y bits so callers can wire them up.
 
         Width defensively clamped to at least 1 so we never emit a
         zero-width cell (which would confuse the rule pack's bit walks).
+        Optionally attaches a ``src`` attribute formatted as Yosys'
+        ``file:line.col-line.col`` convention so the reporter can
+        surface a clickable source location.
         """
         width = max(int(output_width or 1), 1)
         y_bits: tuple[Bit, ...] = tuple(
@@ -898,12 +1042,16 @@ class _ModuleBuilder:
         )
         self._next_bit_id += width
         name = self._fresh_cell_name(cell_type)
+        attrs: dict[str, str] = {}
+        src = self._src_attr(src_node) if src_node is not None else None
+        if src is not None:
+            attrs["src"] = src
         self._cells[name] = Cell(
             name=name,
             type=cell_type,
             connections={**inputs, "Y": y_bits},
             parameters={},
-            attributes={},
+            attributes=attrs,
         )
         return y_bits
 

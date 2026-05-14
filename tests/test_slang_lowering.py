@@ -49,6 +49,14 @@ def _elaborate_inline(tmp_path: Path, src: str, top: str = "m") -> dict[str, str
     return {name: cell.type for name, cell in module.cells.items()}
 
 
+def _elaborate_full(tmp_path: Path, src: str, top: str = "m"):
+    """Like :func:`_elaborate_inline` but returns the full ``Module``
+    so tests can inspect cells / ports / netnames / attributes."""
+    sv = tmp_path / f"{top}.sv"
+    sv.write_text(src)
+    return elaborate([sv], top, frontend=Frontend.slang)
+
+
 # --- BinaryExpression operator coverage -----------------------------------
 #
 # Each test exercises one entry of the BINOP_CELL table that the
@@ -321,4 +329,137 @@ set_clock_groups -asynchronous -group {clk_src} -group {clk_dst}
     # two source flops feeding the mux.
     assert rule_ids == ["CDC-001"], (
         f"expected CDC-001 from ternary-mediated crossing; got {rule_ids}"
+    )
+
+
+# --- ConcatenationExpression ---------------------------------------------
+
+
+def test_concat_aliases_bits_lsb_first(tmp_path: Path) -> None:
+    """``{a, b}`` puts ``a`` in the upper bits and ``b`` in the lower
+    bits per SV semantics. Yosys (and our internal model) stores bit
+    tuples LSB-first, so the destination port must end up with ``b``'s
+    bits first, then ``a``'s. Pure aliasing — no Yosys cell is emitted
+    for a concat, matching post-``opt_clean`` Yosys output."""
+    src = """
+module m (
+    input  logic [3:0] a, b,
+    output logic [7:0] q
+);
+    assign q = {a, b};
+endmodule
+"""
+    module = _elaborate_full(tmp_path, src)
+    a_bits = module.netnames["a"].bits
+    b_bits = module.netnames["b"].bits
+    q_bits = module.ports["q"].bits
+    assert q_bits == tuple(b_bits) + tuple(a_bits), (
+        f"expected concat LSB-first to be b||a, got q={q_bits} a={a_bits} b={b_bits}"
+    )
+    # No cell is emitted for a pure concat — the bits just alias.
+    assert all(c.type != "$_UNKNOWN_" for c in module.cells.values())
+
+
+def test_concat_inside_always_ff_d_traces_through(tmp_path: Path) -> None:
+    """Concat on an ``always_ff`` D-side input must produce a flop
+    whose D bits are the concat of source-side bits — proving the
+    aliasing reaches the cell connection, not just port wiring."""
+    src = """
+module m (
+    input  logic clk, rst_n,
+    input  logic [3:0] hi, lo,
+    output logic [7:0] q
+);
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) q <= 0; else q <= {hi, lo};
+endmodule
+"""
+    module = _elaborate_full(tmp_path, src)
+    hi_bits = module.netnames["hi"].bits
+    lo_bits = module.netnames["lo"].bits
+    ff = next(c for c in module.cells.values() if c.type == "$adff")
+    assert ff.connections["D"] == tuple(lo_bits) + tuple(hi_bits)
+
+
+# --- ReplicationExpression -----------------------------------------------
+
+
+def test_replication_repeats_pattern_bits(tmp_path: Path) -> None:
+    """``{N{x}}`` repeats x's bits N times. Pure aliasing like
+    concat — no cell needed."""
+    src = """
+module m (
+    input  logic x,
+    output logic [3:0] q
+);
+    assign q = {4{x}};
+endmodule
+"""
+    module = _elaborate_full(tmp_path, src)
+    x_bit = module.netnames["x"].bits[0]
+    assert module.ports["q"].bits == (x_bit, x_bit, x_bit, x_bit)
+
+
+def test_replication_of_multi_bit_pattern(tmp_path: Path) -> None:
+    """``{2{a}}`` where ``a`` is 4-bit produces 8 bits in the LSB-first
+    pattern (a[0..3], a[0..3]). Confirms the inner ConcatenationExpression
+    is lowered before the count multiplication."""
+    src = """
+module m (
+    input  logic [3:0] a,
+    output logic [7:0] q
+);
+    assign q = {2{a}};
+endmodule
+"""
+    module = _elaborate_full(tmp_path, src)
+    a_bits = module.netnames["a"].bits
+    assert module.ports["q"].bits == tuple(a_bits) + tuple(a_bits)
+
+
+# --- Source-location propagation -----------------------------------------
+
+
+def test_flop_cells_carry_yosys_style_src_attribute(tmp_path: Path) -> None:
+    """Every emitted ``$dff`` / ``$adff`` should carry a ``src``
+    attribute formatted like Yosys' ``file:line.col-line.col``
+    convention so the JSON / SARIF reporters can surface a clickable
+    source location without a frontend-specific branch."""
+    src = """module m (
+    input  logic clk, rst_n, d,
+    output logic q
+);
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) q <= 0; else q <= d;
+endmodule
+"""
+    module = _elaborate_full(tmp_path, src)
+    ff = next(c for c in module.cells.values() if c.type == "$adff")
+    src_attr = ff.attributes.get("src")
+    assert src_attr is not None, "always_ff cell should have a src attribute"
+    # Format: "<path>:<startLine>.<startCol>-<endLine>.<endCol>"
+    assert ":" in src_attr and "-" in src_attr and "." in src_attr
+    # And the range should span more than a single point — pyslang's
+    # syntax.sourceRange gives the whole always_ff block.
+    after_colon = src_attr.rsplit(":", 1)[-1]
+    start, end = after_colon.split("-", 1)
+    assert start != end, f"expected a non-degenerate range, got {src_attr!r}"
+
+
+def test_comb_cells_carry_src_attribute(tmp_path: Path) -> None:
+    """Combinational cells (``$and`` here) should also carry a src
+    attribute pointing at the operator expression."""
+    src = """module m (
+    input  logic a, b,
+    output logic y
+);
+    assign y = a & b;
+endmodule
+"""
+    module = _elaborate_full(tmp_path, src)
+    cell = next(c for c in module.cells.values() if c.type == "$and")
+    src_attr = cell.attributes.get("src")
+    assert src_attr is not None, "$and cell should have a src attribute"
+    assert src_attr.endswith(".sv:5.16-5.21") or src_attr.endswith(".sv:5.17-5.22"), (
+        f"unexpected src range: {src_attr!r}"
     )
