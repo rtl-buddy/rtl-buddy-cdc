@@ -66,6 +66,13 @@
 - `pyproject.toml` — `description` rephrased from "Yosys-backed" to "with pluggable Yosys or slang (pyslang) frontend" (visible PyPI listing copy)
 - `src/rtl_buddy_cdc/cli.py` — `--frontend` Typer help no longer says slang is "in development — see issue #5"; replaced with the actual install hint (`pip install 'rtl-buddy-cdc[slang]'`)
 
+## [2026-05-14] update | rule-pack structural memoisation (#12)
+- New `_RuleContext` frozen dataclass + `_build_context(module, clock_spec)` builder in `rules.py` holding `flops` / `domains` / `bit_drivers` / `reader_counts` / `d_bit_to_single_bit_flop` / `user_syncs` / `user_grays`. `run_all` builds one per invocation and threads it into every `check_cdc_NNN` via a keyword-only `ctx=` argument; rules called standalone lazy-build their own.
+- `_sync_chain_depth` now takes the `d_bit_to_single_bit_flop` reverse-index from the ctx, turning chain extension from an O(N) `find_flops` scan into an O(1) dict lookup. This was the worst hot path — called per crossing × per chain step.
+- Removed two now-dead module-level helpers `_q_to_flop` / `_bit_drivers` (their work moved into `_build_context`); dropped unused `q_to_flop` parameter from `_sync_chain_depth`'s signature; `RuleFn` type alias loosened to `Callable[..., list[Violation]]` so the kw-only ctx is expressible.
+- Updated `concepts/cdc-rule-pack.md` — "Index helpers" table reframed around `_RuleContext` fields (since they're no longer free functions); new "Rule context" subsection explaining lazy-build + the perf motivation; cross-link to the new sentinel test.
+- New `tests/test_rules_perf.py` — synthetic 500-flop / 250-crossing module asserts `run_all` completes in <1s. Future regression sentinel for the structural-context caching.
+
 ## [2026-05-14] update | JSON output schema contract pinned in code (#13)
 - New `reporter.JSON_CONTRACT` mapping (`summary.violations` / `summary.suppressed` / `summary.crossings` → `int`). Names the three load-bearing keys the rtl-buddy ↔ rtl-buddy-cdc subprocess boundary depends on — previously documented only in prose in AGENTS.md.
 - New tests in `tests/test_reporter.py`: `test_json_contract_keys_present_and_typed` (every contract key resolves to the declared type), `test_json_contract_includes_waived_run` (a waivered run exercises both `summary.violations` and `summary.suppressed` in the same render, catching value-swap regressions the first test alone would miss), `test_sarif_suppression_shape` (SARIF `suppressions: [{kind:external, status:accepted, justification:…}]` payload).
