@@ -19,7 +19,12 @@ on:
       - 'tests/**/*.py'
 
 jobs:
+  # Primary job: install with the [slang] extra so the pyslang-backed
+  # frontend tests (tests/test_slang_elaboration.py,
+  # tests/test_slang_lowering.py) actually run instead of skipping.
+  # Without --extra slang they're ~700 LOC of dead CI weight — see #9.
   pytest:
+    name: pytest (with slang) — py${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -32,8 +37,29 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Install test dependencies
-        run: uv sync --group test --python ${{ matrix.python-version }}
+      - name: Install test dependencies (with [slang] extra)
+        run: uv sync --extra slang --group test --python ${{ matrix.python-version }}
+
+      - name: Run pytest
+        run: uv run pytest -q
+
+  # Companion job: install WITHOUT the [slang] extra to verify the
+  # AGENTS.md "default install stays typer-only" promise. Specifically
+  # exercises the install-hint path in tests/test_frontend.py — the two
+  # tests skipped by PYSLANG_INSTALLED above run here.
+  pytest-no-slang:
+    name: pytest (default install, no pyslang)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install test dependencies (no extras)
+        run: uv sync --group test --python 3.13
 
       - name: Run pytest
         run: uv run pytest -q
