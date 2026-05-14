@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import IO
@@ -13,10 +11,13 @@ import typer
 
 from rtl_buddy_cdc import netlist, reporter, sdc as sdc_mod, waivers as waivers_mod
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
+from rtl_buddy_cdc.frontend import Frontend, elaborate
+from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
+from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import AnalysisResult
 from rtl_buddy_cdc.rules import run_all as run_all_rules
 
-app = typer.Typer(help="CDC linting tool for RTL designs (Yosys-backed).")
+app = typer.Typer(help="CDC linting tool for RTL designs.")
 
 
 class OutputFormat(str, Enum):
@@ -127,16 +128,26 @@ def lint(
         readable=True,
         help="SDC file with clock declarations and async groups.",
     ),
+    frontend: Frontend = typer.Option(
+        Frontend.yosys,
+        "--frontend",
+        case_sensitive=False,
+        help="Elaboration frontend. 'yosys' (default) shells out to "
+        "`yosys` and runs hierarchy/proc/flatten/opt_clean before "
+        "analysis. 'slang' elaborates via pyslang directly with no "
+        "synth step (in development — see issue #5).",
+    ),
     keep_json: Path | None = typer.Option(
         None,
         "--keep-json",
-        help="Save the intermediate Yosys JSON netlist to this path "
-        "(otherwise it lives in a temp file and is deleted).",
+        help="Yosys frontend only: save the intermediate JSON netlist "
+        "to this path (otherwise it lives in a temp file and is deleted).",
     ),
     yosys_bin: str | None = typer.Option(
         None,
         "--yosys",
-        help="Path to the yosys binary (default: first `yosys` on PATH).",
+        help="Yosys frontend only: path to the yosys binary "
+        "(default: first `yosys` on PATH).",
     ),
     waivers_path: Path | None = typer.Option(
         None,
@@ -152,69 +163,58 @@ def lint(
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
 ) -> None:
-    """Convenience wrapper: run yosys to produce a flattened netlist,
-    then analyze it. Equivalent to ``yosys -p 'read_verilog ...; \
-hierarchy -top X; proc; flatten; opt_clean; write_json /tmp/out.json' \
-&& rtl-buddy-cdc analyze --netlist /tmp/out.json --sdc ...``."""
-    yosys = yosys_bin or shutil.which("yosys")
-    if yosys is None or not Path(yosys).exists():
-        typer.echo("error: yosys not found on PATH (use --yosys to override)", err=True)
+    """Convenience wrapper: elaborate the sources using the chosen
+    frontend, then analyze. With ``--frontend yosys`` (the default)
+    this is equivalent to ``yosys -p 'read_verilog ...; hierarchy -top
+    X; proc; flatten; opt_clean; write_json /tmp/out.json' &&
+    rtl-buddy-cdc analyze --netlist /tmp/out.json --sdc ...``."""
+    if fmt is OutputFormat.text:
+        # Preamble for human readers only — structured output mustn't
+        # carry non-payload framing.
+        typer.echo(f"frontend: {frontend.value}")
+        typer.echo(f"top:      {top}")
+        for s in sources:
+            typer.echo(f"src:      {s}")
+
+    try:
+        module = elaborate(
+            sources,
+            top,
+            frontend=frontend,
+            yosys_bin=yosys_bin,
+            keep_json=keep_json,
+        )
+    except SlangFrontendUnavailable as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(code=2)
+    except YosysError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(code=2)
+    except NotImplementedError as e:
+        # Stub frontend path (slang today). Distinct exit signal from
+        # a missing-binary failure so CI scripts can tell them apart.
+        typer.echo(f"error: {e}", err=True)
         raise typer.Exit(code=2)
 
-    tmp_json = Path(tempfile.mkstemp(suffix=".json", prefix="rtl-buddy-cdc-")[1])
-    try:
-        srcs = " ".join(shlex.quote(str(s)) for s in sources)
-        script = (
-            f"read_verilog -sv {srcs}; "
-            f"hierarchy -top {shlex.quote(top)}; "
-            f"proc; flatten; opt_clean; "
-            f"write_json {shlex.quote(str(tmp_json))}"
-        )
-        if fmt is OutputFormat.text:
-            # Only print preamble in text mode — structured output
-            # mustn't contain non-payload preamble.
-            typer.echo(f"yosys: {yosys}")
-            typer.echo(f"top:   {top}")
-            for s in sources:
-                typer.echo(f"src:   {s}")
+    if (
+        fmt is OutputFormat.text
+        and frontend is Frontend.yosys
+        and keep_json is not None
+    ):
+        typer.echo(f"netlist JSON kept at: {keep_json}")
 
-        proc = subprocess.run(
-            [yosys, "-q", "-p", script],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode != 0:
-            typer.echo("yosys elaboration failed:", err=True)
-            if proc.stderr:
-                typer.echo(proc.stderr.rstrip(), err=True)
-            if proc.stdout:
-                typer.echo(proc.stdout.rstrip(), err=True)
-            raise typer.Exit(code=2)
-
-        code = _analyze_and_report(
-            tmp_json,
-            sdc_path,
-            waivers_path,
-            fmt,
-            output_path,
-            sync_depth,
-            verbose=verbose,
-            color=color,
-        )
-        if code != 0:
-            raise typer.Exit(code=code)
-    finally:
-        if keep_json is not None:
-            try:
-                shutil.copy(tmp_json, keep_json)
-                if fmt is OutputFormat.text:
-                    typer.echo(f"netlist JSON kept at: {keep_json}")
-            except OSError as e:
-                typer.echo(f"warning: could not save --keep-json: {e}", err=True)
-        try:
-            tmp_json.unlink()
-        except FileNotFoundError:
-            pass
+    code = _analyze_module_and_report(
+        module,
+        sdc_path,
+        waivers_path,
+        fmt,
+        output_path,
+        sync_depth,
+        verbose=verbose,
+        color=color,
+    )
+    if code != 0:
+        raise typer.Exit(code=code)
 
 
 @app.command()
@@ -245,13 +245,36 @@ def _analyze_and_report(
     verbose: bool = False,
     color: bool | None = None,
 ) -> int:
-    """Run the analyzer on a netlist JSON and dispatch to the chosen
-    reporter. Returns a process-style exit code: 0 = clean (or no SDC
-    so rule checks were skipped), 1 = at least one *unsuppressed* rule
-    violation. Waived findings are still reported but don't fail the
-    run."""
+    """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module = netlist.load(netlist_path)
+    return _analyze_module_and_report(
+        module,
+        sdc_path,
+        waivers_path,
+        fmt,
+        output_path,
+        sync_depth,
+        verbose=verbose,
+        color=color,
+    )
 
+
+def _analyze_module_and_report(
+    module: netlist.Module,
+    sdc_path: Path | None,
+    waivers_path: Path | None,
+    fmt: OutputFormat,
+    output_path: Path | None,
+    sync_depth: int = 2,
+    *,
+    verbose: bool = False,
+    color: bool | None = None,
+) -> int:
+    """Run the analyzer on an in-memory ``Module`` and dispatch to the
+    chosen reporter. Returns a process-style exit code: 0 = clean (or
+    no SDC so rule checks were skipped), 1 = at least one *unsuppressed*
+    rule violation. Waived findings are still reported but don't fail
+    the run."""
     spec: sdc_mod.ClockSpec | None = None
     async_crossings: list[Crossing] = []
     violations = []

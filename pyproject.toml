@@ -13,6 +13,15 @@ dependencies = [
     "typer>=0.25.1",
 ]
 
+[project.optional-dependencies]
+# Opt-in elaboration frontend. Installs the pyslang binding so
+# `rtl-buddy-cdc lint --frontend slang ...` can elaborate SystemVerilog
+# without a Yosys subprocess. Default install stays typer-only — see
+# AGENTS.md "Development rules" on runtime dependencies.
+slang = [
+    "pyslang>=7.0",
+]
+
 [project.scripts]
 rtl-buddy-cdc = "rtl_buddy_cdc:main"
 
