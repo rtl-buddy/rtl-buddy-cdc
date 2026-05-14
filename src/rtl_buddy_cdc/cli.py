@@ -220,7 +220,7 @@ def lint(
 
 @app.command()
 def version() -> None:
-    """Print yosys and tool versions."""
+    """Print tool, yosys, and (when installed) pyslang versions."""
     typer.echo("rtl-buddy-cdc 0.1.0")
     yosys = shutil.which("yosys")
     if yosys:
@@ -230,6 +230,17 @@ def version() -> None:
         typer.echo(out)
     else:
         typer.echo("yosys: not found on PATH")
+
+    # pyslang is the slang frontend's optional runtime dep. We probe via
+    # importlib.metadata (not the lazy import in frontends/slang.py)
+    # because we want the wheel version, not the slang C++ build the
+    # wheel wraps — bug-report diagnostics key on the former.
+    import importlib.metadata as _md
+
+    try:
+        typer.echo(f"pyslang: {_md.version('pyslang')}")
+    except _md.PackageNotFoundError:
+        typer.echo("pyslang: not installed (optional; install with the [slang] extra)")
 
 
 # --- shared analysis path ---------------------------------------------------
