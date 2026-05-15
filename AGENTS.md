@@ -224,7 +224,12 @@ landing.
   release branch.
 - Versioning: bump `pyproject.toml` `[project].version` and
   `reporter.TOOL_VERSION` in lockstep when cutting a release. SARIF
-  consumers key off `TOOL_VERSION`.
+  consumers key off `TOOL_VERSION`. Drift between the two is caught
+  by `tests/test_reporter.py::test_tool_version_matches_pyproject`.
+  Record the release notes in `CHANGELOG.md` (Keep a Changelog
+  format); the `[Unreleased]` section gets renamed to the new
+  version + date on release, and a fresh `[Unreleased]` heading is
+  added back on top.
 
 ## When the architecture spec is wrong
 

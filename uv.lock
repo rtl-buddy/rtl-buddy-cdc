@@ -327,7 +327,7 @@ wheels = [
 
 [[package]]
 name = "rtl-buddy-cdc"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "typer" },
@@ -354,7 +354,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pyslang", marker = "extra == 'slang'", specifier = ">=7.0" },
+    { name = "pyslang", marker = "extra == 'slang'", specifier = ">=10,<11" },
     { name = "typer", specifier = ">=0.25.1" },
 ]
 provides-extras = ["slang"]

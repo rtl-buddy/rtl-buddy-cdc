@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import io
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from rtl_buddy_cdc.cli import OutputFormat  # noqa: I001
 from rtl_buddy_cdc.domain import assign_domains, find_crossings
 from rtl_buddy_cdc.reporter import (
     JSON_CONTRACT,
+    TOOL_VERSION,
     AnalysisResult,
     render_json,
     render_sarif,
@@ -219,3 +221,13 @@ def test_sarif_suppression_shape(result: AnalysisResult) -> None:
     assert supp[0]["kind"] == "external"
     assert supp[0]["status"] == "accepted"
     assert supp[0]["justification"] == "reviewed by team"
+
+
+def test_tool_version_matches_pyproject() -> None:
+    """``reporter.TOOL_VERSION`` (the string SARIF puts in
+    ``runs[0].tool.driver.version``) and the package version
+    ``pyproject.toml`` declares must agree. They're bumped in
+    lockstep on release per ``AGENTS.md``'s "Commit / branch /
+    release conventions"; this sentinel catches a one-sided edit
+    that would leave SARIF consumers pointing at the wrong wheel."""
+    assert TOOL_VERSION == importlib.metadata.version("rtl-buddy-cdc")

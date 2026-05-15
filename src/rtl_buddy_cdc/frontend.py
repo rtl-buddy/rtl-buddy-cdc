@@ -43,6 +43,7 @@ def elaborate(
     *,
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
+    yosys_plugin: str | None = None,
 ) -> Module:
     """Elaborate ``sources`` into a flattened :class:`Module`.
 
@@ -55,7 +56,11 @@ def elaborate(
         from rtl_buddy_cdc.frontends import yosys as yosys_fe
 
         return yosys_fe.elaborate(
-            sources, top, yosys_bin=yosys_bin, keep_json=keep_json
+            sources,
+            top,
+            yosys_bin=yosys_bin,
+            keep_json=keep_json,
+            plugin_path=yosys_plugin,
         )
     if frontend is Frontend.slang:
         from rtl_buddy_cdc.frontends import slang as slang_fe

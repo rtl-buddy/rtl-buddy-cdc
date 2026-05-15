@@ -32,22 +32,39 @@ def elaborate(
     *,
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
+    plugin_path: str | None = None,
 ) -> Module:
     """Run yosys to produce a flattened netlist JSON, then load it.
 
     ``keep_json``, if set, copies the intermediate JSON to that path
     before the temp file is deleted — useful for debugging or for
     re-running ``analyze`` against the same netlist.
+
+    ``plugin_path``, if set, loads a Yosys plugin (typically
+    ``yosys-slang``'s ``slang.so``) and elaborates via ``read_slang``
+    instead of ``read_verilog``. This is required for designs that use
+    SystemVerilog-2017 constructs (e.g. ``import pkg::*``) that Yosys's
+    built-in frontend rejects.
     """
     yosys = yosys_bin or shutil.which("yosys")
     if yosys is None or not Path(yosys).exists():
         raise YosysError("yosys not found on PATH (use --yosys to override)")
 
+    if plugin_path is not None and not Path(plugin_path).exists():
+        raise YosysError(f"yosys plugin not found: {plugin_path}")
+
     tmp_json = Path(tempfile.mkstemp(suffix=".json", prefix="rtl-buddy-cdc-")[1])
     try:
         srcs = " ".join(shlex.quote(str(s)) for s in sources)
+        if plugin_path is None:
+            read_cmd = f"read_verilog -sv {srcs}"
+        else:
+            read_cmd = (
+                f"plugin -i {shlex.quote(plugin_path)}; "
+                f"read_slang --std 1800-2017 --top {shlex.quote(top)} {srcs}"
+            )
         script = (
-            f"read_verilog -sv {srcs}; "
+            f"{read_cmd}; "
             f"hierarchy -top {shlex.quote(top)}; "
             f"proc; flatten; opt_clean; "
             f"write_json {shlex.quote(str(tmp_json))}"

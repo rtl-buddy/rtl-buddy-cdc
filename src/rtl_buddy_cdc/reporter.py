@@ -27,7 +27,7 @@ from rtl_buddy_cdc.sdc import ClockSpec
 from rtl_buddy_cdc.waivers import SuppressedViolation
 
 TOOL_NAME = "rtl-buddy-cdc"
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.2.0"
 TOOL_INFO_URI = "https://github.com/rtl-buddy/rtl-buddy-cdc"
 
 # JSON output schema contract — these dotted keys are PUBLIC API.
