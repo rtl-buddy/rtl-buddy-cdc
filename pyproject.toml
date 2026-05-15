@@ -18,8 +18,14 @@ dependencies = [
 # `rtl-buddy-cdc lint --frontend slang ...` can elaborate SystemVerilog
 # without a Yosys subprocess. Default install stays typer-only — see
 # AGENTS.md "Development rules" on runtime dependencies.
+#
+# Version range: pyslang 10.x is the tested envelope (the CI matrix
+# resolves to 10.0.0; uv.lock pins the same). pyslang has had breaking
+# API changes across majors (e.g. the diagnostic engine surface and
+# attribute lookup paths moved before 10) so we cap below the next
+# major. Re-test and widen when bumping. See issue #26.
 slang = [
-    "pyslang>=7.0",
+    "pyslang>=10,<11",
 ]
 
 [project.scripts]
