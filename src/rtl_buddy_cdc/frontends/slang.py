@@ -545,6 +545,23 @@ class _ModuleBuilder:
         self._ports[member.name] = Port(
             name=member.name, direction=direction, bits=bits
         )
+        # Forward attributes declared on the port itself
+        # (``(* cdc_sync *) output logic q``) onto the netname tied to
+        # the port's internal variable. pyslang stores them on the
+        # ``PortSymbol``; ``_collect_variable`` only sees the underlying
+        # ``VariableSymbol`` and would otherwise miss them. Yosys collapses
+        # port + variable attributes onto the same netname, so doing
+        # the same here keeps the two frontends symmetric for the rule
+        # pack's attribute-aware checks.
+        netname = self._netnames.get(internal.name)
+        if netname is None:
+            return
+        for attr in self.comp.getAttributes(member) or []:
+            name = getattr(attr, "name", None)
+            if not name:
+                continue
+            val = getattr(attr, "value", None)
+            netname.attributes[name] = str(val) if val is not None else "1"
 
     # -- pass 3: cells + continuous assigns -----------------------------
 
