@@ -120,6 +120,21 @@ def test_cdc_003_fires_on_bad_comb_before_sync() -> None:
     assert _run("bad_comb_before_sync") == ["CDC-003"]
 
 
+def test_cdc_003_fires_on_bad_comb_before_sync_with_if() -> None:
+    """Same shape, but the comb is an ``always_comb if/else``.
+    Exercises the ConditionalStatement → ``$mux`` lowering added for
+    issue #36 — without it both branches alias the same LHS and only
+    the last-walked source flop reaches the synchronizer cone."""
+    assert _run("bad_comb_before_sync_with_if") == ["CDC-003"]
+
+
+def test_cdc_003_fires_on_bad_comb_case_before_sync() -> None:
+    """Same shape, but the comb is an ``always_comb case``. Exercises
+    the CaseStatement → chained-``$mux`` lowering added for issue
+    #37."""
+    assert _run("bad_comb_case_before_sync") == ["CDC-003"]
+
+
 def test_cdc_006_fires_on_bad_comb_source() -> None:
     """Synchronizer fed directly by comb of top-level inputs
     (``a & b``) with no registering flop. Confirms the lowering also
