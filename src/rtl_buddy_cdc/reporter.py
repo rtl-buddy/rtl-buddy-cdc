@@ -346,7 +346,7 @@ def _crossing_to_dict(c: Crossing) -> dict:
 
 
 def _violation_to_dict(v: Violation, module: Module) -> dict:
-    out = {
+    out: dict[str, object] = {
         "rule_id": v.rule_id,
         "severity": v.severity,
         "message": v.message,

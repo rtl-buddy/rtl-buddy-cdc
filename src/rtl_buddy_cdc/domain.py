@@ -11,9 +11,38 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import TypedDict
 
 from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
+
+
+class _CrossingGroup(TypedDict):
+    """Per (src_flop, dst_flop) accumulator inside ``find_crossings``.
+
+    Clocks are stored as ``str`` (not ``str | None``) because the
+    insertion site has already filtered out untraceable-clock flops —
+    putting that invariant in the type lets the ``Crossing(...)`` site
+    pass through without further narrowing.
+    """
+
+    src_flop: "Flop"
+    src_clock: str
+    dst_flop: "Flop"
+    dst_clock: str
+    min_hops: int
+    bits: set[Bit]
+
+
+class _PortCrossingGroup(TypedDict):
+    """Per (src_port, dst_flop) accumulator for port-sourced crossings."""
+
+    port: str
+    src_clock: str
+    dst_flop: "Flop"
+    dst_clock: str
+    min_hops: int
+    bits: set[Bit]
 
 
 @dataclass(frozen=True)
@@ -174,8 +203,8 @@ def _trace(
     # first; a stricter check would emit a violation, but we leave
     # that to a future rule.
     if ctype in _GATE_TYPES:
-        a = cell.connections.get("A", (None,))
-        b = cell.connections.get("B", (None,))
+        a = cell.connections.get("A", ())
+        b = cell.connections.get("B", ())
         a_root = (
             _trace(module, a[0], drivers, set(seen), depth - 1, bit_to_clock)
             if a
@@ -303,7 +332,7 @@ def find_crossings(
     # Grouped per (src_flop, dst_flop) pair so a multi-bit bus or a fanout
     # that hits the same destination flop on multiple D bits collapses to
     # one Crossing record.
-    grouped: dict[tuple[str, str], dict[str, object]] = {}
+    grouped: dict[tuple[str, str], _CrossingGroup] = {}
 
     for src_fd in domains.values():
         if src_fd.clock is None:
@@ -333,14 +362,16 @@ def find_crossings(
                     g = grouped.get(key)
                     if g is None:
                         grouped[key] = {
-                            "src_fd": src_fd,
-                            "dst_fd": dst_fd,
+                            "src_flop": src_fd.flop,
+                            "src_clock": src_fd.clock,
+                            "dst_flop": dst_fd.flop,
+                            "dst_clock": dst_fd.clock,
                             "min_hops": hops,
                             "bits": {bit},
                         }
                     else:
-                        g["bits"].add(bit)  # type: ignore[union-attr]
-                        if hops < g["min_hops"]:  # type: ignore[operator]
+                        g["bits"].add(bit)
+                        if hops < g["min_hops"]:
                             g["min_hops"] = hops
                 if hops >= max_hops:
                     continue
@@ -369,12 +400,12 @@ def find_crossings(
 
     out_crossings: list[Crossing] = [
         Crossing(
-            src_flop=g["src_fd"].flop,  # type: ignore[index]
-            src_clock=g["src_fd"].clock,  # type: ignore[index]
-            dst_flop=g["dst_fd"].flop,  # type: ignore[index]
-            dst_clock=g["dst_fd"].clock,  # type: ignore[index]
-            min_hops=g["min_hops"],  # type: ignore[arg-type]
-            width=len(g["bits"]),  # type: ignore[arg-type]
+            src_flop=g["src_flop"],
+            src_clock=g["src_clock"],
+            dst_flop=g["dst_flop"],
+            dst_clock=g["dst_clock"],
+            min_hops=g["min_hops"],
+            width=len(g["bits"]),
         )
         for g in grouped.values()
     ]
@@ -384,19 +415,17 @@ def find_crossings(
     if port_clock:
         from rtl_buddy_cdc.flops import FF_CELL_TYPES
 
-        port_grouped: dict[tuple[str, str], dict[str, object]] = {}
+        port_grouped: dict[tuple[str, str], _PortCrossingGroup] = {}
         for port_name, port_clk_name in port_clock.items():
             port = module.ports.get(port_name)
             if port is None or port.direction != "input":
                 continue
-            seen: dict[Bit, int] = {}
-            frontier: list[tuple[Bit, int]] = [
-                (b, 0) for b in port.bits if isinstance(b, int)
-            ]
+            seen = {}
+            frontier = [(b, 0) for b in port.bits if isinstance(b, int)]
             for b, h in frontier:
                 seen[b] = h
             while frontier:
-                next_frontier: list[tuple[Bit, int]] = []
+                next_frontier = []
                 for bit, hops in frontier:
                     for dst_flop in flop_by_d_bit.get(bit, ()):
                         dst_fd = domains[dst_flop.cell.name]
@@ -407,19 +436,20 @@ def find_crossings(
                         if dst_fd.clock == port_clk_name:
                             continue
                         key = (port_name, dst_flop.cell.name)
-                        g = port_grouped.get(key)
-                        if g is None:
+                        pg = port_grouped.get(key)
+                        if pg is None:
                             port_grouped[key] = {
                                 "port": port_name,
                                 "src_clock": port_clk_name,
-                                "dst_fd": dst_fd,
+                                "dst_flop": dst_fd.flop,
+                                "dst_clock": dst_fd.clock,
                                 "min_hops": hops,
                                 "bits": {bit},
                             }
                         else:
-                            g["bits"].add(bit)  # type: ignore[union-attr]
-                            if hops < g["min_hops"]:  # type: ignore[operator]
-                                g["min_hops"] = hops
+                            pg["bits"].add(bit)
+                            if hops < pg["min_hops"]:
+                                pg["min_hops"] = hops
                     if hops >= max_hops:
                         continue
                     for cell_name, _port, _idx in consumers.get(bit, ()):
@@ -438,15 +468,15 @@ def find_crossings(
                                 next_frontier.append((ob, new_hops))
                 frontier = next_frontier
 
-        for g in port_grouped.values():
+        for pg in port_grouped.values():
             out_crossings.append(
                 Crossing(
-                    src_clock=g["src_clock"],  # type: ignore[arg-type]
-                    dst_flop=g["dst_fd"].flop,  # type: ignore[index]
-                    dst_clock=g["dst_fd"].clock,  # type: ignore[index]
-                    min_hops=g["min_hops"],  # type: ignore[arg-type]
-                    width=len(g["bits"]),  # type: ignore[arg-type]
-                    src_port=g["port"],  # type: ignore[arg-type]
+                    src_clock=pg["src_clock"],
+                    dst_flop=pg["dst_flop"],
+                    dst_clock=pg["dst_clock"],
+                    min_hops=pg["min_hops"],
+                    width=len(pg["bits"]),
+                    src_port=pg["port"],
                 )
             )
 

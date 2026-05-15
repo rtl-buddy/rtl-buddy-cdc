@@ -86,6 +86,7 @@ tests/
 uv sync                        # set up env (Python 3.13; see .python-version)
 uv run ruff check              # lint (must pass)
 uv run ruff format --check     # format check (CI enforces this)
+uv run mypy                    # type check (must pass; src/ scope only)
 uv run pytest -q               # full unit suite
 uv run pytest tests/test_<x>.py -q   # single file
 
@@ -97,8 +98,10 @@ uv run rtl-buddy-cdc analyze \
 uv run rtl-buddy-cdc lint --top my_top --sdc design.sdc rtl/*.sv
 ```
 
-CI runs ruff (`lint.yml`) and pytest (`test.yml`) on every PR. Run
-both locally before pushing.
+CI runs ruff + mypy (`lint.yml`, two jobs) and pytest (`test.yml`,
+matrix) on every PR. Run them locally before pushing — see issue #28
+for the mypy job's lax baseline (it's a drift sentinel for the
+typed surface, not a forcing function for full annotations).
 
 ## Adding a CDC rule
 

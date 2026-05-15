@@ -50,3 +50,19 @@ jobs:
           echo "  pre-commit install"
           echo ""
           echo "After that, every commit will run Ruff automatically."
+
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install lint dependencies
+        run: uv sync --group lint
+
+      - name: Run mypy
+        run: uv run mypy

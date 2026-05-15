@@ -31,6 +31,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 lint = [
+    "mypy>=2.1.0",
     "ruff>=0.11.0",
 ]
 test = [
@@ -51,3 +52,22 @@ select = ["F", "E7", "E9"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# mypy — see issue #28. The job runs in CI as `uv run mypy src/`.
+# Scope: src/ only for now (tests/ is a follow-up). Lax baseline —
+# we're using mypy as a drift sentinel, not as a forcing function
+# to fully annotate every helper. Strict-optional / disallow-untyped
+# adoption is incremental.
+[tool.mypy]
+python_version = "3.11"
+files = ["src/rtl_buddy_cdc"]
+# pyslang ships .pyi stubs but they fail mypy's parser
+# (auto-generated; SyntaxError inside the file). Treat the module as
+# Any to keep the rest of the slang frontend checkable. Re-evaluate
+# after a pyslang release that fixes the stubs.
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pyslang.*"
+ignore_missing_imports = true
+follow_imports = "skip"
