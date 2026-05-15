@@ -15,7 +15,8 @@ from rtl_buddy_cdc.frontend import Frontend, elaborate
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import AnalysisResult
-from rtl_buddy_cdc.rules import run_all as run_all_rules
+from rtl_buddy_cdc.rules import Violation, run_all as run_all_rules
+from rtl_buddy_cdc.waivers import SuppressedViolation
 
 app = typer.Typer(help="CDC linting tool for RTL designs.")
 
@@ -298,7 +299,7 @@ def _analyze_module_and_report(
     the run."""
     spec: sdc_mod.ClockSpec | None = None
     async_crossings: list[Crossing] = []
-    violations = []
+    violations: list[Violation] = []
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
         if spec.partial_warnings and fmt is OutputFormat.text:
@@ -316,7 +317,7 @@ def _analyze_module_and_report(
         domains = assign_domains(module)
         crossings = find_crossings(module)
 
-    suppressed = []
+    suppressed: list[SuppressedViolation] = []
     if waivers_path is not None:
         waivers = waivers_mod.parse_file(waivers_path)
         violations, suppressed = waivers_mod.apply(violations, waivers)
