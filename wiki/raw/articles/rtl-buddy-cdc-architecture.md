@@ -581,6 +581,10 @@ free functions in `rules.py`:
 | Helper | Used by | Purpose |
 |---|---|---|
 | `_sync_chain_depth(module, dst_flop, dst_clock, ...)` | CDC-001, -002, -003 | Walk forward from a flop's Q lane-wise; count the chain length of single-reader same-domain flops |
+| `_sync_chain_flops(module, head, ...)` | CDC-005 | Same walk as `_sync_chain_depth`, but returns the ordered tuple of chain flops so callers can reach the chain's tail without re-walking |
+| `_backward_fanin(module, start_bits, drivers, ...)` | CDC-006 | Reverse-BFS from a flop's `D` through comb cells; returns the set of upstream flop names and input-port names reached |
+| `_forward_reachable_flops(module, start_bits, consumers, ...)` | available for rule writers | Forward analog of `_backward_fanin`: returns the set of *flop* cell names whose `D` is on the cone |
+| `_forward_reachable_cells(module, start_bits, consumers, ...)` | CDC-005 | Forward walk that returns *every* cell on the cone — flop or comb. CDC-005 uses this for reconvergence detection so a comb-cell recombination (sync outputs into an OR driving an output port) still counts |
 | `_is_multibit_sync_first_stage(...)` | CDC-004 | Verify the destination is a width-N flop whose Q exactly equals another same-domain flop's D lane-wise |
 | `_is_gray_encoded_source(...)` | CDC-004 | Backward-walk from src D, looking for the canonical `g = b ^ (b >> 1)` XOR pattern |
 | `_is_gated_bus_crossing(...)` | CDC-004 | Recognise handshake-style gating — D updates only when an enable from the dst domain has been synchronized across |
@@ -778,8 +782,12 @@ current bottlenecks if scaled up:
   precomputed once and shared.
 - The rule pack is `O(C)` in crossings for most rules, with two
   exceptions: CDC-005 (reconvergence detection) is `O(C²)` worst-
-  case, and CDC-008's clock-network identification walks the cell
-  graph from every flop CLK.
+  case from the per-group cone walks (each chain's
+  `_forward_reachable_cells` traversal is `O(cells + nets)`
+  bounded by `max_depth=12`), and CDC-008's clock-network
+  identification walks the cell graph from every flop CLK. The
+  `bit_consumers` index is precomputed once per `run_all`, so the
+  cone walks reuse a shared O(cells × pins) builder cost.
 
 Hierarchical mode (deferred) is the architectural change that would
 let the tool scale to SoC-level designs by analyzing each flatten

@@ -56,6 +56,12 @@ GOOD_FIXTURES = [
     # at those pins to give each block a distinct clock name, then
     # resolve() collapses them back to ck_a so no crossings remain.
     ("good_source_sync_internal", 0),
+    # Reconvergent-on-paper sync chains whose downstream cones are
+    # disjoint (each sync chain feeds its own register + output port).
+    # Phase-2 of CDC-005 (issue #33) classifies this as harmless and
+    # must not fire. Two async crossings (src_q → each sync first
+    # stage).
+    ("good_disjoint_fanout_sync_chains", 2),
 ]
 
 

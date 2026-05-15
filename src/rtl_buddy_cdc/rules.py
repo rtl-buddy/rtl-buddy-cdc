@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from rtl_buddy_cdc.domain import Crossing, assign_domains
-from rtl_buddy_cdc.flops import Flop, find_flops
+from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
 from rtl_buddy_cdc.sdc import ClockSpec
 
@@ -62,6 +62,11 @@ class _RuleContext:
     flops: tuple[Flop, ...]
     domains: dict[str, str | None]
     bit_drivers: dict[Bit, tuple[str, str, int]]
+    # Forward index: maps each bit to every (cell_name, input_port_name,
+    # index) consuming it. Symmetric to ``bit_drivers``. Used by
+    # :func:`_forward_reachable_flops` for downstream-cone walks (e.g.
+    # the CDC-005 reconvergence filter). Built once per ``run_all``.
+    bit_consumers: dict[Bit, tuple[tuple[str, str, int], ...]]
     reader_counts: dict[Bit, int]
     user_syncs: frozenset[str]
     user_grays: frozenset[str]
@@ -90,6 +95,24 @@ def _build_context(module: Module, clock_spec: ClockSpec | None) -> _RuleContext
                 if isinstance(b, int):
                     bit_drivers[b] = (cell.name, port_name, idx)
 
+    # Forward index: same shape as ``bit_drivers`` but for *inputs*.
+    # CLK is excluded (clock pins are walked separately by the clock-
+    # network tracer); other pin names — D, A, B, S, SEL, EN, ARST, … —
+    # all count as data consumers.
+    consumers_builder: dict[Bit, list[tuple[str, str, int]]] = {}
+    for cell in module.cells.values():
+        for port_name, bits in cell.connections.items():
+            if port_name in _OUTPUT_PINS or port_name == "CLK":
+                continue
+            for idx, b in enumerate(bits):
+                if isinstance(b, int):
+                    consumers_builder.setdefault(b, []).append(
+                        (cell.name, port_name, idx)
+                    )
+    bit_consumers: dict[Bit, tuple[tuple[str, str, int], ...]] = {
+        bit: tuple(entries) for bit, entries in consumers_builder.items()
+    }
+
     reader_counts: dict[Bit, int] = {}
     for cell in module.cells.values():
         for port_name, bits in cell.connections.items():
@@ -110,6 +133,7 @@ def _build_context(module: Module, clock_spec: ClockSpec | None) -> _RuleContext
         flops=flops,
         domains=domains,
         bit_drivers=bit_drivers,
+        bit_consumers=bit_consumers,
         reader_counts=reader_counts,
         user_syncs=frozenset(user_sync_flop_names(module)),
         user_grays=frozenset(user_gray_flop_names(module)),
@@ -230,6 +254,98 @@ def _backward_fanin(
                         nxt.append((b, depth + 1))
         frontier = nxt
     return flops, ports
+
+
+def _forward_reachable_flops(
+    module: Module,
+    start_bits: tuple[Bit, ...],
+    consumers: dict[Bit, tuple[tuple[str, str, int], ...]],
+    max_depth: int = 12,
+) -> set[str]:
+    """Forward-BFS through combinational cells, mirror of
+    :func:`_backward_fanin`.
+
+    Starts at ``start_bits`` (typically a flop's ``Q`` bits), walks
+    each consumer cell forward through its output bits, and returns
+    the set of flop cell names whose ``D`` pin was reached. Stops at
+    every flop boundary — flops aren't crossed, they're the answer.
+    Stops at ``max_depth`` hops to bound the walk on huge designs;
+    the ``seen`` set keeps the walk linear regardless.
+
+    See also :func:`_forward_reachable_cells` for a broader variant
+    that also records comb-cell consumers on the path — used by
+    CDC-005's reconvergence filter, which must catch unregistered
+    recombination too (e.g. a top-level output port driven directly
+    by a comb cell combining two synchronized values).
+    """
+    reached: set[str] = set()
+    seen: set[Bit] = set()
+    frontier: list[tuple[Bit, int]] = [(b, 0) for b in start_bits if isinstance(b, int)]
+    while frontier:
+        nxt: list[tuple[Bit, int]] = []
+        for bit, depth in frontier:
+            if bit in seen:
+                continue
+            seen.add(bit)
+            for cell_name, port_name, _idx in consumers.get(bit, ()):
+                cell = module.cells[cell_name]
+                if cell.type in FF_CELL_TYPES:
+                    # Reached a flop — recorded if it's the D input, but
+                    # never crossed regardless of which pin we hit.
+                    if port_name == "D":
+                        reached.add(cell_name)
+                    continue
+                if depth >= max_depth:
+                    continue
+                # Combinational cell — enqueue every output bit.
+                for out_port in _OUTPUT_PINS:
+                    for b in cell.connections.get(out_port, ()):
+                        if isinstance(b, int):
+                            nxt.append((b, depth + 1))
+        frontier = nxt
+    return reached
+
+
+def _forward_reachable_cells(
+    module: Module,
+    start_bits: tuple[Bit, ...],
+    consumers: dict[Bit, tuple[tuple[str, str, int], ...]],
+    max_depth: int = 12,
+) -> set[str]:
+    """Like :func:`_forward_reachable_flops` but records EVERY cell
+    whose input is touched on the way — flops (via their D pin) and
+    intermediate combinational cells alike.
+
+    Recommended over the flop-only variant when the reconvergence
+    point isn't necessarily a flop: e.g. CDC-005 must fire on a
+    fixture whose two synchronized values recombine into a
+    combinational reduction driving an unregistered output port.
+    Two chains "reconverge" the moment any cell observes both
+    values — registered or not.
+    """
+    reached: set[str] = set()
+    seen: set[Bit] = set()
+    frontier: list[tuple[Bit, int]] = [(b, 0) for b in start_bits if isinstance(b, int)]
+    while frontier:
+        nxt: list[tuple[Bit, int]] = []
+        for bit, depth in frontier:
+            if bit in seen:
+                continue
+            seen.add(bit)
+            for cell_name, _port_name, _idx in consumers.get(bit, ()):
+                cell = module.cells[cell_name]
+                reached.add(cell_name)
+                if cell.type in FF_CELL_TYPES:
+                    # Flop boundary — recorded above, but don't cross.
+                    continue
+                if depth >= max_depth:
+                    continue
+                for out_port in _OUTPUT_PINS:
+                    for b in cell.connections.get(out_port, ()):
+                        if isinstance(b, int):
+                            nxt.append((b, depth + 1))
+        frontier = nxt
+    return reached
 
 
 def _backward_flop_fanin(
@@ -360,6 +476,44 @@ def _sync_chain_depth(
         visited.add(nxt.cell.name)
         current = nxt
     return depth
+
+
+def _sync_chain_flops(
+    module: Module,
+    head: Flop,
+    head_clock: str,
+    domains: dict[str, str | None],
+    reader_counts: dict[Bit, int],
+    d_bit_to_single_bit_flop: dict[Bit, Flop],
+) -> tuple[Flop, ...]:
+    """Same walk as :func:`_sync_chain_depth` but returns the ordered
+    list of chain flops (starting at ``head``).
+
+    Phase-2 of CDC-005 needs the terminal flop's Q to start the
+    forward-cone walk for the reconvergence filter; this helper is
+    the shared truth between "how long is the chain" and "what's the
+    chain's tail".
+    """
+    out: list[Flop] = [head]
+    current = head
+    visited = {current.cell.name}
+    while True:
+        if len(current.q) != 1 or len(current.q) != len(current.d):
+            break
+        next_q = current.q[0]
+        if not isinstance(next_q, int):
+            break
+        if reader_counts.get(next_q, 0) != 1:
+            break
+        nxt = d_bit_to_single_bit_flop.get(next_q)
+        if nxt is None or nxt.cell.name in visited:
+            break
+        if domains.get(nxt.cell.name) != head_clock:
+            break
+        out.append(nxt)
+        visited.add(nxt.cell.name)
+        current = nxt
+    return tuple(out)
 
 
 # --- rules ------------------------------------------------------------------
@@ -783,18 +937,18 @@ def check_cdc_005(
     """CDC-005 — Reconvergent synchronizers.
 
     Fires when a single source-domain flop fans out to two or more
-    *independent* synchronizer chains in the same destination domain.
-    Each chain individually filters metastability, but their resolution
-    times can differ by a destination cycle, so any downstream logic
-    that recombines the synchronized outputs may observe a value pair
+    *independent* synchronizer chains in the same destination domain
+    AND the synchronized outputs reconverge downstream. Each chain
+    individually filters metastability, but their resolution times
+    can differ by a destination cycle, so any downstream logic that
+    recombines the synchronized outputs may observe a value pair
     that was never simultaneously true at the source.
 
-    The MVP detection is purely structural: it groups single-bit
-    crossings by ``(src_flop, dst_clock)`` and reports when a single
-    source feeds two-or-more sync first stages. We deliberately don't
-    try (yet) to prove that the recombination actually happens
-    downstream — having the redundant synchronizers is itself a code
-    smell worth surfacing.
+    Phase 2 (issue #33) filters out groups whose forward cones don't
+    intersect — having redundant synchronizers without a
+    recombination point isn't itself a bug, just a code smell, and
+    pure-structural reporting on it was the rule's biggest
+    false-positive source.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -827,6 +981,38 @@ def check_cdc_005(
     for (src_name, dst_clk), group in grouped.items():
         if len(group) < 2:
             continue
+        # Reconvergence filter (issue #33): walk forward from each
+        # chain's *terminal* flop's Q and look for any downstream cell
+        # reached by ≥2 chains. The walk uses
+        # :func:`_forward_reachable_cells` so a recombination point
+        # that isn't itself a flop (e.g. a comb reduction driving an
+        # unregistered top-level port) still counts. Chain-internal
+        # flops are excluded so chains never "reconverge on
+        # themselves" — only genuinely downstream cells count. If no
+        # downstream cell is reached by 2+ chains, the group's
+        # redundancy is harmless and we don't fire.
+        appears_in: dict[str, int] = defaultdict(int)
+        for c in group:
+            chain = _sync_chain_flops(
+                module,
+                c.dst_flop,
+                c.dst_clock,
+                ctx.domains,
+                ctx.reader_counts,
+                ctx.d_bit_to_single_bit_flop,
+            )
+            terminal = chain[-1]
+            chain_internal = {f.cell.name for f in chain}
+            reached = _forward_reachable_cells(
+                module,
+                start_bits=terminal.q,
+                consumers=ctx.bit_consumers,
+            )
+            for cell_name in reached - chain_internal:
+                appears_in[cell_name] += 1
+        if not any(count >= 2 for count in appears_in.values()):
+            continue
+
         dst_names = sorted(c.dst_flop.cell.name for c in group)
         violations.append(
             Violation(

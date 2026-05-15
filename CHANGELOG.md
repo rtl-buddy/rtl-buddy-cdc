@@ -41,6 +41,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry. This is additive — existing `JSON_CONTRACT` keys keep their
   names and types — and gives `--baseline` a stable per-cell handle
   for the match key.
+- **CDC-005 false-positive cut** (#32, #33). The rule used to fire
+  whenever a single source flop drove ≥2 sync chains in the same
+  destination domain — purely structural. It now also requires the
+  chains to reconverge downstream: phase-2 walks each chain's
+  terminal flop's Q forward through the netlist (helper:
+  `_forward_reachable_cells`) and only fires when ≥2 chains'
+  forward cones touch a common downstream cell (flop OR comb,
+  including a comb cell driving an unregistered output port).
+  Existing `bad_reconvergent_sync` and new
+  `bad_reconvergent_with_recombine` fixtures still fire; the new
+  `good_disjoint_fanout_sync_chains` fixture (single source, two
+  sync chains, disjoint downstream registers) is correctly silent.
+  Phase 1 added the `_forward_reachable_flops` helper alongside;
+  it's the strict-flop variant retained for callers that need
+  flop-only reachability.
+
+### Internal
+
+- `_RuleContext` gains a `bit_consumers` index (the forward analog
+  of `bit_drivers`), built once per `run_all`. Used by the
+  CDC-005 reconvergence filter and available to any future rule
+  that needs to walk consumer fanout. New helper `_sync_chain_flops`
+  exposes the chain as an ordered flop tuple so callers that need
+  the chain's tail (not just its depth) don't duplicate the walk
+  inside `_sync_chain_depth`.
 
 ## [0.2.0] — 2026-05-15
 
