@@ -56,6 +56,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Phase 1 added the `_forward_reachable_flops` helper alongside;
   it's the strict-flop variant retained for callers that need
   flop-only reachability.
+- **CDC-004 gating-shape widening** (#34, #35).
+  `_is_gated_bus_crossing` used to recognise exactly one shape: a
+  `$mux` directly driving every bit of the destination flop's `D`
+  with a dst-domain select. Two more shapes are accepted now:
+  - **`$dffe`-style EN gating** (#34). When the destination cell is
+    a flop-with-enable from `flops.FF_CELL_TYPES` (`$dffe` /
+    `$sdffe` / `$adffe` / …) and its `EN` pin's fanin is entirely
+    in the destination clock domain, the crossing is gated by a
+    synchronized load-enable and CDC-004 stays silent. The default
+    Yosys and slang frontend pipelines emit `$dff` + `$mux` (not
+    `$dffe`), so the new path activates only on externally-supplied
+    netlists or with `opt_dff` in the build. Paired fixture
+    `good_dffe_gated_bus_crossing` (built with `opt_dff`) is silent.
+  - **Buffered mux→D** (#35). Up to two transparent single-input
+    buffers (`$buf` / `$pos` / `$_BUF_` / `$_NOT_` / `$not`) between
+    the gating mux's `Y` output and the destination flop's `D` pin
+    are tolerated — Yosys synthesis routinely inserts a fanout
+    buffer or two here. Chains deeper than the budget bail out and
+    keep firing. Paired fixture `good_buffered_gated_bus_crossing`
+    (one `$_BUF_` per lane, post-processed onto the Yosys output by
+    `insert_buffer.py`) is silent; the 3-hop regression case in
+    `tests/test_rule_corners.py` still fires CDC-004.
+
+  Both extensions are pure widenings of the gated-crossing
+  acceptance set — `bad_bus_crossing` (no gating at all) and
+  `ip_cdc_handshake` (direct mux-on-D, no buffers) keep their
+  pre-existing behaviour.
 
 ### Internal
 
@@ -66,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exposes the chain as an ordered flop tuple so callers that need
   the chain's tail (not just its depth) don't duplicate the walk
   inside `_sync_chain_depth`.
+- New helper `_trace_through_bus_buffers` walks each destination
+  `D` bit backward through a bounded chain of transparent single-
+  input buffer cells (`_BUS_BUFFER_TYPES`) and returns the driver
+  of the surviving upstream net. Currently consumed by CDC-004's
+  buffered mux-on-D detection; available to future rules that need
+  to look past Yosys-inserted fanout buffers without owning a
+  buffer-walker each.
 
 ## [0.2.0] — 2026-05-15
 

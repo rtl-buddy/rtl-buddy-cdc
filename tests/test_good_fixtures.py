@@ -62,6 +62,19 @@ GOOD_FIXTURES = [
     # must not fire. Two async crossings (src_q → each sync first
     # stage).
     ("good_disjoint_fanout_sync_chains", 2),
+    # $dffe-style load-enable gating (issue #34). 8-bit data bus into
+    # a $dffe whose EN is a dst-domain 2FF synchronizer's tail.
+    # Yosys inference of $dffe is forced by ``opt_dff`` at fixture-
+    # build time (see the fixture's SV header). Two async crossings:
+    # the 1-bit synced load_req and the 8-bit dffe-gated data path.
+    ("good_dffe_gated_bus_crossing", 2),
+    # Mux-on-D gating with a transparent buffer hop between mux and
+    # the dst flop's D (issue #35). The fixture's JSON is post-
+    # processed (see insert_buffer.py) to splice a single $_BUF_
+    # per lane; the gating-shape detector must walk through it and
+    # still recognise the originating mux. Two async crossings (the
+    # synced load_req + the gated data bus).
+    ("good_buffered_gated_bus_crossing", 2),
 ]
 
 
