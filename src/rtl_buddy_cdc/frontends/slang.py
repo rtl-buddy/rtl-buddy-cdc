@@ -447,11 +447,18 @@ class _ModuleBuilder:
         t = getattr(var_sym, "type", None)
         if t is None:
             return 1
-        # bitWidth is present on integral types; non-integral types
-        # (e.g. interfaces, modports) aren't supported yet — width 1
-        # is a safe placeholder that surfaces as a malformed cell
-        # downstream rather than crashing the build.
-        return int(getattr(t, "bitWidth", 1) or 1)
+        # ``selectableWidth`` is the total number of bits the type
+        # spans, including any unpacked dimensions. pyslang reports
+        # ``bitWidth = 0`` on unpacked-array types and the full
+        # storage count on ``selectableWidth``; for packed types and
+        # scalars the two agree, so this is the right number to use
+        # uniformly. Non-integral types (interfaces, modports) report
+        # 0 / no attribute — fall back to 1 as a placeholder that
+        # surfaces as a malformed cell downstream rather than
+        # crashing the build.
+        return int(
+            getattr(t, "selectableWidth", None) or getattr(t, "bitWidth", None) or 1
+        )
 
     def _fresh_cell_name(self, type_str: str) -> str:
         # Yosys autogen names look like "$procdff$3" — we don't need
@@ -1033,7 +1040,20 @@ class _ModuleBuilder:
         return None
 
     def _element_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
-        """``var[i]`` — return the single-bit subset of ``var``'s bits.
+        """``var[i]`` — return the bit subset of ``var`` that the
+        index picks out.
+
+        Stride is the element type's storage width:
+
+        - For packed arrays (``logic [W-1:0] data``) the element type
+          is a scalar and the stride is 1 — ``data[i]`` returns one
+          bit.
+        - For unpacked arrays (``logic chain [N]``) the element type
+          is the inner type and the stride is its ``selectableWidth``
+          — ``chain[i]`` returns one stripe.
+        - For packed-and-unpacked (``logic [W-1:0] chain [STAGES]``)
+          the outer type is the unpacked array, its element type is
+          the packed type, so each ``chain[i]`` returns W bits.
 
         Falls back to ``None`` when the underlying value isn't a bare
         named variable (e.g. nested selects, slices of expressions),
@@ -1047,10 +1067,30 @@ class _ModuleBuilder:
         idx = self._const_int(getattr(expr, "selector", None))
         if idx is None:
             return None
-        var_bits = self._alloc_bits(inner.symbol)
-        if not (0 <= idx < len(var_bits)):
+        var_sym = inner.symbol
+        var_bits = self._alloc_bits(var_sym)
+        # Stride = element type's selectableWidth. For scalar-element
+        # cases (packed arrays where the element is ``logic`` etc.)
+        # this is 1, matching the original single-bit semantics.
+        var_type = getattr(var_sym, "type", None)
+        elem_type = getattr(var_type, "elementType", None) if var_type else None
+        stride = 1
+        if elem_type is not None:
+            stride = int(
+                getattr(elem_type, "selectableWidth", None)
+                or getattr(elem_type, "bitWidth", None)
+                or 1
+            )
+        # The element-select index counts in *elements*, not bits.
+        # For an unpacked-then-packed type the outer ``range`` runs
+        # over the unpacked dimension; pyslang folds the constant to
+        # the unpacked index. Bits are stored low-element-first
+        # (matching how Yosys-flatten lays out the unpacked dim).
+        start = idx * stride
+        end = start + stride
+        if start < 0 or end > len(var_bits):
             return None
-        return (var_bits[idx],)
+        return tuple(var_bits[start:end])
 
     def _range_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """``var[hi:lo]`` — return the contiguous bit subset.
