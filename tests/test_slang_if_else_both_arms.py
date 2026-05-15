@@ -89,9 +89,7 @@ def test_if_else_both_arms_single_flop_with_mux(tmp_path: Path) -> None:
     drv = drivers.get(d_bit)
     assert drv is not None, "flop D has no driver — no mux emitted"
     drv_cell = mod.cells[drv[0]]
-    assert drv_cell.type == "$mux", (
-        f"expected $mux driving D; got {drv_cell.type}"
-    )
+    assert drv_cell.type == "$mux", f"expected $mux driving D; got {drv_cell.type}"
 
 
 def test_if_else_both_arms_walks_both_rhs(tmp_path: Path) -> None:

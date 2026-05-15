@@ -253,15 +253,26 @@ class _ModuleBuilder:
         # the for-loop body is being walked. See ``_emit_for_loop``.
         self._loop_bindings: dict[Any, int] = {}
         # Stack of single-bit enable signals active in the current
-        # always_ff walk. Pushed when entering the ifTrue arm of a
-        # no-else ``ConditionalStatement`` (the canonical
-        # ``if (cond) q <= ...;`` load gate); consulted by
-        # ``_emit_assignment_expression`` to wrap the flop's D in a
-        # hold-feedback mux. Yosys's ``proc_dff`` pass infers the same
-        # mux from the if/else structure; matching that lets the rule
-        # pack's ``_is_gated_bus_crossing`` recognise handshake-gated
-        # buses. See issue #64.
+        # always_ff walk. Pushed when entering a ``ConditionalStatement``
+        # arm: ``cond`` for ifTrue, ``$not(cond)`` for ifFalse. Combined
+        # via ``$and`` into a per-write enable when an assignment is
+        # accumulated; the rule pack's ``_is_gated_bus_crossing`` then
+        # recognises the resulting hold-feedback mux as a handshake-
+        # gated bus crossing. See issue #64.
         self._enable_stack: list[Bit] = []
+        # Per-procedural-block write accumulator: maps each LHS bit
+        # tuple to a list of ``(enable, rhs)`` pairs in walk order.
+        # ``_emit_assignment_expression`` appends instead of emitting
+        # cells; ``_drain_proc_writes`` (called at end of
+        # ``_emit_procedural_block``) builds one flop per LHS with a
+        # mux tree from the accumulated writes. So
+        # ``if (cond) q <= a; else q <= b;`` collapses to one ``$adff``
+        # whose D is ``mux(cond, b, a)`` — not two flops with the same
+        # Q. Initialised fresh on each procedural-block entry.
+        self._proc_writes: dict[
+            tuple[Bit, ...],
+            list[tuple[Bit | None, tuple[Bit, ...]]],
+        ] = {}
 
     # -- public ----------------------------------------------------------
 
@@ -667,43 +678,56 @@ class _ModuleBuilder:
         # for every flop cell it produces — matches Yosys's $procdff
         # ``src`` attribute, which spans the block too.
         src_node = block
-        if self._kind_name(inner) == "ConditionalStatement":
-            # The if-condition's variable IS the reset signal — confirm
-            # against the event-list-derived candidate, but trust the
-            # body shape when they disagree (event lists are sometimes
-            # ordered unconventionally).
-            cond_reset = self._extract_condition_symbol(inner.conditions[0].expr)
-            if cond_reset is not None:
-                reset_sym = cond_reset
-            data_branch = inner.ifFalse
-            if data_branch is None:
-                return  # no else → no data assignment to model
-            self._emit_assignments_in(
-                data_branch, clk_sym, reset_sym, reset_active_low, src_node
+        # Fresh write accumulator per procedural block. Drained at the
+        # end so one flop emits per LHS even when multiple arms write
+        # the same target (the if/else both-arms case).
+        self._proc_writes = {}
+        block_reset_sym = reset_sym
+        block_reset_active_low = reset_active_low
+        try:
+            if self._kind_name(inner) == "ConditionalStatement":
+                # The if-condition's variable IS the reset signal —
+                # confirm against the event-list-derived candidate,
+                # but trust the body shape when they disagree (event
+                # lists are sometimes ordered unconventionally).
+                cond_reset = self._extract_condition_symbol(inner.conditions[0].expr)
+                if cond_reset is not None:
+                    block_reset_sym = cond_reset
+                data_branch = inner.ifFalse
+                if data_branch is None:
+                    return  # no else → no data assignment to model
+                self._emit_assignments_in(
+                    data_branch,
+                    clk_sym,
+                    block_reset_sym,
+                    block_reset_active_low,
+                    src_node,
+                )
+            elif self._kind_name(inner) == "ExpressionStatement":
+                self._emit_assignment_expression(
+                    inner.expr,
+                    clk_sym,
+                    reset_sym=None,
+                    reset_active_low=False,
+                    src_node=src_node,
+                )
+            else:
+                # Body isn't a single conditional or expression — defer
+                # to the general statement walker. Reached for no-reset
+                # blocks whose body is a multi-statement ``begin..end``,
+                # a ``case``, a procedural ``for``, etc.
+                self._emit_assignments_in(
+                    inner,
+                    clk_sym,
+                    reset_sym=None,
+                    reset_active_low=False,
+                    src_node=src_node,
+                )
+            self._drain_proc_writes(
+                clk_sym, block_reset_sym, block_reset_active_low, src_node
             )
-        elif self._kind_name(inner) == "ExpressionStatement":
-            self._emit_assignment_expression(
-                inner.expr,
-                clk_sym,
-                reset_sym=None,
-                reset_active_low=False,
-                src_node=src_node,
-            )
-        else:
-            # Body isn't a single conditional or expression — defer to
-            # the general statement walker. Reached for no-reset blocks
-            # whose body is a multi-statement ``begin..end``, a
-            # ``case``, a procedural ``for``, etc.; the walker handles
-            # those shapes after #54 and #59. No reset signal in this
-            # path — the synchronous-reset case still enters via the
-            # ConditionalStatement branch above.
-            self._emit_assignments_in(
-                inner,
-                clk_sym,
-                reset_sym=None,
-                reset_active_low=False,
-                src_node=src_node,
-            )
+        finally:
+            self._proc_writes = {}
 
     def _analyse_event_list(self, timing: Any) -> tuple[Any | None, Any | None, bool]:
         """Pick clock + (optional) async-reset symbols out of the
@@ -803,45 +827,57 @@ class _ModuleBuilder:
                 )
             return
         if kind == "ConditionalStatement":
-            # Nested if/else inside the data branch (or an if/else-if
-            # chain that pyslang represents as recursive Conditionals).
+            # Push the condition onto the enable stack while walking
+            # each arm so ``_emit_assignment_expression`` accumulates
+            # writes with the right enable. ``_drain_proc_writes``
+            # then collapses all writes to one flop per LHS with a
+            # mux tree:
             #
-            # For the simple ``if (cond) q <= ...;`` shape with no
-            # else, push ``cond`` onto the enable stack while walking
-            # the ifTrue arm so ``_emit_assignment_expression`` can
-            # wrap the flop's D in a hold-feedback mux. This is the
-            # canonical handshake-gated bus shape — ``ip_cdc_handshake``
-            # consumers latch the bus only when a synchronized
-            # ``cmd_valid`` pulses, and Yosys's ``proc_dff`` pass
-            # infers the same mux automatically.
+            # - ifTrue arm: push ``cond`` (positive polarity).
+            # - ifFalse arm: push ``$not(cond)`` (negate via a $not
+            #   cell) — symmetric with the ifTrue case, so an if/else
+            #   that writes the same LHS in both arms produces a
+            #   single flop whose D is ``mux(not_cond, mux(cond, Q, a), b)``
+            #   (equivalent to ``mux(cond, b, a)`` after ``opt_clean``,
+            #   but with the explicit hold-feedback shape the rule
+            #   pack's ``_is_gated_bus_crossing`` matches).
             #
-            # If/else with an explicit else: both arms walked
-            # unconditionally (current behavior). Proper handling of
-            # both-arms-write-same-LHS needs deferred emission and a
-            # mux tree per LHS — separate follow-up. Most CDC-relevant
-            # shapes (FSM-loaded bus, capture-on-valid, handshake
-            # bypass) use the no-else form.
-            if statement.ifFalse is None:
-                cond_bit = self._lower_condition_to_bit(statement.conditions)
-                pushed = cond_bit is not None
-                if cond_bit is not None:
-                    self._enable_stack.append(cond_bit)
+            # If the condition can't be lowered to a single bit
+            # (multi-pattern match, etc.) fall back to walking both
+            # arms unconditionally — same conservative policy as
+            # before, but rare on real RTL.
+            cond_bit = self._lower_condition_to_bit(statement.conditions)
+            if cond_bit is None:
+                for arm in (statement.ifTrue, statement.ifFalse):
+                    if arm is not None:
+                        self._emit_assignments_in(
+                            arm, clk_sym, reset_sym, reset_active_low, src_node
+                        )
+                return
+            self._enable_stack.append(cond_bit)
+            try:
+                self._emit_assignments_in(
+                    statement.ifTrue,
+                    clk_sym,
+                    reset_sym,
+                    reset_active_low,
+                    src_node,
+                )
+            finally:
+                self._enable_stack.pop()
+            if statement.ifFalse is not None:
+                not_cond = self._lower_not(cond_bit)
+                self._enable_stack.append(not_cond)
                 try:
                     self._emit_assignments_in(
-                        statement.ifTrue,
+                        statement.ifFalse,
                         clk_sym,
                         reset_sym,
                         reset_active_low,
                         src_node,
                     )
                 finally:
-                    if pushed:
-                        self._enable_stack.pop()
-            else:
-                for arm in (statement.ifTrue, statement.ifFalse):
-                    self._emit_assignments_in(
-                        arm, clk_sym, reset_sym, reset_active_low, src_node
-                    )
+                    self._enable_stack.pop()
             return
         if kind == "CaseStatement":
             # Each item is an ``ItemGroup`` with the match expressions
@@ -1014,6 +1050,17 @@ class _ModuleBuilder:
         reset_active_low: bool,
         src_node: Any = None,
     ) -> None:
+        """Accumulate one nonblocking write into ``_proc_writes``.
+
+        Doesn't emit a flop cell — emission happens in
+        ``_drain_proc_writes`` after the entire body has been walked,
+        so multiple arms writing the same LHS collapse to one flop
+        with a mux tree. Reset / clock info is captured at the
+        procedural-block level (same for every write in the block);
+        the parameters here are kept for signature symmetry with the
+        pre-deferred-emission walker but only ``src_node`` is read.
+        """
+        del clk_sym, reset_sym, reset_active_low  # captured at block level
         if type(expr).__name__ != "AssignmentExpression":
             return
         if not getattr(expr, "isNonBlocking", False):
@@ -1038,15 +1085,129 @@ class _ModuleBuilder:
             # input as opaque (no upstream flops trace through it).
             d_bits = self._unknown_driver(width=len(q_bits))
 
-        # If we're inside a ``if (cond) q <= ...;`` body (no else),
-        # wrap D in a hold-feedback mux: ``D = mux(S=cond, A=Q, B=rhs)``.
-        # Yosys's proc_dff infers the same shape from the SV
-        # if/else structure. The rule pack's gated-bus detector
-        # (``_is_gated_bus_crossing``) checks for this mux when
-        # deciding whether a multi-bit crossing is handshake-protected.
-        if self._enable_stack:
-            d_bits = self._wrap_d_with_enable_mux(d_bits, q_bits)
+        # Combine the active enable stack into a single bit (chain
+        # $and cells). None when the stack is empty — the write is
+        # unconditional in the current control-flow context.
+        enable = self._combine_enable_stack()
+        # Stash the write source for cell-attribute use at drain time.
+        # We only need one src_node per LHS (the procedural block's
+        # range); the per-assignment fallback in the old code was
+        # rarely used.
+        self._proc_writes.setdefault(q_bits, []).append((enable, d_bits))
 
+    def _lower_not(self, bit: Bit) -> Bit:
+        """Allocate a ``$not`` cell over ``bit`` and return the output
+        bit. Used by ``ConditionalStatement`` to push the negation of
+        a condition onto ``_enable_stack`` when entering an ifFalse
+        arm — keeps the mux-tree drain symmetric across both arms.
+        """
+        y = self._alloc_anon_bits(1)
+        name = self._fresh_cell_name("$not")
+        self._cells[name] = Cell(
+            name=name,
+            type="$not",
+            connections={"A": (bit,), "Y": y},
+            parameters={},
+            attributes={},
+        )
+        return y[0]
+
+    def _combine_enable_stack(self) -> Bit | None:
+        """AND every entry on ``_enable_stack`` into a single bit, or
+        return ``None`` if the stack is empty. Chains ``$and`` cells
+        for multi-entry stacks; for a single-entry stack returns the
+        bit directly with no cell emission."""
+        if not self._enable_stack:
+            return None
+        if len(self._enable_stack) == 1:
+            return self._enable_stack[0]
+        select_bit: Bit = self._enable_stack[0]
+        for next_bit in self._enable_stack[1:]:
+            and_y = self._alloc_anon_bits(1)
+            cell_name = self._fresh_cell_name("$and")
+            self._cells[cell_name] = Cell(
+                name=cell_name,
+                type="$and",
+                connections={
+                    "A": (select_bit,),
+                    "B": (next_bit,),
+                    "Y": and_y,
+                },
+                parameters={},
+                attributes={},
+            )
+            select_bit = and_y[0]
+        return select_bit
+
+    def _drain_proc_writes(
+        self,
+        clk_sym: Any,
+        reset_sym: Any | None,
+        reset_active_low: bool,
+        src_node: Any,
+    ) -> None:
+        """Emit one flop per accumulated LHS.
+
+        For each LHS, walks its ``(enable, rhs)`` writes in source
+        order to build the flop's D input:
+
+        - The initial "hold" value is the LHS's own Q bits — when no
+          enable in any later write fires, D = Q (the flop holds).
+        - An unconditional write (``enable is None``) replaces the
+          current D entirely; later muxes apply on top.
+        - A conditional write wraps D in a hold-feedback mux
+          ``mux(S=enable, A=prev_D, B=rhs)`` so the rule pack's
+          gated-bus detector can see the select signal.
+
+        ``if (cond) q <= a; else q <= b;`` accumulates as
+        ``[(cond, a), (not_cond, b)]`` and drains to
+        ``D = mux(not_cond, mux(cond, Q, a), b)`` — equivalent to a
+        Yosys ``$mux(cond, b, a)`` after ``opt_clean`` but with the
+        explicit hold-feedback shape the detector recognises.
+        """
+        for q_bits, writes in self._proc_writes.items():
+            d_bits: tuple[Bit, ...] = q_bits  # initial Q-feedback
+            for enable, rhs in writes:
+                if enable is None:
+                    d_bits = rhs
+                else:
+                    d_bits = self._build_hold_mux(enable, hold=d_bits, fire=rhs)
+            self._emit_flop_cell(
+                clk_sym, reset_sym, reset_active_low, q_bits, d_bits, src_node
+            )
+
+    def _build_hold_mux(
+        self, enable: Bit, hold: tuple[Bit, ...], fire: tuple[Bit, ...]
+    ) -> tuple[Bit, ...]:
+        """Allocate a ``$mux(S=enable, A=hold, B=fire)`` cell and
+        return its output bits."""
+        width = len(hold)
+        mux_y = self._alloc_anon_bits(width)
+        mux_name = self._fresh_cell_name("$mux")
+        self._cells[mux_name] = Cell(
+            name=mux_name,
+            type="$mux",
+            connections={
+                "A": hold,
+                "B": fire,
+                "S": (enable,),
+                "Y": mux_y,
+            },
+            parameters={},
+            attributes={},
+        )
+        return mux_y
+
+    def _emit_flop_cell(
+        self,
+        clk_sym: Any,
+        reset_sym: Any | None,
+        reset_active_low: bool,
+        q_bits: tuple[Bit, ...],
+        d_bits: tuple[Bit, ...],
+        src_node: Any,
+    ) -> None:
+        """Allocate a ``$dff`` / ``$adff`` cell with the given D and Q."""
         connections: dict[str, tuple[Bit, ...]] = {
             "CLK": self._alloc_bits(clk_sym),
             "D": d_bits,
@@ -1056,23 +1217,11 @@ class _ModuleBuilder:
         if reset_sym is not None:
             connections["ARST"] = self._alloc_bits(reset_sym)
             cell_type = "$adff"
-        # Polarity parameter mirrors Yosys' parameter encoding so any
-        # rule that later inspects polarity has it available; the rule
-        # pack doesn't read these today but the contract is cheap to
-        # preserve.
-        parameters: dict[str, str] = {
-            "CLK_POLARITY": "1",
-        }
+        parameters: dict[str, str] = {"CLK_POLARITY": "1"}
         if reset_sym is not None:
             parameters["ARST_POLARITY"] = "0" if reset_active_low else "1"
-        # Attach the source range so reporters can surface file:line.
-        # Fall back to the assignment itself when the caller didn't
-        # thread a block-level node through (continuous-assign-ish
-        # shapes).
         attrs: dict[str, str] = {}
         src = self._src_attr(src_node) if src_node is not None else None
-        if src is None:
-            src = self._src_attr(expr)
         if src is not None:
             attrs["src"] = src
         name = self._fresh_cell_name(cell_type)
@@ -1114,65 +1263,6 @@ class _ModuleBuilder:
         if len(bits) != 1:
             return None
         return bits[0]
-
-    def _wrap_d_with_enable_mux(
-        self, d_bits: tuple[Bit, ...], q_bits: tuple[Bit, ...]
-    ) -> tuple[Bit, ...]:
-        """Wrap ``d_bits`` in a hold-feedback mux gated by the AND of
-        every enable currently on ``_enable_stack``.
-
-        Returns the mux output bits, which become the flop's new D
-        connection: ``D = mux(S = AND(enables), A = Q_feedback,
-        B = original_D)``. The mux's A operand is the flop's own Q —
-        when the enable is false, the flop holds its previous value;
-        when true, it captures ``original_D``. That's exactly the
-        shape Yosys's ``proc_dff`` infers from ``if (en) q <= ...;``.
-
-        For multiple stacked enables (nested ``if (a) if (b) ...``),
-        chain ``$and`` cells: the deepest enable bit is the most
-        recently pushed, and AND'ing them yields a single select bit.
-        """
-        # Combine all stacked enables via ``$and``. Single-enable
-        # case: just use the bit directly, no AND needed.
-        if len(self._enable_stack) == 1:
-            select_bit: Bit = self._enable_stack[0]
-        else:
-            select_bit = self._enable_stack[0]
-            for next_bit in self._enable_stack[1:]:
-                and_y = self._alloc_anon_bits(1)
-                cell_name = self._fresh_cell_name("$and")
-                self._cells[cell_name] = Cell(
-                    name=cell_name,
-                    type="$and",
-                    connections={
-                        "A": (select_bit,),
-                        "B": (next_bit,),
-                        "Y": and_y,
-                    },
-                    parameters={},
-                    attributes={},
-                )
-                select_bit = and_y[0]
-
-        # Allocate fresh output bits for the mux. Width matches the
-        # original D / Q width (they must match — Q drives the hold
-        # path).
-        width = len(d_bits)
-        mux_y = self._alloc_anon_bits(width)
-        mux_name = self._fresh_cell_name("$mux")
-        self._cells[mux_name] = Cell(
-            name=mux_name,
-            type="$mux",
-            connections={
-                "A": q_bits,
-                "B": d_bits,
-                "S": (select_bit,),
-                "Y": mux_y,
-            },
-            parameters={},
-            attributes={},
-        )
-        return mux_y
 
     def _alloc_anon_bits(self, width: int) -> tuple[Bit, ...]:
         """Allocate ``width`` fresh anonymous bits for a comb cell's
