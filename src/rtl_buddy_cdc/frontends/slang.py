@@ -12,6 +12,12 @@ internal ``$_BUF_`` primitives in SV source are correctly
 rejected by slang as not being legal SystemVerilog and stay
 Yosys-frontend-only by design.
 
+Tested against ``pyslang>=10,<11`` — that's the range the
+``[slang]`` extra pins (see ``pyproject.toml`` and issue #26).
+Older majors had different ``DiagnosticEngine`` /
+``getAttributes`` surfaces; widening the cap means re-running
+the slang test files against the new wheel.
+
 Rule parity matrix (today)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 Driven by ``tests/test_slang_elaboration.py``; each row is a fixture
