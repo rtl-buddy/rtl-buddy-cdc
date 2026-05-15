@@ -96,3 +96,9 @@
 ## [2026-05-15] update | pin pyslang to tested major-version range (#26)
 - `pyproject.toml` `[project.optional-dependencies].slang` narrowed from `pyslang>=7.0` to `pyslang>=10,<11` — 10.x is the envelope the slang test files were developed against (uv.lock pins 10.0.0; CI matrix resolves to the same). pyslang's `DiagnosticEngine` / attribute-lookup surfaces shifted across pre-10 majors, so widening the cap means re-running `tests/test_slang_*` against the new wheel.
 - `src/rtl_buddy_cdc/frontends/slang.py` module docstring grows a "Tested against pyslang>=10,<11" note alongside the parity status — keeps the version envelope discoverable from inside the file the API calls live in (not just `pyproject.toml`).
+
+## [2026-05-15] create | CHANGELOG.md and bump version to 0.2.0 (#27)
+- New repo-root `CHANGELOG.md` (Keep a Changelog 1.1.0 format) — `[0.2.0] — 2026-05-15` section lists the slang frontend (#5/#6/#7/#8), the `JSON_CONTRACT` pin (#13), structural-context memoisation (#12), version-command pyslang line (#25), pyslang range pin (#26), the SDC brace-group fix (#23), slang-in-CI (#9), Python-3.13 alignment (#10), and the `--frontend` help refresh (#11). `[0.1.0] — 2026-05-11` retroactively documents the initial release surface.
+- Version bumped to `0.2.0` in lockstep in both sources: `pyproject.toml [project].version` and `src/rtl_buddy_cdc/reporter.py:TOOL_VERSION` (the latter is the string SARIF puts in `runs[0].tool.driver.version`).
+- New `tests/test_reporter.py::test_tool_version_matches_pyproject` — asserts `TOOL_VERSION == importlib.metadata.version("rtl-buddy-cdc")`. Sentinel for the dual-bump rule already in AGENTS.md.
+- `AGENTS.md` § Commit / branch / release conventions — Versioning bullet extended: references the new sentinel test by full pytest path and adds the CHANGELOG.md `[Unreleased]` → versioned rename procedure.
