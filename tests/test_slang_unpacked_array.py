@@ -148,7 +148,6 @@ def test_ip_cdc_sync_shape_under_for_loop(tmp_path: Path) -> None:
         "(if 1 → unpacked-array collapse; if 0 → for-loop unroll missing)"
     )
     q_bits = [f.connections["Q"][0] for f in flops]
-    d_bits = [f.connections["D"][0] for f in flops]
     assert len(set(q_bits)) == 2, (
         f"sync stages must have distinct Q bits; got Qs={q_bits}"
     )
