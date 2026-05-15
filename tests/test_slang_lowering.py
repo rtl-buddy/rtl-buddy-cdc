@@ -446,6 +446,29 @@ endmodule
     assert start != end, f"expected a non-degenerate range, got {src_attr!r}"
 
 
+# --- Port-declaration attribute propagation -------------------------------
+
+
+def test_port_level_cdc_sync_reaches_netname(tmp_path: Path) -> None:
+    """``(* cdc_sync *)`` written on a top-level port declaration must
+    land on the netname tied to the port's internal variable — same as
+    when it's written on a sibling ``logic`` declaration. Yosys merges
+    the two; the slang frontend used to only read attributes off the
+    underlying ``VariableSymbol`` and silently dropped the port form
+    (issue #38). The rule pack only consults attribute *keys* (via
+    ``USER_SYNC_ATTRS``), so this test pins presence, not value."""
+    src = """module m (
+    input  logic clk, rst_n, d,
+    (* cdc_sync *) output logic q
+);
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) q <= 0; else q <= d;
+endmodule
+"""
+    module = _elaborate_full(tmp_path, src)
+    assert "cdc_sync" in module.netnames["q"].attributes
+
+
 def test_comb_cells_carry_src_attribute(tmp_path: Path) -> None:
     """Combinational cells (``$and`` here) should also carry a src
     attribute pointing at the operator expression."""

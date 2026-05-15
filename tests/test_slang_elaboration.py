@@ -227,6 +227,15 @@ def test_cdc_sync_attribute_suppresses_cdc_001() -> None:
     assert _run("marked_user_sync") == []
 
 
+def test_port_level_cdc_sync_suppresses_cdc_001() -> None:
+    """Same suppression contract, but the annotation is on the
+    ``output logic q_out`` port declaration rather than a sibling
+    ``logic`` (issue #38). pyslang stores port-declaration attributes
+    on the ``PortSymbol``; ``_collect_port`` has to merge them onto
+    the internal variable's netname for the rule pack to see them."""
+    assert _run("marked_user_sync_port") == []
+
+
 # --- CLI smoke test ---------------------------------------------------------
 
 
