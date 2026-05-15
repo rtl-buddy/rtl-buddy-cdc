@@ -244,6 +244,16 @@ class _ModuleBuilder:
         # selects like ``chain[i]`` fold to the per-iteration bit while
         # the for-loop body is being walked. See ``_emit_for_loop``.
         self._loop_bindings: dict[Any, int] = {}
+        # Stack of single-bit enable signals active in the current
+        # always_ff walk. Pushed when entering the ifTrue arm of a
+        # no-else ``ConditionalStatement`` (the canonical
+        # ``if (cond) q <= ...;`` load gate); consulted by
+        # ``_emit_assignment_expression`` to wrap the flop's D in a
+        # hold-feedback mux. Yosys's ``proc_dff`` pass infers the same
+        # mux from the if/else structure; matching that lets the rule
+        # pack's ``_is_gated_bus_crossing`` recognise handshake-gated
+        # buses. See issue #64.
+        self._enable_stack: list[Bit] = []
 
     # -- public ----------------------------------------------------------
 
@@ -787,13 +797,43 @@ class _ModuleBuilder:
         if kind == "ConditionalStatement":
             # Nested if/else inside the data branch (or an if/else-if
             # chain that pyslang represents as recursive Conditionals).
-            # Both arms are clocked data paths — walk both. Conditions
-            # themselves are pure combinational, only their bodies
-            # contribute flops.
-            for arm in (statement.ifTrue, statement.ifFalse):
-                self._emit_assignments_in(
-                    arm, clk_sym, reset_sym, reset_active_low, src_node
-                )
+            #
+            # For the simple ``if (cond) q <= ...;`` shape with no
+            # else, push ``cond`` onto the enable stack while walking
+            # the ifTrue arm so ``_emit_assignment_expression`` can
+            # wrap the flop's D in a hold-feedback mux. This is the
+            # canonical handshake-gated bus shape — ``ip_cdc_handshake``
+            # consumers latch the bus only when a synchronized
+            # ``cmd_valid`` pulses, and Yosys's ``proc_dff`` pass
+            # infers the same mux automatically.
+            #
+            # If/else with an explicit else: both arms walked
+            # unconditionally (current behavior). Proper handling of
+            # both-arms-write-same-LHS needs deferred emission and a
+            # mux tree per LHS — separate follow-up. Most CDC-relevant
+            # shapes (FSM-loaded bus, capture-on-valid, handshake
+            # bypass) use the no-else form.
+            if statement.ifFalse is None:
+                cond_bit = self._lower_condition_to_bit(statement.conditions)
+                pushed = cond_bit is not None
+                if cond_bit is not None:
+                    self._enable_stack.append(cond_bit)
+                try:
+                    self._emit_assignments_in(
+                        statement.ifTrue,
+                        clk_sym,
+                        reset_sym,
+                        reset_active_low,
+                        src_node,
+                    )
+                finally:
+                    if pushed:
+                        self._enable_stack.pop()
+            else:
+                for arm in (statement.ifTrue, statement.ifFalse):
+                    self._emit_assignments_in(
+                        arm, clk_sym, reset_sym, reset_active_low, src_node
+                    )
             return
         if kind == "CaseStatement":
             # Each item is an ``ItemGroup`` with the match expressions
@@ -990,6 +1030,15 @@ class _ModuleBuilder:
             # input as opaque (no upstream flops trace through it).
             d_bits = self._unknown_driver(width=len(q_bits))
 
+        # If we're inside a ``if (cond) q <= ...;`` body (no else),
+        # wrap D in a hold-feedback mux: ``D = mux(S=cond, A=Q, B=rhs)``.
+        # Yosys's proc_dff infers the same shape from the SV
+        # if/else structure. The rule pack's gated-bus detector
+        # (``_is_gated_bus_crossing``) checks for this mux when
+        # deciding whether a multi-bit crossing is handshake-protected.
+        if self._enable_stack:
+            d_bits = self._wrap_d_with_enable_mux(d_bits, q_bits)
+
         connections: dict[str, tuple[Bit, ...]] = {
             "CLK": self._alloc_bits(clk_sym),
             "D": d_bits,
@@ -1026,6 +1075,104 @@ class _ModuleBuilder:
             parameters=parameters,
             attributes=attrs,
         )
+
+    def _lower_condition_to_bit(self, conditions: Any) -> Bit | None:
+        """Lower a ``ConditionalStatement``'s condition list to a
+        single Yosys-shape bit suitable for use as a mux ``S`` input.
+
+        pyslang represents the conditions as a list of
+        ``ConditionalPattern`` entries; for the canonical
+        ``if (expr)`` form there is exactly one entry whose ``.expr``
+        is the bool/scalar expression. Returns ``None`` if the
+        condition can't be lowered to a single bit (multi-pattern
+        match, anything ``_bits_of_expression`` doesn't model yet) —
+        the caller treats that as "no enable inferred" and falls
+        back to the unconditional emit path.
+        """
+        condition_list = list(conditions) if conditions else []
+        if len(condition_list) != 1:
+            return None
+        expr = getattr(condition_list[0], "expr", None)
+        if expr is None:
+            return None
+        bits = self._bits_of_expression(expr)
+        if bits is None:
+            return None
+        # ``if (expr)`` treats the expression as a boolean. For a
+        # single-bit signal that's already correct; for a multi-bit
+        # signal SV semantics are "non-zero is true", but in practice
+        # always_ff conditions in production RTL are single-bit
+        # qualifiers. Bail when the width doesn't fit.
+        if len(bits) != 1:
+            return None
+        return bits[0]
+
+    def _wrap_d_with_enable_mux(
+        self, d_bits: tuple[Bit, ...], q_bits: tuple[Bit, ...]
+    ) -> tuple[Bit, ...]:
+        """Wrap ``d_bits`` in a hold-feedback mux gated by the AND of
+        every enable currently on ``_enable_stack``.
+
+        Returns the mux output bits, which become the flop's new D
+        connection: ``D = mux(S = AND(enables), A = Q_feedback,
+        B = original_D)``. The mux's A operand is the flop's own Q —
+        when the enable is false, the flop holds its previous value;
+        when true, it captures ``original_D``. That's exactly the
+        shape Yosys's ``proc_dff`` infers from ``if (en) q <= ...;``.
+
+        For multiple stacked enables (nested ``if (a) if (b) ...``),
+        chain ``$and`` cells: the deepest enable bit is the most
+        recently pushed, and AND'ing them yields a single select bit.
+        """
+        # Combine all stacked enables via ``$and``. Single-enable
+        # case: just use the bit directly, no AND needed.
+        if len(self._enable_stack) == 1:
+            select_bit: Bit = self._enable_stack[0]
+        else:
+            select_bit = self._enable_stack[0]
+            for next_bit in self._enable_stack[1:]:
+                and_y = self._alloc_anon_bits(1)
+                cell_name = self._fresh_cell_name("$and")
+                self._cells[cell_name] = Cell(
+                    name=cell_name,
+                    type="$and",
+                    connections={
+                        "A": (select_bit,),
+                        "B": (next_bit,),
+                        "Y": and_y,
+                    },
+                    parameters={},
+                    attributes={},
+                )
+                select_bit = and_y[0]
+
+        # Allocate fresh output bits for the mux. Width matches the
+        # original D / Q width (they must match — Q drives the hold
+        # path).
+        width = len(d_bits)
+        mux_y = self._alloc_anon_bits(width)
+        mux_name = self._fresh_cell_name("$mux")
+        self._cells[mux_name] = Cell(
+            name=mux_name,
+            type="$mux",
+            connections={
+                "A": q_bits,
+                "B": d_bits,
+                "S": (select_bit,),
+                "Y": mux_y,
+            },
+            parameters={},
+            attributes={},
+        )
+        return mux_y
+
+    def _alloc_anon_bits(self, width: int) -> tuple[Bit, ...]:
+        """Allocate ``width`` fresh anonymous bits for a comb cell's
+        output. Same allocator pool as named variables; no Symbol is
+        registered because these aren't user-visible nets."""
+        bits = tuple(range(self._next_bit_id, self._next_bit_id + width))
+        self._next_bit_id += width
+        return bits
 
     def _lvalue_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """Resolve an LHS expression to the variable-bit subset it
