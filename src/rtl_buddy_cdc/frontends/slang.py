@@ -29,6 +29,8 @@ fixture                             expected rules
 bad_single_ff_sync                  CDC-001
 bad_port_no_sync                    CDC-001
 bad_comb_before_sync                CDC-003
+bad_comb_before_sync_with_if        CDC-003 (if/else → $mux)
+bad_comb_case_before_sync           CDC-003 (case → chained $mux)
 bad_bus_crossing                    CDC-004
 bad_reconvergent_sync               CDC-005
 bad_comb_source                     CDC-006
@@ -82,6 +84,13 @@ What currently works
   expression operators round-trip to the Yosys cell zoo
   (``$and``/``$or``/``$xor``/``$mux``/…), so the rule pack walks
   the comb cone correctly.
+- ``always_comb`` procedural ``if`` / ``case`` selection — see
+  :meth:`_walk_conditional_statement` and
+  :meth:`_walk_case_statement`. Each LHS written across multiple
+  branches lowers to a real ``$mux`` (chained for ``case``, with
+  first-match-wins priority and ``default`` as the innermost
+  fallback); LHS written in only one branch keeps the existing
+  single-branch aliasing.
 - LHS bit-selects (``q[0] <= ...``) and contiguous ranges
   (``bus[3:0] <= ...``) — see :meth:`_lvalue_bits`. Same shapes
   accepted on the RHS via :meth:`_bits_of_expression`.
@@ -101,11 +110,10 @@ What currently works
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- **``always_comb`` with ``if`` / ``case``.** Body walks descend into
-  both branches and may produce inconsistent aliasing when each
-  branch writes the same variable. The full lowering builds a
-  ``$mux`` per LHS that appears in both branches; today we
-  conservatively pass through whichever branch wrote last.
+- **``casex`` / ``casez`` wildcard cases** — the
+  :meth:`_walk_case_statement` lowering treats every label as a
+  full ``$eq`` match, so wildcard bits in the label aren't honored.
+  Uncommon in CDC-sensitive code and not yet wired up.
 - **Width-N $dff / $adff parameters** (``WIDTH``, ``ARST_VALUE``)
   — partially populated today; not yet read by any rule but should
   reach full Yosys parity for future rule extensions.
@@ -1520,17 +1528,238 @@ class _ModuleBuilder:
             self._alias_assign(stmt.expr)
             return
         if kind == "ConditionalStatement":
-            # if/else in an always_comb is a selection between two
-            # assignments. The full lowering would build a $mux per LHS
-            # variable that appears in both branches; that's a follow-up
-            # — for now we descend into both branches so any unconditional
-            # writes get aliased and any conditional-only writes are
-            # missed (conservative).
+            self._walk_conditional_statement(stmt)
+            return
+        if kind == "CaseStatement":
+            self._walk_case_statement(stmt)
+            return
+        # for/while loops etc. → ignore for now.
+
+    def _walk_conditional_statement(self, stmt: Any) -> None:
+        """Lower an ``always_comb`` ``if`` / ``else`` into a per-LHS
+        ``$mux``.
+
+        Strategy: snapshot the alias state, walk each branch
+        independently, capture the per-branch result for every LHS
+        that was written, then merge:
+
+        - Written in **both** branches → emit ``$mux(S=cond, A=false,
+          B=true)`` and alias the LHS to the mux output.
+        - Written in **only one** branch → keep the single-branch
+          aliasing. Per SV ``always_comb`` semantics the unwritten side
+          is undefined, but the conservative choice (no mux) keeps the
+          rule pack's data-cone walk honest — we don't pretend the
+          condition gates the value when no real gate exists.
+
+        Cells emitted while walking each branch (e.g. ``$and`` for a
+        ``y = a & b`` body) are preserved across the snapshot/restore
+        — only the alias maps are rolled back, so the bits returned
+        by ``_bits_of_expression`` still resolve to a real Yosys cell.
+        """
+        conds = getattr(stmt, "conditions", None) or []
+        sel_bits = (
+            self._bits_of_expression(conds[0].expr)
+            if conds and conds[0].expr is not None
+            else None
+        )
+        if sel_bits is None:
+            # Can't lower the selector → conservative descend. Matches
+            # pre-mux behaviour: unconditional writes get aliased, any
+            # branch-mismatched LHS picks "whichever wrote last".
             self._walk_comb_statement(stmt.ifTrue)
             if stmt.ifFalse is not None:
                 self._walk_comb_statement(stmt.ifFalse)
             return
-        # case statements, for/while loops, etc. → ignore for now.
+
+        base_var_bits = dict(self._var_bits)
+        base_ports = dict(self._ports)
+        base_netnames = dict(self._netnames)
+
+        self._walk_comb_statement(stmt.ifTrue)
+        true_var_bits = dict(self._var_bits)
+        self._var_bits = dict(base_var_bits)
+        self._ports = dict(base_ports)
+        self._netnames = dict(base_netnames)
+
+        if stmt.ifFalse is not None:
+            self._walk_comb_statement(stmt.ifFalse)
+            false_var_bits = dict(self._var_bits)
+            self._var_bits = dict(base_var_bits)
+            self._ports = dict(base_ports)
+            self._netnames = dict(base_netnames)
+        else:
+            # No else → the false side is the prior value.
+            false_var_bits = dict(base_var_bits)
+
+        all_vars: set[Any] = set()
+        for k, v in true_var_bits.items():
+            if base_var_bits.get(k) != v:
+                all_vars.add(k)
+        for k, v in false_var_bits.items():
+            if base_var_bits.get(k) != v:
+                all_vars.add(k)
+
+        for var in all_vars:
+            base_v = base_var_bits.get(var)
+            t = true_var_bits.get(var)
+            f = false_var_bits.get(var)
+            t_changed = t is not None and t != base_v
+            f_changed = f is not None and f != base_v
+            if t_changed and f_changed:
+                assert t is not None and f is not None
+                if t == f:
+                    # Both branches assigned the same value — no mux
+                    # needed, just alias to the common bits.
+                    self._merge_canonical_var(var, base_v, t)
+                    continue
+                width = max(len(t), len(f))
+                y_bits = self._emit_comb_cell(
+                    cell_type="$mux",
+                    inputs={"A": f, "B": t, "S": sel_bits[:1]},
+                    output_width=width,
+                    src_node=stmt,
+                )
+                self._merge_canonical_var(var, base_v, y_bits)
+            elif t_changed:
+                # Only the true branch wrote → keep single-branch
+                # aliasing (issue #36 spec).
+                assert t is not None
+                self._merge_canonical_var(var, base_v, t)
+            elif f_changed:
+                assert f is not None
+                self._merge_canonical_var(var, base_v, f)
+
+    def _walk_case_statement(self, stmt: Any) -> None:
+        """Lower an ``always_comb`` ``case`` into a chained ``$mux``
+        per LHS, with item arms wrapped highest-priority-outermost.
+
+        For each LHS, the chain starts at the ``default`` arm's
+        contribution (or the prior value, if no default) and folds in
+        each item arm that writes the LHS, in reverse order — item 0
+        ends up as the outermost mux, matching SV's first-match-wins
+        priority semantics. Selector bits for each arm are ``$eq``
+        comparisons against ``stmt.expr``; multi-label arms OR the
+        per-label matches together.
+
+        LHS written in only one arm keeps single-arm aliasing (no
+        mux), matching the conservative shape used by
+        :meth:`_walk_conditional_statement`.
+        """
+        sel_bits = self._bits_of_expression(stmt.expr)
+        items = list(getattr(stmt, "items", []) or [])
+        default_arm = getattr(stmt, "defaultCase", None)
+        if sel_bits is None or not items:
+            for item in items:
+                self._walk_comb_statement(getattr(item, "stmt", None))
+            if default_arm is not None:
+                self._walk_comb_statement(default_arm)
+            return
+
+        base_var_bits = dict(self._var_bits)
+        base_ports = dict(self._ports)
+        base_netnames = dict(self._netnames)
+
+        def restore() -> None:
+            self._var_bits = dict(base_var_bits)
+            self._ports = dict(base_ports)
+            self._netnames = dict(base_netnames)
+
+        arms: list[tuple[list[Any], dict[Any, tuple[Bit, ...]]]] = []
+        for item in items:
+            self._walk_comb_statement(getattr(item, "stmt", None))
+            arms.append(
+                (list(getattr(item, "expressions", []) or []), dict(self._var_bits))
+            )
+            restore()
+
+        if default_arm is not None:
+            self._walk_comb_statement(default_arm)
+            default_state = dict(self._var_bits)
+            restore()
+        else:
+            default_state = dict(base_var_bits)
+
+        def writes(state: dict[Any, tuple[Bit, ...]]) -> set[Any]:
+            return {k for k, v in state.items() if base_var_bits.get(k) != v}
+
+        arm_writes = [writes(s) for _, s in arms]
+        default_writes = writes(default_state)
+        all_written: set[Any] = set(default_writes)
+        for w in arm_writes:
+            all_written |= w
+
+        for var in all_written:
+            base_v = base_var_bits.get(var)
+            writer_indices = [i for i, w in enumerate(arm_writes) if var in w]
+            default_has = var in default_writes
+            total_writers = len(writer_indices) + (1 if default_has else 0)
+
+            if total_writers == 1:
+                # Only one arm (or only default) writes → single-branch
+                # aliasing.
+                if writer_indices:
+                    self._merge_canonical_var(
+                        var, base_v, arms[writer_indices[0]][1][var]
+                    )
+                else:
+                    self._merge_canonical_var(var, base_v, default_state[var])
+                continue
+
+            # 2+ writers → build a chained $mux, default (or prior
+            # value) as the innermost fallback, item-arm 0 outermost.
+            chain = default_state.get(var) if default_has else base_v
+            if chain is None:
+                continue
+            for i in range(len(arms) - 1, -1, -1):
+                if var not in arm_writes[i]:
+                    continue
+                label_exprs, arm_state = arms[i]
+                arm_bits = arm_state[var]
+                sel_match = self._lower_case_arm_selector(sel_bits, label_exprs, stmt)
+                if sel_match is None:
+                    continue
+                width = max(len(arm_bits), len(chain))
+                chain = self._emit_comb_cell(
+                    cell_type="$mux",
+                    inputs={"A": chain, "B": arm_bits, "S": sel_match[:1]},
+                    output_width=width,
+                    src_node=stmt,
+                )
+            self._merge_canonical_var(var, base_v, chain)
+
+    def _lower_case_arm_selector(
+        self,
+        sel_bits: tuple[Bit, ...],
+        label_exprs: list[Any],
+        src_node: Any,
+    ) -> tuple[Bit, ...] | None:
+        """Build the 1-bit ``$mux.S`` selector for a single case arm:
+        OR of ``(case_expr == label_i)`` ``$eq`` cells.
+
+        Returns ``None`` if none of the labels could be lowered, so
+        the caller can drop the arm rather than emit a broken mux.
+        """
+        sel_match: tuple[Bit, ...] | None = None
+        for label_expr in label_exprs:
+            lb = self._bits_of_expression(label_expr)
+            if lb is None:
+                continue
+            eq_y = self._emit_comb_cell(
+                cell_type="$eq",
+                inputs={"A": sel_bits, "B": lb},
+                output_width=1,
+                src_node=src_node,
+            )
+            if sel_match is None:
+                sel_match = eq_y
+            else:
+                sel_match = self._emit_comb_cell(
+                    cell_type="$or",
+                    inputs={"A": sel_match, "B": eq_y},
+                    output_width=1,
+                    src_node=src_node,
+                )
+        return sel_match
 
     def _alias_assign(self, expr: Any) -> None:
         """For a blocking assignment ``lhs = rhs``, rewrite ``lhs``'s
@@ -1578,26 +1807,41 @@ class _ModuleBuilder:
         every one of those aliases needs to follow — not just the
         child's own a_q entry — or the parent's reader sees stale bits.
 
+        Thin shim over :meth:`_merge_canonical_var`; the
+        canonical-keyed variant is the one used by branch-merge sites
+        like :meth:`_walk_conditional_statement` that don't have a
+        live LHS expression to read ``.symbol`` from.
+        """
+        canonical = self._canonical_var(lhs.symbol)
+        self._merge_canonical_var(canonical, self._var_bits.get(canonical), rhs_bits)
+
+    def _merge_canonical_var(
+        self,
+        canonical: Any,
+        old_bits: tuple[Bit, ...] | None,
+        new_bits: tuple[Bit, ...],
+    ) -> None:
+        """Alias-propagation primitive: rewrite every map entry whose
+        bits equal ``old_bits`` to point at ``new_bits``.
+
         We do the cheap thing: scan ``_var_bits`` / ``_ports`` /
         ``_netnames`` for entries whose bits equal the old tuple and
         rewrite them. O(n) per assign, fine for the design sizes the
         analyzer targets.
         """
-        canonical = self._canonical_var(lhs.symbol)
-        old_bits = self._var_bits.get(canonical)
-        self._var_bits[canonical] = rhs_bits
-        if old_bits is None or old_bits == rhs_bits:
+        self._var_bits[canonical] = new_bits
+        if old_bits is None or old_bits == new_bits:
             return
         for sym, bits in list(self._var_bits.items()):
             if bits == old_bits:
-                self._var_bits[sym] = rhs_bits
+                self._var_bits[sym] = new_bits
         for name, port in list(self._ports.items()):
             if port.bits == old_bits:
                 self._ports[name] = Port(
-                    name=port.name, direction=port.direction, bits=rhs_bits
+                    name=port.name, direction=port.direction, bits=new_bits
                 )
         for name, nn in list(self._netnames.items()):
             if nn.bits == old_bits:
                 self._netnames[name] = Netname(
-                    name=nn.name, bits=rhs_bits, attributes=nn.attributes
+                    name=nn.name, bits=new_bits, attributes=nn.attributes
                 )
