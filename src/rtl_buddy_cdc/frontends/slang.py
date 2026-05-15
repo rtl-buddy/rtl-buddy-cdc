@@ -266,21 +266,77 @@ class _ModuleBuilder:
         """
         self._hier_stack.append(hier_prefix)
         try:
-            for member in inst.body:
+            for member, prefix in self._iter_scope(inst.body, hier_prefix):
                 if (
                     self._kind_name(member) == "VariableSymbol"
                     and member not in bound_internals
                 ):
-                    self._collect_variable(member, hier_prefix)
+                    self._collect_variable(member, prefix)
             # Only the top module exposes ports in the flat ``Module``;
             # child ports get folded into their parents' connections.
+            # Ports always live directly on the instance body (SV
+            # disallows declaring them inside generates) so no
+            # scope-flattening is needed for this pass.
             if hier_prefix == "":
                 for member in inst.body:
                     self._collect_port(member)
-            for member in inst.body:
-                self._emit_for_member(member, hier_prefix)
+            for member, prefix in self._iter_scope(inst.body, hier_prefix):
+                # ``_fresh_cell_name`` reads ``_hier_stack[-1]`` when
+                # naming cells; for members inside a generate block
+                # that needs to include the ``g_label[i].`` segment so
+                # the emitted name matches Yosys-flatten.
+                self._hier_stack.append(prefix)
+                try:
+                    self._emit_for_member(member, prefix)
+                finally:
+                    self._hier_stack.pop()
         finally:
             self._hier_stack.pop()
+
+    def _iter_scope(self, container: Any, hier_prefix: str):
+        """Yield ``(member, prefix)`` for every emittable member of a
+        scope, recursively expanding SV ``generate`` blocks.
+
+        pyslang exposes two generate kinds:
+
+        - :class:`GenerateBlockSymbol` — one instantiated generate
+          body (an unconditional ``generate ... endgenerate``, or the
+          taken branch of ``generate if`` / ``generate case``).
+          Iterating the symbol yields its inner members. Untaken
+          branches are usually pruned from the parent body already,
+          but ``isUninstantiated`` is checked as defense-in-depth.
+        - :class:`GenerateBlockArraySymbol` — a labeled
+          ``for (genvar ...)`` array; its ``.entries`` list contains
+          one :class:`GenerateBlockSymbol` per iteration, each
+          carrying ``arrayIndex``.
+
+        Naming follows Yosys-flatten convention: ``g_label[i].`` for
+        array entries, ``g_label.`` for named single blocks, no
+        segment for anonymous blocks. Stable across the two frontends
+        so the rule pack's path reporting and any downstream waiver
+        regexes don't have to branch on the frontend.
+        """
+        for member in container:
+            kind = self._kind_name(member)
+            if kind == "GenerateBlockArraySymbol":
+                array_name = getattr(member, "name", "") or ""
+                for entry in getattr(member, "entries", []) or []:
+                    if getattr(entry, "isUninstantiated", False):
+                        continue
+                    idx = getattr(entry, "arrayIndex", None)
+                    if array_name and idx is not None:
+                        inner_prefix = f"{hier_prefix}{array_name}[{idx}]."
+                    else:
+                        inner_prefix = hier_prefix
+                    yield from self._iter_scope(entry, inner_prefix)
+            elif kind == "GenerateBlockSymbol":
+                if getattr(member, "isUninstantiated", False):
+                    continue
+                name = getattr(member, "name", "") or ""
+                inner_prefix = f"{hier_prefix}{name}." if name else hier_prefix
+                yield from self._iter_scope(member, inner_prefix)
+            else:
+                yield member, hier_prefix
 
     # -- helpers ---------------------------------------------------------
 
@@ -463,9 +519,10 @@ class _ModuleBuilder:
             self._emit_continuous_assign(member)
         elif kind == "InstanceSymbol":
             self._emit_child_instance(member, hier_prefix)
-        # GenerateBlockSymbol and other unmodelled kinds fall through
-        # silently — the lack of expected flops will be visible in
-        # `analyze` output, which is a better failure mode than
+        # GenerateBlock(Array)Symbol are pre-expanded by ``_iter_scope``
+        # before reaching this dispatch; any other unmodelled kind
+        # falls through silently — the missing flops surface in
+        # ``analyze`` output, which is a better failure mode than
         # crashing on an unrecognised member kind.
 
     def _emit_child_instance(self, child: Any, parent_prefix: str) -> None:
@@ -796,20 +853,52 @@ class _ModuleBuilder:
         """Best-effort: extract an ``int`` from a constant pyslang
         expression. Returns ``None`` if the expression isn't a
         compile-time constant — selectors on the LHS need to be
-        static for the flop-shape model to work."""
+        static for the flop-shape model to work.
+
+        Three shapes show up in practice:
+
+        - :class:`IntegerLiteral` — ``expr.value`` is an :class:`SVInt`
+          which :func:`int` accepts directly.
+        - :class:`NamedValueExpression` referring to a parameter or a
+          genvar iteration value — ``expr.constant`` is a
+          :class:`ConstantValue` wrapper; the inner scalar lives on
+          ``.value`` (also :class:`SVInt`) or comes back from
+          :meth:`ConstantValue.convertToInt`.
+        - Other constant-foldable expressions — ``.constant`` is
+          populated post-compilation; same unwrapping applies.
+        """
         if expr is None:
             return None
-        # pyslang exposes ``.constant`` (an SVInt) on most expressions
-        # once compilation has folded the operand; an IntegerLiteral
-        # additionally has ``.value``.
+
+        def _coerce(v: Any) -> int | None:
+            # Direct path (SVInt, IntegerLiteral.value, plain int).
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                pass
+            # ConstantValue → inner SVInt via ``.value``.
+            inner = getattr(v, "value", None)
+            if inner is not None and inner is not v:
+                try:
+                    return int(inner)
+                except (TypeError, ValueError):
+                    pass
+            # ConstantValue → explicit conversion.
+            convert = getattr(v, "convertToInt", None)
+            if callable(convert):
+                try:
+                    return int(convert())
+                except (TypeError, ValueError):
+                    pass
+            return None
+
         for attr in ("constant", "value"):
             v = getattr(expr, attr, None)
             if v is None:
                 continue
-            try:
-                return int(v)
-            except (TypeError, ValueError):
-                continue
+            n = _coerce(v)
+            if n is not None:
+                return n
         return None
 
     def _bits_of_expression(self, expr: Any) -> tuple[Bit, ...] | None:

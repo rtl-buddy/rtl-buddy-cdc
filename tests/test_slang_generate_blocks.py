@@ -150,15 +150,27 @@ def test_generate_if_taken_branch_emits_flops(tmp_path: Path) -> None:
             if (USE_SYNC) begin : g_sync
                 logic meta_q, sync_q;
                 always_ff @(posedge clk or negedge rst_n) begin
-                    if (!rst_n) {sync_q, meta_q} <= '0;
-                    else        {sync_q, meta_q} <= {meta_q, d};
+                    if (!rst_n) meta_q <= 1'b0;
+                    else        meta_q <= d;
+                end
+                always_ff @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) sync_q <= 1'b0;
+                    else        sync_q <= meta_q;
                 end
                 assign q = sync_q;
             end else begin : g_passthrough
                 logic a, b, c;
                 always_ff @(posedge clk or negedge rst_n) begin
-                    if (!rst_n) {a, b, c} <= '0;
-                    else        {a, b, c} <= {d, d, d};
+                    if (!rst_n) a <= 1'b0;
+                    else        a <= d;
+                end
+                always_ff @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) b <= 1'b0;
+                    else        b <= d;
+                end
+                always_ff @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) c <= 1'b0;
+                    else        c <= d;
                 end
                 assign q = a;
             end
@@ -167,7 +179,7 @@ def test_generate_if_taken_branch_emits_flops(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     n = _flop_count(mod)
-    # USE_SYNC=1: g_sync branch has {meta_q, sync_q} = 2 flops; g_passthrough
+    # USE_SYNC=1: g_sync branch has meta_q + sync_q = 2 flops; g_passthrough
     # is unelaborated and contributes 0.
     assert n == 2, f"expected 2 flops from g_sync branch only; got {n}"
 
@@ -184,15 +196,27 @@ def test_generate_if_untaken_branch_emits_zero(tmp_path: Path) -> None:
             if (USE_SYNC) begin : g_sync
                 logic meta_q, sync_q;
                 always_ff @(posedge clk or negedge rst_n) begin
-                    if (!rst_n) {sync_q, meta_q} <= '0;
-                    else        {sync_q, meta_q} <= {meta_q, d};
+                    if (!rst_n) meta_q <= 1'b0;
+                    else        meta_q <= d;
+                end
+                always_ff @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) sync_q <= 1'b0;
+                    else        sync_q <= meta_q;
                 end
                 assign q = sync_q;
             end else begin : g_passthrough
                 logic a, b, c;
                 always_ff @(posedge clk or negedge rst_n) begin
-                    if (!rst_n) {a, b, c} <= '0;
-                    else        {a, b, c} <= {d, d, d};
+                    if (!rst_n) a <= 1'b0;
+                    else        a <= d;
+                end
+                always_ff @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) b <= 1'b0;
+                    else        b <= d;
+                end
+                always_ff @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) c <= 1'b0;
+                    else        c <= d;
                 end
                 assign q = a;
             end
