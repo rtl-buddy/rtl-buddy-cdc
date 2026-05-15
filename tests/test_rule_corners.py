@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from rtl_buddy_cdc.domain import find_crossings
 from rtl_buddy_cdc.netlist import Cell, Module, Port
-from rtl_buddy_cdc.rules import run_all
+from rtl_buddy_cdc.rules import (
+    _build_context,  # noqa: PLC2701
+    _forward_reachable_cells,  # noqa: PLC2701
+    _forward_reachable_flops,  # noqa: PLC2701
+    run_all,
+)
 from rtl_buddy_cdc.sdc import parse as parse_sdc
 
 
@@ -202,3 +207,264 @@ def test_find_crossings_hop_budget_boundary_at_exact_match() -> None:
     crossings = find_crossings(module)  # default max_hops=4
     assert len(crossings) == 1
     assert crossings[0].min_hops == 4
+
+
+# --- _forward_reachable_flops (issue #32) -----------------------------------
+#
+# Phase 1: pure-helper unit tests. The two acceptance-criteria
+# scenarios — two source flops whose Qs share a downstream cone, and
+# two source flops with disjoint downstream cones — exercise the
+# intersection-vs-disjoint distinction that CDC-005's phase-2 filter
+# will key off. Hand-built ``Module``s avoid a Yosys / SV dependency.
+
+
+def _build_shared_downstream_cone_module() -> Module:
+    """Two source flops whose Qs feed an ``$or`` whose Y bit drives a
+    third (downstream) flop.
+
+        src_a.Q ─┐
+                 ├─[$or]──> downstream_ff.D ──> downstream_ff.Q
+        src_b.Q ─┘
+
+    Forward-reachability from EITHER source's Q must include
+    ``downstream_ff`` — that's the reconvergence point.
+    """
+    clk_bit = 2
+    src_a_d_bit = 3
+    src_a_q_bit = 4
+    src_b_d_bit = 5
+    src_b_q_bit = 6
+    or_y_bit = 7
+    dst_q_bit = 8
+
+    ports: dict[str, Port] = {
+        "clk": Port(name="clk", direction="input", bits=(clk_bit,)),
+        "src_a_d": Port(name="src_a_d", direction="input", bits=(src_a_d_bit,)),
+        "src_b_d": Port(name="src_b_d", direction="input", bits=(src_b_d_bit,)),
+        "dst_q": Port(name="dst_q", direction="output", bits=(dst_q_bit,)),
+    }
+    cells: dict[str, Cell] = {
+        "src_a": Cell(
+            name="src_a",
+            type="$dff",
+            connections={
+                "CLK": (clk_bit,),
+                "D": (src_a_d_bit,),
+                "Q": (src_a_q_bit,),
+            },
+        ),
+        "src_b": Cell(
+            name="src_b",
+            type="$dff",
+            connections={
+                "CLK": (clk_bit,),
+                "D": (src_b_d_bit,),
+                "Q": (src_b_q_bit,),
+            },
+        ),
+        "or_gate": Cell(
+            name="or_gate",
+            type="$or",
+            connections={"A": (src_a_q_bit,), "B": (src_b_q_bit,), "Y": (or_y_bit,)},
+        ),
+        "downstream_ff": Cell(
+            name="downstream_ff",
+            type="$dff",
+            connections={
+                "CLK": (clk_bit,),
+                "D": (or_y_bit,),
+                "Q": (dst_q_bit,),
+            },
+        ),
+    }
+    return Module(name="shared_cone", ports=ports, cells=cells, netnames={})
+
+
+def _build_disjoint_cones_module() -> Module:
+    """Two source flops whose Qs feed unrelated downstream flops; no
+    shared cone.
+
+        src_a.Q ──[$buf]──> ff_a.D ──> ff_a.Q
+        src_b.Q ──[$buf]──> ff_b.D ──> ff_b.Q
+    """
+    clk_bit = 2
+    src_a_d_bit = 3
+    src_a_q_bit = 4
+    src_b_d_bit = 5
+    src_b_q_bit = 6
+    a_buf_y_bit = 7
+    b_buf_y_bit = 8
+    ff_a_q_bit = 9
+    ff_b_q_bit = 10
+
+    ports: dict[str, Port] = {
+        "clk": Port(name="clk", direction="input", bits=(clk_bit,)),
+        "src_a_d": Port(name="src_a_d", direction="input", bits=(src_a_d_bit,)),
+        "src_b_d": Port(name="src_b_d", direction="input", bits=(src_b_d_bit,)),
+        "ff_a_q": Port(name="ff_a_q", direction="output", bits=(ff_a_q_bit,)),
+        "ff_b_q": Port(name="ff_b_q", direction="output", bits=(ff_b_q_bit,)),
+    }
+    cells: dict[str, Cell] = {
+        "src_a": Cell(
+            name="src_a",
+            type="$dff",
+            connections={
+                "CLK": (clk_bit,),
+                "D": (src_a_d_bit,),
+                "Q": (src_a_q_bit,),
+            },
+        ),
+        "src_b": Cell(
+            name="src_b",
+            type="$dff",
+            connections={
+                "CLK": (clk_bit,),
+                "D": (src_b_d_bit,),
+                "Q": (src_b_q_bit,),
+            },
+        ),
+        "buf_a": Cell(
+            name="buf_a",
+            type="$buf",
+            connections={"A": (src_a_q_bit,), "Y": (a_buf_y_bit,)},
+        ),
+        "buf_b": Cell(
+            name="buf_b",
+            type="$buf",
+            connections={"A": (src_b_q_bit,), "Y": (b_buf_y_bit,)},
+        ),
+        "ff_a": Cell(
+            name="ff_a",
+            type="$dff",
+            connections={
+                "CLK": (clk_bit,),
+                "D": (a_buf_y_bit,),
+                "Q": (ff_a_q_bit,),
+            },
+        ),
+        "ff_b": Cell(
+            name="ff_b",
+            type="$dff",
+            connections={
+                "CLK": (clk_bit,),
+                "D": (b_buf_y_bit,),
+                "Q": (ff_b_q_bit,),
+            },
+        ),
+    }
+    return Module(name="disjoint_cones", ports=ports, cells=cells, netnames={})
+
+
+def test_forward_reachable_flops_shared_cone() -> None:
+    """Both source flops' forward cones include the downstream flop
+    they jointly feed via the ``$or`` — the intersection is non-empty.
+    This is the shape CDC-005's phase-2 filter classifies as
+    "truly reconvergent"."""
+    module = _build_shared_downstream_cone_module()
+    ctx = _build_context(module, clock_spec=None)
+    a_reach = _forward_reachable_flops(
+        module,
+        start_bits=(4,),  # src_a.Q
+        consumers=ctx.bit_consumers,
+    )
+    b_reach = _forward_reachable_flops(
+        module,
+        start_bits=(6,),  # src_b.Q
+        consumers=ctx.bit_consumers,
+    )
+    assert "downstream_ff" in a_reach
+    assert "downstream_ff" in b_reach
+    assert a_reach & b_reach == {"downstream_ff"}
+
+
+def test_forward_reachable_flops_disjoint_cones() -> None:
+    """Source flops with no shared downstream cell produce disjoint
+    reachable sets. Phase-2's filter will skip the CDC-005 violation
+    on a group whose pairs all look like this."""
+    module = _build_disjoint_cones_module()
+    ctx = _build_context(module, clock_spec=None)
+    a_reach = _forward_reachable_flops(
+        module, start_bits=(4,), consumers=ctx.bit_consumers
+    )
+    b_reach = _forward_reachable_flops(
+        module, start_bits=(6,), consumers=ctx.bit_consumers
+    )
+    assert a_reach == {"ff_a"}
+    assert b_reach == {"ff_b"}
+    assert a_reach & b_reach == set()
+
+
+def test_forward_reachable_flops_stops_at_d_pin() -> None:
+    """The walk never crosses a flop boundary — once a ``D`` pin is
+    reached, the destination flop is recorded but its ``Q`` is NOT
+    walked further. Without this, a long pipeline would have every
+    downstream flop in the reachable set, defeating the filter."""
+    # Reuse the disjoint module: src_a's Q reaches ff_a via buf_a. If
+    # the walk crossed ff_a, it would continue down ff_a.Q to ff_a_q
+    # port — but there's nothing past ff_a (and even if there were,
+    # we wouldn't want to include it).
+    module = _build_disjoint_cones_module()
+    ctx = _build_context(module, clock_spec=None)
+    reached = _forward_reachable_flops(
+        module, start_bits=(4,), consumers=ctx.bit_consumers
+    )
+    # Exactly the single downstream flop, never more.
+    assert reached == {"ff_a"}
+
+
+def test_forward_reachable_cells_includes_comb_recombination() -> None:
+    """The cells variant records EVERY cell whose input is on the cone
+    — flops via D, comb cells via any input. CDC-005's filter uses it
+    so an unregistered comb-cell recombination (an ``$and`` directly
+    driving an output port) still counts as reconvergence."""
+    module = _build_shared_downstream_cone_module()
+    ctx = _build_context(module, clock_spec=None)
+    a_reach = _forward_reachable_cells(
+        module, start_bits=(4,), consumers=ctx.bit_consumers
+    )
+    b_reach = _forward_reachable_cells(
+        module, start_bits=(6,), consumers=ctx.bit_consumers
+    )
+    # Both chains pass through the ``$or`` and reach the downstream FF.
+    assert "or_gate" in a_reach
+    assert "or_gate" in b_reach
+    assert "downstream_ff" in a_reach
+    assert "downstream_ff" in b_reach
+
+
+def test_forward_reachable_cells_disjoint_when_cones_disjoint() -> None:
+    """When the two source flops feed independent comb+flop trees with
+    no shared cell, the cells-variant intersection is empty — exactly
+    the case CDC-005's phase-2 filter must NOT fire on."""
+    module = _build_disjoint_cones_module()
+    ctx = _build_context(module, clock_spec=None)
+    a_reach = _forward_reachable_cells(
+        module, start_bits=(4,), consumers=ctx.bit_consumers
+    )
+    b_reach = _forward_reachable_cells(
+        module, start_bits=(6,), consumers=ctx.bit_consumers
+    )
+    assert a_reach == {"buf_a", "ff_a"}
+    assert b_reach == {"buf_b", "ff_b"}
+    assert a_reach & b_reach == set()
+
+
+def test_forward_reachable_flops_respects_max_depth() -> None:
+    """A ``max_depth`` of 0 forbids the helper from walking past the
+    initial frontier; any flop reached must be a direct consumer of
+    a ``start_bits`` net. Cycle / explosion guard for huge designs."""
+    module = _build_shared_downstream_cone_module()
+    ctx = _build_context(module, clock_spec=None)
+    # max_depth=0: src_a.Q (bit 4) is consumed by ``or_gate`` (a comb
+    # cell) — to reach ``downstream_ff`` the walk would have to cross
+    # ``or_gate`` (one hop). At depth=0 we refuse to enqueue or_gate's
+    # output, so downstream_ff is unreachable.
+    reached = _forward_reachable_flops(
+        module, start_bits=(4,), consumers=ctx.bit_consumers, max_depth=0
+    )
+    assert reached == set()
+    # max_depth=1 reveals it.
+    reached_one_hop = _forward_reachable_flops(
+        module, start_bits=(4,), consumers=ctx.bit_consumers, max_depth=1
+    )
+    assert reached_one_hop == {"downstream_ff"}
