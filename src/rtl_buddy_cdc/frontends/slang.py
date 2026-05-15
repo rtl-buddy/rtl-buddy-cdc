@@ -1285,57 +1285,87 @@ class _ModuleBuilder:
         return None
 
     def _element_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
-        """``var[i]`` — return the bit subset of ``var`` that the
-        index picks out.
+        """``var[i]`` (and ``var[i][j]``, ``var[i][j][k]``, ...) —
+        return the bit subset that the chain picks out of the
+        underlying named variable.
 
-        Stride is the element type's storage width:
+        Walks an ``ElementSelectExpression`` chain inward through
+        ``.value`` until it reaches a ``NamedValueExpression``, then
+        slices the allocated bit pool at the linearised offset.
+        Stride at each level is the inner type's
+        ``selectableWidth``:
 
-        - For packed arrays (``logic [W-1:0] data``) the element type
-          is a scalar and the stride is 1 — ``data[i]`` returns one
-          bit.
-        - For unpacked arrays (``logic chain [N]``) the element type
-          is the inner type and the stride is its ``selectableWidth``
-          — ``chain[i]`` returns one stripe.
-        - For packed-and-unpacked (``logic [W-1:0] chain [STAGES]``)
-          the outer type is the unpacked array, its element type is
-          the packed type, so each ``chain[i]`` returns W bits.
+        - Packed array ``logic [W-1:0] data``: scalar element,
+          stride 1 — ``data[i]`` returns one bit.
+        - Unpacked array ``logic chain [N]``: scalar element,
+          stride 1 — ``chain[i]`` returns one bit.
+        - Packed-and-unpacked ``logic [W-1:0] chain [STAGES]``:
+          W-bit element, stride W — ``chain[i]`` returns W bits.
+        - 2-D unpacked ``logic [W-1:0] arr [R][C]``: outer
+          ``arr[i]`` returns the C*W-bit row, inner ``arr[i][j]``
+          returns the W-bit element.
 
-        Falls back to ``None`` when the underlying value isn't a bare
-        named variable (e.g. nested selects, slices of expressions),
-        and when the selector isn't a constant integer — dynamic
-        indexing would require muxing across all possible bits, which
-        no rule today is worth.
+        Falls back to ``None`` when any selector isn't a compile-time
+        constant or the chain bottoms out somewhere other than a
+        bare named variable (e.g. a hierarchical or virtual-interface
+        select).
         """
-        inner = expr.value
-        if type(inner).__name__ != "NamedValueExpression":
+        base_sym, base_bits, offset, stride = self._resolve_select_chain(expr)
+        if base_sym is None:
             return None
-        idx = self._const_int(getattr(expr, "selector", None))
-        if idx is None:
+        start = offset
+        end = offset + stride
+        if start < 0 or end > len(base_bits):
             return None
-        var_sym = inner.symbol
-        var_bits = self._alloc_bits(var_sym)
-        # Stride = element type's selectableWidth. For scalar-element
-        # cases (packed arrays where the element is ``logic`` etc.)
-        # this is 1, matching the original single-bit semantics.
-        var_type = getattr(var_sym, "type", None)
-        elem_type = getattr(var_type, "elementType", None) if var_type else None
-        stride = 1
-        if elem_type is not None:
+        return tuple(base_bits[start:end])
+
+    def _resolve_select_chain(
+        self, expr: Any
+    ) -> tuple[Any | None, tuple[Bit, ...], int, int]:
+        """Walk an ``ElementSelectExpression`` chain inward to the
+        underlying named variable, accumulating a linearised bit
+        offset and current stride.
+
+        Returns ``(base_sym, base_bits, offset_in_bits, stride_in_bits)``.
+        ``base_sym`` is ``None`` when the chain can't be resolved
+        (non-constant selector, non-NamedValueExpression base, …).
+        """
+        kind = type(expr).__name__
+        if kind == "NamedValueExpression":
+            sym = getattr(expr, "symbol", None)
+            if sym is None:
+                return None, (), 0, 0
+            bits = self._alloc_bits(sym)
+            t = getattr(sym, "type", None)
             stride = int(
-                getattr(elem_type, "selectableWidth", None)
-                or getattr(elem_type, "bitWidth", None)
+                getattr(t, "selectableWidth", None)
+                or getattr(t, "bitWidth", None)
+                or len(bits)
                 or 1
             )
-        # The element-select index counts in *elements*, not bits.
-        # For an unpacked-then-packed type the outer ``range`` runs
-        # over the unpacked dimension; pyslang folds the constant to
-        # the unpacked index. Bits are stored low-element-first
-        # (matching how Yosys-flatten lays out the unpacked dim).
-        start = idx * stride
-        end = start + stride
-        if start < 0 or end > len(var_bits):
-            return None
-        return tuple(var_bits[start:end])
+            return sym, bits, 0, stride
+        if kind == "ElementSelectExpression":
+            inner_sym, inner_bits, inner_offset, inner_stride = (
+                self._resolve_select_chain(expr.value)
+            )
+            if inner_sym is None:
+                return None, (), 0, 0
+            idx = self._const_int(getattr(expr, "selector", None))
+            if idx is None:
+                return None, (), 0, 0
+            # Stride at this level = the inner type's element width.
+            inner_type = getattr(expr.value, "type", None)
+            elem_type = getattr(inner_type, "elementType", None)
+            new_stride = 1
+            if elem_type is not None:
+                new_stride = int(
+                    getattr(elem_type, "selectableWidth", None)
+                    or getattr(elem_type, "bitWidth", None)
+                    or 1
+                )
+            new_offset = inner_offset + idx * new_stride
+            return inner_sym, inner_bits, new_offset, new_stride
+        return None, (), 0, 0
 
     def _range_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """``var[hi:lo]`` — return the contiguous bit subset.
