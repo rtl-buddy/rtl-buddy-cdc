@@ -703,13 +703,24 @@ class _ModuleBuilder:
         reset_active_low: bool,
         src_node: Any = None,
     ) -> None:
-        """Find every nonblocking assignment inside ``statement`` (a
-        BlockStatement or single ExpressionStatement) and emit a flop
-        cell per assignment."""
+        """Find every nonblocking assignment reachable from
+        ``statement`` and emit a flop cell per assignment.
+
+        Walks through whichever procedural control-flow nodes the
+        ``always_ff`` data branch contains: nested ``if/else``
+        (``ConditionalStatement``), ``case`` arms (``CaseStatement``
+        + ``ItemGroup``), and statement blocks. Clock / reset
+        bindings are inherited from the enclosing ``always_ff`` —
+        every leaf nonblocking assignment fires on the same edge.
+        """
+        if statement is None:
+            return
         kind = self._kind_name(statement)
         if kind == "BlockStatement":
-            statement = statement.body
-            kind = self._kind_name(statement)
+            self._emit_assignments_in(
+                statement.body, clk_sym, reset_sym, reset_active_low, src_node
+            )
+            return
         if kind == "ExpressionStatement":
             self._emit_assignment_expression(
                 statement.expr,
@@ -726,6 +737,40 @@ class _ModuleBuilder:
                 self._emit_assignments_in(
                     s, clk_sym, reset_sym, reset_active_low, src_node
                 )
+            return
+        if kind == "ConditionalStatement":
+            # Nested if/else inside the data branch (or an if/else-if
+            # chain that pyslang represents as recursive Conditionals).
+            # Both arms are clocked data paths — walk both. Conditions
+            # themselves are pure combinational, only their bodies
+            # contribute flops.
+            for arm in (statement.ifTrue, statement.ifFalse):
+                self._emit_assignments_in(
+                    arm, clk_sym, reset_sym, reset_active_low, src_node
+                )
+            return
+        if kind == "CaseStatement":
+            # Each item is an ``ItemGroup`` with the match expressions
+            # on ``.expressions`` and the body on ``.stmt``. The
+            # default arm lives on ``.defaultCase`` (None if absent).
+            for item in getattr(statement, "items", []) or []:
+                self._emit_assignments_in(
+                    getattr(item, "stmt", None),
+                    clk_sym,
+                    reset_sym,
+                    reset_active_low,
+                    src_node,
+                )
+            default_arm = getattr(statement, "defaultCase", None)
+            if default_arm is not None:
+                self._emit_assignments_in(
+                    default_arm, clk_sym, reset_sym, reset_active_low, src_node
+                )
+            return
+        # Other statement kinds (function/task call, immediate assert,
+        # event, timing control inside always_ff — atypical) fall
+        # through silently; the missing flops surface in analyze
+        # output and we file the next gap when it bites a real design.
 
     def _emit_assignment_expression(
         self,

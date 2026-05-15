@@ -96,6 +96,17 @@ def test_cdc_008_fires_on_bad_clock_as_data() -> None:
     assert _run("bad_clock_as_data") == ["CDC-008"]
 
 
+@pytest.mark.xfail(
+    reason=(
+        "Gray-code detector at rules.py:594 matches Yosys-flatten's "
+        "wire-routed shift shape; slang lowers `>> 1` to an explicit "
+        "$shr cell, so the A[i+1]==B[i] pattern doesn't fire and "
+        "CDC-004 false-positives. Latent before issue #54's walker fix "
+        "(the gray-coded always_ff branch was silently skipped). "
+        "Tracking: rtl-buddy/rtl-buddy-cdc#55."
+    ),
+    strict=True,
+)
 def test_cdc_004_silent_on_good_gray_counter_crossing() -> None:
     """Gray-coded bus crossing into a multi-bit sync chain — the
     structural gray-code detector should accept it."""

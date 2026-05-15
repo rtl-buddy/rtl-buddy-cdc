@@ -141,8 +141,7 @@ def test_nested_if_in_data_branch(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     assert _flop_count(mod) >= 2, (
-        f"expected ≥ 2 flops from both arms of the nested if; "
-        f"got {_flop_count(mod)}"
+        f"expected ≥ 2 flops from both arms of the nested if; got {_flop_count(mod)}"
     )
 
 
