@@ -143,6 +143,14 @@ built is pluggable:
   raises `SlangFrontendUnavailable` with an install hint; fatal
   pyslang diagnostics surface through a `TextDiagnosticClient`
   (file:line:col + caret summaries — the usual compiler-error UX).
+- **`Frontend.auto`** — at runtime probes
+  `importlib.util.find_spec("pyslang")` via `frontend.resolve_auto`
+  and dispatches to `slang` when pyslang is importable, else `yosys`.
+  The default frontend stays `yosys` — `auto` is opt-in via the CLI
+  (`lint --frontend auto`). The auto branch resolves at the CLI
+  surface so the preamble shows the *resolved* frontend
+  (`frontend: yosys (auto)`) and downstream log-scraping tools never
+  see a third value in the `frontend:` line.
 
 The factory in `frontend.py` is the only orchestration:
 
@@ -595,6 +603,14 @@ edit in `RULES` plus the function definition.
 A waiver moves a violation out of "kept" and into "suppressed"; only
 kept violations drive the exit code.
 
+`--strict` (CLI flag) reframes the kept set without re-gating it:
+every `warning` is promoted to `error` before the reporter renders,
+so the text banner, JSON `severity`, and SARIF `level` all show
+`error`. The exit code is unchanged — any kept violation already
+drives 1 — so `--strict` is documentation/UX, not policy. Suppressed
+and baseline-carried findings are left at their natural severity
+(they aren't driving exit-code outcomes by definition).
+
 ### 8.3 Recognition vs. annotation
 
 For each rule the analyzer faces a choice between **structural
@@ -643,6 +659,30 @@ This deliberately mimics the Spyglass `.swl` workflow at a much
 smaller surface — no scope qualifiers, no severity overrides, no
 expiry dates. Add those when a real project asks for them, not
 preemptively.
+
+### 9.1 Baseline filtering (`--baseline`)
+
+`--baseline FILE.json` is auto-derived waivers. The flag points at a
+prior JSON report (the same shape `render_json` emits); findings
+whose `(rule_id, cell_name, message)` tuple matches an entry in the
+baseline's `violations` or `baseline_carryover` lists are filtered
+out of the kept set and moved into a third bucket on
+`AnalysisResult.baseline_carryover`. The kept-vs-suppressed-vs-
+carryover partition is performed in `cli._analyze_module_and_report`
+after waivers and before `--strict` promotion (so a carryover
+warning isn't promoted; carryover findings never drive exit code).
+
+JSON output gains `summary.baseline_carryover` (int) and a top-level
+`baseline_carryover` list of `_violation_to_dict` entries; SARIF
+emits each carryover entry with a `suppressions` field whose
+`justification` is `"carried over from baseline"` (distinguishing it
+from waiver-suppressed entries). The match key reuses fields the
+JSON schema already exposes; `cell_name` is now part of every
+violation dict for this purpose.
+
+Baseline files chain — a finding already in the baseline's
+`baseline_carryover` list stays carried over on the next run too —
+so re-baselining doesn't re-flag inherited findings.
 
 ## 10. Reporting
 

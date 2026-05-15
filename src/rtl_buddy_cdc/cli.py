@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import json
 import shutil
 import subprocess
 import sys
@@ -11,7 +13,7 @@ import typer
 
 from rtl_buddy_cdc import netlist, reporter, sdc as sdc_mod, waivers as waivers_mod
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
-from rtl_buddy_cdc.frontend import Frontend, elaborate
+from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import AnalysisResult
@@ -61,6 +63,25 @@ _COLOR_OPT = typer.Option(
     help="Force color on/off for the text report. Default: auto (color "
     "when stdout is a TTY and NO_COLOR is unset).",
 )
+_STRICT_OPT = typer.Option(
+    False,
+    "--strict",
+    help="Promote every `warning`-severity violation to `error` before "
+    "reporting. CDC-002 and CDC-005 are the rules affected today; the "
+    "exit code is unchanged (any kept violation already drives exit 1) "
+    "— the flag is reframing, not gating.",
+)
+_BASELINE_OPT = typer.Option(
+    None,
+    "--baseline",
+    exists=True,
+    readable=True,
+    help="Path to a baseline JSON report (a prior `--format json` "
+    "output). Violations matching baseline entries by "
+    "(rule_id, cell_name, message) are filtered out of the kept set "
+    "and surfaced as a 'Carried over from baseline' tally; they don't "
+    "drive the exit code. Useful for 'fail PR only on new findings'.",
+)
 
 
 @app.command()
@@ -96,6 +117,8 @@ def analyze(
     sync_depth: int = _SYNC_DEPTH_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
+    strict: bool = _STRICT_OPT,
+    baseline_path: Path | None = _BASELINE_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
     code = _analyze_and_report(
@@ -107,6 +130,8 @@ def analyze(
         sync_depth,
         verbose=verbose,
         color=color,
+        strict=strict,
+        baseline_path=baseline_path,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -137,7 +162,8 @@ def lint(
         "`yosys` and runs hierarchy/proc/flatten/opt_clean before "
         "analysis. 'slang' elaborates via pyslang directly with no "
         "synth step; install the optional extra with "
-        "`pip install 'rtl-buddy-cdc[slang]'`.",
+        "`pip install 'rtl-buddy-cdc[slang]'`. 'auto' picks slang when "
+        "pyslang is importable and falls back to yosys otherwise.",
     ),
     keep_json: Path | None = typer.Option(
         None,
@@ -172,16 +198,26 @@ def lint(
     sync_depth: int = _SYNC_DEPTH_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
+    strict: bool = _STRICT_OPT,
+    baseline_path: Path | None = _BASELINE_OPT,
 ) -> None:
     """Convenience wrapper: elaborate the sources using the chosen
     frontend, then analyze. With ``--frontend yosys`` (the default)
     this is equivalent to ``yosys -p 'read_verilog ...; hierarchy -top
     X; proc; flatten; opt_clean; write_json /tmp/out.json' &&
     rtl-buddy-cdc analyze --netlist /tmp/out.json --sdc ...``."""
+    # ``auto`` resolves once at the CLI surface so the preamble shows
+    # the concrete frontend and downstream tooling parsing stdout
+    # ("frontend: yosys"/"frontend: slang") doesn't see a third value.
+    resolved_frontend = resolve_auto() if frontend is Frontend.auto else frontend
+
     if fmt is OutputFormat.text:
         # Preamble for human readers only — structured output mustn't
         # carry non-payload framing.
-        typer.echo(f"frontend: {frontend.value}")
+        if frontend is Frontend.auto:
+            typer.echo(f"frontend: {resolved_frontend.value} (auto)")
+        else:
+            typer.echo(f"frontend: {resolved_frontend.value}")
         typer.echo(f"top:      {top}")
         for s in sources:
             typer.echo(f"src:      {s}")
@@ -190,7 +226,7 @@ def lint(
         module = elaborate(
             sources,
             top,
-            frontend=frontend,
+            frontend=resolved_frontend,
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             yosys_plugin=yosys_plugin,
@@ -209,7 +245,7 @@ def lint(
 
     if (
         fmt is OutputFormat.text
-        and frontend is Frontend.yosys
+        and resolved_frontend is Frontend.yosys
         and keep_json is not None
     ):
         typer.echo(f"netlist JSON kept at: {keep_json}")
@@ -223,6 +259,8 @@ def lint(
         sync_depth,
         verbose=verbose,
         color=color,
+        strict=strict,
+        baseline_path=baseline_path,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -266,6 +304,8 @@ def _analyze_and_report(
     *,
     verbose: bool = False,
     color: bool | None = None,
+    strict: bool = False,
+    baseline_path: Path | None = None,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module = netlist.load(netlist_path)
@@ -278,6 +318,8 @@ def _analyze_and_report(
         sync_depth,
         verbose=verbose,
         color=color,
+        strict=strict,
+        baseline_path=baseline_path,
     )
 
 
@@ -291,12 +333,14 @@ def _analyze_module_and_report(
     *,
     verbose: bool = False,
     color: bool | None = None,
+    strict: bool = False,
+    baseline_path: Path | None = None,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
     no SDC so rule checks were skipped), 1 = at least one *unsuppressed*
-    rule violation. Waived findings are still reported but don't fail
-    the run."""
+    rule violation. Waived findings (and baseline-carried findings) are
+    still reported but don't fail the run."""
     spec: sdc_mod.ClockSpec | None = None
     async_crossings: list[Crossing] = []
     violations: list[Violation] = []
@@ -322,6 +366,30 @@ def _analyze_module_and_report(
         waivers = waivers_mod.parse_file(waivers_path)
         violations, suppressed = waivers_mod.apply(violations, waivers)
 
+    # --baseline filter: partition findings against a prior JSON report.
+    # Carryover entries stay in the report (separate tally) but never
+    # drive the exit code — auto-derived waivers, basically.
+    baseline_carryover: list[Violation] = []
+    if baseline_path is not None:
+        baseline_keys = _load_baseline_keys(baseline_path)
+        kept: list[Violation] = []
+        for v in violations:
+            if _violation_key(v) in baseline_keys:
+                baseline_carryover.append(v)
+            else:
+                kept.append(v)
+        violations = kept
+
+    # --strict: promote every kept ``warning`` to ``error`` before the
+    # reporter sees the list. Suppressed and baseline-carried findings
+    # are left alone — by definition they aren't driving exit-code
+    # outcomes that the user is asking to tighten.
+    if strict:
+        violations = [
+            dataclasses.replace(v, severity="error") if v.severity == "warning" else v
+            for v in violations
+        ]
+
     result = AnalysisResult(
         module=module,
         domains=domains,
@@ -330,6 +398,7 @@ def _analyze_module_and_report(
         spec=spec,
         violations=list(violations),
         suppressed=list(suppressed),
+        baseline_carryover=list(baseline_carryover),
     )
 
     out: IO[str]
@@ -355,6 +424,41 @@ def _analyze_module_and_report(
             out.close()
 
     return 1 if violations else 0
+
+
+# --- --baseline support ------------------------------------------------------
+#
+# The match key is keyed on JSON-contract fields exposed by
+# ``reporter._violation_to_dict``: ``rule_id``, ``cell_name`` (added
+# alongside this feature so each finding has a stable per-cell handle),
+# and ``message``. Two genuinely-identical findings collapse to one key;
+# that's the same coarseness waivers already accept.
+
+
+def _violation_key(v: Violation) -> tuple[str, str, str]:
+    return (v.rule_id, v.cell_name or "", v.message)
+
+
+def _load_baseline_keys(path: Path) -> set[tuple[str, str, str]]:
+    """Parse a baseline JSON report and return the set of match keys.
+
+    Reads both ``violations`` and ``baseline_carryover`` so chained
+    baselines stay stable: a finding that was carried over in the
+    baseline run is still treated as carried over here.
+    """
+    with path.open() as fh:
+        payload = json.load(fh)
+    keys: set[tuple[str, str, str]] = set()
+    for bucket in ("violations", "baseline_carryover"):
+        for entry in payload.get(bucket, []):
+            keys.add(
+                (
+                    entry.get("rule_id", ""),
+                    entry.get("cell_name") or "",
+                    entry.get("message", ""),
+                )
+            )
+    return keys
 
 
 def _filter_async(
