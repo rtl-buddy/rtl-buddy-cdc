@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--strict` flag** on `analyze` and `lint` (#29). Promotes every
+  `warning`-severity violation (CDC-002, CDC-005 today) to `error`
+  before reporters see it, so the text banner, JSON `severity`, and
+  SARIF `level` all render as `error`. Exit code is unchanged — any
+  kept violation already drives exit 1; the flag is reframing, not
+  gating. Suppressed findings and baseline-carried findings are left
+  alone (by definition they don't drive exit-code outcomes).
+- **`--baseline FILE.json` flag** on `analyze` and `lint` (#30).
+  Filters out findings present in a prior JSON report (matched on
+  `(rule_id, cell_name, message)`) and surfaces them as a separate
+  "Carried over from baseline" tally; the carryover set never drives
+  the exit code. JSON output gains `summary.baseline_carryover`
+  (int) and a top-level `baseline_carryover` list; SARIF emits each
+  carryover entry with a `suppressions` field tagged
+  `carried over from baseline`. Baseline chains: a finding already
+  in the baseline's `baseline_carryover` list stays carried over on
+  the next run too, so re-baselining doesn't re-flag inherited
+  findings.
+- **`Frontend.auto`** + `--frontend auto` (#31). Probes
+  `importlib.util.find_spec("pyslang")` at runtime and dispatches to
+  `slang` when pyslang is importable, falling back to `yosys`
+  otherwise. The default frontend stays `yosys` — `auto` is opt-in
+  via the CLI. The `lint` preamble shows the *resolved* frontend
+  (`frontend: yosys (auto)`) so log scrapers never see a third
+  value.
+
+### Changed
+
+- JSON output now exposes a `cell_name` field on every violation
+  entry. This is additive — existing `JSON_CONTRACT` keys keep their
+  names and types — and gives `--baseline` a stable per-cell handle
+  for the match key.
+
 ## [0.2.0] — 2026-05-15
 
 `0.2.0` is the first release after the slang frontend reached parity

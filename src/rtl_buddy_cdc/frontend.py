@@ -23,6 +23,7 @@ delegates. The implementations live in :mod:`rtl_buddy_cdc.frontends`.
 
 from __future__ import annotations
 
+import importlib.util
 from enum import Enum
 from pathlib import Path
 
@@ -34,6 +35,22 @@ class Frontend(str, Enum):
 
     yosys = "yosys"
     slang = "slang"
+    # Probe pyslang at runtime and prefer slang when available; fall back
+    # to yosys otherwise. The default stays ``yosys`` — ``auto`` is
+    # opt-in. See ``resolve_auto`` for the resolution rule.
+    auto = "auto"
+
+
+def resolve_auto() -> Frontend:
+    """Resolve ``Frontend.auto`` into a concrete frontend.
+
+    Returns :attr:`Frontend.slang` when pyslang is importable in the
+    current environment (the slang frontend has no subprocess overhead
+    and no Yosys runtime dependency), :attr:`Frontend.yosys` otherwise.
+    """
+    if importlib.util.find_spec("pyslang") is not None:
+        return Frontend.slang
+    return Frontend.yosys
 
 
 def elaborate(
@@ -52,6 +69,8 @@ def elaborate(
     are accepted as keyword arguments and silently ignored by frontends
     that don't use them (e.g. ``yosys_bin`` is meaningless for slang).
     """
+    if frontend is Frontend.auto:
+        frontend = resolve_auto()
     if frontend is Frontend.yosys:
         from rtl_buddy_cdc.frontends import yosys as yosys_fe
 

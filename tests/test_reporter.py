@@ -231,3 +231,269 @@ def test_tool_version_matches_pyproject() -> None:
     release conventions"; this sentinel catches a one-sided edit
     that would leave SARIF consumers pointing at the wrong wheel."""
     assert TOOL_VERSION == importlib.metadata.version("rtl-buddy-cdc")
+
+
+# --- --strict severity promotion (issue #29) --------------------------------
+#
+# CDC-002 fires at warning severity. With ``--strict`` it should render
+# as an error in every output format AND drive the same exit code (1 —
+# any kept violation already drives it). The fixture is good_2ff_sync
+# (depth-2 chain): silent at the default ``--sync-depth 2``, fires
+# CDC-002 once at ``--sync-depth 3``.
+
+_STRICT_FIX = Path(__file__).parent / "fixtures" / "good_2ff_sync"
+_STRICT_JSON = _STRICT_FIX / "good_2ff_sync.json"
+_STRICT_SDC = _STRICT_FIX / "good_2ff_sync.sdc"
+
+
+def _strict_skip_if_missing() -> None:
+    if not _STRICT_JSON.exists():
+        pytest.skip(f"fixture not built: {_STRICT_JSON}")
+
+
+def test_strict_promotes_cdc_002_in_text(tmp_path: Path) -> None:
+    _strict_skip_if_missing()
+    out = tmp_path / "report.txt"
+    code = _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.text,
+        out,
+        sync_depth=3,
+        strict=True,
+    )
+    assert code == 1
+    text = out.read_text()
+    assert "CDC-002" in text
+    # Promoted: the rendered severity for this finding is now ``error``,
+    # and the summary banner counts it as such.
+    assert "error" in text
+    assert "1 error" in text
+    # And no stray ``warning`` token (the rule's natural severity).
+    assert "warning" not in text
+
+
+def test_strict_promotes_cdc_002_in_json(tmp_path: Path) -> None:
+    _strict_skip_if_missing()
+    out = tmp_path / "report.json"
+    code = _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        out,
+        sync_depth=3,
+        strict=True,
+    )
+    assert code == 1
+    payload = json.loads(out.read_text())
+    cdc_002 = [v for v in payload["violations"] if v["rule_id"] == "CDC-002"]
+    assert len(cdc_002) == 1
+    assert cdc_002[0]["severity"] == "error"
+
+
+def test_strict_promotes_cdc_002_in_sarif(tmp_path: Path) -> None:
+    _strict_skip_if_missing()
+    out = tmp_path / "report.sarif"
+    code = _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.sarif,
+        out,
+        sync_depth=3,
+        strict=True,
+    )
+    assert code == 1
+    payload = json.loads(out.read_text())
+    results = payload["runs"][0]["results"]
+    cdc_002 = [r for r in results if r["ruleId"] == "CDC-002"]
+    assert len(cdc_002) == 1
+    # SARIF maps internal severity ``error`` → level ``error`` (warning
+    # would have become ``warning``).
+    assert cdc_002[0]["level"] == "error"
+
+
+def test_strict_off_is_a_noop(tmp_path: Path) -> None:
+    """Without ``--strict``, CDC-002 stays at its natural warning
+    severity — promotion is opt-in, not a behaviour change."""
+    _strict_skip_if_missing()
+    out = tmp_path / "report.json"
+    code = _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        out,
+        sync_depth=3,
+        strict=False,
+    )
+    assert code == 1  # CDC-002 is still a violation, just at warning level
+    payload = json.loads(out.read_text())
+    cdc_002 = [v for v in payload["violations"] if v["rule_id"] == "CDC-002"]
+    assert len(cdc_002) == 1
+    assert cdc_002[0]["severity"] == "warning"
+
+
+# --- --baseline filter (issue #30) ------------------------------------------
+#
+# Acceptance-criteria cases: identical baseline → empty, baseline subset
+# → only the new finding kept. The JSON payload exposes a
+# ``baseline_carryover`` tally / list; SARIF emits carryover entries with
+# a ``suppressions`` field tagged ``carried over from baseline``.
+
+
+def _run_baseline_test(
+    tmp_path: Path, baseline_json: Path | None, *, sync_depth: int = 3
+) -> dict:
+    out = tmp_path / "report.json"
+    _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        out,
+        sync_depth=sync_depth,
+        baseline_path=baseline_json,
+    )
+    return json.loads(out.read_text())
+
+
+def test_baseline_identical_run_yields_zero_kept(tmp_path: Path) -> None:
+    """`--baseline <itself>` on the same fixture moves every finding to
+    the carryover tally — kept count is zero, exit code is zero."""
+    _strict_skip_if_missing()
+    # First run: emit a JSON report to use as the baseline.
+    baseline = tmp_path / "baseline.json"
+    code = _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        baseline,
+        sync_depth=3,
+    )
+    assert code == 1  # one CDC-002 in the baseline run
+    baseline_payload = json.loads(baseline.read_text())
+    assert baseline_payload["summary"]["violations"] == 1
+
+    # Second run with the baseline applied: the CDC-002 finding moves
+    # from `violations` to `baseline_carryover`.
+    out = tmp_path / "second.json"
+    code = _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        out,
+        sync_depth=3,
+        baseline_path=baseline,
+    )
+    payload = json.loads(out.read_text())
+    assert payload["summary"]["violations"] == 0
+    assert payload["summary"]["baseline_carryover"] == 1
+    assert payload["baseline_carryover"][0]["rule_id"] == "CDC-002"
+    # And the exit code drops to 0 — carryover doesn't fail the build.
+    assert code == 0
+
+
+def test_baseline_empty_keeps_every_finding(tmp_path: Path) -> None:
+    """`--baseline <empty-report>` is the same as no baseline — every
+    current finding stays in the kept set."""
+    _strict_skip_if_missing()
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"violations": []}))
+    payload = _run_baseline_test(tmp_path, baseline)
+    assert payload["summary"]["violations"] == 1
+    assert payload["summary"]["baseline_carryover"] == 0
+
+
+def test_baseline_filters_only_matching_keys(tmp_path: Path) -> None:
+    """A baseline that lists a DIFFERENT finding (different rule_id)
+    leaves the current finding untouched. The filter is exact-match on
+    (rule_id, cell_name, message), not blanket suppression."""
+    _strict_skip_if_missing()
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "violations": [
+                    {
+                        "rule_id": "CDC-999",
+                        "cell_name": "ghost",
+                        "message": "phantom finding",
+                    }
+                ]
+            }
+        )
+    )
+    payload = _run_baseline_test(tmp_path, baseline)
+    assert payload["summary"]["violations"] == 1
+    assert payload["summary"]["baseline_carryover"] == 0
+
+
+def test_baseline_sarif_marks_carryover_as_suppressed(tmp_path: Path) -> None:
+    """SARIF entries for baseline-carried findings carry a
+    ``suppressions`` field so GitHub Code Scanning doesn't fail the
+    build on a finding the PR already inherited from main."""
+    _strict_skip_if_missing()
+    baseline = tmp_path / "baseline.json"
+    _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        baseline,
+        sync_depth=3,
+    )
+    out = tmp_path / "report.sarif"
+    _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.sarif,
+        out,
+        sync_depth=3,
+        baseline_path=baseline,
+    )
+    payload = json.loads(out.read_text())
+    results = payload["runs"][0]["results"]
+    assert len(results) == 1
+    entry = results[0]
+    assert entry["ruleId"] == "CDC-002"
+    assert "suppressions" in entry
+    assert entry["suppressions"][0]["justification"] == "carried over from baseline"
+
+
+def test_baseline_carryover_chains(tmp_path: Path) -> None:
+    """A finding already in the baseline's ``baseline_carryover`` list
+    stays carried over on the next run too. Without this, re-baselining
+    would re-flag inherited findings."""
+    _strict_skip_if_missing()
+    # Run once to capture a realistic violation entry, then transplant
+    # it into the carryover bucket of a synthesised baseline file. This
+    # avoids hard-coding the (rule-generated) message and cell_name.
+    real = tmp_path / "real.json"
+    _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        real,
+        sync_depth=3,
+    )
+    real_payload = json.loads(real.read_text())
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "violations": [],
+                "baseline_carryover": real_payload["violations"],
+            }
+        )
+    )
+    payload = _run_baseline_test(tmp_path, baseline)
+    # The current finding matches via the baseline's carryover bucket.
+    assert payload["summary"]["violations"] == 0
+    assert payload["summary"]["baseline_carryover"] == 1

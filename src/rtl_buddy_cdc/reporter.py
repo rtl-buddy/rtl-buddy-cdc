@@ -69,6 +69,11 @@ class AnalysisResult:
     spec: ClockSpec | None
     violations: list[Violation]
     suppressed: list[SuppressedViolation] = field(default_factory=list)
+    # Findings filtered out by ``--baseline``: present in a baseline
+    # JSON report so they're not re-flagged on this run. Visible in the
+    # report (separate tally) but never drive the exit code — the
+    # "carried over" tally is auto-derived waivers, not new findings.
+    baseline_carryover: list[Violation] = field(default_factory=list)
 
 
 # --- text -------------------------------------------------------------------
@@ -148,6 +153,7 @@ def render_text(
         return
     _render_violations(result, out, s)
     _render_suppressed(result, out, s)
+    _render_baseline_carryover(result, out, s)
 
 
 def _render_header(result: AnalysisResult, out: IO[str], s: _Style) -> None:
@@ -285,6 +291,18 @@ def _render_suppressed(result: AnalysisResult, out: IO[str], s: _Style) -> None:
         )
 
 
+def _render_baseline_carryover(result: AnalysisResult, out: IO[str], s: _Style) -> None:
+    if not result.baseline_carryover:
+        return
+    out.write(
+        f"\n{s.bold}Carried over from baseline{s.reset} "
+        f"({len(result.baseline_carryover)})\n"
+    )
+    for v in result.baseline_carryover:
+        msg = v.message.splitlines()[0] if v.message else ""
+        out.write(f"  {s.dim}{v.rule_id}{s.reset}  {msg}\n")
+
+
 def _severity_counts(violations: list[Violation]) -> dict[str, int]:
     counts = {"error": 0, "warning": 0, "info": 0}
     for v in violations:
@@ -307,6 +325,7 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             "async_crossings": len(result.async_crossings),
             "violations": len(result.violations),
             "suppressed": len(result.suppressed),
+            "baseline_carryover": len(result.baseline_carryover),
         },
         "domains": [
             {"flop": fd.flop.cell.name, "clock": fd.clock} for fd in result.domains
@@ -324,6 +343,9 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
                 },
             }
             for s in result.suppressed
+        ],
+        "baseline_carryover": [
+            _violation_to_dict(v, result.module) for v in result.baseline_carryover
         ],
     }
     json.dump(payload, out, indent=2)
@@ -351,6 +373,11 @@ def _violation_to_dict(v: Violation, module: Module) -> dict:
         "severity": v.severity,
         "message": v.message,
     }
+    # ``cell_name`` is part of the stable JSON contract so ``--baseline``
+    # has a unique key per violation (``rule_id`` alone collides for
+    # designs with many same-rule findings). Emitted as ``null`` when
+    # the rule didn't anchor on a single cell.
+    out["cell_name"] = v.cell_name
     if v.crossing is not None:
         out["crossing"] = _crossing_to_dict(v.crossing)
     loc = _source_location(module, v.cell_name)
@@ -398,6 +425,18 @@ def render_sarif(result: AnalysisResult, out: IO[str]) -> None:
                 "kind": "external",
                 "status": "accepted",
                 "justification": s.waiver.reason or "waived",
+            }
+        ]
+        sarif_results.append(entry)
+    # Baseline-carried findings: same shape, distinct justification so
+    # consumers can tell them apart from user-authored waivers.
+    for v in result.baseline_carryover:
+        entry = _violation_to_sarif(v, result.module)
+        entry["suppressions"] = [
+            {
+                "kind": "external",
+                "status": "accepted",
+                "justification": "carried over from baseline",
             }
         ]
         sarif_results.append(entry)
