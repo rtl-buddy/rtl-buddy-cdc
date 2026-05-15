@@ -587,7 +587,8 @@ free functions in `rules.py`:
 | `_forward_reachable_cells(module, start_bits, consumers, ...)` | CDC-005 | Forward walk that returns *every* cell on the cone — flop or comb. CDC-005 uses this for reconvergence detection so a comb-cell recombination (sync outputs into an OR driving an output port) still counts |
 | `_is_multibit_sync_first_stage(...)` | CDC-004 | Verify the destination is a width-N flop whose Q exactly equals another same-domain flop's D lane-wise |
 | `_is_gray_encoded_source(...)` | CDC-004 | Backward-walk from src D, looking for the canonical `g = b ^ (b >> 1)` XOR pattern |
-| `_is_gated_bus_crossing(...)` | CDC-004 | Recognise handshake-style gating — D updates only when an enable from the dst domain has been synchronized across |
+| `_is_gated_bus_crossing(...)` | CDC-004 | Recognise handshake-style gating — D updates only when an enable from the dst domain has been synchronized across. Three shapes are accepted: (1) `$mux` directly driving `D` with a dst-domain `S` (the original handshake), (2) the same mux behind up to `_GATING_BUF_BUDGET`=2 transparent fanout buffers (`$buf`/`$_BUF_`/`$_NOT_`/`$not`/`$pos`), (3) destination cell is a `$dffe`-style flop with a dst-domain `EN` fanin |
+| `_trace_through_bus_buffers(module, bit, drivers, ...)` | CDC-004 | Walk one D bit backward through up to `_GATING_BUF_BUDGET` transparent single-input buffers and return the surviving upstream driver. Used by `_is_gated_bus_crossing`'s shape-2 path so Yosys-inserted fanout buffers don't hide the originating mux |
 | `_clock_network_cells(...)` | CDC-008 | Identify cells whose output transitively drives any flop CLK; they're exempted from "clock as data" |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |

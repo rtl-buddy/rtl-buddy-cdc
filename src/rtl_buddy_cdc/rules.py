@@ -694,6 +694,65 @@ def check_cdc_003(
     return violations
 
 
+# Single-input cells that pass each input bit through to the
+# corresponding output bit (modulo polarity). Used by the CDC-004
+# gating-shape detector to walk back from the destination flop's
+# ``D`` pin to the originating mux through Yosys-inserted fanout
+# buffers. Polarity is irrelevant because we're only locating the
+# origin cell, not preserving signal value. Kept as a small local
+# constant rather than reusing ``domain._BUFFER_TYPES`` because that
+# set also includes reduce-style cells (``$reduce_bool``,
+# ``$logic_not``) that aren't bit-aligned passthroughs on buses.
+_BUS_BUFFER_TYPES: frozenset[str] = frozenset(
+    {"$not", "$buf", "$pos", "$_BUF_", "$_NOT_"}
+)
+# Maximum number of transparent buffers tolerated between the gating
+# mux and the destination flop's ``D`` pin. Two covers the realistic
+# Yosys-inserted buffer count (typically zero or one); deeper chains
+# are unusual and stay flagged so users get a review nudge.
+_GATING_BUF_BUDGET = 2
+
+
+def _trace_through_bus_buffers(
+    module: Module,
+    bit: Bit,
+    drivers: dict[Bit, tuple[str, str, int]],
+    max_hops: int = _GATING_BUF_BUDGET,
+) -> tuple[str, str, int] | None:
+    """Return the driver of ``bit`` after stepping through up to
+    ``max_hops`` transparent single-input buffers.
+
+    A "transparent" cell here is one of :data:`_BUS_BUFFER_TYPES`
+    whose ``A`` input is bit-aligned with its ``Y`` output (same
+    width, bit *i* of A produces bit *i* of Y). When the chain
+    exceeds the budget, the function returns the last buffer's
+    driver so the caller's cell-type check still runs and rejects
+    cleanly — the originating mux is then one more hop away than
+    we accept.
+    """
+    cur_bit: Bit = bit
+    hops = 0
+    while True:
+        drv = drivers.get(cur_bit) if isinstance(cur_bit, int) else None
+        if drv is None:
+            return None
+        cell_name, _port, idx = drv
+        cell = module.cells[cell_name]
+        if cell.type not in _BUS_BUFFER_TYPES:
+            return drv
+        if hops >= max_hops:
+            return drv
+        a_bits = cell.connections.get("A", ())
+        y_bits = cell.connections.get("Y", ())
+        if len(a_bits) != len(y_bits) or idx >= len(a_bits):
+            return drv
+        nxt = a_bits[idx]
+        if not isinstance(nxt, int):
+            return drv
+        cur_bit = nxt
+        hops += 1
+
+
 def _is_gated_bus_crossing(
     module: Module,
     crossing: Crossing,
@@ -703,28 +762,52 @@ def _is_gated_bus_crossing(
     """Heuristic: the bus crossing is properly gated by a dst-domain
     handshake (so CDC-004 should not fire).
 
-    The pattern we accept: the cell that directly drives the
-    destination flop's ``D`` pin is a single ``$mux``, and the mux's
-    ``S`` (select) input is driven by combinational/sequential logic
-    whose entire fanin in the netlist sits in the destination clock
-    domain. That matches the golden ``ip_cdc_handshake`` shape and
-    the standard "load on synced req-edge" pattern in textbooks.
+    Two shapes are accepted; both reduce to the same correctness
+    argument — the destination only latches the bus when a dst-domain
+    control signal allows it, so mid-flight values aren't captured:
 
-    A more rigorous check would also verify that the mux's hold-input
-    is the destination flop's own ``Q`` (proper feedback hold), but we
-    leave that as a follow-up — the current shape catches the bus
-    crossing patterns we care about without false-positives on the
-    golden fixture.
+    - **Mux-on-D**: the cell driving the destination flop's ``D`` is
+      a ``$mux`` whose ``S`` (select) fanin sits entirely in the dst
+      clock domain (the golden ``ip_cdc_handshake`` shape). Up to
+      :data:`_GATING_BUF_BUDGET` transparent fanout buffers between
+      the mux and ``D`` are tolerated — Yosys routinely inserts them
+      after the flatten/opt passes.
+    - **Dffe-EN**: the destination cell is itself a flop-with-enable
+      from :data:`flops.FF_CELL_TYPES` (``$dffe`` / ``$sdffe`` /
+      ``$adffe`` / etc.) whose ``EN`` pin fans in only from dst-domain
+      flops. That's the "load on synced enable" idiom.
+
+    A more rigorous check would also verify that the mux's
+    hold-input is the destination flop's own ``Q`` (proper feedback
+    hold), but we leave that as a follow-up — the current shape
+    catches the bus crossing patterns we care about without
+    false-positives on the golden fixture.
     """
     dst_clock = crossing.dst_clock
-    # All D bits should be driven by the same cell for the gating
-    # interpretation to apply. If the bus is split across multiple
-    # drivers, give up and treat as ungated (conservative).
+    dst_cell = crossing.dst_flop.cell
+
+    # Shape 1: $dffe-style EN gating. Cheap to test (one cell-type
+    # lookup plus one pin walk); try first so EN-gated designs skip
+    # the more expensive driver-cell aggregation below.
+    if dst_cell.type in FF_CELL_TYPES:
+        en_bits = dst_cell.connections.get("EN", ())
+        en_int_bits = tuple(b for b in en_bits if isinstance(b, int))
+        if en_int_bits:
+            en_fanin_flops = _backward_flop_fanin(module, en_int_bits, drivers)
+            if en_fanin_flops and all(
+                domains.get(name) == dst_clock for name in en_fanin_flops
+            ):
+                return True
+
+    # Shape 2: mux-on-D, optionally through a short chain of
+    # transparent buffers. All D bits must trace back to the same
+    # origin cell — a bus split across multiple drivers can't be a
+    # single gating mux.
     driver_cells: set[str] = set()
     for d_bit in crossing.dst_flop.d:
         if not isinstance(d_bit, int):
             continue
-        drv = drivers.get(d_bit)
+        drv = _trace_through_bus_buffers(module, d_bit, drivers)
         if drv is None:
             return False
         driver_cells.add(drv[0])

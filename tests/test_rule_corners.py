@@ -17,6 +17,8 @@ from rtl_buddy_cdc.rules import (
     _build_context,  # noqa: PLC2701
     _forward_reachable_cells,  # noqa: PLC2701
     _forward_reachable_flops,  # noqa: PLC2701
+    _is_gated_bus_crossing,  # noqa: PLC2701
+    _trace_through_bus_buffers,  # noqa: PLC2701
     run_all,
 )
 from rtl_buddy_cdc.sdc import parse as parse_sdc
@@ -447,6 +449,305 @@ def test_forward_reachable_cells_disjoint_when_cones_disjoint() -> None:
     assert a_reach == {"buf_a", "ff_a"}
     assert b_reach == {"buf_b", "ff_b"}
     assert a_reach & b_reach == set()
+
+
+# --- CDC-004 gating-shape extensions (issues #34, #35) ---------------------
+#
+# Phase 1: pure-helper test for the buffer-walker.
+# Phase 2: end-to-end shape-1 ($dffe.EN) and shape-2 (mux-on-D through a
+# buffer chain) tests, plus a budget-exceeded guard that confirms a 3-hop
+# chain still trips CDC-004.
+
+
+def _build_buffered_mux_to_d_module(num_buffers: int) -> Module:
+    """Multi-bit gated bus crossing with ``num_buffers`` ``$_BUF_`` cells
+    between the gating mux and the dst flop's ``D`` pin.
+
+    Topology (per lane; the module is 2-bit wide)::
+
+        src_q.Q[i] ─┐
+                    [$mux Y[i]] ─[$_BUF_]…[$_BUF_]─> dst_q.D[i]
+        dst_q.Q[i] ─┘
+                       ▲
+                       │ S=en_sync.Q (dst-domain control)
+
+    With ``num_buffers <= _GATING_BUF_BUDGET`` the gating detector
+    should accept; beyond the budget the trace bails out before
+    reaching the mux and CDC-004 must fire.
+    """
+    src_clk_bit = 2
+    dst_clk_bit = 3
+    src_d0_bit, src_d1_bit = 4, 5
+    src_q0_bit, src_q1_bit = 6, 7
+    en_d_bit = 8
+    en_q_bit = 9
+    mux_y0_bit, mux_y1_bit = 10, 11
+    dst_q0_bit, dst_q1_bit = 12, 13
+
+    # Allocate intermediate net IDs for the buffer chain. Each stage
+    # is two lanes wide. ``stage_bits[0]`` sits between mux Y and the
+    # first buffer; ``stage_bits[k>0]`` sits between buffers k-1 and
+    # k. The final buffer writes mux_y* directly into the flop D,
+    # which is wired through the last stage's nets.
+    nxt = 100
+    chain_stages: list[tuple[int, int]] = []
+    for _ in range(num_buffers):
+        chain_stages.append((nxt, nxt + 1))
+        nxt += 2
+    # mux's actual Y output: first chain stage's nets if buffered,
+    # else the dst flop's D bits directly.
+    if num_buffers == 0:
+        mux_y = (mux_y0_bit, mux_y1_bit)
+        dst_d = (mux_y0_bit, mux_y1_bit)
+    else:
+        mux_y = chain_stages[0]
+        dst_d = (mux_y0_bit, mux_y1_bit)
+
+    ports: dict[str, Port] = {
+        "src_clk": Port(name="src_clk", direction="input", bits=(src_clk_bit,)),
+        "dst_clk": Port(name="dst_clk", direction="input", bits=(dst_clk_bit,)),
+        "src_d": Port(name="src_d", direction="input", bits=(src_d0_bit, src_d1_bit)),
+        "en_d": Port(name="en_d", direction="input", bits=(en_d_bit,)),
+        "dst_q": Port(name="dst_q", direction="output", bits=(dst_q0_bit, dst_q1_bit)),
+    }
+    cells: dict[str, Cell] = {
+        "src_q": Cell(
+            name="src_q",
+            type="$dff",
+            connections={
+                "CLK": (src_clk_bit,),
+                "D": (src_d0_bit, src_d1_bit),
+                "Q": (src_q0_bit, src_q1_bit),
+            },
+        ),
+        "en_sync": Cell(
+            name="en_sync",
+            type="$dff",
+            connections={
+                "CLK": (dst_clk_bit,),
+                "D": (en_d_bit,),
+                "Q": (en_q_bit,),
+            },
+        ),
+        "load_mux": Cell(
+            name="load_mux",
+            type="$mux",
+            connections={
+                "A": (dst_q0_bit, dst_q1_bit),  # hold (dst flop's Q)
+                "B": (src_q0_bit, src_q1_bit),  # load (src flop's Q)
+                "S": (en_q_bit,),
+                "Y": mux_y,
+            },
+        ),
+        "dst_q": Cell(
+            name="dst_q",
+            type="$dff",
+            connections={
+                "CLK": (dst_clk_bit,),
+                "D": dst_d,
+                "Q": (dst_q0_bit, dst_q1_bit),
+            },
+        ),
+    }
+    # Chain the buffers. Buffer k reads stage k, writes stage k+1;
+    # the last buffer writes ``mux_y0_bit/mux_y1_bit`` (the dst flop's
+    # actual D nets). Single-bit $_BUF_, two per stage (one per lane).
+    for k in range(num_buffers):
+        src_vec = chain_stages[k]
+        if k == num_buffers - 1:
+            dst_vec = (mux_y0_bit, mux_y1_bit)
+        else:
+            dst_vec = chain_stages[k + 1]
+        for lane in range(2):
+            cells[f"buf_h{k}_b{lane}"] = Cell(
+                name=f"buf_h{k}_b{lane}",
+                type="$_BUF_",
+                connections={
+                    "A": (src_vec[lane],),
+                    "Y": (dst_vec[lane],),
+                },
+            )
+    return Module(name="buffered_mux_to_d", ports=ports, cells=cells, netnames={})
+
+
+_TWO_CLOCK_SDC = """
+create_clock -name src_clk -period 10.0 [get_ports src_clk]
+create_clock -name dst_clk -period 7.5  [get_ports dst_clk]
+set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
+"""
+
+
+def _async_crossings(module: Module, spec):
+    crossings = find_crossings(module)
+    return [
+        c
+        for c in crossings
+        if spec.are_async(
+            spec.clock_for_port(c.src_clock) or c.src_clock,
+            spec.clock_for_port(c.dst_clock) or c.dst_clock,
+        )
+    ]
+
+
+def test_trace_through_bus_buffers_single_hop() -> None:
+    """One ``$_BUF_`` between mux and D: the trace should land on the
+    mux output, not on the buffer cell."""
+    module = _build_buffered_mux_to_d_module(num_buffers=1)
+    ctx = _build_context(module, clock_spec=None)
+    # dst_q.D bits are 10 / 11; trace each backward through the buffer.
+    drv0 = _trace_through_bus_buffers(module, 10, ctx.bit_drivers)
+    drv1 = _trace_through_bus_buffers(module, 11, ctx.bit_drivers)
+    assert drv0 is not None and drv0[0] == "load_mux"
+    assert drv1 is not None and drv1[0] == "load_mux"
+
+
+def test_trace_through_bus_buffers_budget_exceeded() -> None:
+    """A 3-hop chain (budget=2) must stop at the last buffer rather
+    than returning the originating mux. The caller's cell-type check
+    will then see a ``$_BUF_`` and reject."""
+    module = _build_buffered_mux_to_d_module(num_buffers=3)
+    ctx = _build_context(module, clock_spec=None)
+    drv = _trace_through_bus_buffers(module, 10, ctx.bit_drivers)
+    assert drv is not None
+    assert module.cells[drv[0]].type == "$_BUF_"
+
+
+def test_cdc_004_silent_with_one_buffer_between_mux_and_d() -> None:
+    """End-to-end: a single buffer between the gating mux and the
+    dst flop's D pin keeps the gating-shape detector happy. Matches
+    the ``good_buffered_gated_bus_crossing`` fixture's shape but is
+    fully self-contained."""
+    module = _build_buffered_mux_to_d_module(num_buffers=1)
+    spec = parse_sdc(_TWO_CLOCK_SDC)
+    crossings = _async_crossings(module, spec)
+    # One bus crossing src_clk → dst_clk into dst_q.
+    assert len(crossings) >= 1
+    violations = run_all(module, crossings, spec)
+    cdc_004 = [v for v in violations if v.rule_id == "CDC-004"]
+    assert cdc_004 == []
+
+
+def test_cdc_004_fires_with_three_buffers_between_mux_and_d() -> None:
+    """Budget-exceeded regression guard for issue #35: 3 buffers
+    between the mux and D are one too many. The trace bails out
+    before reaching the mux, the gating shape fails to match, and
+    CDC-004 fires on the bus crossing."""
+    module = _build_buffered_mux_to_d_module(num_buffers=3)
+    spec = parse_sdc(_TWO_CLOCK_SDC)
+    crossings = _async_crossings(module, spec)
+    violations = run_all(module, crossings, spec)
+    cdc_004 = [v for v in violations if v.rule_id == "CDC-004"]
+    assert len(cdc_004) == 1
+    assert "unprotected bus crossing" in cdc_004[0].message
+
+
+def _build_dffe_gated_module(en_clock_bit: int) -> Module:
+    """Multi-bit bus crossing into a ``$dffe`` whose EN comes from a
+    flop on ``en_clock_bit``. When ``en_clock_bit`` is the dst clock,
+    the EN-gating shape should accept; when it's the src clock, it
+    must reject (the gate is itself cross-domain)."""
+    src_clk_bit = 2
+    dst_clk_bit = 3
+    src_d0, src_d1 = 4, 5
+    src_q0, src_q1 = 6, 7
+    en_d = 8
+    en_q = 9
+    dst_q0, dst_q1 = 10, 11
+
+    ports: dict[str, Port] = {
+        "src_clk": Port(name="src_clk", direction="input", bits=(src_clk_bit,)),
+        "dst_clk": Port(name="dst_clk", direction="input", bits=(dst_clk_bit,)),
+        "src_d": Port(name="src_d", direction="input", bits=(src_d0, src_d1)),
+        "en_d": Port(name="en_d", direction="input", bits=(en_d,)),
+        "dst_q": Port(name="dst_q", direction="output", bits=(dst_q0, dst_q1)),
+    }
+    cells: dict[str, Cell] = {
+        "src_q": Cell(
+            name="src_q",
+            type="$dff",
+            connections={
+                "CLK": (src_clk_bit,),
+                "D": (src_d0, src_d1),
+                "Q": (src_q0, src_q1),
+            },
+        ),
+        "en_q": Cell(
+            name="en_q",
+            type="$dff",
+            connections={
+                "CLK": (en_clock_bit,),
+                "D": (en_d,),
+                "Q": (en_q,),
+            },
+        ),
+        "dst_q": Cell(
+            name="dst_q",
+            type="$dffe",
+            connections={
+                "CLK": (dst_clk_bit,),
+                "EN": (en_q,),
+                "D": (src_q0, src_q1),
+                "Q": (dst_q0, dst_q1),
+            },
+        ),
+    }
+    return Module(name="dffe_gated", ports=ports, cells=cells, netnames={})
+
+
+def test_cdc_004_silent_with_dffe_en_in_dst_domain() -> None:
+    """Shape 1: ``$dffe`` destination whose EN fanin is all dst-domain.
+    Matches the textbook handshake/load-enable idiom; CDC-004 must
+    stay silent."""
+    module = _build_dffe_gated_module(en_clock_bit=3)  # dst_clk
+    spec = parse_sdc(_TWO_CLOCK_SDC)
+    crossings = _async_crossings(module, spec)
+    violations = run_all(module, crossings, spec)
+    cdc_004 = [v for v in violations if v.rule_id == "CDC-004"]
+    assert cdc_004 == []
+
+
+def test_cdc_004_fires_when_dffe_en_is_src_domain() -> None:
+    """Negative shape-1 case: ``$dffe`` destination whose EN comes
+    from a src-domain flop. The "gate" is itself a cross-domain
+    signal — the rule must still fire, otherwise we'd accept any
+    ``$dffe`` as automatically gated."""
+    module = _build_dffe_gated_module(en_clock_bit=2)  # src_clk
+    spec = parse_sdc(_TWO_CLOCK_SDC)
+    crossings = _async_crossings(module, spec)
+    # Sanity: there must be at least the bus crossing visible.
+    bus_crossings = [c for c in crossings if c.width >= 2]
+    assert bus_crossings
+    violations = run_all(module, crossings, spec)
+    cdc_004 = [v for v in violations if v.rule_id == "CDC-004"]
+    assert len(cdc_004) >= 1
+
+
+def test_is_gated_bus_crossing_rejects_dffe_without_en() -> None:
+    """If a flop happens to be ``$dffe`` typed but has no ``EN``
+    connection (or EN is constant), shape 1 must not accept it on
+    the basis of the cell type alone. Falling back to shape 2 is
+    still allowed."""
+    module = _build_dffe_gated_module(en_clock_bit=3)
+    # Strip the EN connection. Frozen dataclass — rebuild the cell.
+    old = module.cells["dst_q"]
+    new_conns = {k: v for k, v in old.connections.items() if k != "EN"}
+    module.cells["dst_q"] = Cell(
+        name=old.name,
+        type=old.type,
+        connections=new_conns,
+        parameters=old.parameters,
+        attributes=old.attributes,
+    )
+    spec = parse_sdc(_TWO_CLOCK_SDC)
+    crossings = _async_crossings(module, spec)
+    ctx = _build_context(module, clock_spec=spec)
+    bus_crossings = [c for c in crossings if c.width >= 2]
+    assert bus_crossings
+    # The shape-1 detector should now reject; with no mux on D
+    # shape-2 also fails, so the overall result is "not gated".
+    assert not _is_gated_bus_crossing(
+        module, bus_crossings[0], ctx.domains, ctx.bit_drivers
+    )
 
 
 def test_forward_reachable_flops_respects_max_depth() -> None:
