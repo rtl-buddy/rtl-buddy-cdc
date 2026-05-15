@@ -685,14 +685,27 @@ class _ModuleBuilder:
         block_reset_sym = reset_sym
         block_reset_active_low = reset_active_low
         try:
-            if self._kind_name(inner) == "ConditionalStatement":
-                # The if-condition's variable IS the reset signal —
-                # confirm against the event-list-derived candidate,
-                # but trust the body shape when they disagree (event
-                # lists are sometimes ordered unconventionally).
-                cond_reset = self._extract_condition_symbol(inner.conditions[0].expr)
-                if cond_reset is not None:
-                    block_reset_sym = cond_reset
+            reset_check = self._classify_reset_check(inner, reset_sym)
+            if reset_check is not None:
+                # Canonical reset-check shape — either async-reset
+                # ``always_ff @(posedge clk or negedge rst_n) begin
+                #     if (!rst_n) <reset_assigns> else <data> end``
+                # or its sync-reset cousin
+                # ``always_ff @(posedge clk) begin
+                #     if (!rst_n) <reset_assigns> else <data> end``
+                # In both, the reset arm's writes are absorbed into
+                # the flop's reset value rather than emitted as
+                # separate writes (we only walk ``ifFalse``, the data
+                # branch). For async reset, the reset signal comes
+                # from the event list; for sync reset we identified
+                # the shape heuristically (constant-only ifTrue arm
+                # — matches every synthesizable reset block).
+                # Falling outside that envelope (a runtime ``if (cond)``
+                # at the top of a no-reset always_ff, where the ifTrue
+                # arm computes a real value) flows into the general
+                # walker below so both arms drain into one flop per
+                # LHS, not silently dropped.
+                block_reset_sym = reset_check
                 data_branch = inner.ifFalse
                 if data_branch is None:
                     return  # no else → no data assignment to model
@@ -783,6 +796,98 @@ class _ModuleBuilder:
             return expr.symbol
         return None
 
+    def _classify_reset_check(
+        self, inner: Any, reset_sym_from_event_list: Any | None
+    ) -> Any | None:
+        """Return the reset symbol for ``inner`` if it has the canonical
+        reset-check shape, else ``None`` so the caller walks the body
+        normally.
+
+        Two shapes match:
+
+        - **Async reset.** The event list announced an async reset
+          (``or negedge rst_n``), so ``reset_sym_from_event_list`` is
+          non-None, and the body's outer if-condition gates on that
+          same symbol.
+        - **Sync reset.** No async reset event, but the body's outer
+          ``ConditionalStatement`` writes only constants in its
+          ``ifTrue`` arm (the standard ``if (!rst_n) <constants>
+          else <data>`` shape that synthesizers fold into ``$sdff``).
+          The constant-only check is what distinguishes a real reset
+          check from a runtime ``if (cond)`` at the top of a no-reset
+          always_ff body — the latter has a real RHS expression in
+          ifTrue and must be walked as a normal mux-tree.
+        """
+        if self._kind_name(inner) != "ConditionalStatement":
+            return None
+        conds = getattr(inner, "conditions", None)
+        if not conds:
+            return None
+        cond_sym = self._extract_condition_symbol(conds[0].expr)
+        if cond_sym is None:
+            return None
+        if reset_sym_from_event_list is not None:
+            return cond_sym if cond_sym is reset_sym_from_event_list else None
+        # Sync-reset heuristic: the ifTrue arm assigns only constants.
+        if self._is_constant_only_assignment_tree(inner.ifTrue):
+            return cond_sym
+        return None
+
+    def _is_constant_only_assignment_tree(self, stmt: Any) -> bool:
+        """``True`` if every nonblocking assignment reachable from
+        ``stmt`` has a compile-time-constant RHS (IntegerLiteral,
+        ConversionExpression wrapping a literal, or another expression
+        ``_const_int`` can fold). Used to distinguish a reset-arm
+        body (all-constant assigns) from a runtime if/else arm.
+
+        Recurses through the same control-flow shapes the walker
+        handles — BlockStatement, StatementList, ConditionalStatement
+        (both arms), CaseStatement, ForLoopStatement. Bails on
+        anything it can't reason about; that returns ``False`` and
+        the caller falls through to the dynamic-condition path,
+        which is the conservative choice.
+        """
+        if stmt is None:
+            return True  # vacuously: no assignments → no non-constants
+        kind = self._kind_name(stmt)
+        if kind == "BlockStatement":
+            return self._is_constant_only_assignment_tree(stmt.body)
+        if kind in {"StatementList", "ListStatement"}:
+            return all(
+                self._is_constant_only_assignment_tree(s)
+                for s in (getattr(stmt, "list", []) or [])
+            )
+        if kind == "ConditionalStatement":
+            return all(
+                self._is_constant_only_assignment_tree(arm)
+                for arm in (stmt.ifTrue, stmt.ifFalse)
+                if arm is not None
+            )
+        if kind == "CaseStatement":
+            ok = all(
+                self._is_constant_only_assignment_tree(getattr(it, "stmt", None))
+                for it in (getattr(stmt, "items", []) or [])
+            )
+            default = getattr(stmt, "defaultCase", None)
+            if default is not None:
+                ok = ok and self._is_constant_only_assignment_tree(default)
+            return ok
+        if kind == "ForLoopStatement":
+            return self._is_constant_only_assignment_tree(getattr(stmt, "body", None))
+        if kind == "ExpressionStatement":
+            expr = getattr(stmt, "expr", None)
+            if expr is None or type(expr).__name__ != "AssignmentExpression":
+                # Non-assignment ExpressionStatement (e.g. function
+                # call) — not a reset assign; bail conservatively.
+                return False
+            if not getattr(expr, "isNonBlocking", False):
+                return False
+            return self._const_int(expr.right) is not None
+        if kind == "VariableDeclStatement":
+            return True  # loop-var declarations etc. contribute no flop
+        # Anything else (timing control, immediate assert, …) — bail.
+        return False
+
     def _emit_assignments_in(
         self,
         statement: Any,
@@ -827,11 +932,29 @@ class _ModuleBuilder:
                 )
             return
         if kind == "ConditionalStatement":
-            # Push the condition onto the enable stack while walking
-            # each arm so ``_emit_assignment_expression`` accumulates
-            # writes with the right enable. ``_drain_proc_writes``
-            # then collapses all writes to one flop per LHS with a
-            # mux tree:
+            # Compile-time-constant fold: if the condition is a
+            # parameter-driven (``IS_DIAGONAL``-style) or literal
+            # constant, walk only the live arm with no enable push.
+            # Matches Yosys-flatten + opt_clean's pruning of dead
+            # arms, so the resulting netlist doesn't leak fanin
+            # from a statically unreachable RHS into the mux tree
+            # (the cause of #72's 36 false-positive md→mr crossings
+            # on tiny-NPU's non-diagonal mxp_cors).
+            cond_expr = statement.conditions[0].expr if statement.conditions else None
+            cond_const = self._const_int(cond_expr)
+            if cond_const is not None:
+                live = statement.ifTrue if cond_const != 0 else statement.ifFalse
+                if live is not None:
+                    self._emit_assignments_in(
+                        live, clk_sym, reset_sym, reset_active_low, src_node
+                    )
+                return
+
+            # Dynamic condition: push the bit onto the enable stack
+            # while walking each arm so ``_emit_assignment_expression``
+            # accumulates writes with the right enable.
+            # ``_drain_proc_writes`` then collapses all writes to one
+            # flop per LHS with a mux tree:
             #
             # - ifTrue arm: push ``cond`` (positive polarity).
             # - ifFalse arm: push ``$not(cond)`` (negate via a $not
