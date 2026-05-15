@@ -129,6 +129,12 @@ _PYSLANG_INSTALL_HINT = (
     "    pip install pyslang"
 )
 
+# Marker for "no prior binding" in ``_emit_for_loop``'s save/restore
+# discipline around ``_loop_bindings``. Using a sentinel (rather than
+# ``None``) lets nested loops correctly nest their own loop variable
+# even if a previous binding was ``0`` or other falsy int.
+_SENTINEL: Any = object()
+
 
 class SlangFrontendUnavailable(RuntimeError):
     """pyslang import failed (extra not installed)."""
@@ -232,6 +238,12 @@ class _ModuleBuilder:
         # ``u_child.`` prefix matching Yosys-flatten output. ``""`` at
         # the top level. Push/pop bracket each ``_walk_instance`` call.
         self._hier_stack: list[str] = [""]
+        # Active procedural for-loop iteration bindings. Keyed by the
+        # loop variable's VariableSymbol identity, value is the current
+        # iteration's integer. Consulted by ``_const_int`` so element
+        # selects like ``chain[i]`` fold to the per-iteration bit while
+        # the for-loop body is being walked. See ``_emit_for_loop``.
+        self._loop_bindings: dict[Any, int] = {}
 
     # -- public ----------------------------------------------------------
 
@@ -652,17 +664,44 @@ class _ModuleBuilder:
                 reset_active_low=False,
                 src_node=src_node,
             )
+        else:
+            # Body isn't a single conditional or expression — defer to
+            # the general statement walker. Reached for no-reset blocks
+            # whose body is a multi-statement ``begin..end``, a
+            # ``case``, a procedural ``for``, etc.; the walker handles
+            # those shapes after #54 and #59. No reset signal in this
+            # path — the synchronous-reset case still enters via the
+            # ConditionalStatement branch above.
+            self._emit_assignments_in(
+                inner,
+                clk_sym,
+                reset_sym=None,
+                reset_active_low=False,
+                src_node=src_node,
+            )
 
     def _analyse_event_list(self, timing: Any) -> tuple[Any | None, Any | None, bool]:
-        """Pick clock + (optional) async-reset symbols out of the event
-        list.
+        """Pick clock + (optional) async-reset symbols out of the
+        timing control.
 
         Returns ``(clock_sym, reset_sym, reset_active_low)``. The reset
         identification is provisional — the canonical conditional body
         shape gives the authoritative answer and we override here when
         we see it. The polarity comes from the event edge: ``negedge``
         on the reset event means the reset asserts low.
+
+        pyslang exposes two timing-control shapes:
+
+        - :class:`SignalEventControl` — a single ``@(<edge> <expr>)``;
+          ``.expr`` and ``.edge`` sit directly on the node, with no
+          ``.events`` list.
+        - :class:`EventListControl` — the multi-event ``@(<a> or <b>)``
+          shape used by async-reset always_ff; ``.events`` is the list
+          of :class:`SignalEventControl` entries.
         """
+        # SignalEventControl: single event, no ``.events`` list.
+        if getattr(timing, "events", None) is None and hasattr(timing, "expr"):
+            return getattr(timing.expr, "symbol", None), None, False
         events = list(getattr(timing, "events", []) or [])
         if not events:
             return None, None, False
@@ -767,10 +806,150 @@ class _ModuleBuilder:
                     default_arm, clk_sym, reset_sym, reset_active_low, src_node
                 )
             return
+        if kind == "ForLoopStatement":
+            self._emit_for_loop(
+                statement, clk_sym, reset_sym, reset_active_low, src_node
+            )
+            return
+        if kind == "VariableDeclStatement":
+            # Loop variable declarations are emitted as siblings of the
+            # ForLoopStatement (``for (int i = ...; ...; ...)``). They
+            # contribute no flops; the loopvar's initial value is
+            # already on its VariableSymbol's ``.initializer``.
+            return
         # Other statement kinds (function/task call, immediate assert,
         # event, timing control inside always_ff — atypical) fall
         # through silently; the missing flops surface in analyze
         # output and we file the next gap when it bites a real design.
+
+    def _emit_for_loop(
+        self,
+        stmt: Any,
+        clk_sym: Any,
+        reset_sym: Any | None,
+        reset_active_low: bool,
+        src_node: Any,
+    ) -> None:
+        """Virtually unroll a procedural ``for`` loop with compile-time
+        constant bounds and walk the body once per iteration with the
+        loop variable bound to the iteration value.
+
+        Yosys' frontend unrolls these in elaboration; we have to do
+        the same so element selects in the body (``chain[i]`` /
+        ``chain[i-1]``) fold to per-iteration bits. Loops whose bounds
+        can't be folded — runtime stop expression, non-trivial step,
+        multi-variable header — fall through with no emit, matching
+        the existing walker's "skip on unrecognised shape" policy.
+
+        Hard iteration cap (1024) is defensive against pathological
+        SV that would otherwise spin the unroller.
+        """
+        loop_vars = list(getattr(stmt, "loopVars", []) or [])
+        if len(loop_vars) != 1:
+            return
+        loopvar = loop_vars[0]
+        init_expr = getattr(loopvar, "initializer", None)
+        start = self._const_int(init_expr)
+        if start is None:
+            return
+
+        stop_expr = getattr(stmt, "stopExpr", None)
+        if stop_expr is None or type(stop_expr).__name__ != "BinaryExpression":
+            return
+        stop_op = str(getattr(stop_expr, "op", "")).rsplit(".", 1)[-1]
+        left = getattr(stop_expr, "left", None)
+        if (
+            type(left).__name__ != "NamedValueExpression"
+            or getattr(left, "symbol", None) is not loopvar
+        ):
+            return
+        stop_val = self._const_int(getattr(stop_expr, "right", None))
+        if stop_val is None:
+            return
+
+        steps = list(getattr(stmt, "steps", []) or [])
+        if len(steps) != 1:
+            return
+        step_expr = steps[0]
+        step_kind = type(step_expr).__name__
+        step_amount: int | None = None
+        if step_kind == "UnaryExpression":
+            op_name = str(getattr(step_expr, "op", "")).rsplit(".", 1)[-1]
+            if op_name in ("Postincrement", "Preincrement"):
+                step_amount = 1
+            elif op_name in ("Postdecrement", "Predecrement"):
+                step_amount = -1
+        elif step_kind == "AssignmentExpression":
+            # ``i += N`` / ``i -= N`` is the only compound shape we
+            # support; pyslang desugars these to ``i = i op N`` and
+            # stores the RHS as a BinaryExpression whose ``.left`` is
+            # an ``LValueReferenceExpression`` (the read of ``i`` on
+            # the right of the assignment) and whose ``.right`` is the
+            # step constant. ``_const_int`` returns None on the
+            # LValueReferenceExpression (it's not a NamedValueExpression
+            # so the loop-binding lookup misses), which is what lets us
+            # tell which operand is the constant.
+            if not getattr(step_expr, "isCompound", False):
+                return
+            desugared = getattr(step_expr, "right", None)
+            if desugared is None or type(desugared).__name__ != "BinaryExpression":
+                return
+            left_const = self._const_int(getattr(desugared, "left", None))
+            right_const = self._const_int(getattr(desugared, "right", None))
+            if left_const is None and right_const is not None:
+                step_const = right_const
+                lvalue_on_left = True
+            elif right_const is None and left_const is not None:
+                step_const = left_const
+                lvalue_on_left = False
+            else:
+                return
+            bin_op = str(getattr(desugared, "op", "")).rsplit(".", 1)[-1]
+            if bin_op == "Add":
+                step_amount = step_const
+            elif bin_op == "Subtract" and lvalue_on_left:
+                # ``i = i - N`` → i decreases by N
+                step_amount = -step_const
+            # Other compound shapes (``*=``, ``/=``, …) intentionally
+            # fall through; they don't produce constant trip counts.
+        if step_amount is None or step_amount == 0:
+            return
+
+        ITER_CAP = 1024
+
+        def _still_iterating(v: int) -> bool:
+            if stop_op == "LessThan":
+                return v < stop_val
+            if stop_op == "LessThanEqual":
+                return v <= stop_val
+            if stop_op == "GreaterThan":
+                return v > stop_val
+            if stop_op == "GreaterThanEqual":
+                return v >= stop_val
+            if stop_op == "Inequality":
+                return v != stop_val
+            return False
+
+        v = start
+        count = 0
+        while _still_iterating(v) and count < ITER_CAP:
+            prev = self._loop_bindings.pop(loopvar, _SENTINEL)
+            self._loop_bindings[loopvar] = v
+            try:
+                self._emit_assignments_in(
+                    getattr(stmt, "body", None),
+                    clk_sym,
+                    reset_sym,
+                    reset_active_low,
+                    src_node,
+                )
+            finally:
+                if prev is _SENTINEL:
+                    self._loop_bindings.pop(loopvar, None)
+                else:
+                    self._loop_bindings[loopvar] = prev
+            v += step_amount
+            count += 1
 
     def _emit_assignment_expression(
         self,
@@ -893,15 +1072,21 @@ class _ModuleBuilder:
             return None
         return tuple(var_bits[lo : hi + 1])
 
-    @staticmethod
-    def _const_int(expr: Any) -> int | None:
+    def _const_int(self, expr: Any) -> int | None:
         """Best-effort: extract an ``int`` from a constant pyslang
         expression. Returns ``None`` if the expression isn't a
         compile-time constant — selectors on the LHS need to be
         static for the flop-shape model to work.
 
-        Three shapes show up in practice:
+        Shapes handled, in order:
 
+        - :class:`NamedValueExpression` referring to a procedural
+          for-loop iteration variable that's currently bound by
+          :attr:`_loop_bindings` — returns the iteration value.
+          Without this, ``chain[i]`` inside an unrolled body wouldn't
+          fold to a per-iteration constant (pyslang considers ``i``
+          a runtime variable; only the unroller knows its current
+          value).
         - :class:`IntegerLiteral` — ``expr.value`` is an :class:`SVInt`
           which :func:`int` accepts directly.
         - :class:`NamedValueExpression` referring to a parameter or a
@@ -911,9 +1096,44 @@ class _ModuleBuilder:
           :meth:`ConstantValue.convertToInt`.
         - Other constant-foldable expressions — ``.constant`` is
           populated post-compilation; same unwrapping applies.
+        - :class:`BinaryExpression` / :class:`UnaryExpression` over
+          already-foldable operands. ``chain[i-1]`` parses as
+          ``BinaryExpression(Subtract, NamedValue(i), IntegerLiteral(1))``
+          and pyslang won't fold the outer node because ``i`` is a
+          runtime variable from its perspective — recursing
+          per-operand and combining works because the loop-binding
+          path makes each operand foldable.
         """
         if expr is None:
             return None
+
+        kind = type(expr).__name__
+
+        # Loop-variable binding takes priority — pyslang considers the
+        # loopvar a runtime variable, so its own ``.constant`` is None.
+        if kind == "NamedValueExpression":
+            sym = getattr(expr, "symbol", None)
+            if sym is not None and sym in self._loop_bindings:
+                return self._loop_bindings[sym]
+            # ParameterSymbol carries its compile-time value on the
+            # symbol's ``.value`` field; the NamedValueExpression that
+            # references it doesn't populate ``.constant`` (pyslang
+            # leaves that for explicit constant expressions).
+            if sym is not None and type(sym).__name__ == "ParameterSymbol":
+                pv = getattr(sym, "value", None)
+                if pv is not None:
+                    # Reuse the lower-block's coercer below by falling
+                    # through — but inline the unwrap so we don't have
+                    # to lift _coerce out of scope yet.
+                    try:
+                        return int(pv)
+                    except (TypeError, ValueError):
+                        inner_v = getattr(pv, "value", None)
+                        if inner_v is not None:
+                            try:
+                                return int(inner_v)
+                            except (TypeError, ValueError):
+                                pass
 
         def _coerce(v: Any) -> int | None:
             # Direct path (SVInt, IntegerLiteral.value, plain int).
@@ -944,6 +1164,42 @@ class _ModuleBuilder:
             n = _coerce(v)
             if n is not None:
                 return n
+
+        # Recursive fold for arithmetic over already-foldable operands.
+        # The common shapes are ``i - 1`` / ``i + 1`` / ``i * N`` in
+        # the body of an unrolled for-loop; without this fold, pyslang
+        # would leave the outer BinaryExpression unfolded because ``i``
+        # is a runtime variable from its perspective.
+        if kind == "BinaryExpression":
+            op = str(getattr(expr, "op", "")).rsplit(".", 1)[-1]
+            left = self._const_int(getattr(expr, "left", None))
+            right = self._const_int(getattr(expr, "right", None))
+            if left is None or right is None:
+                return None
+            if op == "Add":
+                return left + right
+            if op == "Subtract":
+                return left - right
+            if op == "Multiply":
+                return left * right
+            if op == "Divide" and right != 0:
+                return left // right
+            if op == "Mod" and right != 0:
+                return left % right
+            return None
+        if kind == "UnaryExpression":
+            op = str(getattr(expr, "op", "")).rsplit(".", 1)[-1]
+            operand = self._const_int(getattr(expr, "operand", None))
+            if operand is None:
+                return None
+            if op == "Plus":
+                return operand
+            if op == "Minus":
+                return -operand
+            return None
+        if kind == "ConversionExpression":
+            return self._const_int(getattr(expr, "operand", None))
+
         return None
 
     def _bits_of_expression(self, expr: Any) -> tuple[Bit, ...] | None:

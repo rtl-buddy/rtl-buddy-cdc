@@ -122,17 +122,24 @@ def test_for_loop_with_loop_var_arithmetic(tmp_path: Path) -> None:
 
 
 def test_ip_cdc_sync_shape_emits_full_chain(tmp_path: Path) -> None:
-    """The exact ``ip_cdc_sync`` body: synchronous-reset if/else with
+    """The ``ip_cdc_sync`` body shape: synchronous-reset if/else with
     a for-loop in each arm. The reset branch's for-loop is fanout
     (constant-driven reset across all stages); the data branch has
-    the cascade. After unroll, STAGES=2 means at minimum 2 flops on
-    the synchronizer chain."""
+    the cascade.
+
+    Uses a packed-array chain rather than the production IP's packed
+    ``[WIDTH-1:0]`` × unpacked ``[STAGES]`` shape — unpacked-array
+    bit allocation in the slang frontend is a separate gap and the
+    walker-side contract this fixture pins is independent of it.
+    The cascade emits STAGES-1 flops after the unroll, plus one for
+    the bare ``chain[0] <= d`` site.
+    """
     src = """
-    module m #(parameter int STAGES = 2) (
+    module m #(parameter int STAGES = 3) (
         input  logic clk, rst_n, d,
         output logic q
     );
-        logic chain [STAGES];
+        logic [STAGES-1:0] chain;
         always_ff @(posedge clk) begin
             if (!rst_n) begin
                 for (int i = 0; i < STAGES; i++)
@@ -147,14 +154,11 @@ def test_ip_cdc_sync_shape_emits_full_chain(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    # At minimum two flops on the synchronizer chain (the cascade).
-    # The walker's unroll may emit more due to per-arm sites that
-    # opt_clean would later collapse — the contract here is "no
-    # silent skip on the canonical sync IP body".
+    # Data branch only (the reset arm is folded into the $adff's
+    # ARST value, not separate flops). 1 bare site + (STAGES-1)
+    # unrolled = 3 flops for STAGES=3.
     n = _flop_count(mod)
-    assert n >= 2, (
-        f"expected ≥ 2 flops from ip_cdc_sync-shaped body (STAGES=2); got {n}"
-    )
+    assert n == 3, f"expected 3 flops (1 bare + STAGES-1=2 unrolled); got {n}"
 
 
 # --- step variations ------------------------------------------------------
@@ -199,9 +203,7 @@ def test_for_loop_step_by_two(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     # Only even bits get a flop; odd bits stay unconnected.
-    assert _flop_count(mod) == 3, (
-        f"expected 3 flops (i=0,2,4); got {_flop_count(mod)}"
-    )
+    assert _flop_count(mod) == 3, f"expected 3 flops (i=0,2,4); got {_flop_count(mod)}"
 
 
 # --- non-foldable bounds: must NOT crash ----------------------------------
