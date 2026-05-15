@@ -1542,10 +1542,57 @@ class _ModuleBuilder:
         b_bits = self._bits_of_expression(expr.right)
         if a_bits is None or b_bits is None:
             return None
+        # Constant-shift fold: when ``x << N`` / ``x >> N`` has a
+        # compile-time-constant shift amount, emit the result as a
+        # wire-rerouting of ``x``'s bits rather than a ``$shl`` / ``$shr``
+        # cell. Matches Yosys-flatten's structural output and is what
+        # the gray-code detector (``_is_gray_encoded_source``) keys on:
+        # ``b ^ (b >> 1)`` only matches the gray-pattern signature when
+        # the shifted operand shares bit IDs with the unshifted one.
+        # Runtime shift amounts can't be folded — fall through to the
+        # cell-emit path.
+        if cell_type in ("$shl", "$shr"):
+            shift = self._const_int(expr.right)
+            if shift is not None and shift >= 0:
+                width = self._expr_width(expr) or len(a_bits)
+                return self._wire_route_shift(
+                    a_bits, shift, width, left=(cell_type == "$shl")
+                )
         width = self._expr_width(expr)
         return self._emit_comb_cell(
             cell_type, {"A": a_bits, "B": b_bits}, output_width=width, src_node=expr
         )
+
+    @staticmethod
+    def _wire_route_shift(
+        a_bits: tuple[Bit, ...], shift: int, width: int, left: bool
+    ) -> tuple[Bit, ...]:
+        """Constant-shift fold result as a bit tuple.
+
+        Bits are stored LSB-first throughout the frontend. For a right
+        shift by ``N``, output bit ``i`` is input bit ``i + N`` for
+        ``i < len(a)-N`` and a constant ``'0'`` for the high pad. Left
+        shift mirrors: output bit ``i`` is ``'0'`` for ``i < N`` and
+        input bit ``i - N`` afterwards.
+
+        ``width`` is the result type's bit width (usually equals
+        ``len(a_bits)``). When wider, the extra high bits pad with
+        ``'0'``; when narrower (truncated shift result), drop from
+        the top. SystemVerilog sizes shifts to the wider of the
+        operands, so most call sites pass ``width == len(a_bits)``.
+        """
+        n = len(a_bits)
+        out: list[Bit] = []
+        for i in range(width):
+            if left:
+                src_idx = i - shift
+            else:
+                src_idx = i + shift
+            if 0 <= src_idx < n:
+                out.append(a_bits[src_idx])
+            else:
+                out.append("0")
+        return tuple(out)
 
     def _lower_unary(self, expr: Any) -> tuple[Bit, ...] | None:
         op_name = str(expr.op).rsplit(".", 1)[-1]

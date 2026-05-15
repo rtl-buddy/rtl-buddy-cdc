@@ -130,8 +130,7 @@ def test_gray_encoding_matches_rule_pack_shape(tmp_path: Path) -> None:
     # encode constant bits in the netlist).
     for i in range(3):
         assert a_bits[i + 1] == b_bits[i], (
-            f"gray shape requires A[{i + 1}] == B[{i}]; "
-            f"got A={a_bits} B={b_bits}"
+            f"gray shape requires A[{i + 1}] == B[{i}]; got A={a_bits} B={b_bits}"
         )
     assert isinstance(b_bits[3], str), (
         f"gray shape requires B[N-1] to be a constant; got B[3]={b_bits[3]!r}"
