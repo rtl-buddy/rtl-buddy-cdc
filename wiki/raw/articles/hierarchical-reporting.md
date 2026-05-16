@@ -144,12 +144,15 @@ def _instance_path(module: Module, cell_name: str | None) -> tuple[str, ...]:
 Resolution rules, in order:
 
 1. `cell_name is None` → `()`.
-2. The name begins with `$flatten\` (Yosys post-flatten user
-   instance) — strip the prefix, split on the **first** `.`
-   (everything after the first dot is the leaf cell name, not
-   further hierarchy under flatten); the part before is one
-   instance component. Repeat as long as the leaf still starts
-   with `$flatten\`.
+2. The name begins with `$flatten\` (Yosys post-flatten). Yosys
+   emits **exactly one** `$flatten\` prefix per cell regardless of
+   nesting depth — deeper hierarchy is encoded as additional
+   dot-separated, `\`-escaped instance identifiers inside the same
+   name (e.g. `$flatten\u_hs_cmd.\u_sync_ack.$procdff$893` for a
+   cell two levels deep). Strip the prefix, then walk dot-separated
+   tokens until one starts with `$` — that's the leaf cell name;
+   everything before it is the instance path. Strip the Yosys
+   identifier-escape `\` from each instance token.
 3. The name contains no `$flatten\` and no `$` before the first
    `.` — this is the slang shape. Split on `.`, return all
    components *except the last* (the last is the leaf symbol
@@ -159,13 +162,10 @@ Resolution rules, in order:
 
 The "no `$` before the first `.`" guard in rule 3 is what protects
 the `$logic_and$<file>:<line>$13` shape from being mistakenly split
-on the `.` inside the source path.
-
-Rule 2 covers nested-flatten cases (a child of a child) by
-iterating. In practice Yosys emits a single `$flatten\` regardless
-of nesting depth, but the loop is cheap and the explicit handling
-matches what `flatten -separator .` actually produces under unusual
-options.
+on the `.` inside the source path. The "stop at first `$`-prefixed
+token" guard in rule 2 does the same job for leaf cells inside
+flatten whose auto-name embeds a source path
+(`$add$/abs/path/file.sv:39$314`).
 
 ### 5.3 Where the resolver runs
 
@@ -216,8 +216,9 @@ resolver gains a frontend-aware branch — preference is the former
 | `cell_name=None` | `()` |
 | `"$procdff$42"` | `()` |
 | `"$logic_and$tests/foo.sv:55$13"` | `()` |
-| `"$flatten\u_sync_ack.$procdff$84"` | `("u_sync_ack",)` |
-| `"$flatten\u_a.$flatten\u_b.$dff$1"` (nested) | `("u_a", "u_b")` |
+| `"$flatten\u_sync_ack.$procdff$84"` (single level) | `("u_sync_ack",)` |
+| `"$flatten\u_hs_cmd.\u_sync_ack.$procdff$893"` (nested) | `("u_hs_cmd", "u_sync_ack")` |
+| `"$flatten\u_afifo.$add$/abs/path/ip_async_fifo.sv:39$314"` (leaf has embedded source path) | `("u_afifo",)` |
 | `"u_b0.q"` (slang) | `("u_b0",)` |
 | `"u_top.u_b0.q"` (hypothetical frontend that includes top) | `("u_top", "u_b0")` — accepted; documenting top-stripping is the frontend's responsibility |
 | `"u_b0.cell_name_with.dots_in_it"` (pathological) | `("u_b0", "cell_name_with")` — accepted as a known limitation; cell names with dots are not produced by either shipping frontend |

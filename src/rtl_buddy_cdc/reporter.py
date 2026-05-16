@@ -570,14 +570,19 @@ def _instance_path(module: Module, cell_name: str | None) -> tuple[str, ...]:
 
     Cell-name shapes the analyzer sees today:
 
-    - ``$flatten\\u_x.<leaf>`` — Yosys post-flatten, user instance.
-      Strip the prefix, split on the *first* ``.``; the prefix piece
-      is one path component. Iterate while the remainder still begins
-      with ``$flatten\\`` to cover the (rare) nested case.
-    - ``$procdff$42`` / ``$logic_and$<file>:<line>$N`` — top-level
-      Yosys auto-name. No instance prefix; the ``$<...>:<line>`` shape
-      embeds a source path so naïve ``split('.')`` would tokenize on
-      the dot inside the file path. Returns ``()``.
+    - ``$flatten\\<inst>.<leaf>`` (single level) and
+      ``$flatten\\<inst>.\\<inner>.<leaf>`` (any depth) — Yosys post-
+      flatten. The flatten pass emits *exactly one* ``$flatten\\``
+      prefix per cell regardless of nesting; deeper hierarchy is
+      encoded as additional dot-separated, ``\\``-escaped instance
+      identifiers in the same name. After the prefix, walk
+      dot-separated tokens until one starts with ``$`` — that's the
+      leaf cell. Everything before it is the instance path (with the
+      Yosys identifier-escape ``\\`` stripped from each token).
+    - ``$procdff$42`` / ``$add$<file>:<line>$N`` — top-level Yosys
+      auto-name. No instance prefix; the ``$<kind>$<file>:<line>``
+      shape embeds a source path so naïve ``split('.')`` would
+      tokenize on the dot inside ``.sv``. Returns ``()``.
     - ``u_b0.q`` — slang frontend. Plain dotted path; the last
       component is the leaf symbol, everything before it is the
       instance path. The top instance is *not* part of the name (the
@@ -587,18 +592,19 @@ def _instance_path(module: Module, cell_name: str | None) -> tuple[str, ...]:
     """
     if cell_name is None:
         return ()
-    parts: list[str] = []
-    remaining = cell_name
-    while remaining.startswith(_FLATTEN_PREFIX):
-        body = remaining[len(_FLATTEN_PREFIX) :]
-        dot = body.find(".")
-        if dot < 0:
-            # Malformed ``$flatten\<name>`` with no separator — bail
-            # conservatively rather than guessing.
-            return tuple(parts)
-        parts.append(body[:dot])
-        remaining = body[dot + 1 :]
-    if parts:
+    if cell_name.startswith(_FLATTEN_PREFIX):
+        body = cell_name[len(_FLATTEN_PREFIX) :]
+        # Leaf detection: the first ``$``-prefixed dot-separated token
+        # is the leaf cell (``$procdff$N``, ``$add$<file>:<line>$N``,
+        # ``$auto$proc_dff.cc:242:proc_dff$N``, etc.). Stop accumulating
+        # instance components when we hit it; the leaf may itself
+        # contain ``.`` inside an embedded source path which we
+        # deliberately don't try to tokenize further.
+        parts: list[str] = []
+        for tok in body.split("."):
+            if tok.startswith("$"):
+                break
+            parts.append(tok.lstrip("\\"))
         return tuple(parts)
     # No ``$flatten\`` prefix. Distinguish the slang dotted shape from
     # top-level Yosys auto-names. Yosys auto-names always begin with
