@@ -505,6 +505,7 @@ def _violation_to_sarif(v: Violation, module: Module) -> dict:
         "level": _SARIF_LEVEL.get(v.severity, "warning"),
         "message": {"text": v.message},
     }
+    location: dict = {}
     loc = _source_location(module, v.cell_name)
     if loc is not None:
         physical = {"artifactLocation": {"uri": loc["file"]}}
@@ -517,7 +518,23 @@ def _violation_to_sarif(v: Violation, module: Module) -> dict:
             if "end_column" in loc:
                 region["endColumn"] = loc["end_column"]
             physical["region"] = region
-        entry["locations"] = [{"physicalLocation": physical}]
+        location["physicalLocation"] = physical
+    # ``logicalLocations`` is SARIF's slot for hierarchical / semantic
+    # location info — what GitHub Code Scanning and the SARIF viewer use
+    # to group results by component. Emitted only when the violation
+    # actually lives inside a child instance; omitted (rather than an
+    # empty list) at top-instance so the output diff stays minimal on
+    # flat IP-block fixtures. See phase 3 of #46.
+    if v.instance_path:
+        location["logicalLocations"] = [
+            {
+                "name": v.instance_path[-1],
+                "fullyQualifiedName": ".".join(v.instance_path),
+                "kind": "module",
+            }
+        ]
+    if location:
+        entry["locations"] = [location]
     return entry
 
 

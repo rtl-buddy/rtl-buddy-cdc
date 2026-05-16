@@ -754,3 +754,124 @@ def test_json_contract_still_stable_after_phase2(result: AnalysisResult) -> None
     for dotted, expected_type in JSON_CONTRACT.items():
         value = _walk_dotted(payload, dotted)
         assert isinstance(value, expected_type), dotted
+
+
+# --- SARIF logicalLocations (phase 3 of #46) --------------------------------
+#
+# SARIF spec: ``location`` can carry ``physicalLocation`` (file/line/column)
+# and/or ``logicalLocations`` (hierarchical / semantic location). The
+# analyzer always populates ``physicalLocation`` from the cell's ``src``
+# attribute; phase 3 additionally populates ``logicalLocations`` from
+# ``instance_path`` when non-empty, omitting the field at top-instance
+# (rather than emitting an empty array) so the output diff stays minimal
+# on flat fixtures.
+
+
+def test_sarif_logical_locations_absent_at_top_instance(
+    result: AnalysisResult,
+) -> None:
+    """A top-instance finding emits ``physicalLocation`` only; the
+    ``logicalLocations`` field is *absent* (not present-but-empty)."""
+    buf = io.StringIO()
+    render_sarif(result, buf)
+    data = json.loads(buf.getvalue())
+    assert len(data["runs"][0]["results"]) == 1
+    loc = data["runs"][0]["results"][0]["locations"][0]
+    assert "physicalLocation" in loc
+    assert "logicalLocations" not in loc
+
+
+def test_sarif_logical_locations_emitted_for_nested_handshake_strict(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: ``ip_cdc_handshake`` at ``--sync-depth 3`` fires two
+    CDC-002 findings inside ``u_sync_ack`` and ``u_sync_req``. Each
+    SARIF result must carry a single-entry ``logicalLocations`` with
+    ``fullyQualifiedName`` matching the instance path."""
+    fix_dir = Path(__file__).parent / "fixtures" / "ip_cdc_handshake"
+    json_path = fix_dir / "ip_cdc_handshake.json"
+    sdc_path = fix_dir / "ip_cdc_handshake.sdc"
+    if not json_path.exists():
+        pytest.skip(f"fixture not built: {json_path}")
+    out = tmp_path / "report.sarif"
+    _analyze_and_report(
+        json_path,
+        sdc_path,
+        None,
+        OutputFormat.sarif,
+        out,
+        sync_depth=3,
+    )
+    payload = json.loads(out.read_text())
+    results = payload["runs"][0]["results"]
+    assert len(results) == 2
+    fqns: set[str] = set()
+    for r in results:
+        # physicalLocation is independent of instance_path; both must be
+        # present on a violation that has a source location AND an
+        # instance path.
+        loc = r["locations"][0]
+        assert "physicalLocation" in loc
+        assert "logicalLocations" in loc
+        ll = loc["logicalLocations"]
+        assert len(ll) == 1
+        assert ll[0]["kind"] == "module"
+        fqns.add(ll[0]["fullyQualifiedName"])
+        # ``name`` is the leaf component of the path.
+        assert ll[0]["name"] == ll[0]["fullyQualifiedName"].rsplit(".", 1)[-1]
+    assert fqns == {"u_sync_ack", "u_sync_req"}
+
+
+def test_sarif_logical_locations_on_suppressed_entries(
+    result: AnalysisResult,
+) -> None:
+    """Suppressed (waivered) entries go through the same emission path
+    as kept findings, so a waivered finding with a non-empty
+    ``instance_path`` also picks up ``logicalLocations``. Using a
+    synthetic suppressed list so the test doesn't depend on a
+    multi-instance bad fixture being available."""
+    # Synthesise a suppressed-violation list with one entry that has a
+    # populated instance_path, mirroring what the CLI boundary would
+    # have produced if the fixture were hierarchical.
+    import re
+
+    from rtl_buddy_cdc.rules import Violation as RuleViolation
+    from rtl_buddy_cdc.waivers import SuppressedViolation, Waiver
+
+    v_nested = RuleViolation(
+        rule_id="CDC-001",
+        severity="error",
+        message="nested",
+        instance_path=("u_block_a", "u_sync"),
+    )
+    fake_waiver = Waiver(
+        rule_pattern="CDC-001",
+        regex=re.compile(".*"),
+        reason="hand-reviewed",
+        source_line=1,
+    )
+    waived_result = AnalysisResult(
+        module=result.module,
+        domains=result.domains,
+        crossings=result.crossings,
+        async_crossings=result.async_crossings,
+        spec=result.spec,
+        violations=[],
+        suppressed=[SuppressedViolation(violation=v_nested, waiver=fake_waiver)],
+    )
+    buf = io.StringIO()
+    render_sarif(waived_result, buf)
+    data = json.loads(buf.getvalue())
+    # Suppressed entries are emitted as results carrying a SARIF
+    # ``suppressions`` field; check ours carries logicalLocations too.
+    suppressed_entries = [r for r in data["runs"][0]["results"] if "suppressions" in r]
+    assert len(suppressed_entries) == 1
+    entry = suppressed_entries[0]
+    # No physical location (no real cell), but the logical location is
+    # populated from the instance_path.
+    locations = entry.get("locations", [])
+    assert len(locations) == 1
+    ll = locations[0]["logicalLocations"]
+    assert ll[0]["fullyQualifiedName"] == "u_block_a.u_sync"
+    assert ll[0]["name"] == "u_sync"
+    assert ll[0]["kind"] == "module"
