@@ -158,9 +158,9 @@ Each violation carries:
 
 `--format text|json|sarif` (default `text`), `--output PATH` to write to a file.
 
-- **Text** — human-readable summary suitable for terminals and CI logs.
-- **JSON** — structured, includes summary counts, full crossing/violation lists, and source locations. Stable schema for downstream consumers (rtl-buddy itself, custom dashboards).
-- **SARIF 2.1.0** — GitHub-Code-Scanning-compatible. `tool.driver.rules` populated for every rule that fired in the run; results carry `physicalLocation.region`. Suppressed (waived) findings are emitted with a SARIF `suppressions` field so the alert exists but doesn't fail the build.
+- **Text** — human-readable summary suitable for terminals and CI logs. Inside each rule group, violations are bucketed by hierarchical instance path (`[top]` / `u_block_a / u_sync`); the bucketing collapses to a flat layout when every finding in the rule group lives at the top instance.
+- **JSON** — structured, includes summary counts, full crossing/violation lists, and source locations. Stable schema for downstream consumers (rtl-buddy itself, custom dashboards). Every violation also carries an `instance_path: list[str]`; a top-level `by_instance` summary aggregates kept violations by path.
+- **SARIF 2.1.0** — GitHub-Code-Scanning-compatible. `tool.driver.rules` populated for every rule that fired in the run; results carry `physicalLocation.region` and, when the violation lives inside a child instance, a `logicalLocations` entry whose `fullyQualifiedName` is the dot-joined instance path. Suppressed (waived) findings are emitted with a SARIF `suppressions` field so the alert exists but doesn't fail the build.
 
 To inspect SARIF locally without uploading, the easiest paths are the [SARIF Viewer VS Code extension](https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer) or the browser-based [Microsoft SARIF web viewer](https://microsoft.github.io/sarif-web-component/).
 
@@ -275,6 +275,7 @@ Implemented:
 - [x] First-class port→flop crossings: `find_crossings(module, port_clock=...)` emits port-sourced `Crossing` records for ports the SDC has typed via `set_input_delay`. CDC-001 and CDC-002 now fire on those (CDC-003 defers to CDC-006's existing port-comb walk; CDC-004 / CDC-005 skip them as flop-source-specific concepts).
 - [x] CDC-007 reset-tree grouping: violations are merged by `(src_flop, src_clk, dst_clk)` — a single async-reset source feeding many destinations produces one violation listing every destination, instead of N near-duplicates.
 - [x] **slang frontend** — elaborate SystemVerilog via [pyslang](https://pypi.org/project/pyslang/) as a peer to the Yosys frontend, swappable via `lint --frontend slang`. Covers flop inference (async-reset shape), combinational primitive lowering (binary / unary / conditional / element-select / range-select / concatenation / replication), `always_comb`, hierarchical instance flattening with port aliasing, SV attribute propagation, and Yosys-style `src` source-location attributes on every emitted cell (`file:line.col-line.col`, surfaced by the JSON / SARIF reporters). Reaches parity with the Yosys frontend on every SDC-equipped fixture in the regression suite. Opt-in via the `[slang]` install extra (`pip install 'rtl-buddy-cdc[slang]'`); the default install stays `typer`-only.
+- [x] **Hierarchical reporting** (#46) — every violation carries an `instance_path: tuple[str, ...]` derived from its Yosys-flatten or slang cell name, populated at the CLI boundary so the rule pack stays frontend-agnostic. Text reporter buckets findings under per-instance headers inside each rule group (`[top]` / `u_block_a / u_sync`), collapsing to the flat layout when every finding in the rule group lives at top. JSON output gains `instance_path: list[str]` on every violation / suppressed / baseline_carryover entry plus a top-level `by_instance` aggregation of kept violations. SARIF gains `logicalLocations` with `fullyQualifiedName` on each result whose instance path is non-empty, alongside the existing `physicalLocation`. All additive — `JSON_CONTRACT` keys and `--baseline` match key are untouched. See [`wiki/raw/articles/hierarchical-reporting.md`](wiki/raw/articles/hierarchical-reporting.md) for the design.
 
 Not yet:
 
@@ -282,7 +283,7 @@ Not yet:
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
 - [ ] In-RTL pragma comments (`// rtl-buddy-cdc disable-rule …`, Spyglass-style block suppression) for inline waiving without an external file
-- [ ] Hierarchical reporting — group violations by module instance for large designs
+- [ ] Instance-scoped waivers (`waive CDC-001 inst:u_block_a/.*`) — natural follow-on to hierarchical reporting now that `instance_path` is on every violation
 - [ ] Pulse-width / fast-to-slow data-loss checks (CDC-009-class: data on src_clk shorter than one dst_clk period)
 - [ ] Glitch detection on data path through async muxes / clock-gate enables
 

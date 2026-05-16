@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hierarchical reporting** (#46). Every violation gains an
+  `instance_path: tuple[str, ...]` field resolved at the
+  `cli._analyze_and_report` boundary from the cell's name. The
+  resolver normalises both the Yosys-flatten shape
+  (`$flatten\u_a.\u_b.<leaf>` — one `$flatten\` prefix regardless of
+  depth) and the slang frontend's dotted shape (`u_b0.q`) into the
+  same `tuple[str, ...]`, with the top instance never appearing as
+  a component. The rule pack stays frontend-agnostic — no `reporter`
+  import in `rules.py`. Rendering changes are additive: text reporter
+  buckets findings under per-instance headers inside each rule group
+  (`[top]` / `u_block_a / u_sync`), collapsing back to the flat
+  layout when every finding lives at top; JSON output gains
+  `instance_path: list[str]` on every violation entry plus a
+  top-level `by_instance` aggregation of kept violations; SARIF
+  results gain a `logicalLocations` entry alongside the existing
+  `physicalLocation` when the path is non-empty. `JSON_CONTRACT` and
+  the `--baseline` match key are untouched — historical baselines
+  do not re-flag on first run after the bump. Phased landing in
+  #83 / #87 / #88 / #89; the resolver's nested-flatten handling
+  was corrected in #90 after a template-design demo surfaced that
+  Yosys emits exactly one `$flatten\` prefix per cell (not one per
+  level). Design captured in
+  `wiki/raw/articles/hierarchical-reporting.md` (#82).
+- **SARIF 2.1.0 schema validation in the test suite** (#80). The
+  OASIS errata01 SARIF schema is vendored at
+  `tests/schemas/sarif-2.1.0.json` (CI does not reach out to
+  schemastore.org or docs.oasis-open.org); `tests/test_sarif_schema.py`
+  validates `render_sarif` output across four render paths
+  (clean, with-violations, waiver-suppressed, baseline-carryover)
+  plus rule-shape variants. Caught schema drift the shape-assertion
+  tests miss — a typo'd field name, a wrong-type value, a missing
+  required sub-field on a code path no shape assertion happens to
+  read. `jsonschema` added to the `test` dep group; runtime deps
+  stay typer-only.
+- **slang frontend: `$dff` / `$adff` WIDTH and ARST_VALUE
+  parameters** (#40). Emitted flops carry the parameters Yosys
+  populates for the same shapes, so downstream consumers that key
+  off `cell.parameters["WIDTH"]` (or read the reset polarity from
+  `ARST_VALUE`) see consistent values across frontends.
 - **`--strict` flag** on `analyze` and `lint` (#29). Promotes every
   `warning`-severity violation (CDC-002, CDC-005 today) to `error`
   before reporters see it, so the text banner, JSON `severity`, and
@@ -83,6 +122,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   acceptance set — `bad_bus_crossing` (no gating at all) and
   `ip_cdc_handshake` (direct mux-on-D, no buffers) keep their
   pre-existing behaviour.
+
+### Fixed
+
+- **slang frontend: `always_comb if/else` both-arms emission** (#64).
+  An if/else where both arms wrote the same LHS dropped one arm
+  because the per-LHS `$mux` emission keyed on the canonical
+  variable and overwrote the alias before the second arm walked.
+  Fix defers the emission until both branches have been visited.
+- **slang frontend: nested element-select / 2-D port alias** (#69).
+  A 2-D port driven from an indexed select (`x[i][j]`) didn't
+  resolve through the alias chain because the resolver stopped at
+  the first element-select. Walk now recurses through nested
+  selects.
+- **resolver: Yosys multi-level flatten** (#90). The phase-1
+  resolver assumed Yosys emits `$flatten\u_a.$flatten\u_b.<leaf>`
+  for nested flatten. Real Yosys emits exactly *one* `$flatten\`
+  prefix per cell regardless of nesting depth, with deeper
+  hierarchy encoded as additional dot-separated `\`-escaped
+  instance identifiers. Symptom on the project-template
+  `demo_tiny_alu_subsys` design: findings inside
+  `u_hs_cmd/u_sync_ack` and `u_hs_result/u_sync_ack` bucketed under
+  just `u_hs_cmd` / `u_hs_result`, dropping the inner level. Fix
+  walks dot-separated tokens after the prefix until one starts with
+  `$` (that's the leaf), accumulating instance components (with the
+  Yosys identifier-escape `\` stripped) in between.
 
 ### Internal
 

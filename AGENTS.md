@@ -34,7 +34,7 @@ src/rtl_buddy_cdc/
 ├── frontend.py        # Frontend enum + elaborate() factory (dispatches by name)
 ├── frontends/
 │   ├── yosys.py       # Yosys frontend: shell out + netlist.load
-│   └── slang.py       # slang frontend (in development, issue #5) — lazy pyslang import
+│   └── slang.py       # slang frontend (Yosys-parity in 0.2.0) — lazy pyslang import
 ├── netlist.py         # Yosys write_json loader (Module / Cell / Port / Netname)
 ├── flops.py           # FF cell zoo (FF_CELL_TYPES) + Flop dataclass
 ├── domain.py          # trace_clock_root + find_crossings (BFS) + Crossing

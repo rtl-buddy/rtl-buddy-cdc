@@ -328,17 +328,28 @@ declared async). See [§6](#6-sdc-parsing) for the parser scope.
 ```python
 @dataclass(frozen=True)
 class Violation:
-    rule_id: str           # "CDC-001" .. "CDC-008"
-    severity: str          # "error" | "warning" | "info"
-    message: str           # human-readable
-    crossing: Crossing | None    # the offending crossing (most rules)
-    cell_name: str | None        # most-responsible cell (for src locations)
+    rule_id: str                   # "CDC-001" .. "CDC-008"
+    severity: str                  # "error" | "warning" | "info"
+    message: str                   # human-readable
+    crossing: Crossing | None      # the offending crossing (most rules)
+    cell_name: str | None          # most-responsible cell (for src locations)
+    instance_path: tuple[str, ...] # hierarchy path the cell lives in; () = top
 ```
 
 `crossing` is `None` for rules that operate on a non-data shape
 (CDC-007 reset crossings, CDC-008 clock-as-data). `cell_name` lets
 structured reporters surface a `file:line:col` source location by
 looking at `cell.attributes["src"]`.
+
+`instance_path` is the dot-stripped, tuple-form hierarchy the
+offending cell lives in. Resolved from `cell_name` at the
+`cli._analyze_and_report` boundary (the rule pack stays
+frontend-agnostic — no `reporter` import in `rules.py`); see
+[`wiki/raw/articles/hierarchical-reporting.md`](hierarchical-reporting.md)
+for the resolver contract. `()` is the safe default (top instance)
+and is also what rules constructing a `Violation` directly get
+without specifying — the boundary post-pass overrides it for every
+finding that actually flows through `_analyze_and_report`.
 
 ### 4.7 The reporter contract
 
@@ -694,20 +705,53 @@ so re-baselining doesn't re-flag inherited findings.
 Three formatters share the same `AnalysisResult` input:
 
 - **`render_text`** — human-readable. Module summary, domain counts,
-  crossing list, then the violations grouped by severity. Designed
-  for terminal and CI-log review.
+  crossing list, then the violations grouped by rule. Inside each
+  rule group, findings are bucketed by `instance_path` (§4.6) under
+  per-instance headers (`[top]` for top-level findings,
+  `u_block_a / u_sync` for nested paths). The bucketing collapses
+  to a flat layout when every finding in the rule group lives at
+  top, so flat IP-block fixtures' output is byte-identical to
+  pre-hierarchical-reporting. Designed for terminal and CI-log
+  review.
 - **`render_json`** — full structured output. Stable schema. Used by
   `rb cdc` (rtl-buddy's wrapper) to extract violation counts, and by
-  any custom dashboard.
+  any custom dashboard. Every violation / suppressed /
+  baseline-carryover entry carries `instance_path: list[str]`
+  (always present, `[]` at top, never `null` or missing). A
+  top-level `by_instance` list aggregates kept violations by path,
+  sorted lexicographically (empty path first), with per-rule counts.
+  Suppressed and baseline-carried findings are excluded from
+  `by_instance` — the aggregation answers "what's actually failing
+  per block", not "what structural findings exist". The
+  `JSON_CONTRACT` keys (`summary.violations`, `summary.suppressed`,
+  `summary.crossings`) and the `--baseline` match key
+  (`rule_id`, `cell_name`, `message`) are unchanged by the
+  hierarchical additions, so historical baselines do not re-flag
+  after the bump.
 - **`render_sarif`** — SARIF 2.1.0, GitHub-Code-Scanning-compatible.
-  Populates `tool.driver.rules` for every rule that fired in the run.
-  Each result carries `physicalLocation.region` parsed from the
-  cell's `attributes["src"]`. Suppressed findings are emitted with a
+  Populates `tool.driver.rules` for every rule that fired in the
+  run. Each result carries `physicalLocation.region` parsed from the
+  cell's `attributes["src"]`, and — when the violation's
+  `instance_path` is non-empty — a `logicalLocations` entry with
+  `name` (leaf component), `fullyQualifiedName` (dot-joined path),
+  and `kind: "module"`. `logicalLocations` is omitted (not emitted
+  as an empty array) at top instance so the output diff stays
+  minimal on flat fixtures. Suppressed findings are emitted with a
   `suppressions` field so the alert exists but doesn't fail the
   build.
 
 Format selection is purely a CLI flag (`--format text|json|sarif`);
 the analyzer pipeline runs the same way regardless.
+
+The SARIF output is validated against the OASIS-published 2.1.0
+schema by `tests/test_sarif_schema.py`, vendored at
+`tests/schemas/sarif-2.1.0.json` so CI does not depend on
+schemastore reachability. Five render paths are covered (clean,
+with-violations, waiver-suppressed, baseline-carryover, plus a
+rule-shape variant pass). The schema test catches the structural
+mistakes the shape-assertion tests miss — typo'd field names,
+wrong-type values, required-sub-field omissions on code paths no
+shape assertion happens to read.
 
 ## 11. Extension points
 

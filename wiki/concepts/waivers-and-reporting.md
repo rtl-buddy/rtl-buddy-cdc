@@ -40,13 +40,15 @@ A hit on any of the three suppresses. First matching waiver wins (top-down).
 Three formatters share the same `AnalysisResult` input. Format selection is purely a CLI flag (`--format text|json|sarif`); the analyzer pipeline runs the same regardless.
 
 ### `render_text`
-Human-readable. Module summary, domain counts, crossing list, then violations grouped by severity. Designed for terminal and CI-log review.
+Human-readable. Module summary, domain counts, crossing list, then violations grouped by rule. Inside each rule group, findings are bucketed by `Violation.instance_path` under per-instance headers (`[top]` for top-level, `u_block_a / u_sync` for nested paths); the bucketing collapses to a flat layout when every finding in the group is at top, so output on flat IP-block fixtures is byte-identical to pre-hierarchical-reporting. Designed for terminal and CI-log review.
 
 ### `render_json`
 Full structured output with a stable schema. Used by `rb cdc` to extract violation counts and by custom dashboards. The downstream contract: `summary.violations` (int), `summary.suppressed` (int), `summary.crossings` (int). These three keys are pinned in code by `reporter.JSON_CONTRACT` and a paired test that fails on rename or retype — see `tests/test_reporter.py::test_json_contract_keys_present_and_typed`.
 
+Every violation / suppressed / baseline-carryover entry also carries `instance_path: list[str]` (always present, `[]` at top, never `null` or missing), and a top-level `by_instance` list aggregates *kept* violations by path with per-rule counts. The `--baseline` match key (`rule_id`, `cell_name`, `message`) is intentionally not extended with `instance_path` — historical baselines do not re-flag after the field was added.
+
 ### `render_sarif`
-SARIF 2.1.0, GitHub Code Scanning compatible. Populates `tool.driver.rules` for every rule that fired. Each result carries `physicalLocation.region` parsed from `cell.attributes["src"]`. Suppressed findings emit with a `suppressions` field so the alert exists but doesn't fail the build.
+SARIF 2.1.0, GitHub Code Scanning compatible. Populates `tool.driver.rules` for every rule that fired. Each result carries `physicalLocation.region` parsed from `cell.attributes["src"]`, and — when `instance_path` is non-empty — a `logicalLocations` entry with `fullyQualifiedName` (dot-joined path) and `kind: "module"`. Suppressed findings emit with a `suppressions` field so the alert exists but doesn't fail the build. Output is validated against the OASIS-published SARIF 2.1.0 schema by `tests/test_sarif_schema.py` across five render paths.
 
 ## The Reporter Contract
 
