@@ -875,3 +875,131 @@ def test_sarif_logical_locations_on_suppressed_entries(
     assert ll[0]["fullyQualifiedName"] == "u_block_a.u_sync"
     assert ll[0]["name"] == "u_sync"
     assert ll[0]["kind"] == "module"
+
+
+# --- text reporter per-instance grouping (phase 4 of #46) -------------------
+#
+# Inside each rule group, violations are bucketed by ``instance_path`` and
+# rendered with a per-instance header (``[top]`` for the top bucket,
+# ``a / b / c`` for nested paths). Headers collapse when every violation in
+# the group is at the top instance — flat IP-block fixtures' output stays
+# byte-identical to today.
+
+
+def test_text_no_instance_headers_on_flat_fixture(result: AnalysisResult) -> None:
+    """``bad_single_ff_sync`` is a flat fixture (no child instances).
+    The grouped layout collapses and the rendered text contains no
+    instance-header markers — same output as before phase 4."""
+    buf = io.StringIO()
+    render_text(result, buf, color=False)
+    text = buf.getvalue()
+    assert "[top]" not in text
+    # No 'a / b' style instance headers either. The ' / ' substring is
+    # specific enough — rule descriptions use ' — ' (em-dash) not ' / '.
+    assert " / " not in text
+
+
+def test_text_groups_by_instance_on_handshake_strict(tmp_path: Path) -> None:
+    """``ip_cdc_handshake`` at ``--sync-depth 3`` fires two CDC-002
+    findings, one inside ``u_sync_ack`` and one inside ``u_sync_req``.
+    The text report buckets them under per-instance headers in
+    sorted order (no ``[top]`` here since neither finding is
+    top-instance)."""
+    fix_dir = Path(__file__).parent / "fixtures" / "ip_cdc_handshake"
+    json_path = fix_dir / "ip_cdc_handshake.json"
+    sdc_path = fix_dir / "ip_cdc_handshake.sdc"
+    if not json_path.exists():
+        pytest.skip(f"fixture not built: {json_path}")
+    out = tmp_path / "report.txt"
+    _analyze_and_report(
+        json_path,
+        sdc_path,
+        None,
+        OutputFormat.text,
+        out,
+        sync_depth=3,
+        color=False,
+    )
+    text = out.read_text()
+    # Both instance headers are present; top header is omitted because
+    # neither finding sits at top.
+    assert "    u_sync_ack\n" in text
+    assert "    u_sync_req\n" in text
+    assert "[top]" not in text
+    # Headers appear in sorted order: u_sync_ack before u_sync_req.
+    ack_pos = text.index("u_sync_ack")
+    req_pos = text.index("u_sync_req")
+    assert ack_pos < req_pos
+    # Each instance header is followed (within the rule group) by an
+    # indented severity line. Two CDC-002s total, both `warning`.
+    assert text.count("      warning") == 2
+
+
+def test_text_mixed_top_and_nested_renders_both_headers(
+    result: AnalysisResult,
+) -> None:
+    """When a single rule group has BOTH a top-instance violation and
+    a nested-instance one, the layout emits ``[top]`` first then the
+    nested-path header. Built from synthetic violations because no
+    shipping fixture exercises this mix yet."""
+    from rtl_buddy_cdc.rules import Violation as RuleViolation
+
+    v_top = RuleViolation(
+        rule_id="CDC-001",
+        severity="error",
+        message="top-level finding",
+    )
+    v_nested = RuleViolation(
+        rule_id="CDC-001",
+        severity="error",
+        message="nested finding",
+        instance_path=("u_block_a", "u_sync"),
+    )
+    mixed = AnalysisResult(
+        module=result.module,
+        domains=result.domains,
+        crossings=result.crossings,
+        async_crossings=result.async_crossings,
+        spec=result.spec,
+        violations=[v_top, v_nested],
+    )
+    buf = io.StringIO()
+    render_text(mixed, buf, color=False)
+    text = buf.getvalue()
+    assert "    [top]\n" in text
+    assert "    u_block_a / u_sync\n" in text
+    # Top bucket comes first.
+    assert text.index("[top]") < text.index("u_block_a / u_sync")
+    # Severity lines under each bucket use the deeper indent (6 spaces)
+    # so the header→body relationship is visually unambiguous.
+    assert "      error" in text
+
+
+def test_text_grouped_layout_indent_one_deeper_than_flat(
+    result: AnalysisResult,
+) -> None:
+    """When grouping engages, severity lines sit one indent level
+    deeper than they do in the flat layout (6 spaces vs 4). The
+    rule-group line itself ('  CDC-NNN — ...') is unchanged."""
+    from rtl_buddy_cdc.rules import Violation as RuleViolation
+
+    nested = RuleViolation(
+        rule_id="CDC-001",
+        severity="error",
+        message="x",
+        instance_path=("u_a",),
+    )
+    grouped = AnalysisResult(
+        module=result.module,
+        domains=result.domains,
+        crossings=result.crossings,
+        async_crossings=result.async_crossings,
+        spec=result.spec,
+        violations=[nested],
+    )
+    buf = io.StringIO()
+    render_text(grouped, buf, color=False)
+    text = buf.getvalue()
+    assert "  CDC-001" in text  # rule header at 2 spaces (unchanged)
+    assert "    u_a\n" in text  # instance header at 4 spaces
+    assert "      error" in text  # severity at 6 spaces (deeper than flat)
