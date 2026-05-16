@@ -114,9 +114,12 @@ What is NOT yet implemented (next slices)
   :meth:`_walk_case_statement` lowering treats every label as a
   full ``$eq`` match, so wildcard bits in the label aren't honored.
   Uncommon in CDC-sensitive code and not yet wired up.
-- **Width-N $dff / $adff parameters** (``WIDTH``, ``ARST_VALUE``)
-  — partially populated today; not yet read by any rule but should
-  reach full Yosys parity for future rule extensions.
+- **``CLK_POLARITY = "0"`` for negedge-clocked flops** — the
+  procedural-block lowering assumes posedge today, so
+  ``CLK_POLARITY`` is hard-coded to ``"1"`` in :meth:`_emit_flop_cell`.
+  ``WIDTH`` / ``ARST_VALUE`` / ``ARST_POLARITY`` are populated in
+  Yosys-binary form per issue #40, and width comes straight from the
+  Q bit-tuple, so multi-bit flops have correct parameter shape.
 - **Yosys-only constructs** (``$_BUF_`` / ``$_NOT_`` primitives in SV
   source) are correctly rejected by slang — they're post-synthesis
   cells, not legal SV. Fixtures that rely on them
@@ -207,6 +210,22 @@ def elaborate(sources: list[Path], top: str) -> Module:
 # --- internal: build a Yosys-shape Module from a pyslang InstanceSymbol -----
 
 
+def _param_int32(val: int) -> str:
+    """Encode ``val`` as a 32-bit MSB-first binary string. Matches the
+    serialisation Yosys writes for integer-typed cell parameters
+    (``WIDTH``, ``ARST_POLARITY``) into ``write_json`` output."""
+    return format(val & 0xFFFFFFFF, "032b")
+
+
+def _param_bits(val: int, width: int) -> str:
+    """Encode ``val`` as an ``N``-bit MSB-first binary string of length
+    ``max(width, 1)``. Matches how Yosys serialises constant-bit-vector
+    parameters whose width tracks the flop's data width (``ARST_VALUE``,
+    where the string length equals the ``$adff``'s ``WIDTH``)."""
+    w = max(int(width), 1)
+    return format(val & ((1 << w) - 1), f"0{w}b")
+
+
 class _ModuleBuilder:
     """Translate a pyslang elaborated :class:`InstanceSymbol` into a
     :class:`netlist.Module`.
@@ -273,6 +292,15 @@ class _ModuleBuilder:
             tuple[Bit, ...],
             list[tuple[Bit | None, tuple[Bit, ...]]],
         ] = {}
+        # Per-procedural-block async-reset value accumulator: maps each
+        # LHS bit tuple to the integer constant written in the reset
+        # arm (``if (!rst_n) q <= 4'd5;`` → 5). Populated by
+        # ``_collect_reset_assignments`` from the ifTrue arm and read
+        # at drain time to fill the ``$adff`` ``ARST_VALUE`` parameter.
+        # Missing entries default to 0 — that's the conservative match
+        # for the typical ``q <= '0`` reset and keeps the netlist
+        # valid when the reset RHS isn't a recognised literal.
+        self._proc_resets: dict[tuple[Bit, ...], int] = {}
 
     # -- public ----------------------------------------------------------
 
@@ -699,6 +727,7 @@ class _ModuleBuilder:
         # end so one flop emits per LHS even when multiple arms write
         # the same target (the if/else both-arms case).
         self._proc_writes = {}
+        self._proc_resets = {}
         block_reset_sym = reset_sym
         block_reset_active_low = reset_active_low
         try:
@@ -726,6 +755,10 @@ class _ModuleBuilder:
                 data_branch = inner.ifFalse
                 if data_branch is None:
                     return  # no else → no data assignment to model
+                # Capture reset-arm literal RHS values before walking
+                # the data arm — drain time looks these up to populate
+                # ``$adff``'s ``ARST_VALUE`` parameter (issue #40).
+                self._collect_reset_assignments(inner.ifTrue)
                 self._emit_assignments_in(
                     data_branch,
                     clk_sym,
@@ -758,6 +791,44 @@ class _ModuleBuilder:
             )
         finally:
             self._proc_writes = {}
+            self._proc_resets = {}
+
+    def _collect_reset_assignments(self, stmt: Any) -> None:
+        """Walk an ``always_ff`` reset arm (``if (!rst_n) <stmt>``) and
+        record per-LHS reset values into ``self._proc_resets``.
+
+        Captures nonblocking assignments whose RHS is a compile-time
+        constant. Anything else — non-literal RHS, struct/hierref LHS,
+        nested conditionals — is silently skipped, and the drain-time
+        lookup falls back to 0. The reset values feed ``$adff``'s
+        ``ARST_VALUE`` parameter (issue #40); the rule pack doesn't
+        read it today, so a default of 0 keeps the netlist valid even
+        when this walker doesn't recognise the shape.
+        """
+        if stmt is None:
+            return
+        kind = self._kind_name(stmt)
+        if kind == "BlockStatement":
+            self._collect_reset_assignments(stmt.body)
+            return
+        if kind in {"StatementList", "ListStatement"}:
+            for s in getattr(stmt, "list", []) or []:
+                self._collect_reset_assignments(s)
+            return
+        if kind != "ExpressionStatement":
+            return
+        expr = stmt.expr
+        if type(expr).__name__ != "AssignmentExpression":
+            return
+        if not getattr(expr, "isNonBlocking", False):
+            return
+        q_bits = self._lvalue_bits(expr.left)
+        if q_bits is None:
+            return
+        val = self._const_int(expr.right)
+        if val is None:
+            return
+        self._proc_resets[q_bits] = val
 
     def _analyse_event_list(self, timing: Any) -> tuple[Any | None, Any | None, bool]:
         """Pick clock + (optional) async-reset symbols out of the
@@ -1312,8 +1383,15 @@ class _ModuleBuilder:
                     d_bits = rhs
                 else:
                     d_bits = self._build_hold_mux(enable, hold=d_bits, fire=rhs)
+            reset_value = self._proc_resets.get(q_bits, 0)
             self._emit_flop_cell(
-                clk_sym, reset_sym, reset_active_low, q_bits, d_bits, src_node
+                clk_sym,
+                reset_sym,
+                reset_active_low,
+                q_bits,
+                d_bits,
+                src_node,
+                reset_value=reset_value,
             )
 
     def _build_hold_mux(
@@ -1346,6 +1424,7 @@ class _ModuleBuilder:
         q_bits: tuple[Bit, ...],
         d_bits: tuple[Bit, ...],
         src_node: Any,
+        reset_value: int = 0,
     ) -> None:
         """Allocate a ``$dff`` / ``$adff`` cell with the given D and Q."""
         connections: dict[str, tuple[Bit, ...]] = {
@@ -1357,9 +1436,20 @@ class _ModuleBuilder:
         if reset_sym is not None:
             connections["ARST"] = self._alloc_bits(reset_sym)
             cell_type = "$adff"
-        parameters: dict[str, str] = {"CLK_POLARITY": "1"}
+        # CLK_POLARITY: slang lowering only emits posedge-clocked flops
+        # today, so this is hard-coded to "1". Negedge support (issue
+        # out-of-scope for #40) will need a polarity arg threaded down.
+        # WIDTH / ARST_POLARITY match Yosys' 32-bit binary-string param
+        # encoding; ARST_VALUE matches the flop's bit width so the
+        # string length lines up with the D / Q nets.
+        width = len(q_bits)
+        parameters: dict[str, str] = {
+            "CLK_POLARITY": "1",
+            "WIDTH": _param_int32(width),
+        }
         if reset_sym is not None:
-            parameters["ARST_POLARITY"] = "0" if reset_active_low else "1"
+            parameters["ARST_POLARITY"] = _param_int32(0 if reset_active_low else 1)
+            parameters["ARST_VALUE"] = _param_bits(reset_value, width)
         attrs: dict[str, str] = {}
         src = self._src_attr(src_node) if src_node is not None else None
         if src is not None:
