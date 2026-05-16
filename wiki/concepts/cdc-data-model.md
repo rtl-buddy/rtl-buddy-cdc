@@ -81,12 +81,22 @@ Key predicates:
 ```python
 @dataclass(frozen=True)
 class Violation:
-    rule_id: str           # "CDC-001" .. "CDC-008"
-    severity: str          # "error" | "warning" | "info"
-    message: str           # human-readable
-    crossing: Crossing | None    # None for non-data rules (CDC-007, CDC-008)
-    cell_name: str | None        # for source locations via cell.attributes["src"]
+    rule_id: str                   # "CDC-001" .. "CDC-008"
+    severity: str                  # "error" | "warning" | "info"
+    message: str                   # human-readable
+    crossing: Crossing | None      # None for non-data rules (CDC-007, CDC-008)
+    cell_name: str | None          # for source locations via cell.attributes["src"]
+    instance_path: tuple[str, ...] # hierarchy path the cell lives in; () = top
 ```
+
+`instance_path` is resolved from `cell_name` at the
+`cli._analyze_and_report` boundary by `reporter._instance_path` —
+the rule pack itself is frontend-agnostic and does not import the
+reporter. `()` is the safe default and is what `Violation`
+constructed directly (e.g. in tests) gets when the field is
+omitted. Reporters consume the field for per-instance grouping
+(text `[top]` / `u_a / u_b` headers, JSON `by_instance`, SARIF
+`logicalLocations`).
 
 ## AnalysisResult
 
