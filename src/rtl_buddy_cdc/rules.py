@@ -32,6 +32,15 @@ class Violation:
     # cell's ``attributes["src"]`` field. Falls back to the crossing's
     # dst flop if not set.
     cell_name: str | None = None
+    # Hierarchical instance path the offending cell lives in, derived
+    # from ``cell_name`` by ``reporter._instance_path`` at the CLI
+    # boundary. ``()`` means the cell is at the top instance (the
+    # common case on flat IP-block fixtures) and is also the safe
+    # default for rules that construct ``Violation`` directly — the
+    # resolver only runs in ``cli._analyze_and_report``, not in the
+    # rule pack. Reporters consume this in phase 2/3/4 of #46 to
+    # group findings by instance.
+    instance_path: tuple[str, ...] = ()
 
 
 # ``ctx`` is keyword-only on every rule; using ``Callable[..., ...]`` because
