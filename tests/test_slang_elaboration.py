@@ -289,6 +289,71 @@ def test_elaborated_module_has_expected_yosys_shape() -> None:
                 # Constant bits would be the string "0" / "1" / "x"
                 # / "z"; the canonical case here is all-integer.
                 assert isinstance(bit, (int, str))
+    # Issue #40: every $adff carries the Yosys-shape parameter dict
+    # — WIDTH / ARST_VALUE / ARST_POLARITY / CLK_POLARITY — populated
+    # in the same binary-string encoding Yosys writes for write_json.
+    # The fixture's flops are both 1-bit with active-low resets and a
+    # ``q <= 1'b0`` reset value, so the expected dict is deterministic.
+    for cell in ff_cells:
+        assert cell.type == "$adff"
+        assert cell.parameters == {
+            "CLK_POLARITY": "1",
+            "WIDTH": "0" * 31 + "1",
+            "ARST_POLARITY": "0" * 32,
+            "ARST_VALUE": "0",
+        }, cell.parameters
+
+
+def test_adff_parameters_track_multi_bit_width_and_reset_value(
+    tmp_path: Path,
+) -> None:
+    """Pin the parameter shape for a multi-bit flop with a non-zero
+    async reset value — exercises the ``WIDTH`` decoding (matches the
+    D bit-tuple length) and the ``ARST_VALUE`` width tracking with
+    ``WIDTH`` (issue #40). Yosys writes ``ARST_VALUE`` as an N-bit
+    binary string whose length equals ``WIDTH``; reset value 5 in a
+    4-bit flop is ``"0101"``."""
+    src = """module m (
+    input  logic clk, rst_n, d0, d1, d2, d3,
+    output logic [3:0] q
+);
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) q <= 4'd5;
+        else        q <= {d3, d2, d1, d0};
+    end
+endmodule
+"""
+    sv = tmp_path / "m.sv"
+    sv.write_text(src)
+    module = elaborate([sv], "m", frontend=Frontend.slang)
+    adff = next(c for c in module.cells.values() if c.type == "$adff")
+    assert adff.parameters == {
+        "CLK_POLARITY": "1",
+        "WIDTH": "0" * 28 + "0100",  # 4 in 32-bit binary
+        "ARST_POLARITY": "0" * 32,  # active-low (negedge rst_n)
+        "ARST_VALUE": "0101",  # 5 in 4-bit binary, length tracks WIDTH
+    }, adff.parameters
+
+
+def test_dff_parameters_have_width_but_no_arst(tmp_path: Path) -> None:
+    """The plain ``$dff`` case (no async reset) should still get
+    ``WIDTH`` + ``CLK_POLARITY``, but no ``ARST_*`` keys — Yosys omits
+    them when the cell type is ``$dff``."""
+    src = """module m (
+    input  logic clk, d,
+    output logic q
+);
+    always_ff @(posedge clk) q <= d;
+endmodule
+"""
+    sv = tmp_path / "m.sv"
+    sv.write_text(src)
+    module = elaborate([sv], "m", frontend=Frontend.slang)
+    dff = next(c for c in module.cells.values() if c.type == "$dff")
+    assert dff.parameters == {
+        "CLK_POLARITY": "1",
+        "WIDTH": "0" * 31 + "1",
+    }, dff.parameters
 
 
 # --- Issue #15 regression: child-port netnames preserved as aliases --------
