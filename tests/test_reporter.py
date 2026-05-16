@@ -518,9 +518,21 @@ def test_baseline_carryover_chains(tmp_path: Path) -> None:
         (None, ()),
         ("$procdff$42", ()),
         ("$logic_and$tests/foo.sv:55$13", ()),
-        # Yosys flatten — single instance, then nested.
+        # Yosys flatten — single-level instance.
         ("$flatten\\u_sync_ack.$procdff$84", ("u_sync_ack",)),
-        ("$flatten\\u_a.$flatten\\u_b.$dff$1", ("u_a", "u_b")),
+        # Yosys flatten — nested (multi-level). Yosys emits *one*
+        # ``$flatten\`` prefix per cell regardless of nesting depth;
+        # inner instances are encoded as dot-separated ``\``-escaped
+        # identifiers inside the same name.
+        ("$flatten\\u_hs_cmd.\\u_sync_ack.$procdff$893", ("u_hs_cmd", "u_sync_ack")),
+        # Yosys flatten — leaf cell with embedded source path inside
+        # its auto-name (``$add$<file>:<line>$N``). The path contains
+        # ``.sv`` which must NOT be tokenized as more hierarchy; the
+        # leaf-detection guard on ``$`` prefix protects this.
+        (
+            "$flatten\\u_afifo.$add$/abs/path/ip_async_fifo.sv:39$314",
+            ("u_afifo",),
+        ),
         # slang frontend dotted shape; the last component is the leaf
         # symbol, not an instance.
         ("u_b0.q", ("u_b0",)),
