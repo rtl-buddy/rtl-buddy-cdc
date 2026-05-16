@@ -16,7 +16,7 @@ from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
 from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
-from rtl_buddy_cdc.reporter import AnalysisResult
+from rtl_buddy_cdc.reporter import AnalysisResult, _instance_path
 from rtl_buddy_cdc.rules import Violation, run_all as run_all_rules
 from rtl_buddy_cdc.waivers import SuppressedViolation
 
@@ -389,6 +389,31 @@ def _analyze_module_and_report(
             dataclasses.replace(v, severity="error") if v.severity == "warning" else v
             for v in violations
         ]
+
+    # Resolve each violation's hierarchical instance path from its
+    # ``cell_name``. Done here, at the CLI boundary, so the rule pack
+    # stays frontend-agnostic (no ``reporter`` import in ``rules.py``).
+    # See ``wiki/raw/articles/hierarchical-reporting.md`` for the
+    # resolver contract and the parent issue #46 for the rendering
+    # phases that consume the field.
+    violations = [
+        dataclasses.replace(v, instance_path=_instance_path(module, v.cell_name))
+        for v in violations
+    ]
+    suppressed = [
+        dataclasses.replace(
+            s,
+            violation=dataclasses.replace(
+                s.violation,
+                instance_path=_instance_path(module, s.violation.cell_name),
+            ),
+        )
+        for s in suppressed
+    ]
+    baseline_carryover = [
+        dataclasses.replace(v, instance_path=_instance_path(module, v.cell_name))
+        for v in baseline_carryover
+    ]
 
     result = AnalysisResult(
         module=module,

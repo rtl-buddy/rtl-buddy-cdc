@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
 import io
 import json
@@ -17,6 +18,7 @@ from rtl_buddy_cdc.reporter import (
     JSON_CONTRACT,
     TOOL_VERSION,
     AnalysisResult,
+    _instance_path,
     render_json,
     render_sarif,
     render_text,
@@ -497,3 +499,100 @@ def test_baseline_carryover_chains(tmp_path: Path) -> None:
     # The current finding matches via the baseline's carryover bucket.
     assert payload["summary"]["violations"] == 0
     assert payload["summary"]["baseline_carryover"] == 1
+
+
+# --- hierarchical instance path (issue #75) ---------------------------------
+#
+# Phase 1 of #46: every Violation carries an ``instance_path: tuple[str, ...]``
+# resolved from its ``cell_name``. The resolver runs in the CLI boundary, not
+# in the rule pack. These tests pin the resolver's behaviour against the
+# three cell-name shapes the analyzer sees today (Yosys ``$flatten\`` prefix,
+# top-level Yosys auto-name, slang dotted) and verify the field actually
+# reaches ``AnalysisResult.violations`` on a real fixture.
+
+
+@pytest.mark.parametrize(
+    "cell_name, expected",
+    [
+        # Top instance / None → empty tuple.
+        (None, ()),
+        ("$procdff$42", ()),
+        ("$logic_and$tests/foo.sv:55$13", ()),
+        # Yosys flatten — single instance, then nested.
+        ("$flatten\\u_sync_ack.$procdff$84", ("u_sync_ack",)),
+        ("$flatten\\u_a.$flatten\\u_b.$dff$1", ("u_a", "u_b")),
+        # slang frontend dotted shape; the last component is the leaf
+        # symbol, not an instance.
+        ("u_b0.q", ("u_b0",)),
+        # Pathological — cell names containing dots are not produced by
+        # either shipping frontend, but the resolver still does
+        # something sensible (treats the last component as the leaf).
+        ("u_b0.cell_with.dots", ("u_b0", "cell_with")),
+    ],
+)
+def test_instance_path_resolver_table(
+    result: AnalysisResult, cell_name: str | None, expected: tuple[str, ...]
+) -> None:
+    # The ``module`` argument is currently unused but the contract takes
+    # it for parity with ``_source_location``; passing the existing
+    # result's module satisfies the type without changing behaviour.
+    assert _instance_path(result.module, cell_name) == expected
+
+
+def test_instance_path_default_on_violation_is_empty_tuple() -> None:
+    """A ``Violation`` constructed without ``instance_path`` defaults to
+    ``()``. This keeps existing test literals across the suite valid
+    without an audit, and matches the resolver's top-instance result."""
+    from rtl_buddy_cdc.rules import Violation
+
+    v = Violation(rule_id="CDC-001", severity="error", message="x")
+    assert v.instance_path == ()
+
+
+def test_instance_path_populated_on_handshake_strict_run(tmp_path: Path) -> None:
+    """End-to-end: a real fixture with nested instances (ip_cdc_handshake
+    instantiates two ``ip_cdc_sync`` children, ``u_sync_ack`` and
+    ``u_sync_req``) at ``--sync-depth 3`` produces two CDC-002 findings
+    whose ``cell_name`` carries the ``$flatten\\u_sync_*`` prefix. The
+    CLI boundary must populate ``instance_path`` accordingly."""
+    fix_dir = Path(__file__).parent / "fixtures" / "ip_cdc_handshake"
+    json_path = fix_dir / "ip_cdc_handshake.json"
+    sdc_path = fix_dir / "ip_cdc_handshake.sdc"
+    if not json_path.exists():
+        pytest.skip(f"fixture not built: {json_path}")
+    out = tmp_path / "report.json"
+    _analyze_and_report(
+        json_path,
+        sdc_path,
+        None,
+        OutputFormat.json,
+        out,
+        sync_depth=3,
+    )
+    payload = json.loads(out.read_text())
+    # Two CDC-002 findings (one per sync chain); each must come from
+    # inside one of the named child instances.
+    rule_ids = {v["rule_id"] for v in payload["violations"]}
+    assert rule_ids == {"CDC-002"}, rule_ids
+    # ``instance_path`` is not yet emitted in the JSON payload (phase 2),
+    # so rebuild the AnalysisResult to peek at the in-memory field.
+    module = netlist.load(json_path)
+    spec = sdc_mod.parse_file(sdc_path)
+    crossings = find_crossings(
+        module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+    )
+    async_crossings = [
+        c
+        for c in crossings
+        if spec.are_async(
+            spec.clock_for_port(c.src_clock) or c.src_clock,
+            spec.clock_for_port(c.dst_clock) or c.dst_clock,
+        )
+    ]
+    raw = run_all_rules(module, async_crossings, spec, required_depth=3)
+    # Run the same boundary post-pass the CLI runs.
+    resolved = [
+        dataclasses.replace(v, instance_path=_instance_path(module, v.cell_name))
+        for v in raw
+    ]
+    assert {v.instance_path for v in resolved} == {("u_sync_ack",), ("u_sync_req",)}

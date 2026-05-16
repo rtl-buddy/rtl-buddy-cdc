@@ -497,6 +497,71 @@ _SRC_RE = re.compile(
 )
 
 
+# Yosys ``flatten`` writes nested cells under a literal ``$flatten\``
+# prefix followed by the instance name and a ``.`` separator. The
+# constant captures one literal backslash — Python source needs the
+# double-backslash escape, the on-disk string is one byte.
+_FLATTEN_PREFIX = "$flatten\\"
+
+
+def _instance_path(module: Module, cell_name: str | None) -> tuple[str, ...]:
+    """Map a cell name to the hierarchical instance path it lives in.
+
+    Returns an empty tuple for cells at the top instance (the common
+    case on flat IP-block fixtures), the inferred path otherwise. The
+    ``module`` argument is currently unused but mirrors the
+    :func:`_source_location` signature and leaves room for a future
+    hierarchy-aware lookup (e.g. resolving an attribute-tagged netname
+    back through an alias chain).
+
+    Cell-name shapes the analyzer sees today:
+
+    - ``$flatten\\u_x.<leaf>`` — Yosys post-flatten, user instance.
+      Strip the prefix, split on the *first* ``.``; the prefix piece
+      is one path component. Iterate while the remainder still begins
+      with ``$flatten\\`` to cover the (rare) nested case.
+    - ``$procdff$42`` / ``$logic_and$<file>:<line>$N`` — top-level
+      Yosys auto-name. No instance prefix; the ``$<...>:<line>`` shape
+      embeds a source path so naïve ``split('.')`` would tokenize on
+      the dot inside the file path. Returns ``()``.
+    - ``u_b0.q`` — slang frontend. Plain dotted path; the last
+      component is the leaf symbol, everything before it is the
+      instance path. The top instance is *not* part of the name (the
+      slang frontend walks the top with ``hier_prefix=''``), so the
+      resolver does not need to strip a top component.
+    - Anything else (e.g. slang top-level ``$mux$23``) → ``()``.
+    """
+    if cell_name is None:
+        return ()
+    parts: list[str] = []
+    remaining = cell_name
+    while remaining.startswith(_FLATTEN_PREFIX):
+        body = remaining[len(_FLATTEN_PREFIX) :]
+        dot = body.find(".")
+        if dot < 0:
+            # Malformed ``$flatten\<name>`` with no separator — bail
+            # conservatively rather than guessing.
+            return tuple(parts)
+        parts.append(body[:dot])
+        remaining = body[dot + 1 :]
+    if parts:
+        return tuple(parts)
+    # No ``$flatten\`` prefix. Distinguish the slang dotted shape from
+    # top-level Yosys auto-names. Yosys auto-names always begin with
+    # ``$``; the ``$<...>:<line>`` shape may embed dots inside the
+    # source path, so a name with ``$`` before its first ``.`` is
+    # never a slang hierarchical path.
+    first_dot = cell_name.find(".")
+    if first_dot < 0:
+        return ()
+    if "$" in cell_name[:first_dot]:
+        return ()
+    components = cell_name.split(".")
+    if len(components) < 2:
+        return ()
+    return tuple(components[:-1])
+
+
 def _source_location(module: Module, cell_name: str | None) -> dict | None:
     """Translate a cell's ``attributes["src"]`` into a structured location.
 
