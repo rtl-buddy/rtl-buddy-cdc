@@ -243,12 +243,44 @@ def _render_violations(result: AnalysisResult, out: IO[str], s: _Style) -> None:
         vs = by_rule[rule_id]
         desc = _RULE_DESCRIPTIONS.get(rule_id, "")
         out.write(f"\n  {s.bold}{rule_id}{s.reset} — {desc}\n")
-        for v in vs:
-            _render_one_violation(v, result.module, out, s)
+        _render_rule_group(vs, result.module, out, s)
+
+
+def _render_rule_group(
+    violations: list[Violation], module: Module, out: IO[str], s: _Style
+) -> None:
+    """Render the violations within a single rule group.
+
+    Per-instance bucketing is engaged iff *any* violation in the group
+    carries a non-empty ``instance_path``. When every violation is at
+    the top instance — the common case on flat IP-block fixtures — the
+    headers collapse and the output is byte-identical to the pre-#46
+    layout. Phase 4 of #46.
+    """
+    if not any(v.instance_path for v in violations):
+        for v in violations:
+            _render_one_violation(v, module, out, s, indent=4)
+        return
+    # Bucket by instance_path. Tuple comparison sorts ``()`` before any
+    # populated path, then lexicographically — which is exactly the
+    # display order we want: top first, then nested in path order.
+    by_inst: dict[tuple[str, ...], list[Violation]] = defaultdict(list)
+    for v in violations:
+        by_inst[v.instance_path].append(v)
+    for path in sorted(by_inst):
+        header = "[top]" if not path else " / ".join(path)
+        out.write(f"    {s.dim}{header}{s.reset}\n")
+        for v in by_inst[path]:
+            _render_one_violation(v, module, out, s, indent=6)
 
 
 def _render_one_violation(
-    v: Violation, module: Module, out: IO[str], s: _Style
+    v: Violation,
+    module: Module,
+    out: IO[str],
+    s: _Style,
+    *,
+    indent: int = 4,
 ) -> None:
     severity_color = {
         "error": s.red,
@@ -260,9 +292,11 @@ def _render_one_violation(
     if loc is not None:
         line_part = f":{loc['start_line']}" if "start_line" in loc else ""
         loc_str = f"  {s.dim}{loc['file']}{line_part}{s.reset}"
-    out.write(f"    {severity_color}{v.severity}{s.reset}{loc_str}\n")
+    pad = " " * indent
+    msg_pad = " " * (indent + 2)
+    out.write(f"{pad}{severity_color}{v.severity}{s.reset}{loc_str}\n")
     for line in _wrap_message(v.message):
-        out.write(f"      {line}\n")
+        out.write(f"{msg_pad}{line}\n")
 
 
 def _wrap_message(text: str) -> list[str]:
