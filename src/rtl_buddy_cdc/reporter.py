@@ -327,6 +327,7 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             "suppressed": len(result.suppressed),
             "baseline_carryover": len(result.baseline_carryover),
         },
+        "by_instance": _by_instance(result.violations),
         "domains": [
             {"flop": fd.flop.cell.name, "clock": fd.clock} for fd in result.domains
         ],
@@ -350,6 +351,37 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
     }
     json.dump(payload, out, indent=2)
     out.write("\n")
+
+
+def _by_instance(violations: list[Violation]) -> list[dict]:
+    """Aggregate kept violations by ``instance_path``.
+
+    Returns one entry per distinct path, sorted by ``instance_path``
+    (empty tuple first, then lexicographic). Each entry has a
+    ``violations`` count and a per-rule breakdown.
+
+    Suppressed and baseline-carryover findings are intentionally
+    excluded — they don't drive the exit code, and rolling them into
+    the ``by_instance`` tally would mislead anyone reading the report
+    as a "what's actually broken in each block" view. Consumers that
+    want the suppressed view can iterate ``suppressed`` themselves
+    (each entry already carries ``instance_path``).
+    """
+    buckets: dict[tuple[str, ...], dict[str, int]] = {}
+    for v in violations:
+        rule_counts = buckets.setdefault(v.instance_path, {})
+        rule_counts[v.rule_id] = rule_counts.get(v.rule_id, 0) + 1
+    out: list[dict] = []
+    for path in sorted(buckets):
+        rule_counts = buckets[path]
+        out.append(
+            {
+                "instance_path": list(path),
+                "violations": sum(rule_counts.values()),
+                "rules": dict(sorted(rule_counts.items())),
+            }
+        )
+    return out
 
 
 def _crossing_to_dict(c: Crossing) -> dict:
@@ -378,6 +410,11 @@ def _violation_to_dict(v: Violation, module: Module) -> dict:
     # designs with many same-rule findings). Emitted as ``null`` when
     # the rule didn't anchor on a single cell.
     out["cell_name"] = v.cell_name
+    # Hierarchical instance path the offending cell lives in.
+    # Always present (never null, never missing) — ``[]`` is the
+    # top-instance result. Downstream consumers can treat the field
+    # unconditionally. See phase 2 of #46.
+    out["instance_path"] = list(v.instance_path)
     if v.crossing is not None:
         out["crossing"] = _crossing_to_dict(v.crossing)
     loc = _source_location(module, v.cell_name)

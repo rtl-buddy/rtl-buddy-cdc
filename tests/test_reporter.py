@@ -596,3 +596,161 @@ def test_instance_path_populated_on_handshake_strict_run(tmp_path: Path) -> None
         for v in raw
     ]
     assert {v.instance_path for v in resolved} == {("u_sync_ack",), ("u_sync_req",)}
+
+
+# --- JSON per-instance shape (phase 2 of #46) -------------------------------
+#
+# Two surfaces this phase pins: ``instance_path: list[str]`` on every
+# violation / suppressed / baseline_carryover dict (always present, ``[]``
+# at top, never null/missing), and a top-level ``by_instance`` aggregation
+# of *kept* violations sorted by path.
+
+
+def test_json_violations_carry_instance_path_field(result: AnalysisResult) -> None:
+    """Every entry in ``violations`` has ``instance_path: list[str]``
+    populated. The shape is unconditional so downstream consumers
+    don't have to handle a missing or null key."""
+    buf = io.StringIO()
+    render_json(result, buf)
+    payload = json.loads(buf.getvalue())
+    assert len(payload["violations"]) == 1
+    v = payload["violations"][0]
+    assert "instance_path" in v
+    assert isinstance(v["instance_path"], list)
+    # bad_single_ff_sync is a flat fixture — the single CDC-001 lives
+    # at top, so the path is empty.
+    assert v["instance_path"] == []
+
+
+def test_json_suppressed_and_carryover_carry_instance_path(tmp_path: Path) -> None:
+    """``suppressed`` and ``baseline_carryover`` entries also carry the
+    field. The CLI boundary post-pass runs on all three lists, so any
+    consumer iterating one of the auxiliary buckets sees a populated
+    path too."""
+    _strict_skip_if_missing()
+    # First, baseline JSON to feed back in.
+    baseline = tmp_path / "baseline.json"
+    _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        baseline,
+        sync_depth=3,
+    )
+    waivers = tmp_path / "cdc.waivers"
+    # An unrelated waiver so the kept list contains a non-suppressed
+    # finding and the suppressed list is empty in this particular setup.
+    # We re-purpose the same fixture for the carryover bucket assertion.
+    waivers.write_text("waive CDC-999 .* unmatched\n")
+    out = tmp_path / "report.json"
+    _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        waivers,
+        OutputFormat.json,
+        out,
+        sync_depth=3,
+        baseline_path=baseline,
+    )
+    payload = json.loads(out.read_text())
+    # Every carryover entry has the field. (Suppressed list may be empty
+    # in this configuration; the contract is "if present, populated".)
+    for entry in payload["baseline_carryover"]:
+        assert "instance_path" in entry
+        assert isinstance(entry["instance_path"], list)
+
+
+def test_json_by_instance_summary_present_and_sorted(result: AnalysisResult) -> None:
+    """Top-level ``by_instance`` is a sorted list of per-path aggregates.
+    Each entry has ``instance_path: list[str]``, a ``violations`` count,
+    and a per-rule ``rules`` map."""
+    buf = io.StringIO()
+    render_json(result, buf)
+    payload = json.loads(buf.getvalue())
+    assert "by_instance" in payload
+    by = payload["by_instance"]
+    assert isinstance(by, list)
+    # bad_single_ff_sync has one CDC-001 at top.
+    assert by == [{"instance_path": [], "violations": 1, "rules": {"CDC-001": 1}}]
+
+
+def test_json_by_instance_groups_handshake_strict(tmp_path: Path) -> None:
+    """End-to-end: at ``--sync-depth 3``, ``ip_cdc_handshake`` fires two
+    CDC-002 findings — one inside ``u_sync_ack`` and one inside
+    ``u_sync_req``. The ``by_instance`` aggregation bucketizes them as
+    two separate entries, sorted lexicographically."""
+    fix_dir = Path(__file__).parent / "fixtures" / "ip_cdc_handshake"
+    json_path = fix_dir / "ip_cdc_handshake.json"
+    sdc_path = fix_dir / "ip_cdc_handshake.sdc"
+    if not json_path.exists():
+        pytest.skip(f"fixture not built: {json_path}")
+    out = tmp_path / "report.json"
+    _analyze_and_report(
+        json_path,
+        sdc_path,
+        None,
+        OutputFormat.json,
+        out,
+        sync_depth=3,
+    )
+    payload = json.loads(out.read_text())
+    assert payload["by_instance"] == [
+        {
+            "instance_path": ["u_sync_ack"],
+            "violations": 1,
+            "rules": {"CDC-002": 1},
+        },
+        {
+            "instance_path": ["u_sync_req"],
+            "violations": 1,
+            "rules": {"CDC-002": 1},
+        },
+    ]
+
+
+def test_json_by_instance_excludes_suppressed_and_carryover(tmp_path: Path) -> None:
+    """``by_instance`` counts only the *kept* violations. Suppressed
+    waivered findings and baseline-carried entries are intentionally
+    excluded — the aggregation is a "what's actually failing" view, not
+    a structural inventory."""
+    _strict_skip_if_missing()
+    # First run: emit a baseline JSON to use as the carryover source.
+    baseline = tmp_path / "baseline.json"
+    _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        baseline,
+        sync_depth=3,
+    )
+    # Second run with the baseline applied: the single finding moves
+    # from kept to baseline_carryover. ``by_instance`` should be empty.
+    out = tmp_path / "second.json"
+    _analyze_and_report(
+        _STRICT_JSON,
+        _STRICT_SDC,
+        None,
+        OutputFormat.json,
+        out,
+        sync_depth=3,
+        baseline_path=baseline,
+    )
+    payload = json.loads(out.read_text())
+    assert payload["summary"]["violations"] == 0
+    assert payload["summary"]["baseline_carryover"] == 1
+    assert payload["by_instance"] == []
+
+
+def test_json_contract_still_stable_after_phase2(result: AnalysisResult) -> None:
+    """Adding ``instance_path`` and ``by_instance`` is purely additive.
+    The cross-repo JSON contract (``summary.violations``,
+    ``summary.suppressed``, ``summary.crossings``) must still resolve
+    to its declared types."""
+    buf = io.StringIO()
+    render_json(result, buf)
+    payload = json.loads(buf.getvalue())
+    for dotted, expected_type in JSON_CONTRACT.items():
+        value = _walk_dotted(payload, dotted)
+        assert isinstance(value, expected_type), dotted
