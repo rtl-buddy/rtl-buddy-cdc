@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--emit-domain-map` structured clock-domain artifact** (#106).
+  New CLI option on `analyze` and `lint` that writes a stable v1.0
+  JSON sidecar (`schema_version: "1.0"`) capturing the analyzer's
+  clock-domain view independently of the findings stream: clocks +
+  generated clocks + clock groups + false-path pairs, per-flop
+  domain assignments with source locations, the typed port→clock
+  map, and structural crossings tagged with `async_per_sdc`. Pair
+  with the new `--no-findings` flag to skip rule evaluation
+  entirely — useful when the artifact is the sole deliverable
+  (downstream consumers like [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view)
+  don't need the rule findings). All collections are sorted by a
+  documented key so a golden-file diff against the same inputs
+  stays empty. Endpoint identifiers (`flop_domains[].instance_path`,
+  `crossings[].src_flop`/`dst_flop`) use the same `<top>.<parents>.<leaf>`
+  dotted form so consumers can join them. Implementation in the
+  new `rtl_buddy_cdc.domain_map` module; contract pinned by
+  `tests/test_domain_map.py` (12 checks including a golden-file diff
+  against the `ip_cdc_handshake` fixture).
 - **CDC-009 — Pulse-width / fast-to-slow data-loss** (#47 design,
   #101 detection, #102 fixtures, #103 integration). Catches the
   textbook fast-to-slow case where a single-cycle src-domain pulse may
