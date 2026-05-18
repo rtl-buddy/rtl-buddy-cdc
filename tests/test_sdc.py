@@ -329,3 +329,41 @@ def test_filter_clause_is_partial_warning() -> None:
     # Without filter evaluation the parser may still pick up the
     # name from -name, but the filter-presence flag should surface.
     assert any("filter" in w for w in spec.partial_warnings)
+
+
+def test_set_input_delay_without_clock_warns_and_leaves_port_untyped() -> None:
+    """set_input_delay needs -clock to anchor the delay to a clock
+    edge; without it the constraint has no STA semantics. Real timers
+    reject it. The parser previously dropped this silently — now it
+    surfaces a partial_warning and leaves the port untyped so CDC-011
+    (issue #97) can pick the port up as unconstrained."""
+    spec = parse(
+        """
+        create_clock -name clk -period 10 [get_ports clk]
+        set_input_delay 1.5 [get_ports d_in]
+        """
+    )
+    assert "d_in" not in spec.port_clock, (
+        "Port without -clock anchor must stay untyped — adding it to "
+        "port_clock would fabricate a clock relationship the user "
+        "never declared."
+    )
+    assert any(
+        "no -clock anchor" in w and "d_in" in w for w in spec.partial_warnings
+    ), (
+        f"Expected a partial_warning naming d_in and 'no -clock anchor'; "
+        f"got {spec.partial_warnings!r}"
+    )
+
+
+def test_set_input_delay_without_clock_and_without_ports_stays_silent() -> None:
+    """Bare delay with no port target is a delay-only / defaults-style
+    usage. No port mapping to fabricate, nothing actionable for CDC,
+    and not the misuse pattern the warning targets — stay silent."""
+    spec = parse(
+        """
+        create_clock -name clk -period 10 [get_ports clk]
+        set_input_delay 1.5
+        """
+    )
+    assert spec.partial_warnings == []
