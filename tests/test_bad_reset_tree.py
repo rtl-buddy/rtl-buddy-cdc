@@ -1,5 +1,5 @@
 """Negative-case fixture: one async-reset source flop in src_clk feeds
-ARST on four flops in dst_clk. CDC-007 should fire ONCE for the
+ARST on four flops in dst_clk. RDC-001 should fire ONCE for the
 shared source (not four times) and the message should list multiple
 destination flops."""
 
@@ -34,14 +34,14 @@ def context():
     return module, async_crossings, spec
 
 
-def test_cdc_007_fires_once_for_shared_source(context) -> None:
+def test_rdc_001_fires_once_for_shared_source(context) -> None:
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
-    cdc_007 = [v for v in violations if v.rule_id == "CDC-007"]
-    assert len(cdc_007) == 1, (
-        f"expected 1 grouped CDC-007, got {len(cdc_007)}: "
-        f"{[v.message for v in cdc_007]}"
+    rdc_001 = [v for v in violations if v.rule_id == "RDC-001"]
+    assert len(rdc_001) == 1, (
+        f"expected 1 grouped RDC-001, got {len(rdc_001)}: "
+        f"{[v.message for v in rdc_001]}"
     )
-    msg = cdc_007[0].message
+    msg = rdc_001[0].message
     assert "4 destination flops share this source" in msg
     assert "reset distribution tree" in msg

@@ -64,6 +64,49 @@ def test_apply_suppresses_matching() -> None:
     assert suppressed[0].waiver.reason == "reviewed by team"
 
 
+def test_legacy_cdc_007_alias_suppresses_rdc_001() -> None:
+    """Back-compat: a waiver written against the legacy ``CDC-007``
+    rule_id continues to suppress the renamed ``RDC-001`` rule.
+
+    Added in #107 when the async-reset-crossing rule was renamed from
+    CDC-007 to RDC-001 to join the new RDC (Reset Domain Crossing)
+    family. Without the alias path in
+    :func:`rtl_buddy_cdc.waivers._rule_pattern_matches`, every
+    existing project waiver would silently break — this test guards
+    against accidental removal of the alias map."""
+    fix_dir = Path(__file__).parent / "fixtures" / "bad_reset_crossing"
+    json_path = fix_dir / "bad_reset_crossing.json"
+    sdc_path = fix_dir / "bad_reset_crossing.sdc"
+    if not json_path.exists():
+        pytest.skip(f"fixture not built: {json_path}")
+    module = netlist.load(json_path)
+    spec = sdc_mod.parse_file(sdc_path)
+    crossings = find_crossings(module)
+    async_crossings = [
+        c
+        for c in crossings
+        if spec.are_async(
+            spec.clock_for_port(c.src_clock) or c.src_clock,
+            spec.clock_for_port(c.dst_clock) or c.dst_clock,
+        )
+    ]
+    violations = run_all_rules(module, async_crossings, spec)
+    rdc = [v for v in violations if v.rule_id == "RDC-001"]
+    assert len(rdc) == 1, f"expected one RDC-001, got {violations}"
+
+    # Legacy alias suppresses.
+    legacy = waivers_mod.parse("waive CDC-007 .* legacy waiver\n")
+    kept, suppressed = waivers_mod.apply(violations, legacy)
+    assert kept == [] and len(suppressed) == 1
+    assert suppressed[0].waiver.rule_pattern == "CDC-007"
+    assert suppressed[0].violation.rule_id == "RDC-001"
+
+    # New canonical id also suppresses (sanity check).
+    canonical = waivers_mod.parse("waive RDC-001 .* canonical\n")
+    kept2, suppressed2 = waivers_mod.apply(violations, canonical)
+    assert kept2 == [] and len(suppressed2) == 1
+
+
 def test_apply_non_matching_keeps_violation() -> None:
     if not JSON_PATH.exists():
         pytest.skip(f"fixture not built: {JSON_PATH}")

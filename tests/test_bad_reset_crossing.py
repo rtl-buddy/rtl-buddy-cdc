@@ -1,4 +1,4 @@
-"""Negative-case fixture: src-domain flop drives dst flop's ARST → CDC-007."""
+"""Negative-case fixture: src-domain flop drives dst flop's ARST → RDC-001."""
 
 from __future__ import annotations
 
@@ -40,16 +40,16 @@ def test_no_data_crossings(context) -> None:
     assert len(async_crossings) == 0
 
 
-def test_cdc_007_fires(context) -> None:
+def test_rdc_001_fires(context) -> None:
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
-    cdc_007 = [v for v in violations if v.rule_id == "CDC-007"]
-    assert len(cdc_007) == 1
-    v = cdc_007[0]
+    rdc_001 = [v for v in violations if v.rule_id == "RDC-001"]
+    assert len(rdc_001) == 1
+    v = rdc_001[0]
     assert "async reset crossing" in v.message
     assert "src_clk" in v.message and "dst_clk" in v.message
     assert v.severity == "error"
-    # CDC-007 doesn't carry a data crossing.
+    # RDC-001 doesn't carry a data crossing.
     assert v.crossing is None
 
 
@@ -58,4 +58,4 @@ def test_no_other_rules_fire(context) -> None:
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     rule_ids = {v.rule_id for v in violations}
-    assert rule_ids == {"CDC-007"}
+    assert rule_ids == {"RDC-001"}
