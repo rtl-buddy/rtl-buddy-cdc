@@ -75,6 +75,23 @@ GOOD_FIXTURES = [
     # still recognise the originating mux. Two async crossings (the
     # synced load_req + the gated data bus).
     ("good_buffered_gated_bus_crossing", 2),
+    # CDC-011 (#97) positive shapes: SDC types the unconstrained
+    # input via ``set_input_delay -clock``, with a 2FF synchronizer
+    # on any cross-domain capture.
+    #
+    # _two_domains_typed: port→clk_a direct (same domain, dropped) +
+    # port→clk_b through 2FF sync (1 async port-sourced crossing).
+    ("good_unconstrained_input_two_domains_typed", 1),
+    # _derived_clock_typed: port typed to the same clock the AND-
+    # tree resolves to → same domain → 0 async crossings.
+    ("good_unconstrained_input_derived_clock_typed", 0),
+    # _bus_two_domains_typed: same shape as _two_domains_typed but
+    # width 8 (the port-walk emits one crossing with width=8, not
+    # eight width=1 crossings).
+    ("good_unconstrained_input_bus_two_domains_typed", 1),
+    # _muxed_clock_typed: port typed to whichever mux side
+    # trace_clock_root picks → same domain → 0 async crossings.
+    ("good_unconstrained_input_muxed_clock_typed", 0),
 ]
 
 

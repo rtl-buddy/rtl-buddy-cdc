@@ -16,3 +16,10 @@ create_clock -name dst_clk -period 7.5  [get_ports dst_clk]
 set_clock_groups -asynchronous \
     -group {src_clk} \
     -group {dst_clk}
+
+# Declare the data inputs as members of their respective clock domains
+# so CDC-011 doesn't flag them as unconstrained primary inputs (this
+# fixture exercises the req/ack handshake shape, not the
+# unconstrained-input shape).
+set_input_delay -clock src_clk 1.0 [get_ports src_valid]
+set_input_delay -clock src_clk 1.0 [get_ports src_data]

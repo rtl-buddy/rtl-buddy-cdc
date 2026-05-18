@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CDC-011 — Unconstrained primary input captured by clocked logic**
+  (#97). Surfaces the SDC-discipline gap where a top-level input port
+  has no `set_input_delay -clock <name>` typing but physically reaches
+  a flop's `D` pin. Implementation seam: `sdc.UNCONSTRAINED_SENTINEL`
+  + `sdc.synthesize_unconstrained_inputs(spec, module)` assigns the
+  sentinel to every untyped input port after parse; the existing
+  port-walk in `find_crossings` then emits port-sourced crossings the
+  rule can consume. `check_cdc_011` consolidates by source port:
+  single destination domain → `warning` (typical fix is SDC typing);
+  two or more distinct destination domains → `error` (a single port
+  cannot be synchronous to multiple clocks). CDC-001 / CDC-002 /
+  CDC-006 each gain a sentinel skip so they don't double-fire with
+  fix-advice mismatch. Parser now also surfaces a `partial_warnings`
+  entry when `set_*_delay` names ports but omits `-clock` (previously
+  silent). Four paired fixtures land: `bad_unconstrained_input_two_domains`
+  (multi-domain scalar — error), `bad_unconstrained_input_derived_clock`
+  (AND-of-clocks — warning), `bad_unconstrained_input_bus_two_domains`
+  (multi-domain bus — error), `bad_unconstrained_input_muxed_clock`
+  (test-mode mux — warning), each with a `good_*_typed` counterpart.
+  Ten existing `bad_*` fixtures retro-typed (`set_input_delay -clock
+  src_clk` on their data inputs) so each fires only the rule it was
+  authored to test; `ip_cdc_handshake` and `good_2ff_sync` updated
+  the same way.
 - **Design proposal: CDC-010, glitches on the clock network from a
   wrong-domain control signal** (#48). New
   `docs/proposals/clock-network-glitch.md` covers the failure mode

@@ -16,7 +16,7 @@ from typing import Callable
 from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
-from rtl_buddy_cdc.sdc import ClockSpec
+from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
 
 @dataclass(frozen=True)
@@ -553,6 +553,8 @@ def check_cdc_001(
     for c in crossings:
         if c.width != 1:
             continue
+        if c.src_clock == UNCONSTRAINED_SENTINEL:
+            continue  # CDC-011 owns crossings from unconstrained ports
         if c.dst_flop.cell.name in ctx.user_syncs:
             continue  # user vouches for the synchronizer shape
         depth = _sync_chain_depth(
@@ -610,6 +612,8 @@ def check_cdc_002(
     for c in crossings:
         if c.width != 1:
             continue
+        if c.src_clock == UNCONSTRAINED_SENTINEL:
+            continue  # CDC-011 owns crossings from unconstrained ports
         if c.dst_flop.cell.name in ctx.user_syncs:
             continue
         depth = _sync_chain_depth(
@@ -1194,6 +1198,12 @@ def check_cdc_006(
             port_clk: str | None = None
             if clock_spec is not None:
                 port_clk = clock_spec.port_clock.get(p)
+            # Unconstrained ports belong to CDC-011, not CDC-006. The
+            # right fix for them is SDC typing, not "register the
+            # source"; firing CDC-006 here would push the wrong
+            # remediation.
+            if port_clk == UNCONSTRAINED_SENTINEL:
+                continue
             if (
                 port_clk is not None
                 and my_clock_name is not None
@@ -1446,6 +1456,93 @@ def check_cdc_007(
     return violations
 
 
+def check_cdc_011(
+    module: Module,  # noqa: ARG001
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,  # noqa: ARG001
+) -> list[Violation]:
+    """CDC-011 — Unconstrained primary input captured by clocked logic.
+
+    Fires on top-level input ports that the SDC didn't type via
+    ``set_input_delay -clock <name>`` but that physically reach a
+    flop's ``D`` pin. ``sdc.synthesize_unconstrained_inputs`` assigns
+    :data:`UNCONSTRAINED_SENTINEL` as ``port_clock`` for any such
+    port; :func:`find_crossings` then walks them and emits
+    port-sourced crossings whose ``src_clock`` carries the sentinel.
+
+    Severity escalation by shape:
+
+    * **error** when one port lands on flops in ``>=2`` distinct
+      destination clock domains. A single port cannot be synchronous
+      to two clocks at once, so this is intrinsically wrong
+      regardless of SDC opinion — typing it on either side won't
+      silence the rule, only fixing the RTL (or adding a synchronizer
+      on the foreign side) will.
+    * **warning** when the port lands in a single destination domain.
+      The usual fix is adding ``set_input_delay -clock <name>`` to
+      assert which domain the port belongs to (and adding a 2FF
+      synchronizer if it's a different domain than declared). This is
+      a methodology gap, not a hard bug.
+
+    One :class:`Violation` per source port — the message lists every
+    distinct destination clock, so a port fanning out across many
+    flops in two domains collapses to a single error rather than a
+    fixture-per-flop flood.
+    """
+    by_port: dict[str, list[Crossing]] = defaultdict(list)
+    for c in crossings:
+        if c.src_port is None:
+            continue
+        if c.src_clock != UNCONSTRAINED_SENTINEL:
+            continue
+        by_port[c.src_port].append(c)
+
+    violations: list[Violation] = []
+    for port in sorted(by_port):
+        cs = by_port[port]
+        dst_clocks = sorted({c.dst_clock for c in cs})
+        # Representative cell for source-location reporting: pick the
+        # alphabetically-first destination flop so the reporter has
+        # something concrete to anchor on.
+        repr_cell = sorted(c.dst_flop.cell.name for c in cs)[0]
+        if len(dst_clocks) > 1:
+            violations.append(
+                Violation(
+                    rule_id="CDC-011",
+                    severity="error",
+                    message=(
+                        f"unconstrained primary input {port!r} is "
+                        f"captured in multiple clock domains "
+                        f"({dst_clocks}); a single port cannot be "
+                        f"synchronous to more than one clock — add "
+                        f"set_input_delay -clock <name> and a "
+                        f"synchronizer on at least one destination"
+                    ),
+                    cell_name=repr_cell,
+                )
+            )
+        else:
+            (dst_clk,) = dst_clocks
+            violations.append(
+                Violation(
+                    rule_id="CDC-011",
+                    severity="warning",
+                    message=(
+                        f"unconstrained primary input {port!r} has no "
+                        f"set_input_delay -clock typing in the SDC "
+                        f"but is captured in domain {dst_clk!r}; add "
+                        f"set_input_delay -clock {dst_clk} "
+                        f"[get_ports {port}] (or declare the port's "
+                        f"true source clock and add a synchronizer)"
+                    ),
+                    cell_name=repr_cell,
+                )
+            )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -1455,6 +1552,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-006": check_cdc_006,
     "CDC-007": check_cdc_007,
     "CDC-008": check_cdc_008,
+    "CDC-011": check_cdc_011,
 }
 
 
