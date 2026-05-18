@@ -42,8 +42,13 @@ jobs:
       - name: Install test dependencies (with [slang] extra)
         run: uv sync --extra slang --group test --python ${{ matrix.python-version }}
 
-      - name: Run pytest
-        run: uv run pytest -q
+      # Pass `--python` to `uv run` too — without it, uv re-resolves the
+      # venv against `.python-version` (3.13), wipes the matrix-specific
+      # env from the previous step, and ends up running every matrix
+      # entry on 3.13 with pyslang silently absent. Surfaced by the
+      # coverage gate in #120 / #121.
+      - name: Run pytest (with coverage)
+        run: uv run --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=78
 
   # Companion job: install WITHOUT the [slang] extra to verify the
   # AGENTS.md "default install stays typer-only" promise. Specifically
