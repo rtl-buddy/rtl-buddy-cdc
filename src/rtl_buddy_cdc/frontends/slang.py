@@ -730,8 +730,9 @@ class _ModuleBuilder:
         self._proc_resets = {}
         block_reset_sym = reset_sym
         block_reset_active_low = reset_active_low
+        block_reset_kind: str | None = None
         try:
-            reset_check = self._classify_reset_check(inner, reset_sym)
+            reset_check = self._classify_reset_check(inner, reset_sym, reset_active_low)
             if reset_check is not None:
                 # Canonical reset-check shape — either async-reset
                 # ``always_ff @(posedge clk or negedge rst_n) begin
@@ -742,22 +743,24 @@ class _ModuleBuilder:
                 # In both, the reset arm's writes are absorbed into
                 # the flop's reset value rather than emitted as
                 # separate writes (we only walk ``ifFalse``, the data
-                # branch). For async reset, the reset signal comes
-                # from the event list; for sync reset we identified
-                # the shape heuristically (constant-only ifTrue arm
-                # — matches every synthesizable reset block).
+                # branch). For async reset, the reset signal and
+                # polarity come from the event list; for sync reset
+                # the shape is identified heuristically (constant-only
+                # ifTrue arm) and the polarity is read off the
+                # condition itself (``!rst_n`` vs bare ``rst``).
                 # Falling outside that envelope (a runtime ``if (cond)``
                 # at the top of a no-reset always_ff, where the ifTrue
                 # arm computes a real value) flows into the general
                 # walker below so both arms drain into one flop per
                 # LHS, not silently dropped.
-                block_reset_sym = reset_check
+                block_reset_sym, block_reset_kind, block_reset_active_low = reset_check
                 data_branch = inner.ifFalse
                 if data_branch is None:
                     return  # no else → no data assignment to model
                 # Capture reset-arm literal RHS values before walking
                 # the data arm — drain time looks these up to populate
-                # ``$adff``'s ``ARST_VALUE`` parameter (issue #40).
+                # ``$adff``'s ``ARST_VALUE`` / ``$sdff``'s ``SRST_VALUE``
+                # parameter (issues #40 / #86).
                 self._collect_reset_assignments(inner.ifTrue)
                 self._emit_assignments_in(
                     data_branch,
@@ -787,7 +790,11 @@ class _ModuleBuilder:
                     src_node=src_node,
                 )
             self._drain_proc_writes(
-                clk_sym, block_reset_sym, block_reset_active_low, src_node
+                clk_sym,
+                block_reset_sym,
+                block_reset_active_low,
+                src_node,
+                reset_kind=block_reset_kind,
             )
         finally:
             self._proc_writes = {}
@@ -885,41 +892,59 @@ class _ModuleBuilder:
         return None
 
     def _classify_reset_check(
-        self, inner: Any, reset_sym_from_event_list: Any | None
-    ) -> Any | None:
-        """Return the reset symbol for ``inner`` if it has the canonical
-        reset-check shape, else ``None`` so the caller walks the body
-        normally.
+        self,
+        inner: Any,
+        reset_sym_from_event_list: Any | None,
+        reset_active_low_from_event_list: bool,
+    ) -> tuple[Any, str, bool] | None:
+        """Classify ``inner`` against the canonical reset-check shape.
 
-        Two shapes match:
+        Returns ``(reset_sym, kind, active_low)`` when matched, else
+        ``None`` so the caller walks the body as a normal procedural
+        statement (no reset semantics).
 
-        - **Async reset.** The event list announced an async reset
-          (``or negedge rst_n``), so ``reset_sym_from_event_list`` is
-          non-None, and the body's outer if-condition gates on that
-          same symbol.
-        - **Sync reset.** No async reset event, but the body's outer
-          ``ConditionalStatement`` writes only constants in its
-          ``ifTrue`` arm (the standard ``if (!rst_n) <constants>
-          else <data>`` shape that synthesizers fold into ``$sdff``).
-          The constant-only check is what distinguishes a real reset
-          check from a runtime ``if (cond)`` at the top of a no-reset
-          always_ff body — the latter has a real RHS expression in
-          ifTrue and must be walked as a normal mux-tree.
+        ``kind`` is ``"async"`` when the event list carried a
+        dedicated reset event (``or negedge rst_n``); the body's
+        outer ``if`` then gates on that same symbol, and
+        ``active_low`` comes from the event-list edge.
+
+        ``kind`` is ``"sync"`` for the synthesizable-into-``$sdff``
+        shape — no reset in the event list, but the body's outer
+        ``ConditionalStatement`` writes only constants in its
+        ``ifTrue`` arm (matches ``if (!rst_n) <constants> else
+        <data>``). ``active_low`` is derived from the condition
+        shape: a ``UnaryExpression`` wrapping the symbol (``!rst_n``
+        / ``~rst_n``) marks active-low, a bare reference marks
+        active-high. The event list has no reset event to read in
+        this case, so the condition shape is the only source.
+
+        The constant-only check is what distinguishes a real reset
+        check from a runtime ``if (cond)`` at the top of a no-reset
+        always_ff body — the latter has a real RHS expression in
+        ifTrue and must be walked as a normal mux-tree.
         """
         if self._kind_name(inner) != "ConditionalStatement":
             return None
         conds = getattr(inner, "conditions", None)
         if not conds:
             return None
-        cond_sym = self._extract_condition_symbol(conds[0].expr)
+        cond_expr = conds[0].expr
+        cond_sym = self._extract_condition_symbol(cond_expr)
         if cond_sym is None:
             return None
         if reset_sym_from_event_list is not None:
-            return cond_sym if cond_sym is reset_sym_from_event_list else None
+            if cond_sym is not reset_sym_from_event_list:
+                return None
+            return cond_sym, "async", reset_active_low_from_event_list
         # Sync-reset heuristic: the ifTrue arm assigns only constants.
-        if self._is_constant_only_assignment_tree(inner.ifTrue):
-            return cond_sym
-        return None
+        if not self._is_constant_only_assignment_tree(inner.ifTrue):
+            return None
+        # Polarity from the condition shape — same convention as the
+        # async edge: ``!rst_n`` / ``~rst_n`` is active-low, bare
+        # ``rst`` is active-high. ``_extract_condition_symbol`` already
+        # accepts both shapes; mirror its branch here.
+        active_low = type(cond_expr).__name__ == "UnaryExpression"
+        return cond_sym, "sync", active_low
 
     def _is_constant_only_assignment_tree(self, stmt: Any) -> bool:
         """``True`` if every nonblocking assignment reachable from
@@ -1512,6 +1537,7 @@ class _ModuleBuilder:
         reset_sym: Any | None,
         reset_active_low: bool,
         src_node: Any,
+        reset_kind: str | None = None,
     ) -> None:
         """Emit one flop per accumulated LHS.
 
@@ -1531,6 +1557,11 @@ class _ModuleBuilder:
         ``D = mux(not_cond, mux(cond, Q, a), b)`` — equivalent to a
         Yosys ``$mux(cond, b, a)`` after ``opt_clean`` but with the
         explicit hold-feedback shape the detector recognises.
+
+        ``reset_kind`` (``"async"`` / ``"sync"`` / ``None``) controls
+        whether ``_emit_flop_cell`` materialises ``$adff``, ``$sdff``,
+        or plain ``$dff``. ``None`` is also accepted alongside
+        ``reset_sym=None`` for blocks with no reset.
         """
         for q_bits, writes in self._proc_writes.items():
             d_bits: tuple[Bit, ...] = q_bits  # initial Q-feedback
@@ -1548,6 +1579,7 @@ class _ModuleBuilder:
                 d_bits,
                 src_node,
                 reset_value=reset_value,
+                reset_kind=reset_kind,
             )
 
     def _build_hold_mux(
@@ -1581,8 +1613,19 @@ class _ModuleBuilder:
         d_bits: tuple[Bit, ...],
         src_node: Any,
         reset_value: int = 0,
+        reset_kind: str | None = None,
     ) -> None:
-        """Allocate a ``$dff`` / ``$adff`` cell with the given D and Q."""
+        """Allocate a ``$dff`` / ``$adff`` / ``$sdff`` cell with the
+        given D and Q.
+
+        ``reset_kind`` picks the reset shape when ``reset_sym`` is
+        non-None: ``"async"`` → ``$adff`` (ARST/ARST_POLARITY/
+        ARST_VALUE), ``"sync"`` → ``$sdff`` (SRST/SRST_POLARITY/
+        SRST_VALUE). ``None`` is treated as async to preserve the
+        pre-#86 behaviour for any caller that hasn't been updated;
+        ``_emit_procedural_block`` always passes an explicit kind
+        when there is a reset.
+        """
         connections: dict[str, tuple[Bit, ...]] = {
             "CLK": self._alloc_bits(clk_sym),
             "D": d_bits,
@@ -1590,13 +1633,18 @@ class _ModuleBuilder:
         }
         cell_type = "$dff"
         if reset_sym is not None:
-            connections["ARST"] = self._alloc_bits(reset_sym)
-            cell_type = "$adff"
+            if reset_kind == "sync":
+                connections["SRST"] = self._alloc_bits(reset_sym)
+                cell_type = "$sdff"
+            else:
+                # ``"async"`` (or unspecified — pre-#86 default).
+                connections["ARST"] = self._alloc_bits(reset_sym)
+                cell_type = "$adff"
         # CLK_POLARITY: slang lowering only emits posedge-clocked flops
         # today, so this is hard-coded to "1". Negedge support (issue
         # out-of-scope for #40) will need a polarity arg threaded down.
-        # WIDTH / ARST_POLARITY match Yosys' 32-bit binary-string param
-        # encoding; ARST_VALUE matches the flop's bit width so the
+        # WIDTH / *RST_POLARITY match Yosys' 32-bit binary-string param
+        # encoding; *RST_VALUE matches the flop's bit width so the
         # string length lines up with the D / Q nets.
         width = len(q_bits)
         parameters: dict[str, str] = {
@@ -1604,8 +1652,14 @@ class _ModuleBuilder:
             "WIDTH": _param_int32(width),
         }
         if reset_sym is not None:
-            parameters["ARST_POLARITY"] = _param_int32(0 if reset_active_low else 1)
-            parameters["ARST_VALUE"] = _param_bits(reset_value, width)
+            polarity = _param_int32(0 if reset_active_low else 1)
+            value_param = _param_bits(reset_value, width)
+            if cell_type == "$sdff":
+                parameters["SRST_POLARITY"] = polarity
+                parameters["SRST_VALUE"] = value_param
+            else:
+                parameters["ARST_POLARITY"] = polarity
+                parameters["ARST_VALUE"] = value_param
         attrs: dict[str, str] = {}
         src = self._src_attr(src_node) if src_node is not None else None
         if src is not None:

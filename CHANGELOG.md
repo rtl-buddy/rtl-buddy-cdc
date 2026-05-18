@@ -152,6 +152,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     that previously hit the walker still does).
   Casez / casex / `inside`-set match remain out of scope and bail via
   `_bits_of_expression` returning None, same as today.
+- **slang frontend: sync-reset shape emits `$sdff`** (#86). After
+  PR #74's sync-reset shape detection landed, sync-reset bodies —
+  ``always_ff @(posedge clk) if (!rst_n) <constants> else <data>`` —
+  walked only the data arm but still produced ``$adff`` cells wired
+  to the reset signal, with ``ARST_POLARITY`` defaulted to active-
+  high (the event list never carried an async-reset event to read
+  the polarity off). Two bugs in one cell: wrong cell type relative
+  to Yosys-flatten (which materialises ``$sdff`` here), and wrong
+  polarity even within the ``$adff`` shape. ``_classify_reset_check``
+  now returns ``(symbol, kind, active_low)`` and threads ``kind``
+  through ``_drain_proc_writes`` → ``_emit_flop_cell``, which
+  branches on it to emit ``$sdff`` with ``SRST`` / ``SRST_POLARITY``
+  / ``SRST_VALUE`` for the sync case. Sync polarity is derived from
+  the condition shape itself (``!rst_n`` / ``~rst_n`` → active-low,
+  bare ``rst`` → active-high) since the event list has nothing to
+  read there. Async and no-reset paths are unchanged; the rule pack
+  is cell-type-tolerant via ``flops.FF_CELL_TYPES`` so existing
+  detection isn't affected.
 - **slang frontend: `always_comb if/else` both-arms emission** (#64).
   An if/else where both arms wrote the same LHS dropped one arm
   because the per-LHS `$mux` emission keyed on the canonical
