@@ -1,0 +1,215 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_rdc_003_sync_reset_synced": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:20.1-55.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "global_rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "kill_req": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 7 ]
+        }
+      },
+      "cells": {
+        "$auto$ff.cc:337:slice$25": {
+          "hide_name": 1,
+          "type": "$sdff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:48.5-51.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 6 ],
+            "Q": [ 7 ],
+            "SRST": [ 8 ]
+          }
+        },
+        "$procdff$14": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:37.5-45.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 9 ],
+            "Q": [ 10 ]
+          }
+        },
+        "$procdff$19": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:37.5-45.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 10 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$procdff$24": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:30.5-33.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 9 ]
+          }
+        }
+      },
+      "netnames": {
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:25.18-25.22"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:22.18-22.25"
+          }
+        },
+        "global_rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:23.18-23.30"
+          }
+        },
+        "kill_req": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:24.18-24.26"
+          }
+        },
+        "q_dst": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:47.11-47.16"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:26.18-26.23"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:21.18-21.25"
+          }
+        },
+        "src_rst": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:29.11-29.18"
+          }
+        },
+        "src_rst_meta": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:36.11-36.23"
+          }
+        },
+        "src_rst_sync": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/good_rdc_003_sync_reset_synced/good_rdc_003_sync_reset_synced.sv:36.25-36.37"
+          }
+        }
+      }
+    }
+  }
+}

@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RDC-003 — Sync reset crossing** (second sub-PR of #114, fifth
+  instalment of #107). New rule: a flop's synchronous reset pin
+  (``SRST``) is driven — directly or through combinational logic —
+  by a flop in a different asynchronous clock domain. The sync
+  reset is sampled on the destination clock's rising edge and the
+  cross-domain source can be metastable on the sample cycle. Detection
+  is the SRST analogue of RDC-001's ARST walk; findings are grouped
+  by ``(src_flop, src_clk, dst_clk)`` so one foreign-domain source
+  feeding many sync-reset consumers becomes one finding (mirrors
+  RDC-001's reset-tree grouping). Severity ``error``. Paired
+  fixtures ``bad_rdc_003_sync_reset_crossing`` /
+  ``good_rdc_003_sync_reset_synced`` (the good case demonstrates the
+  textbook fix: a 2FF reset synchroniser in the destination clock
+  domain between the foreign source and the consuming ``$sdff``).
+
+### Changed
+
+- **RDC-002 narrowed to async-reset consumers.** The polarity-
+  mismatch check now skips ``$sdff*`` consumers — sync-reset signals
+  are intentional gating (e.g. a "kill" signal that synchronously
+  clears a pipeline), not part of the async-reset distribution tree
+  where the "consumer must enter reset when producer does"
+  invariant holds. Caught while bringing up the RDC-003 fixture
+  pair: both fixtures triggered RDC-002 as a false positive on the
+  ``$sdff`` consumer. RDC-003 owns the sync-reset crossing concern.
+
+### Added
+
 - **RDC-002 — Reset polarity mismatch** (first sub-PR of #114, fourth
   instalment of #107). New rule: a flop's reset pin is driven
   *directly* (no inverter, no comb between) by another flop's ``Q``,
