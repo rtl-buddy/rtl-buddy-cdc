@@ -346,6 +346,11 @@ def _analyze_module_and_report(
     violations: list[Violation] = []
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
+        # Synthesize sentinel entries for input ports the SDC didn't
+        # type via ``set_input_delay -clock``. Lets find_crossings's
+        # existing port-walk emit port-sourced crossings for them so
+        # CDC-011 can fire — see ``sdc.synthesize_unconstrained_inputs``.
+        sdc_mod.synthesize_unconstrained_inputs(spec, module)
         if spec.partial_warnings and fmt is OutputFormat.text:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)

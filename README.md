@@ -4,7 +4,7 @@ Python-based open-source CDC (Clock Domain Crossing) linting tool for RTL design
 
 ## Status
 
-Usable on IP-block-sized designs. Eight rules implemented (CDC-001 through CDC-008), three output formats (text / JSON / SARIF), waiver-file suppression, `(* cdc_sync *)` / `(* cdc_gray *)` SV attributes for user-vetted synchronizers and gray-coded buses, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule.
+Usable on IP-block-sized designs. Nine rules implemented (CDC-001 through CDC-008 plus CDC-011), three output formats (text / JSON / SARIF), waiver-file suppression, `(* cdc_sync *)` / `(* cdc_gray *)` SV attributes for user-vetted synchronizers and gray-coded buses, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule.
 
 Known gaps and roadmap items are tracked at the end of this README.
 
@@ -136,6 +136,7 @@ If no SDC is supplied, the tool prints a structural summary and skips all rule c
 | **CDC-006** | error | Glitchy combinational source — synchronizer is fed by combinational logic with no registering flop, reaching unregistered top-level ports. Suppressed when `set_input_delay -clock <my_clk>` types the port into the destination flop's own clock domain (port is asserted same-domain). |
 | **CDC-007** | error | Async reset crossing — flop's `ARST` is driven by a flop in a different async clock domain, no reset synchronizer. Violations are grouped by the shared async source: one report per source listing every destination flop it feeds (the typical reset-distribution-tree shape). |
 | **CDC-008** | error | Clock signal used as data — clock-network bit reaches a non-CLK input (flop `D`/`ARST`, comb input, etc.); cells that themselves drive a flop CLK are exempted (legitimate ICG / clock muxes / dividers) |
+| **CDC-011** | warning / error | Unconstrained primary input captured by clocked logic — top-level input port has no `set_input_delay -clock <name>` typing yet physically reaches a flop's `D` pin. Fires as `warning` when the port lands in a single destination clock domain (the fix is usually adding SDC typing); escalates to `error` when the same port lands in **two or more** distinct domains (a single port cannot be synchronous to multiple clocks — intrinsically wrong regardless of SDC opinion). One violation per source port, listing every destination clock. |
 
 Each violation carries:
 - rule ID and severity
@@ -261,7 +262,7 @@ Implemented:
 - [x] SDC parser (`create_clock`, `set_clock_groups -asynchronous`)
 - [x] Clock-domain tracing through buffers / ICGs / clock muxes / dividers
 - [x] Flop→flop crossing detection (single-bit + bus, deduped per pair)
-- [x] CDC-001 through CDC-008
+- [x] CDC-001 through CDC-008, plus CDC-011 (unconstrained primary inputs)
 - [x] `lint` standalone wrapper (yosys → analyzer)
 - [x] Text / JSON / SARIF reporters with source locations
 - [x] Waiver file suppression

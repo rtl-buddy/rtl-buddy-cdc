@@ -33,8 +33,23 @@ import logging
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rtl_buddy_cdc.netlist import Module
 
 logger = logging.getLogger(__name__)
+
+# Synthetic clock name assigned to input ports that have no
+# ``set_input_delay -clock`` typing. Picked to be obviously not a real
+# clock identifier (angle brackets are illegal in Verilog/SDC names) so
+# it never collides with anything the user could have written. CDC-011
+# owns crossings carrying this as ``src_clock``; CDC-001 / CDC-002 /
+# CDC-006 skip them to avoid double-firing. ``ClockSpec.are_async``
+# treats the sentinel as async to every real clock — the whole point
+# is that we *don't know* what domain the port lives in, so any flop
+# capture is a potential cross.
+UNCONSTRAINED_SENTINEL = "<unconstrained>"
 
 
 @dataclass(frozen=True)
@@ -144,6 +159,14 @@ class ClockSpec:
         """
         if a == b:
             return False
+        # Sentinel port-clock (synthesised for input ports without
+        # ``set_input_delay -clock`` typing) is treated as async to
+        # every real clock — we don't know the port's domain, so any
+        # flop capture is a potential cross. CDC-011 owns the rule
+        # that fires; the async flag here just keeps the crossing in
+        # the filtered list so CDC-011 sees it.
+        if a == UNCONSTRAINED_SENTINEL or b == UNCONSTRAINED_SENTINEL:
+            return True
         # Step 1: explicit override on unresolved names.
         for groups in self.async_groups:
             ga = next((g for g in groups if a in g), None)
@@ -224,6 +247,37 @@ def parse(text: str) -> ClockSpec:
 
 def parse_file(path: str | Path) -> ClockSpec:
     return parse(Path(path).read_text())
+
+
+def synthesize_unconstrained_inputs(spec: ClockSpec, module: "Module") -> list[str]:
+    """Assign :data:`UNCONSTRAINED_SENTINEL` to input ports not already
+    typed by the SDC.
+
+    Mutates ``spec.port_clock`` in place and returns the list of port
+    names that received the sentinel (caller may want to surface this
+    in verbose output). A port is considered untyped if
+    :meth:`ClockSpec.clock_for_port` returns ``None`` — that covers
+    both "no ``set_input_delay``" and "``set_input_delay`` without
+    ``-clock``" (the parser warning at ``_handle_set_delay`` already
+    surfaces the latter as a misuse).
+
+    Called by the CLI after SDC parse and netlist load, before
+    :func:`rtl_buddy_cdc.domain.find_crossings`. The sentinel
+    propagates through the port-walk as the crossing's ``src_clock``;
+    :func:`ClockSpec.are_async` treats it as async to every real
+    clock, so the resulting port-sourced crossings reach the rule
+    pack. CDC-011 owns them; CDC-001 / CDC-002 / CDC-006 skip them to
+    avoid double-firing with a fix-advice mismatch.
+    """
+    sentinel_ports: list[str] = []
+    for port in module.ports.values():
+        if port.direction != "input":
+            continue
+        if spec.clock_for_port(port.name) is not None:
+            continue
+        spec.port_clock[port.name] = UNCONSTRAINED_SENTINEL
+        sentinel_ports.append(port.name)
+    return sentinel_ports
 
 
 # ---- internals --------------------------------------------------------------
@@ -642,11 +696,23 @@ def _handle_set_delay(spec: ClockSpec, args: list[str]) -> None:
 
     if saw_filter:
         spec.partial_warnings.append("set_*_delay: ignored unsupported -filter clause")
-    if clock is None or not ports:
-        # Delay without a -clock or without a port target — nothing
-        # actionable for CDC. Don't warn: this often comes from
-        # delay-only constraint files where users genuinely don't
-        # care about port→clock mapping.
+    if not ports:
+        # No port target — delay-only constraint or defaults-applies-
+        # to-all-ports usage. Nothing actionable for CDC; stay silent.
+        return
+    if clock is None:
+        # Port target named but no -clock anchor. set_input_delay /
+        # set_output_delay are intrinsically clock-relative (the delay
+        # is a fraction of a clock period), so without -clock the
+        # constraint has no STA semantics and most real timers reject
+        # it. Common misuse: users reach for set_input_delay when they
+        # meant set_input_transition (slew) or set_load. Warn so the
+        # mistake doesn't silently produce an untyped port.
+        spec.partial_warnings.append(
+            f"set_*_delay on {sorted(ports)} has no -clock anchor; "
+            "the constraint is ignored. Add -clock <name>, or use "
+            "set_input_transition / set_load for slew or load defaults."
+        )
         return
     for p in ports:
         spec.port_clock[p] = clock
