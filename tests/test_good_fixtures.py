@@ -106,6 +106,12 @@ GOOD_FIXTURES = [
     # at the synchroniser's first stage (a normal CDC-001 same-shape
     # crossing the rule pack accepts because the chain depth is 2).
     ("good_rdc_003_sync_reset_synced", 1),
+    # RDC-004 positive shape: the comb-AND of two flop outputs is
+    # registered on the local clock before being used as a reset, so
+    # the consumer's ARST sees a clean flop edge (no glitches). All
+    # polarities matched (every flop active-low) — RDC-002 silent.
+    # Single-clock design — zero async crossings.
+    ("good_rdc_004_registered_reset", 0),
     # CDC-009 (#47/#101/#102) positive shapes: textbook fixes for the
     # fast-to-slow pulse-loss case.
     #

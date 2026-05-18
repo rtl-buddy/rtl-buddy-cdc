@@ -1548,6 +1548,94 @@ def check_rdc_003(
     return violations
 
 
+def check_rdc_004(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """RDC-004 — Reset driven by combinational logic with no synchroniser.
+
+    Fires when a flop's async reset pin is driven by combinational
+    logic (an ``$and`` / ``$or`` / ``$mux`` / etc. output, not a
+    flop's ``Q`` and not a top-level port), and the comb's backward
+    fanin reaches one or more flops. Comb-gate outputs can glitch
+    when the inputs transition near-simultaneously; on an async
+    reset pin the transient looks like a real reset assertion.
+
+    Detection:
+
+    * Consumer must be async-reset (``$adff*`` / ``$aldff*`` /
+      ``$dffsr*``) — sync resets sample the gate on the clock edge,
+      so glitches shorter than a cycle are filtered.
+    * :func:`rtl_buddy_cdc.reset_domain.assign_reset_domains` must
+      classify the reset source as ``"comb"`` (the immediate driver
+      is a non-``Q`` cell output).
+    * Backward fanin from the reset pin must reach at least one flop.
+      Pure-port comb (e.g. ``rst_a_n & test_mode_n``) is accepted —
+      those signals are the user's responsibility to drive cleanly.
+
+    Suppressed when the consumer is recognised as a reset-synchroniser
+    chain member by :func:`find_reset_synchronizers` (intentional
+    comb-on-reset patterns inside a vetted sync stage stay silent).
+    """
+    from rtl_buddy_cdc.reset_domain import (
+        assign_reset_domains,
+        find_reset_synchronizers,
+    )
+
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    reset_domains = assign_reset_domains(module)
+    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+
+    violations: list[Violation] = []
+    for f in ctx.flops:
+        if f.cell.name in recognised_syncs:
+            continue
+        rd = reset_domains.get(f.cell.name)
+        if rd is None or rd.reset is None:
+            continue
+        if rd.reset.type != "async" or rd.reset.source != "comb":
+            continue
+        # Locate the actual reset pin on this cell type.
+        rst_bits: tuple[Bit, ...] = ()
+        for pin in ("ARST", "ALOAD", "CLR"):
+            bits = f.cell.connections.get(pin, ())
+            if bits:
+                rst_bits = bits
+                break
+        if not rst_bits:
+            continue
+        fanin_flops = _backward_flop_fanin(module, rst_bits, ctx.bit_drivers)
+        if not fanin_flops:
+            # Pure comb-of-ports — the user's responsibility, not a
+            # CDC concern. Keeps the noise floor low on designs that
+            # legitimately AND two external reset ports.
+            continue
+        flop_list = sorted(fanin_flops)[:3]
+        flop_desc = ", ".join(flop_list) + ("..." if len(fanin_flops) > 3 else "")
+        violations.append(
+            Violation(
+                rule_id="RDC-004",
+                severity="error",
+                message=(
+                    f"reset driven by combinational logic: flop "
+                    f"{f.cell.name}'s reset pin is the output of "
+                    f"combinational gate(s) fed by flop(s) "
+                    f"{flop_desc}. Comb-gate outputs can glitch when "
+                    f"inputs transition asynchronously, causing "
+                    f"spurious reset assertions. Register the comb "
+                    f"output on the consumer's clock before using as "
+                    f"a reset."
+                ),
+                cell_name=f.cell.name,
+            )
+        )
+    return violations
+
+
 def check_rdc_002(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -1832,6 +1920,7 @@ RULES: dict[str, RuleFn] = {
     "RDC-001": check_rdc_001,
     "RDC-002": check_rdc_002,
     "RDC-003": check_rdc_003,
+    "RDC-004": check_rdc_004,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
     "CDC-011": check_cdc_011,
