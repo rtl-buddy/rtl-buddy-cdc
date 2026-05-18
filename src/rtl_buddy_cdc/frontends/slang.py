@@ -1091,22 +1091,9 @@ class _ModuleBuilder:
                     self._enable_stack.pop()
             return
         if kind == "CaseStatement":
-            # Each item is an ``ItemGroup`` with the match expressions
-            # on ``.expressions`` and the body on ``.stmt``. The
-            # default arm lives on ``.defaultCase`` (None if absent).
-            for item in getattr(statement, "items", []) or []:
-                self._emit_assignments_in(
-                    getattr(item, "stmt", None),
-                    clk_sym,
-                    reset_sym,
-                    reset_active_low,
-                    src_node,
-                )
-            default_arm = getattr(statement, "defaultCase", None)
-            if default_arm is not None:
-                self._emit_assignments_in(
-                    default_arm, clk_sym, reset_sym, reset_active_low, src_node
-                )
+            self._emit_case_statement(
+                statement, clk_sym, reset_sym, reset_active_low, src_node
+            )
             return
         if kind == "ForLoopStatement":
             self._emit_for_loop(
@@ -1123,6 +1110,146 @@ class _ModuleBuilder:
         # event, timing control inside always_ff — atypical) fall
         # through silently; the missing flops surface in analyze
         # output and we file the next gap when it bites a real design.
+
+    def _emit_case_statement(
+        self,
+        statement: Any,
+        clk_sym: Any,
+        reset_sym: Any | None,
+        reset_active_low: bool,
+        src_node: Any,
+    ) -> None:
+        """Walk a ``case`` body, emitting per-arm enables onto the
+        enable stack so the deferred-emission drain can build a mux
+        tree gated by each arm's ``case_expr == match`` equality.
+
+        Three paths, in order of decreasing precision:
+
+        - **Compile-time-constant case-expr (#84).** ``_const_int``
+          folds the case expression and (best-effort) each match
+          expression; walk only the matching arm — or the default
+          when none match — and return. Dead arms contribute no
+          fanin. Mirrors Yosys-flatten + opt_clean's pruning and the
+          if/else fold landed in #72.
+        - **Dynamic case-expr we can lower (#85).** Emit a ``$eq``
+          per match expression with the case-expr bits on ``A`` and
+          the match constant on ``B``. Items with multiple matches
+          OR the per-match equalities together. The default arm's
+          enable is ``$not($or(all explicit-match equalities))``.
+          Each arm walks with its enable pushed onto
+          ``_enable_stack``; the drain builds the corresponding
+          ``$mux`` tree.
+        - **Bail.** If the case-expr can't be lowered (kind we don't
+          model on the RHS yet), walk every arm with no enable —
+          same conservative policy as the pre-PR behaviour, so flops
+          still emit; we just lose the gating-mux shape on this
+          particular case.
+        """
+        case_expr = getattr(statement, "expr", None)
+        items = list(getattr(statement, "items", []) or [])
+        default_arm = getattr(statement, "defaultCase", None)
+
+        # #84: compile-time-constant case-expr — short-circuit to the
+        # matching arm. ``_const_int`` already folds parameter refs
+        # and arithmetic, so ``case (MODE)`` with a parameter-bound
+        # MODE resolves cleanly.
+        case_const = self._const_int(case_expr)
+        if case_const is not None:
+            live_arm: Any = None
+            for item in items:
+                for match_expr in getattr(item, "expressions", []) or []:
+                    match_const = self._const_int(match_expr)
+                    if match_const is not None and match_const == case_const:
+                        live_arm = getattr(item, "stmt", None)
+                        break
+                if live_arm is not None:
+                    break
+            if live_arm is None:
+                live_arm = default_arm
+            if live_arm is not None:
+                self._emit_assignments_in(
+                    live_arm, clk_sym, reset_sym, reset_active_low, src_node
+                )
+            return
+
+        # #85: dynamic case-expr — build per-item enables.
+        case_expr_bits = (
+            self._bits_of_expression(case_expr) if case_expr is not None else None
+        )
+        if case_expr_bits is None:
+            # Couldn't lower the case-expr. Conservative bail: walk
+            # every item with no enable so writes still surface as
+            # unconditional flops. Matches the pre-PR shape, so any
+            # design that hit the old path still does.
+            for item in items:
+                self._emit_assignments_in(
+                    getattr(item, "stmt", None),
+                    clk_sym,
+                    reset_sym,
+                    reset_active_low,
+                    src_node,
+                )
+            if default_arm is not None:
+                self._emit_assignments_in(
+                    default_arm, clk_sym, reset_sym, reset_active_low, src_node
+                )
+            return
+
+        explicit_match_bits: list[Bit] = []
+        for item in items:
+            item_match_bits: list[Bit] = []
+            for match_expr in getattr(item, "expressions", []) or []:
+                match_bits = self._bits_of_expression(match_expr)
+                if match_bits is None:
+                    continue
+                eq_y = self._alloc_anon_bits(1)
+                eq_name = self._fresh_cell_name("$eq")
+                self._cells[eq_name] = Cell(
+                    name=eq_name,
+                    type="$eq",
+                    connections={
+                        "A": case_expr_bits,
+                        "B": match_bits,
+                        "Y": eq_y,
+                    },
+                    parameters={},
+                    attributes={},
+                )
+                item_match_bits.append(eq_y[0])
+                explicit_match_bits.append(eq_y[0])
+            item_enable = self._or_bits(item_match_bits)
+            item_stmt = getattr(item, "stmt", None)
+            if item_enable is None:
+                # No lowerable match in this item (unmodelled pattern
+                # shape). Walk without enable so the body's flops still
+                # emit — same shape as the case-expr bail above.
+                self._emit_assignments_in(
+                    item_stmt, clk_sym, reset_sym, reset_active_low, src_node
+                )
+                continue
+            self._enable_stack.append(item_enable)
+            try:
+                self._emit_assignments_in(
+                    item_stmt, clk_sym, reset_sym, reset_active_low, src_node
+                )
+            finally:
+                self._enable_stack.pop()
+
+        if default_arm is not None:
+            no_match = self._or_bits(explicit_match_bits)
+            default_enable = self._lower_not(no_match) if no_match is not None else None
+            if default_enable is None:
+                self._emit_assignments_in(
+                    default_arm, clk_sym, reset_sym, reset_active_low, src_node
+                )
+            else:
+                self._enable_stack.append(default_enable)
+                try:
+                    self._emit_assignments_in(
+                        default_arm, clk_sym, reset_sym, reset_active_low, src_node
+                    )
+                finally:
+                    self._enable_stack.pop()
 
     def _emit_for_loop(
         self,
@@ -1322,6 +1449,35 @@ class _ModuleBuilder:
             attributes={},
         )
         return y[0]
+
+    def _or_bits(self, bits: list[Bit]) -> Bit | None:
+        """OR a list of single-bit ``Bit`` values into one bit via a
+        left-folded chain of ``$or`` cells. Returns ``None`` for an
+        empty list and the bit itself for a single-element list (no
+        cell emission). Used by the dynamic ``case`` lowering to OR
+        multi-match equalities within an item, and to OR explicit
+        matches for the default arm's negation."""
+        if not bits:
+            return None
+        if len(bits) == 1:
+            return bits[0]
+        result: Bit = bits[0]
+        for next_bit in bits[1:]:
+            or_y = self._alloc_anon_bits(1)
+            cell_name = self._fresh_cell_name("$or")
+            self._cells[cell_name] = Cell(
+                name=cell_name,
+                type="$or",
+                connections={
+                    "A": (result,),
+                    "B": (next_bit,),
+                    "Y": or_y,
+                },
+                parameters={},
+                attributes={},
+            )
+            result = or_y[0]
+        return result
 
     def _combine_enable_stack(self) -> Bit | None:
         """AND every entry on ``_enable_stack`` into a single bit, or
