@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`(* reset_polarity *)` SV attribute + RDC-002 port-declared
+  polarity variant** (ninth instalment of #107). Top-level reset
+  ports can be annotated with ``(* reset_polarity = "low" *)`` /
+  ``"high"`` to declare the intended active polarity as authoritative.
+  RDC-002 grows a second firing path: when a flop's async reset
+  traces back to a declared port and the flop's inferred
+  ``ARST_POLARITY`` disagrees with the declaration, the rule fires
+  with a message naming the port and both polarities. This catches
+  the "designer added a ``posedge rst_n`` flop on a port the rest of
+  the design treats as active-low" wiring bug — invisible to every
+  prior rule (no clock crossing, no flop→flop reset path). Paired
+  fixtures ``bad_marked_reset_polarity`` /
+  ``good_marked_reset_polarity`` with a test covering the helper, the
+  port-only scoping rule (internal nets with the attribute are
+  ignored), and the end-to-end rule path.
+- **`find_reset_crossings` + `ResetCrossing` unified API**
+  (companion to the RDC family, issue #107). New public surface in
+  ``rtl_buddy_cdc.reset_domain`` that emits one record per flop whose
+  reset arrival is worth flagging — kinds ``async-deassert``,
+  ``sync-crossing``, ``comb-driven``, ``polarity-mismatch`` —
+  consolidating the structural facts the RDC rule pack would walk to
+  individually. Additive: the per-rule walks in ``check_rdc_00N`` are
+  unchanged; this is the surface external consumers (e.g.
+  ``rtl-buddy-view``) call when they want a unified reset-domain
+  view without rerunning the analyzer.
 - **`(* reset_sync *)` SV attribute escape hatch** (#115, eighth
   instalment of #107). Parallel to the existing
   ``(* cdc_sync *)`` / ``(* cdc_gray *)`` annotations. Marks a flop
@@ -28,10 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Accepted aliases: ``reset_sync``, ``reset_synchronizer``. Coverage
   fixture ``marked_reset_sync`` with a dedicated test module
   (``test_marked_reset_sync.py``) pinning the attribute discovery,
-  recogniser overlay, and end-to-end RDC-002 suppression. The
-  companion ``(* reset_polarity *)`` attribute from the #115 scope
-  is deferred — no rule consumes source-side port polarity today,
-  so it would be dead code without a consumer rule extension.
+  recogniser overlay, and end-to-end RDC-002 suppression.
 - **RDC-005 — Multiple reset sources converging without muxing**
   (fourth and final sub-PR of #114, seventh instalment of #107).
   New rule: a flop's async reset pin is the output of comb logic
