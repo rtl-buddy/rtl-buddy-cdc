@@ -285,7 +285,7 @@ Not yet:
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
 - [ ] In-RTL pragma comments (`// rtl-buddy-cdc disable-rule …`, Spyglass-style block suppression) for inline waiving without an external file
 - [ ] Instance-scoped waivers (`waive CDC-001 inst:u_block_a/.*`) — natural follow-on to hierarchical reporting now that `instance_path` is on every violation
-- [ ] Pulse-width / fast-to-slow data-loss checks (CDC-009-class: data on src_clk shorter than one dst_clk period)
+- [ ] Pulse-width / fast-to-slow data-loss checks (CDC-009-class: data on src_clk shorter than one dst_clk period) — designed in [#47](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/47); implementation tracked in [#101](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/101) / [#102](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/102) / [#103](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/103)
 - [ ] Glitch detection on data path through async muxes / clock-gate enables
 
 ## License
