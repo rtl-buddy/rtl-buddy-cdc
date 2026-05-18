@@ -1462,6 +1462,92 @@ def check_rdc_001(
     return violations
 
 
+def check_rdc_003(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """RDC-003 — Sync reset crossing without a reset synchroniser.
+
+    Fires when a flop's synchronous reset pin (``SRST``) is driven —
+    directly or through combinational logic — by a flop sitting in a
+    different asynchronous clock domain. A sync reset is sampled on
+    the destination clock's rising edge; if the upstream signal lives
+    in a foreign async clock domain the sample can be metastable on
+    the cycle the source flop changes.
+
+    Detection is the SRST analogue of RDC-001's ARST walk: backward
+    fanin from the ``SRST`` pin through combinational cells; any
+    reached flop in a different async clock domain produces an edge.
+    Edges are grouped by ``(src_flop, src_clk, dst_clk)`` so a single
+    foreign-domain source feeding many sync-reset consumers becomes
+    one finding (mirroring RDC-001's reset-tree grouping).
+
+    The classic fix is a 2FF reset synchroniser in the destination
+    clock domain between the foreign source and the consumer; that
+    breaks the cross-domain path so the immediate ``SRST`` driver is
+    a same-domain flop.
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+
+    def _async(a: str, b: str) -> bool:
+        if clock_spec is None:
+            return a != b
+        ca = clock_spec.clock_for_port(a) or a
+        cb = clock_spec.clock_for_port(b) or b
+        return clock_spec.are_async(ca, cb)
+
+    edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    for f in ctx.flops:
+        srst_bits = f.cell.connections.get("SRST", ())
+        if not srst_bits:
+            continue
+        my_clk = ctx.domains.get(f.cell.name)
+        if my_clk is None:
+            continue
+        fanin_flops = _backward_flop_fanin(module, srst_bits, ctx.bit_drivers)
+        for src_name in fanin_flops:
+            src_clk = ctx.domains.get(src_name)
+            if src_clk is None or src_clk == my_clk:
+                continue
+            if not _async(my_clk, src_clk):
+                continue
+            edges[(src_name, src_clk, my_clk)].append(f.cell.name)
+
+    violations: list[Violation] = []
+    for (src_name, src_clk, dst_clk), dst_flops in edges.items():
+        dsts = sorted(set(dst_flops))
+        repr_cell = dsts[0]
+        if len(dsts) == 1:
+            dst_desc = f"destination flop: {dsts[0]}"
+        else:
+            dst_desc = (
+                f"{len(dsts)} destination flops share this source "
+                f"(reset distribution tree): "
+                f"{', '.join(dsts[:3])}" + (", ..." if len(dsts) > 3 else "")
+            )
+        violations.append(
+            Violation(
+                rule_id="RDC-003",
+                severity="error",
+                message=(
+                    f"sync reset crossing: flop(s) in clk={dst_clk} have "
+                    f"SRST driven by flop {src_name} from a different "
+                    f"async domain (clk={src_clk}); the sync reset is "
+                    f"sampled on the destination clock and the cross-"
+                    f"domain source may produce metastability. Add a 2FF "
+                    f"reset synchroniser in the {dst_clk} domain. "
+                    f"{dst_desc}"
+                ),
+                cell_name=repr_cell,
+            )
+        )
+    return violations
+
+
 def check_rdc_002(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -1512,6 +1598,16 @@ def check_rdc_002(
             continue
         rd = reset_domains.get(f.cell.name)
         if rd is None or rd.reset is None or rd.reset.source != "inferred":
+            continue
+        # Only fire on async-reset consumers (ARST). Sync-reset (SRST)
+        # signals are intentional gating — e.g. a "kill" signal that
+        # synchronously clears a pipeline — and the producer's own
+        # ARST_VALUE has no semantic relationship with the consumer's
+        # SRST_POLARITY. RDC-003 owns the sync-reset crossing concern;
+        # RDC-002 stays scoped to the async-reset distribution tree
+        # where the "consumer must enter reset when producer does"
+        # invariant actually holds.
+        if rd.reset.type != "async":
             continue
         producer_name = rd.reset.name
         producer = module.cells.get(producer_name)
@@ -1735,6 +1831,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-006": check_cdc_006,
     "RDC-001": check_rdc_001,
     "RDC-002": check_rdc_002,
+    "RDC-003": check_rdc_003,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
     "CDC-011": check_cdc_011,

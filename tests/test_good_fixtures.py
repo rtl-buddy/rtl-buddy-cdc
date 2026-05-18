@@ -98,6 +98,14 @@ GOOD_FIXTURES = [
     # polarity expectation. No async clock crossings — single-clock
     # design.
     ("good_rdc_002_polarity_match", 0),
+    # RDC-003 positive shape: sync-reset crossing protected by a 2FF
+    # synchroniser in the dst_clk domain between the foreign src_rst
+    # and the consuming $sdff. Zero async data crossings — the src
+    # flop's Q only reaches the dst domain through the synchroniser's
+    # D-input path, which find_crossings *does* see, but it terminates
+    # at the synchroniser's first stage (a normal CDC-001 same-shape
+    # crossing the rule pack accepts because the chain depth is 2).
+    ("good_rdc_003_sync_reset_synced", 1),
     # CDC-009 (#47/#101/#102) positive shapes: textbook fixes for the
     # fast-to-slow pulse-loss case.
     #
