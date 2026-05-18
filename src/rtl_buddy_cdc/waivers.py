@@ -38,9 +38,20 @@ from pathlib import Path
 from rtl_buddy_cdc.rules import Violation
 
 
+# Renamed rule IDs — keep accepting the legacy name in waiver files so
+# users don't have to mass-edit on the bump. Each entry is
+# ``{legacy_id: canonical_id}``. A waiver line ``waive CDC-007 …`` now
+# matches violations whose ``rule_id == "RDC-001"`` (the post-#107
+# canonical name). The legacy id is otherwise a fully synonym for the
+# canonical one — first-match-wins is unchanged.
+_LEGACY_RULE_ALIASES: dict[str, str] = {
+    "CDC-007": "RDC-001",
+}
+
+
 @dataclass(frozen=True)
 class Waiver:
-    rule_pattern: str  # exact rule id or "*"
+    rule_pattern: str  # exact rule id, a legacy alias, or "*"
     regex: re.Pattern[str]
     reason: str
     source_line: int  # 1-based line in the waiver file (for diagnostics)
@@ -88,6 +99,14 @@ class SuppressedViolation:
     waiver: Waiver
 
 
+def _rule_pattern_matches(pattern: str, rule_id: str) -> bool:
+    """Exact match, or legacy alias resolves to the canonical id."""
+    if pattern == rule_id:
+        return True
+    aliased = _LEGACY_RULE_ALIASES.get(pattern)
+    return aliased is not None and aliased == rule_id
+
+
 def _candidates(v: Violation) -> tuple[str, ...]:
     """Strings the waiver regex is matched against. The caller passes
     ANY one of these; a hit on any string suppresses the violation.
@@ -119,7 +138,9 @@ def apply(
         match: Waiver | None = None
         cands = _candidates(v)
         for w in waivers:
-            if w.rule_pattern != "*" and w.rule_pattern != v.rule_id:
+            if w.rule_pattern != "*" and not _rule_pattern_matches(
+                w.rule_pattern, v.rule_id
+            ):
                 continue
             if any(w.regex.search(c) for c in cands):
                 match = w

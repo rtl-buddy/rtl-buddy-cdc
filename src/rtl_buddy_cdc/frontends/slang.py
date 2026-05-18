@@ -35,8 +35,8 @@ bad_bus_crossing                    CDC-004
 bad_reconvergent_sync               CDC-005
 bad_comb_source                     CDC-006
 bad_input_delay_cross_domain        CDC-006
-bad_reset_crossing                  CDC-007
-bad_reset_tree                      CDC-007 (grouped)
+bad_reset_crossing                  RDC-001
+bad_reset_tree                      RDC-001 (grouped)
 bad_clock_as_data                   CDC-008
 bad_source_sync_chain               CDC-001 × 4 (4-module hierarchy)
 good_2ff_sync                       (none)

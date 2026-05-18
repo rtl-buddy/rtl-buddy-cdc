@@ -85,10 +85,10 @@ def test_cdc_005_fires_on_bad_reconvergent_sync() -> None:
     assert _run("bad_reconvergent_sync") == ["CDC-005"]
 
 
-def test_cdc_007_fires_on_bad_reset_crossing() -> None:
+def test_rdc_001_fires_on_bad_reset_crossing() -> None:
     """Async reset crossing without a reset synchronizer — relies on
     ``$adff``'s ``ARST`` connection being correctly emitted."""
-    assert _run("bad_reset_crossing") == ["CDC-007"]
+    assert _run("bad_reset_crossing") == ["RDC-001"]
 
 
 def test_cdc_008_fires_on_bad_clock_as_data() -> None:
@@ -177,15 +177,15 @@ def test_hierarchical_module_cell_names_use_dotted_prefix() -> None:
     assert any(n.startswith("u_c1.") for n in flop_names)
 
 
-def test_cdc_007_groups_reset_tree_violations() -> None:
+def test_rdc_001_groups_reset_tree_violations() -> None:
     """4-bit register written per-bit by 4 ``always_ff`` blocks, all
     using a foreign-domain flop as ``ARST``. Exercises the
     ElementSelect-LHS path (``dst_q[0] <= ...``) — each block emits
     a separate ``$adff`` whose ``Q`` ties to one bit of the shared
-    register. CDC-007's reset-tree grouping collapses the four
+    register. RDC-001's reset-tree grouping collapses the four
     crossings to a single violation."""
     fixture = "bad_reset_tree"
-    assert _run(fixture) == ["CDC-007"]
+    assert _run(fixture) == ["RDC-001"]
     # Sanity-check the module shape — five flops total (one source,
     # four destinations) and the four destinations share the same
     # ARST bit.

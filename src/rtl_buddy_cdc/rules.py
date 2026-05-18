@@ -1368,14 +1368,19 @@ def check_cdc_008(
     return violations
 
 
-def check_cdc_007(
+def check_rdc_001(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
     clock_spec: ClockSpec | None = None,
     *,
     ctx: _RuleContext | None = None,
 ) -> list[Violation]:
-    """CDC-007 — Reset crossing without a reset synchronizer.
+    """RDC-001 — Reset crossing without a reset synchronizer.
+
+    Renamed from CDC-007 in #107 as the rule joins the RDC (Reset
+    Domain Crossing) family. Existing waivers written against
+    ``CDC-007`` continue to suppress via the alias map in
+    :mod:`rtl_buddy_cdc.waivers`.
 
     Fires when a flop's asynchronous reset pin (``ARST``) is driven by
     another flop sitting in a *different* asynchronous clock domain.
@@ -1443,7 +1448,7 @@ def check_cdc_007(
             )
         violations.append(
             Violation(
-                rule_id="CDC-007",
+                rule_id="RDC-001",
                 severity="error",
                 message=(
                     f"async reset crossing: flop(s) in clk={dst_clk} "
@@ -1623,7 +1628,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-004": check_cdc_004,
     "CDC-005": check_cdc_005,
     "CDC-006": check_cdc_006,
-    "CDC-007": check_cdc_007,
+    "RDC-001": check_rdc_001,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
     "CDC-011": check_cdc_011,

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Rule `CDC-007` renamed to `RDC-001`** (#113, third instalment of
+  the RDC family from #107). Internal-only rename — the reset-tree
+  grouping behaviour is unchanged, and no cross-repo consumer
+  pattern-matches on the literal rule_id string (verified against
+  `rtl_buddy` and `rtl-buddy-project-template`). Existing waiver
+  files written against `CDC-007` continue to suppress the renamed
+  rule via a legacy-id alias map in
+  `rtl_buddy_cdc.waivers._LEGACY_RULE_ALIASES`. The reporter's
+  short-form description on `RDC-001` carries a "(was CDC-007)"
+  parenthetical so log readers see the breadcrumb. Tests, README
+  rule table, and the slang frontend's fixture-id docstring all
+  rename to `RDC-001`; the new alias path is pinned by
+  `test_waivers.py::test_legacy_cdc_007_alias_suppresses_rdc_001`.
+
 ### Added
 
 - **Reset-synchronizer recognizer** (second slice of #107).
