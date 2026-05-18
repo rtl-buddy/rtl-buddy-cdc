@@ -642,11 +642,23 @@ def _handle_set_delay(spec: ClockSpec, args: list[str]) -> None:
 
     if saw_filter:
         spec.partial_warnings.append("set_*_delay: ignored unsupported -filter clause")
-    if clock is None or not ports:
-        # Delay without a -clock or without a port target — nothing
-        # actionable for CDC. Don't warn: this often comes from
-        # delay-only constraint files where users genuinely don't
-        # care about port→clock mapping.
+    if not ports:
+        # No port target — delay-only constraint or defaults-applies-
+        # to-all-ports usage. Nothing actionable for CDC; stay silent.
+        return
+    if clock is None:
+        # Port target named but no -clock anchor. set_input_delay /
+        # set_output_delay are intrinsically clock-relative (the delay
+        # is a fraction of a clock period), so without -clock the
+        # constraint has no STA semantics and most real timers reject
+        # it. Common misuse: users reach for set_input_delay when they
+        # meant set_input_transition (slew) or set_load. Warn so the
+        # mistake doesn't silently produce an untyped port.
+        spec.partial_warnings.append(
+            f"set_*_delay on {sorted(ports)} has no -clock anchor; "
+            "the constraint is ignored. Add -clock <name>, or use "
+            "set_input_transition / set_load for slew or load defaults."
+        )
         return
     for p in ports:
         spec.port_clock[p] = clock
