@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reset-synchronizer recognizer** (second slice of #107).
+  `rtl_buddy_cdc.reset_domain.find_reset_synchronizers(module,
+  clock_domains, *, min_depth=2)` returns the set of flop cell names
+  participating in a textbook async-assert / sync-deassert reset
+  chain: ≥`min_depth` same-clock flops sharing the same async-reset
+  source, chained Q→D, whose head flop's D pin is a constant. The
+  load-bearing distinction vs. the naive "same ARST + same clock"
+  walk is that data-path register chains which *happen* to share an
+  upstream reset are correctly rejected — the head's D must be a
+  constant. No rule consumes this yet; subsequent RDC rules (polarity
+  mismatch, comb-driven reset) will skip recognised synchronizers to
+  avoid false positives on legitimate ones.
 - **`reset_domain` analysis module — foundation pass** (first slice of
   #107). New `src/rtl_buddy_cdc/reset_domain.py` exposing
   `ResetSource`, `ResetDomain`, and `assign_reset_domains(module)` —
