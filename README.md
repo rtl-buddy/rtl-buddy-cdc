@@ -136,6 +136,7 @@ If no SDC is supplied, the tool prints a structural summary and skips all rule c
 | **CDC-006** | error | Glitchy combinational source — synchronizer is fed by combinational logic with no registering flop, reaching unregistered top-level ports. Suppressed when `set_input_delay -clock <my_clk>` types the port into the destination flop's own clock domain (port is asserted same-domain). |
 | **CDC-007** | error | Async reset crossing — flop's `ARST` is driven by a flop in a different async clock domain, no reset synchronizer. Violations are grouped by the shared async source: one report per source listing every destination flop it feeds (the typical reset-distribution-tree shape). |
 | **CDC-008** | error | Clock signal used as data — clock-network bit reaches a non-CLK input (flop `D`/`ARST`, comb input, etc.); cells that themselves drive a flop CLK are exempted (legitimate ICG / clock muxes / dividers) |
+| **CDC-009** | warning | Pulse-width / fast-to-slow data loss — single-bit src-domain pulse may land entirely between two slower dst-clock rising edges and never be sampled. Fires when the SDC declares both clock periods, `src_period × 1.5 < dst_period`, and the src flop's `D` pin matches the textbook edge-detector pattern `A & ~A_d` (with `A_d` the 1-cycle delay of `A`). False-negative-biased: handshake / pulse-stretcher / toggle-sync idioms naturally fall outside the pattern and stay silent. |
 | **CDC-011** | warning / error | Unconstrained primary input captured by clocked logic — top-level input port has no `set_input_delay -clock <name>` typing yet physically reaches a flop's `D` pin. Fires as `warning` when the port lands in a single destination clock domain (the fix is usually adding SDC typing); escalates to `error` when the same port lands in **two or more** distinct domains (a single port cannot be synchronous to multiple clocks — intrinsically wrong regardless of SDC opinion). One violation per source port, listing every destination clock. |
 
 Each violation carries:
@@ -262,7 +263,7 @@ Implemented:
 - [x] SDC parser (`create_clock`, `set_clock_groups -asynchronous`)
 - [x] Clock-domain tracing through buffers / ICGs / clock muxes / dividers
 - [x] Flop→flop crossing detection (single-bit + bus, deduped per pair)
-- [x] CDC-001 through CDC-008, plus CDC-011 (unconstrained primary inputs)
+- [x] CDC-001 through CDC-009 (skipping CDC-010, drafted in [`docs/proposals/clock-network-glitch.md`](docs/proposals/clock-network-glitch.md)) and CDC-011 (unconstrained primary inputs)
 - [x] `lint` standalone wrapper (yosys → analyzer)
 - [x] Text / JSON / SARIF reporters with source locations
 - [x] Waiver file suppression
@@ -285,7 +286,6 @@ Not yet:
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
 - [ ] In-RTL pragma comments (`// rtl-buddy-cdc disable-rule …`, Spyglass-style block suppression) for inline waiving without an external file
 - [ ] Instance-scoped waivers (`waive CDC-001 inst:u_block_a/.*`) — natural follow-on to hierarchical reporting now that `instance_path` is on every violation
-- [ ] Pulse-width / fast-to-slow data-loss checks (CDC-009-class: data on src_clk shorter than one dst_clk period) — designed in [#47](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/47); implementation tracked in [#101](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/101) / [#102](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/102) / [#103](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/103)
 - [ ] Glitch detection on data path through async muxes / clock-gate enables
 
 ## License

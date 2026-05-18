@@ -92,6 +92,21 @@ GOOD_FIXTURES = [
     # _muxed_clock_typed: port typed to whichever mux side
     # trace_clock_root picks → same domain → 0 async crossings.
     ("good_unconstrained_input_muxed_clock_typed", 0),
+    # CDC-009 (#47/#101/#102) positive shapes: textbook fixes for the
+    # fast-to-slow pulse-loss case.
+    #
+    # _stretched: a 4-bit countdown counter widens the src strobe to
+    # ~16 src cycles before it crosses; the src flop's D is the
+    # counter's "non-zero" reduction, not the edge-detector pattern,
+    # so CDC-009 stays silent. 1 async crossing (stretched_strobe →
+    # strobe_meta).
+    ("good_pulse_width_stretched", 1),
+    # _handshake: req/ack handshake — req_held is set on req_in and
+    # cleared only by a synced-back ack from dst, so the src flop
+    # holds its value across many cycles. D is a priority-encoded
+    # $mux nest, not an $and edge-detector. 2 async crossings (the
+    # synced-back ack and the held request).
+    ("good_pulse_width_handshake", 2),
 ]
 
 
