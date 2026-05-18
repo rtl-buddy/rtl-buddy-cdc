@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Design proposal: CDC-010, glitches on the clock network from a
+  wrong-domain control signal** (#48). New
+  `docs/proposals/clock-network-glitch.md` covers the failure mode
+  (a clock mux's select or an ICG's enable driven by a flop in a
+  foreign domain chops the output clock), the detection shape
+  reusing `_clock_network_cells` and `_backward_flop_fanin`, why
+  this is the complement of CDC-008 rather than a duplicate, the
+  paired-fixture sketch (`bad_async_clock_mux/` /
+  `good_sync_clock_mux/`), and the open questions blocking a tech-
+  mapped second pass. Severity is `error`; suggested rule ID
+  `CDC-010` (the next free slot after the upcoming CDC-009 from
+  #47). Implementation tracked by follow-up issues — this entry is
+  documentation only; no rule behavior changes in this PR.
 - **Hierarchical reporting** (#46). Every violation gains an
   `instance_path: tuple[str, ...]` field resolved at the
   `cli._analyze_and_report` boundary from the cell's name. The
