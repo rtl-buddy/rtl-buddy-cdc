@@ -190,6 +190,38 @@ When adding a new SDC command:
 5. Add a `tests/test_sdc.py` case for the new command and a fixture
    exercising it end-to-end.
 
+## Design proposals live on GitHub, not in `docs/proposals/`
+
+Design discussion for a new rule, a behaviour change, or any other
+non-trivial piece of work belongs in the GitHub issue body (and its
+comment thread), not in a committed Markdown file. Do **not** create
+new files under `docs/proposals/`.
+
+Concretely, when you're scoped to "design X":
+
+- Write the failure-mode description, approach, severity decision,
+  fixture sketches, open questions, etc. directly into the issue body
+  (edit it in place as the design evolves) or as comments on the
+  issue. Use `gh issue edit <n>` / `gh issue comment <n>`.
+- The PR that implements the work links back to the issue; the issue
+  thread is the design record. The PR description summarises *what*
+  shipped, not *why we chose this shape* — that's the issue's job.
+- Don't seed `docs/proposals/<x>.md` in the issue's Scope list when
+  filing a new issue. Past issues (#46, #48, #97) did this and
+  propagated the pattern; new issues should not.
+
+The three legacy files (`hierarchical-reporting.md`,
+`clock-network-glitch.md`, `unconstrained-input-domain.md`) stay as
+historical artifacts — don't delete or move them without an explicit
+ask, but don't add to the pattern either.
+
+Exception: cross-cutting reference material that outlives a single
+issue (the architecture spec, the SDC subset reference) belongs in
+`wiki/raw/articles/`, not `docs/proposals/`. If a design discussion
+graduates into long-lived reference docs after shipping, promote it
+to `wiki/raw/articles/` with a `source_url:` frontmatter pointing
+at the issue.
+
 ## Cross-repo coupling
 
 The `rtl_buddy` repo at `../rtl_buddy/` consumes this analyzer via
