@@ -178,12 +178,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **CI: pytest coverage measurement** (#120). The `pytest (with
   slang)` job in `test.yml` now runs with `--cov --cov-report=term-
-  missing`; `[tool.coverage.run]` is configured for the
-  `src/rtl_buddy_cdc` package with branch coverage on. No
-  `fail_under` gate — visibility-only, same drift-sentinel posture
-  as the mypy job (#28). The `pytest-no-slang` companion job stays
-  plain pytest by design (it exists to exercise the install-hint
-  path, not to measure coverage).
+  missing --cov-fail-under=78`; `[tool.coverage.run]` is configured
+  for the `src/rtl_buddy_cdc` package with branch coverage on. The
+  78% floor sits a few points below the observed 81% baseline so
+  small refactors don't trip the gate while still failing CI on a
+  meaningful regression. The threshold is passed on the CLI (not
+  in `[tool.coverage.report]`) so the no-slang env can run its own
+  pytest without inheriting it. The `pytest-no-slang` companion
+  job stays plain `pytest -q` by design (its purpose is the
+  install-hint path, not coverage).
 
 ### Changed
 

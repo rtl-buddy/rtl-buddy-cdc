@@ -43,7 +43,7 @@ jobs:
         run: uv sync --extra slang --group test --python ${{ matrix.python-version }}
 
       - name: Run pytest (with coverage)
-        run: uv run pytest --cov --cov-report=term-missing
+        run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=78
 
   # Companion job: install WITHOUT the [slang] extra to verify the
   # AGENTS.md "default install stays typer-only" promise. Specifically
