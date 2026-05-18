@@ -42,6 +42,7 @@ lint = [
 ]
 test = [
     "pytest>=9.0.3",
+    "pytest-cov>=5.0",
     "jsonschema>=4.0",
 ]
 dev = [
@@ -78,3 +79,20 @@ ignore_missing_imports = true
 module = "pyslang.*"
 ignore_missing_imports = true
 follow_imports = "skip"
+
+# Coverage — see issue #120. Visibility-only; no fail_under gate
+# (drift-sentinel posture, same as the mypy job in #28). The CI
+# `pytest (with slang)` job runs with `--cov`; the no-slang
+# companion stays plain pytest by design.
+[tool.coverage.run]
+source = ["src/rtl_buddy_cdc"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.$",
+]
