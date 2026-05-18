@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`reset_domain` analysis module — foundation pass** (first slice of
+  #107). New `src/rtl_buddy_cdc/reset_domain.py` exposing
+  `ResetSource`, `ResetDomain`, and `assign_reset_domains(module)` —
+  the structural facts the upcoming RDC (Reset Domain Crossing) rule
+  family will share, parallel to how `assign_domains` underpins the
+  clock-domain rule pack. Per-flop output classifies each flop's
+  reset pin (or absence of one) by reset type (sync/async), polarity
+  (high/low, decoded from Yosys' `*_POLARITY` parameter), and source
+  kind (port / inferred-from-flop / constant / comb). No rule pack
+  consumes this yet — the existing CDC-007 walk is unchanged. Rule
+  rerooting and the RDC-001..-005 family land in follow-up PRs so
+  each rule's firing shape and any contract changes (rule_id alias,
+  message text) can be reviewed independently.
 - **`--emit-domain-map` structured clock-domain artifact** (#106).
   New CLI option on `analyze` and `lint` that writes a stable v1.0
   JSON sidecar (`schema_version: "1.0"`) capturing the analyzer's
