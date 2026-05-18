@@ -1462,6 +1462,111 @@ def check_rdc_001(
     return violations
 
 
+def check_rdc_002(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """RDC-002 — Reset polarity mismatch on a direct flop→flop reset.
+
+    Fires when a flop's reset pin is driven *directly* (no inverter,
+    no comb between) by another flop's ``Q``, and the consumer's
+    polarity expectation doesn't match the producer's reset-value
+    output. Concretely:
+
+    * Let *P* be the producer flop and *C* the consumer flop.
+    * When *P* enters reset, ``P.Q = P.ARST_VALUE``.
+    * *C* enters reset when its reset pin equals ``C.ARST_POLARITY``.
+    * If ``P.ARST_VALUE != C.ARST_POLARITY``, *C* does **not** enter
+      reset when *P* does — a polarity wiring bug.
+
+    Suppressed when *C* is recognised as a member of a reset-
+    synchroniser chain by :func:`rtl_buddy_cdc.reset_domain.find_reset_synchronizers`
+    (the user may have built an intentional polarity-inverting sync
+    on purpose; the recogniser's constant-fed-head check is what
+    distinguishes that from accidental wiring).
+
+    This is a structural rule — it does not depend on the SDC clock
+    declarations. It runs whether or not ``clock_spec`` is supplied.
+    """
+    from rtl_buddy_cdc.reset_domain import (
+        assign_reset_domains,
+        find_reset_synchronizers,
+    )
+
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    reset_domains = assign_reset_domains(module)
+    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+
+    # Group by (producer, producer_arst_value, consumer_polarity_bit)
+    # so the typical "one upstream polarity wiring bug, N downstream
+    # consumers" shape becomes one finding listing every affected
+    # consumer — matches RDC-001's reset-tree grouping convention and
+    # the fix-shape the user has to take.
+    groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    for f in ctx.flops:
+        if f.cell.name in recognised_syncs:
+            continue
+        rd = reset_domains.get(f.cell.name)
+        if rd is None or rd.reset is None or rd.reset.source != "inferred":
+            continue
+        producer_name = rd.reset.name
+        producer = module.cells.get(producer_name)
+        if producer is None:
+            continue
+        producer_arst_value = _trailing_bit(producer.parameters.get("ARST_VALUE", "0"))
+        consumer_polarity_bit = "1" if rd.reset.polarity == "high" else "0"
+        if producer_arst_value == consumer_polarity_bit:
+            continue  # polarities match — wiring is correct
+        groups[(producer_name, producer_arst_value, consumer_polarity_bit)].append(
+            f.cell.name
+        )
+
+    violations: list[Violation] = []
+    for (producer_name, prod_val, cons_pol), consumers in groups.items():
+        dsts = sorted(set(consumers))
+        repr_cell = dsts[0]
+        if len(dsts) == 1:
+            dst_desc = f"destination flop: {dsts[0]}"
+        else:
+            dst_desc = (
+                f"{len(dsts)} destination flops share this polarity "
+                f"mismatch from the same source "
+                f"(reset distribution tree): "
+                f"{', '.join(dsts[:3])}" + (", ..." if len(dsts) > 3 else "")
+            )
+        violations.append(
+            Violation(
+                rule_id="RDC-002",
+                severity="error",
+                message=(
+                    f"reset polarity mismatch: consumer flop(s) expect "
+                    f"reset asserted on '{cons_pol}' "
+                    f"(ARST_POLARITY={cons_pol}), but the producer flop "
+                    f"{producer_name} drives its reset to '{prod_val}' "
+                    f"on assert (ARST_VALUE={prod_val}); consumer(s) "
+                    f"will never enter reset when the producer does. Add "
+                    f"an inverter between them, or flip the consumer's "
+                    f"reset edge sensitivity to match. {dst_desc}"
+                ),
+                cell_name=repr_cell,
+            )
+        )
+    return violations
+
+
+def _trailing_bit(raw: str) -> str:
+    """Yosys polarity / value parameters are binary strings. Return
+    the trailing bit (``'1'`` or ``'0'``); empty string defaults to
+    ``'0'`` — the conservative active-low / reset-value convention."""
+    if not raw:
+        return "0"
+    return raw[-1] if raw[-1] in "01" else "0"
+
+
 def check_cdc_011(
     module: Module,  # noqa: ARG001
     crossings: list[Crossing],
@@ -1629,6 +1734,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-005": check_cdc_005,
     "CDC-006": check_cdc_006,
     "RDC-001": check_rdc_001,
+    "RDC-002": check_rdc_002,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
     "CDC-011": check_cdc_011,

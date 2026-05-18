@@ -183,9 +183,16 @@ def test_rdc_001_groups_reset_tree_violations() -> None:
     ElementSelect-LHS path (``dst_q[0] <= ...``) — each block emits
     a separate ``$adff`` whose ``Q`` ties to one bit of the shared
     register. RDC-001's reset-tree grouping collapses the four
-    crossings to a single violation."""
+    crossings to a single violation.
+
+    The fixture also has a polarity asymmetry (source flop's reset
+    value is ``1'b1``, downstream consumers expect active-low) — RDC-002
+    legitimately fires on the consumer-side and uses its own grouping
+    pass to collapse the four polarity-mismatched destinations to one
+    finding. Both findings are grouped to one each, matching the user
+    fix-shape ("one upstream wiring bug, N consumers")."""
     fixture = "bad_reset_tree"
-    assert _run(fixture) == ["RDC-001"]
+    assert _run(fixture) == ["RDC-001", "RDC-002"]
     # Sanity-check the module shape — five flops total (one source,
     # four destinations) and the four destinations share the same
     # ARST bit.

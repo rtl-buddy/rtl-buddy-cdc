@@ -1,0 +1,109 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_rdc_002_polarity_mismatch": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_rdc_002_polarity_mismatch/bad_rdc_002_polarity_mismatch.sv:23.1-40.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "raw_rst_n": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 4 ]
+        }
+      },
+      "cells": {
+        "$procdff$11": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_rdc_002_polarity_mismatch/bad_rdc_002_polarity_mismatch.sv:30.5-33.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 2 ],
+            "D": [ "1" ],
+            "Q": [ 5 ]
+          }
+        },
+        "$procdff$6": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "1",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_rdc_002_polarity_mismatch/bad_rdc_002_polarity_mismatch.sv:35.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 2 ],
+            "D": [ "1" ],
+            "Q": [ 4 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_rdc_002_polarity_mismatch/bad_rdc_002_polarity_mismatch.sv:24.18-24.21"
+          }
+        },
+        "gated_rst": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_rdc_002_polarity_mismatch/bad_rdc_002_polarity_mismatch.sv:29.11-29.20"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_rdc_002_polarity_mismatch/bad_rdc_002_polarity_mismatch.sv:26.18-26.23"
+          }
+        },
+        "raw_rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_rdc_002_polarity_mismatch/bad_rdc_002_polarity_mismatch.sv:25.18-25.27"
+          }
+        }
+      }
+    }
+  }
+}
