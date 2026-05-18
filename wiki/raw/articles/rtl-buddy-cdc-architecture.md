@@ -743,6 +743,21 @@ Three formatters share the same `AnalysisResult` input:
 Format selection is purely a CLI flag (`--format text|json|sarif`);
 the analyzer pipeline runs the same way regardless.
 
+A separate, additive output stream is the **domain-map artifact**,
+emitted as a sidecar JSON file by `--emit-domain-map FILE.json` and
+implemented in `rtl_buddy_cdc.domain_map.build_domain_map`. The map
+captures the analyzer's clock-domain view independently of the
+findings stream: clocks, generated clocks, async / exclusive groups,
+false-path pairs, per-flop domain assignments with source locations,
+the typed port→clock map, and structural crossings (each tagged with
+`async_per_sdc` so consumers know which subset would reach the rule
+pack). It is its own contract: `schema_version: "1.0"` is pinned by
+`domain_map.SCHEMA_VERSION`, breaking changes require a bump, and the
+artifact ships sorted deterministically so consumers can golden-diff
+against the same inputs. `--no-findings` short-circuits rule
+evaluation when the map is the sole deliverable. Primary consumer
+today is [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view).
+
 The SARIF output is validated against the OASIS-published 2.1.0
 schema by `tests/test_sarif_schema.py`, vendored at
 `tests/schemas/sarif-2.1.0.json` so CI does not depend on

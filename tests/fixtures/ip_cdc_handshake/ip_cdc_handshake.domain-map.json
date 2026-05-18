@@ -1,0 +1,199 @@
+{
+  "schema_version": "1.0",
+  "generator": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.2.0"
+  },
+  "design": {
+    "top": "ip_cdc_handshake",
+    "frontend": "yosys"
+  },
+  "clocks": [
+    {
+      "name": "dst_clk",
+      "period": 7.5,
+      "source": "create_clock",
+      "ports": [
+        "dst_clk"
+      ]
+    },
+    {
+      "name": "src_clk",
+      "period": 10.0,
+      "source": "create_clock",
+      "ports": [
+        "src_clk"
+      ]
+    }
+  ],
+  "generated_clocks": [],
+  "clock_groups": [
+    {
+      "kind": "asynchronous",
+      "members": [
+        [
+          "src_clk"
+        ],
+        [
+          "dst_clk"
+        ]
+      ]
+    }
+  ],
+  "false_path_pairs": [],
+  "flop_domains": [
+    {
+      "instance_path": "ip_cdc_handshake.$procdff$42",
+      "clock": "dst_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
+        "start_line": 63,
+        "start_column": 3,
+        "end_line": 80,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.$procdff$47",
+      "clock": "dst_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
+        "start_line": 63,
+        "start_column": 3,
+        "end_line": 80,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.$procdff$52",
+      "clock": "dst_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
+        "start_line": 63,
+        "start_column": 3,
+        "end_line": 80,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.$procdff$57",
+      "clock": "dst_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
+        "start_line": 63,
+        "start_column": 3,
+        "end_line": 80,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.$procdff$62",
+      "clock": "src_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
+        "start_line": 51,
+        "start_column": 3,
+        "end_line": 59,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.$procdff$67",
+      "clock": "src_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
+        "start_line": 51,
+        "start_column": 3,
+        "end_line": 59,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.u_sync_ack.$procdff$84",
+      "clock": "src_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 29,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.u_sync_ack.$procdff$89",
+      "clock": "src_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 29,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.u_sync_req.$procdff$84",
+      "clock": "dst_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 29,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "ip_cdc_handshake.u_sync_req.$procdff$89",
+      "clock": "dst_clk",
+      "location": {
+        "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 29,
+        "end_column": 6
+      }
+    }
+  ],
+  "port_domains": [
+    {
+      "module": "ip_cdc_handshake",
+      "port": "src_data",
+      "clock": "src_clk",
+      "kind": "input"
+    },
+    {
+      "module": "ip_cdc_handshake",
+      "port": "src_valid",
+      "clock": "src_clk",
+      "kind": "input"
+    }
+  ],
+  "crossings": [
+    {
+      "src_clock": "dst_clk",
+      "dst_clock": "src_clk",
+      "dst_flop": "ip_cdc_handshake.u_sync_ack.$procdff$84",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "src_flop": "ip_cdc_handshake.$procdff$57"
+    },
+    {
+      "src_clock": "src_clk",
+      "dst_clock": "dst_clk",
+      "dst_flop": "ip_cdc_handshake.$procdff$47",
+      "min_hops": 1,
+      "width": 8,
+      "async_per_sdc": true,
+      "src_flop": "ip_cdc_handshake.$procdff$67"
+    },
+    {
+      "src_clock": "src_clk",
+      "dst_clock": "dst_clk",
+      "dst_flop": "ip_cdc_handshake.u_sync_req.$procdff$84",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "src_flop": "ip_cdc_handshake.$procdff$62"
+    }
+  ]
+}

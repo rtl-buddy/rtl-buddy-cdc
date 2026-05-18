@@ -13,6 +13,7 @@ import typer
 
 from rtl_buddy_cdc import netlist, reporter, sdc as sdc_mod, waivers as waivers_mod
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
+from rtl_buddy_cdc.domain_map import build_domain_map
 from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
@@ -82,6 +83,24 @@ _BASELINE_OPT = typer.Option(
     "and surfaced as a 'Carried over from baseline' tally; they don't "
     "drive the exit code. Useful for 'fail PR only on new findings'.",
 )
+_EMIT_DOMAIN_MAP_OPT = typer.Option(
+    None,
+    "--emit-domain-map",
+    help="Write a structured clock-domain map (JSON, schema "
+    "v1.0) to this path alongside the normal report. Captures "
+    "clocks, async groups, false paths, per-flop domain assignments, "
+    "typed port→clock map, and structural crossings (tagged with "
+    "`async_per_sdc`). Designed for downstream tools like "
+    "rtl-buddy-view; see issue #106.",
+)
+_NO_FINDINGS_OPT = typer.Option(
+    False,
+    "--no-findings",
+    help="Skip rule evaluation entirely. Only meaningful with "
+    "`--emit-domain-map`: produces just the domain map and exits 0 "
+    "on successful elaboration + map emission, 2 on elaboration "
+    "failure. Suppresses the normal report.",
+)
 
 
 @app.command()
@@ -119,6 +138,8 @@ def analyze(
     color: bool | None = _COLOR_OPT,
     strict: bool = _STRICT_OPT,
     baseline_path: Path | None = _BASELINE_OPT,
+    emit_domain_map: Path | None = _EMIT_DOMAIN_MAP_OPT,
+    no_findings: bool = _NO_FINDINGS_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
     code = _analyze_and_report(
@@ -132,6 +153,8 @@ def analyze(
         color=color,
         strict=strict,
         baseline_path=baseline_path,
+        emit_domain_map=emit_domain_map,
+        no_findings=no_findings,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -200,6 +223,8 @@ def lint(
     color: bool | None = _COLOR_OPT,
     strict: bool = _STRICT_OPT,
     baseline_path: Path | None = _BASELINE_OPT,
+    emit_domain_map: Path | None = _EMIT_DOMAIN_MAP_OPT,
+    no_findings: bool = _NO_FINDINGS_OPT,
 ) -> None:
     """Convenience wrapper: elaborate the sources using the chosen
     frontend, then analyze. With ``--frontend yosys`` (the default)
@@ -261,6 +286,8 @@ def lint(
         color=color,
         strict=strict,
         baseline_path=baseline_path,
+        emit_domain_map=emit_domain_map,
+        no_findings=no_findings,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -306,6 +333,8 @@ def _analyze_and_report(
     color: bool | None = None,
     strict: bool = False,
     baseline_path: Path | None = None,
+    emit_domain_map: Path | None = None,
+    no_findings: bool = False,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module = netlist.load(netlist_path)
@@ -320,6 +349,8 @@ def _analyze_and_report(
         color=color,
         strict=strict,
         baseline_path=baseline_path,
+        emit_domain_map=emit_domain_map,
+        no_findings=no_findings,
     )
 
 
@@ -335,12 +366,20 @@ def _analyze_module_and_report(
     color: bool | None = None,
     strict: bool = False,
     baseline_path: Path | None = None,
+    emit_domain_map: Path | None = None,
+    no_findings: bool = False,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
-    no SDC so rule checks were skipped), 1 = at least one *unsuppressed*
-    rule violation. Waived findings (and baseline-carried findings) are
-    still reported but don't fail the run."""
+    no SDC so rule checks were skipped, or ``--no-findings``), 1 = at
+    least one *unsuppressed* rule violation. Waived findings (and
+    baseline-carried findings) are still reported but don't fail the
+    run.
+
+    ``--no-findings`` is only meaningful alongside ``--emit-domain-map``:
+    rule evaluation is skipped, the normal report is suppressed, and
+    the exit code is 0 on successful map emission (elaboration failure
+    still exits 2 from the lint wrapper before we get here)."""
     spec: sdc_mod.ClockSpec | None = None
     async_crossings: list[Crossing] = []
     violations: list[Violation] = []
@@ -351,7 +390,7 @@ def _analyze_module_and_report(
         # existing port-walk emit port-sourced crossings for them so
         # CDC-011 can fire — see ``sdc.synthesize_unconstrained_inputs``.
         sdc_mod.synthesize_unconstrained_inputs(spec, module)
-        if spec.partial_warnings and fmt is OutputFormat.text:
+        if spec.partial_warnings and fmt is OutputFormat.text and not no_findings:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)
         domains = assign_domains(module, pin_clocks=spec.pin_clocks)
@@ -359,9 +398,10 @@ def _analyze_module_and_report(
             module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
         )
         async_crossings = _filter_async(crossings, spec)
-        violations = run_all_rules(
-            module, async_crossings, spec, required_depth=sync_depth
-        )
+        if not no_findings:
+            violations = run_all_rules(
+                module, async_crossings, spec, required_depth=sync_depth
+            )
     else:
         domains = assign_domains(module)
         crossings = find_crossings(module)
@@ -430,6 +470,27 @@ def _analyze_module_and_report(
         suppressed=list(suppressed),
         baseline_carryover=list(baseline_carryover),
     )
+
+    # Domain-map emission runs *before* the normal report so a write
+    # failure surfaces deterministically as an OSError rather than being
+    # masked by the report's own I/O path.
+    if emit_domain_map is not None:
+        payload = build_domain_map(
+            module,
+            domains,
+            crossings,
+            spec,
+            async_crossings=async_crossings,
+        )
+        with emit_domain_map.open("w") as fh:
+            json.dump(payload, fh, indent=2)
+            fh.write("\n")
+
+    # ``--no-findings`` suppresses the normal report entirely (the run
+    # exists to produce the map). Exit 0 — there were no findings to
+    # drive a non-zero code.
+    if no_findings:
+        return 0
 
     out: IO[str]
     close_after = False
