@@ -43,7 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from rtl_buddy_cdc.flops import find_flops
+from rtl_buddy_cdc.flops import Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
 
 # Cell types with an asynchronous reset pin. Each maps to the pin name
@@ -197,6 +197,123 @@ def _classify_reset_source(
     if out_port == "Q":
         return (cell_name, "inferred")
     return ("", "comb")
+
+
+def find_reset_synchronizers(
+    module: Module,
+    clock_domains: dict[str, str | None],
+    *,
+    min_depth: int = 2,
+) -> set[str]:
+    """Identify flop cells that participate in a reset-synchronizer chain.
+
+    The canonical reset-synchronizer is the textbook async-assert /
+    sync-deassert pattern: N≥2 flops in the destination clock domain
+    sharing the same async reset, chained Q→D, with the chain's head
+    flop's ``D`` tied to a constant (typically ``1'b1`` for an active-
+    low reset, ``1'b0`` for an active-high reset). The synchronizer's
+    last flop's ``Q`` is the synchronised reset that downstream
+    consumers connect to their own ``ARST``.
+
+    Returns the set of cell names of *every* flop participating in
+    such a chain (head, tail, and anything in between) — RDC-002
+    onward will skip these flops to avoid false-positive findings on
+    legitimate synchronizers.
+
+    A flop is recognised iff:
+
+    * it is async-reset (has an ``ARST`` / ``ALOAD`` / ``CLR`` pin
+      per :data:`_ASYNC_RESET_PINS`),
+    * the chain walking backward through its ``D`` pin (following
+      same-clock, same-reset-source flops only) reaches a flop whose
+      ``D`` is a constant within ``min_depth - 1`` hops, and
+    * the chain length (from head constant to tail) is at least
+      ``min_depth`` flops.
+
+    ``clock_domains`` is the per-flop clock-domain map that the rule
+    pack already builds in ``_RuleContext.domains`` — passed in to
+    avoid re-running :func:`rtl_buddy_cdc.domain.assign_domains`. The
+    recogniser tolerates ``None`` entries (untraceable clock); those
+    flops never match because their domain cannot be compared.
+    """
+    if min_depth < 1:
+        raise ValueError("min_depth must be >= 1")
+    domains = assign_reset_domains(module)
+    flop_by_name = {f.cell.name: f for f in find_flops(module)}
+    bit_drivers = _bit_drivers(module)
+    out: set[str] = set()
+
+    for name, rd in domains.items():
+        if rd.reset is None or rd.reset.type != "async":
+            continue
+        chain = _trace_reset_sync_chain(
+            name,
+            flop_by_name,
+            domains,
+            clock_domains,
+            bit_drivers,
+            max_depth=min_depth + 4,
+        )
+        if len(chain) >= min_depth:
+            out.update(chain)
+    return out
+
+
+def _trace_reset_sync_chain(
+    start: str,
+    flop_by_name: dict[str, Flop],
+    reset_domains: dict[str, ResetDomain],
+    clock_domains: dict[str, str | None],
+    bit_drivers: dict[Bit, tuple[str, str]],
+    *,
+    max_depth: int,
+) -> list[str]:
+    """Walk Q→D back from ``start``; return the chain iff its head is constant-fed.
+
+    The returned chain includes ``start`` (as the tail) and every
+    intermediate flop up to the constant-fed head. If the walk
+    terminates on anything other than a constant — a foreign-domain
+    flop, a port, a multi-bit ``D``, a combinational signal, depth
+    exhaustion — the chain is **not** a reset synchroniser and an
+    empty list is returned. This is the load-bearing distinction:
+    without it, any 2-flop ARST-sharing chain in the same clock domain
+    (including data-path register chains that happen to share a
+    reset) would be mis-identified as a synchroniser."""
+    chain = [start]
+    cur_name = start
+    cur_rd = reset_domains[cur_name]
+    cur_clk = clock_domains.get(cur_name)
+    if cur_clk is None or cur_rd.reset is None:
+        return []
+    reset_signature = (cur_rd.reset.name, cur_rd.reset.source)
+
+    for _ in range(max_depth):
+        cur_flop = flop_by_name[cur_name]
+        d_bits = cur_flop.d
+        if len(d_bits) != 1:
+            return []  # Multi-bit chains aren't the reset-sync shape.
+        d_bit = d_bits[0]
+        if not isinstance(d_bit, int):
+            # D is a constant — chain head found. Return the chain as
+            # collected so far; the constant itself isn't a flop.
+            return chain
+        drv = bit_drivers.get(d_bit)
+        if drv is None:
+            return []  # Port- or constant-net-fed D isn't the recogniser's shape.
+        drv_name, drv_port = drv
+        if drv_port != "Q" or drv_name not in flop_by_name:
+            return []
+        drv_rd = reset_domains.get(drv_name)
+        drv_clk = clock_domains.get(drv_name)
+        if drv_rd is None or drv_rd.reset is None or drv_clk is None:
+            return []
+        if drv_clk != cur_clk:
+            return []
+        if (drv_rd.reset.name, drv_rd.reset.source) != reset_signature:
+            return []
+        chain.append(drv_name)
+        cur_name = drv_name
+    return []
 
 
 def _polarity_from_param(raw: str) -> ResetPolarity:

@@ -13,9 +13,11 @@ from pathlib import Path
 import pytest
 
 from rtl_buddy_cdc import netlist
+from rtl_buddy_cdc.domain import assign_domains
 from rtl_buddy_cdc.reset_domain import (
     ResetSource,
     assign_reset_domains,
+    find_reset_synchronizers,
 )
 
 FIX_ROOT = Path(__file__).parent / "fixtures"
@@ -92,6 +94,60 @@ def test_no_reset_pin_yields_none() -> None:
     has_reset = sum(1 for rd in domains.values() if rd.reset is not None)
     no_reset = sum(1 for rd in domains.values() if rd.reset is None)
     assert has_reset + no_reset == len(domains)
+
+
+def test_recognizer_finds_good_reset_sync_chain() -> None:
+    """The good-reset-sync fixture's 2FF chain (``dst_rst_meta`` and
+    ``dst_rst_n_sync``) must be recognised as a reset synchronizer.
+
+    The data-path flops (``src_q``, ``sync_meta``, ``sync_q``) are
+    *consumers* of the synchronised reset, not part of the synchronizer
+    chain itself — they must NOT be flagged. The chain head
+    (``dst_rst_meta``)'s ``D`` is tied to ``1'b1``; the tail
+    (``dst_rst_n_sync``)'s ``D`` is the head's ``Q``.
+    """
+    module = _load("good_reset_sync")
+    flop_clocks = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    syncs = find_reset_synchronizers(module, flop_clocks)
+    names = {name.split(".")[-1].lstrip("\\") for name in syncs}
+    # The chain head and tail (and only those) — the fixture uses
+    # Yosys auto-names (``$procdff$N``) so we filter by membership and
+    # count rather than asserting on the names.
+    assert len(syncs) == 2, f"expected 2 sync stages, got {sorted(syncs)}"
+    # Sanity check that the recognised flops are exactly the ones whose
+    # D pin is either a constant (chain head) or another recognised
+    # sync stage's Q (chain tail).
+    assert all("$procdff" in n or "rst" in n for n in names), names
+
+
+def test_recognizer_skips_bad_reset_crossing() -> None:
+    """``bad_reset_crossing`` has no constant-fed reset chain at all
+    (``src_kill_n``'s D is ``~kill_req``, ``dst_q``'s D is a data
+    port). The recogniser must return an empty set so RDC-001 cannot
+    misclassify either flop as a synchroniser and let the crossing
+    through."""
+    module = _load("bad_reset_crossing")
+    flop_clocks = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    syncs = find_reset_synchronizers(module, flop_clocks)
+    assert syncs == set()
+
+
+def test_recognizer_min_depth_validation() -> None:
+    module = _load("good_reset_sync")
+    flop_clocks = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    with pytest.raises(ValueError):
+        find_reset_synchronizers(module, flop_clocks, min_depth=0)
+
+
+def test_recognizer_min_depth_three_drops_the_2ff_chain() -> None:
+    """Bumping ``min_depth`` past the chain length excludes it.
+
+    Mirrors how the rule pack can let projects raise the bar (analogous
+    to CDC-002's ``required_depth``). At depth=3 the good fixture's
+    2FF chain no longer qualifies."""
+    module = _load("good_reset_sync")
+    flop_clocks = {fd.flop.cell.name: fd.clock for fd in assign_domains(module)}
+    assert find_reset_synchronizers(module, flop_clocks, min_depth=3) == set()
 
 
 def test_dataclasses_frozen() -> None:
