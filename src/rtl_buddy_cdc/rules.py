@@ -1636,6 +1636,156 @@ def check_rdc_004(
     return violations
 
 
+def check_rdc_005(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """RDC-005 — Multiple reset sources converging on a flop without muxing.
+
+    Fires when a flop's async reset pin is the output of comb logic
+    whose backward fanin reaches two or more distinct **top-level
+    reset ports**, the immediate driver cell is not a ``$mux`` /
+    ``$pmux`` (the explicit-muxing exemption), and the fanin
+    contains no flops (those go through RDC-004).
+
+    The canonical anti-pattern is ``assign rst_for_flop =
+    global_rst_n & block_rst_n;`` — both reset sources are active
+    simultaneously, the user can't disable one to isolate the
+    other, and the AND has no selection signal making the intent
+    unambiguous. The textbook fix is either to mux the two
+    sources on a control signal (``selected_rst = sel ? a : b``)
+    or to register the combined signal on the local clock.
+
+    Severity ``warning`` — the AND-of-resets pattern is common
+    enough in SoC designs that calling it an unambiguous bug
+    would be too strong; ``warning`` invites review.
+
+    Suppressed when the consumer is recognised as a reset-
+    synchroniser chain member.
+    """
+    from rtl_buddy_cdc.reset_domain import (
+        assign_reset_domains,
+        find_reset_synchronizers,
+    )
+
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    reset_domains = assign_reset_domains(module)
+    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+
+    violations: list[Violation] = []
+    for f in ctx.flops:
+        if f.cell.name in recognised_syncs:
+            continue
+        rd = reset_domains.get(f.cell.name)
+        if rd is None or rd.reset is None:
+            continue
+        if rd.reset.type != "async" or rd.reset.source != "comb":
+            continue
+        rst_bits: tuple[Bit, ...] = ()
+        for pin in ("ARST", "ALOAD", "CLR"):
+            bits = f.cell.connections.get(pin, ())
+            if bits:
+                rst_bits = bits
+                break
+        if not rst_bits:
+            continue
+        # Immediate-driver exemption: explicit-mux selection of the
+        # reset source is the user telling us they intended the
+        # multi-source pattern. The exemption only checks the cell
+        # whose output IS the reset bit — nested muxes deeper in the
+        # fanin are out of scope for v1.
+        rst_bit = rst_bits[0]
+        if isinstance(rst_bit, int):
+            drv = ctx.bit_drivers.get(rst_bit)
+            if drv is not None:
+                drv_cell_name, _, _ = drv
+                drv_cell = module.cells.get(drv_cell_name)
+                if drv_cell is not None and drv_cell.type in {"$mux", "$pmux"}:
+                    continue
+        # RDC-004 already owns the "fanin reaches flops" case.
+        fanin_flops = _backward_flop_fanin(module, rst_bits, ctx.bit_drivers)
+        if fanin_flops:
+            continue
+        fanin_ports = _backward_port_fanin(module, rst_bits, ctx.bit_drivers)
+        # Need 2+ distinct ports for this to be a multi-source
+        # convergence. A single port through a comb cell is just a
+        # polarity flip or a constant fold; not the target shape.
+        if len(fanin_ports) < 2:
+            continue
+        port_list = sorted(fanin_ports)
+        violations.append(
+            Violation(
+                rule_id="RDC-005",
+                severity="warning",
+                message=(
+                    f"multiple reset sources converging without muxing: "
+                    f"flop {f.cell.name}'s reset pin is the comb-AND/OR "
+                    f"of {len(fanin_ports)} top-level reset ports "
+                    f"({', '.join(port_list[:3])}"
+                    + ("..." if len(port_list) > 3 else "")
+                    + "). "
+                    "Both sources are active simultaneously and the "
+                    "user has no control over which dominates. Add a "
+                    "$mux selecting between them on a control signal, "
+                    "or register the combined signal on the local "
+                    "clock so the reset edge is at least glitch-free."
+                ),
+                cell_name=f.cell.name,
+            )
+        )
+    return violations
+
+
+def _backward_port_fanin(
+    module: Module,
+    start_bits: tuple[Bit, ...],
+    drivers: dict[Bit, tuple[str, str, int]],
+    max_depth: int = 12,
+) -> set[str]:
+    """Backward BFS through combinational cells; return the set of
+    top-level **input port names** reached.
+
+    Mirrors :func:`_backward_flop_fanin` but stops on ports rather
+    than ``Q`` outputs. Used by RDC-005 to count distinct external
+    reset sources behind a comb cell.
+    """
+    ports: set[str] = set()
+    seen: set[Bit] = set()
+    frontier: list[tuple[Bit, int]] = [(b, 0) for b in start_bits if isinstance(b, int)]
+    while frontier:
+        nxt: list[tuple[Bit, int]] = []
+        for bit, depth in frontier:
+            if bit in seen:
+                continue
+            seen.add(bit)
+            port = module.port_of_bit(bit)
+            if port is not None and port.direction == "input":
+                ports.add(port.name)
+                continue
+            drv = drivers.get(bit)
+            if drv is None:
+                continue
+            cell_name, port_name, _idx = drv
+            cell = module.cells[cell_name]
+            if port_name == "Q":
+                # Reached a flop — RDC-004's domain, not ours.
+                continue
+            if depth >= max_depth:
+                continue
+            for in_port, in_bits in cell.connections.items():
+                if in_port in _OUTPUT_PINS:
+                    continue
+                for b in in_bits:
+                    if isinstance(b, int):
+                        nxt.append((b, depth + 1))
+        frontier = nxt
+    return ports
+
+
 def check_rdc_002(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -1921,6 +2071,7 @@ RULES: dict[str, RuleFn] = {
     "RDC-002": check_rdc_002,
     "RDC-003": check_rdc_003,
     "RDC-004": check_rdc_004,
+    "RDC-005": check_rdc_005,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
     "CDC-011": check_cdc_011,
