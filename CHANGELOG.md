@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--emit-reset-domain-map` reset-domain artifact** (#108). New CLI
+  flag on both ``analyze`` and ``lint`` that writes a stable v1.0
+  JSON sidecar capturing the reset-tree view of the design, parallel
+  to the clock-domain map (#106). Payload sections: ``reset_sources``
+  (distinct upstream resets, deduped by ``(name, source)`` —
+  ``"port"`` / ``"inferred"`` / ``"constant"``), ``reset_synchronizers``
+  (one entry per flop in the recognised reset-synchroniser set, union
+  of the structural recogniser and ``(* reset_sync *)``-marked
+  flops), ``flop_resets`` (per-flop reset assignments with source
+  locations), and ``reset_crossings`` (kinds ``async-deassert``,
+  ``polarity-mismatch``, ``sync-crossing``, ``comb-driven`` —
+  parallel to RDC-001..-004). Port-level ``(* reset_polarity *)``
+  declarations surface as ``declared_polarity`` on the
+  ``reset_sources`` entry. Schema version pinned by
+  ``rtl_buddy_cdc.reset_domain_map.SCHEMA_VERSION`` (``"1.0"``);
+  every collection is sorted by a documented key so two builds on
+  the same inputs emit the same byte sequence (pinned by
+  ``tests/test_reset_domain_map.py::test_deterministic``). Composable
+  with ``--emit-domain-map`` — both flags can be passed in a single
+  invocation; the shared ``design.top`` / ``design.frontend`` envelope
+  lets consumers join the two artefacts safely. ``--no-findings``
+  short-circuits rule evaluation when one or both maps are the sole
+  deliverable. Schema reference at
+  ``wiki/raw/articles/rtl-buddy-cdc-reset-domain-map-schema.md``.
+  Immediate consumer: rtl-buddy-view's Phase 3 reset-overlay.
 - **`(* reset_polarity *)` SV attribute + RDC-002 port-declared
   polarity variant** (ninth instalment of #107). Top-level reset
   ports can be annotated with ``(* reset_polarity = "low" *)`` /

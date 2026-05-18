@@ -18,7 +18,18 @@ from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import AnalysisResult, _instance_path
-from rtl_buddy_cdc.rules import Violation, run_all as run_all_rules
+from rtl_buddy_cdc.reset_domain import (
+    assign_reset_domains,
+    find_reset_crossings,
+    find_reset_synchronizers,
+)
+from rtl_buddy_cdc.reset_domain_map import build_reset_domain_map
+from rtl_buddy_cdc.rules import (
+    Violation,
+    run_all as run_all_rules,
+    user_reset_polarity_overrides,
+    user_reset_sync_flop_names,
+)
 from rtl_buddy_cdc.waivers import SuppressedViolation
 
 app = typer.Typer(help="CDC linting tool for RTL designs.")
@@ -93,13 +104,25 @@ _EMIT_DOMAIN_MAP_OPT = typer.Option(
     "`async_per_sdc`). Designed for downstream tools like "
     "rtl-buddy-view; see issue #106.",
 )
+_EMIT_RESET_DOMAIN_MAP_OPT = typer.Option(
+    None,
+    "--emit-reset-domain-map",
+    help="Write a structured reset-domain map (JSON, schema "
+    "v1.0) to this path alongside the normal report. Captures "
+    "reset sources, recognised reset-synchroniser stages, per-flop "
+    "reset assignments, and structural reset crossings. Parallel to "
+    "`--emit-domain-map`; the two can be passed in a single run. "
+    "Designed for downstream tools like rtl-buddy-view; see issue "
+    "#108.",
+)
 _NO_FINDINGS_OPT = typer.Option(
     False,
     "--no-findings",
     help="Skip rule evaluation entirely. Only meaningful with "
-    "`--emit-domain-map`: produces just the domain map and exits 0 "
-    "on successful elaboration + map emission, 2 on elaboration "
-    "failure. Suppresses the normal report.",
+    "`--emit-domain-map` or `--emit-reset-domain-map`: produces just "
+    "the requested map(s) and exits 0 on successful elaboration + "
+    "map emission, 2 on elaboration failure. Suppresses the normal "
+    "report.",
 )
 
 
@@ -139,6 +162,7 @@ def analyze(
     strict: bool = _STRICT_OPT,
     baseline_path: Path | None = _BASELINE_OPT,
     emit_domain_map: Path | None = _EMIT_DOMAIN_MAP_OPT,
+    emit_reset_domain_map: Path | None = _EMIT_RESET_DOMAIN_MAP_OPT,
     no_findings: bool = _NO_FINDINGS_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
@@ -154,6 +178,7 @@ def analyze(
         strict=strict,
         baseline_path=baseline_path,
         emit_domain_map=emit_domain_map,
+        emit_reset_domain_map=emit_reset_domain_map,
         no_findings=no_findings,
     )
     if code != 0:
@@ -224,6 +249,7 @@ def lint(
     strict: bool = _STRICT_OPT,
     baseline_path: Path | None = _BASELINE_OPT,
     emit_domain_map: Path | None = _EMIT_DOMAIN_MAP_OPT,
+    emit_reset_domain_map: Path | None = _EMIT_RESET_DOMAIN_MAP_OPT,
     no_findings: bool = _NO_FINDINGS_OPT,
 ) -> None:
     """Convenience wrapper: elaborate the sources using the chosen
@@ -287,6 +313,7 @@ def lint(
         strict=strict,
         baseline_path=baseline_path,
         emit_domain_map=emit_domain_map,
+        emit_reset_domain_map=emit_reset_domain_map,
         no_findings=no_findings,
     )
     if code != 0:
@@ -334,6 +361,7 @@ def _analyze_and_report(
     strict: bool = False,
     baseline_path: Path | None = None,
     emit_domain_map: Path | None = None,
+    emit_reset_domain_map: Path | None = None,
     no_findings: bool = False,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
@@ -350,6 +378,7 @@ def _analyze_and_report(
         strict=strict,
         baseline_path=baseline_path,
         emit_domain_map=emit_domain_map,
+        emit_reset_domain_map=emit_reset_domain_map,
         no_findings=no_findings,
     )
 
@@ -367,6 +396,7 @@ def _analyze_module_and_report(
     strict: bool = False,
     baseline_path: Path | None = None,
     emit_domain_map: Path | None = None,
+    emit_reset_domain_map: Path | None = None,
     no_findings: bool = False,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
@@ -484,6 +514,33 @@ def _analyze_module_and_report(
         )
         with emit_domain_map.open("w") as fh:
             json.dump(payload, fh, indent=2)
+            fh.write("\n")
+
+    if emit_reset_domain_map is not None:
+        flop_clocks = {fd.flop.cell.name: fd.clock for fd in domains}
+        reset_domains_map = assign_reset_domains(module)
+        polarity_overrides = user_reset_polarity_overrides(module)
+        recognised_syncs = find_reset_synchronizers(
+            module,
+            flop_clocks,
+            extra_synchronizers=user_reset_sync_flop_names(module),
+        )
+        reset_crossings = find_reset_crossings(
+            module,
+            flop_clocks,
+            recognised_syncs=recognised_syncs,
+            polarity_overrides=polarity_overrides,
+        )
+        reset_payload = build_reset_domain_map(
+            module,
+            reset_domains_map,
+            flop_clocks,
+            recognised_syncs,
+            polarity_overrides,
+            reset_crossings,
+        )
+        with emit_reset_domain_map.open("w") as fh:
+            json.dump(reset_payload, fh, indent=2)
             fh.write("\n")
 
     # ``--no-findings`` suppresses the normal report entirely (the run

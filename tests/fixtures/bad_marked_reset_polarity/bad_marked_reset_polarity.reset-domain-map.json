@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "generator": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.2.0"
+  },
+  "design": {
+    "top": "bad_marked_reset_polarity",
+    "frontend": "yosys"
+  },
+  "reset_sources": [
+    {
+      "name": "rst_n",
+      "source": "port",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": false,
+      "declared_polarity": "low",
+      "location": {
+        "file": "bad_marked_reset_polarity.sv",
+        "start_line": 27,
+        "start_column": 46,
+        "end_line": 27,
+        "end_column": 51
+      }
+    }
+  ],
+  "reset_synchronizers": [],
+  "flop_resets": [
+    {
+      "instance_path": "bad_marked_reset_polarity.$procdff$2",
+      "clock": "clk",
+      "reset": "rst_n",
+      "reset_kind": "port",
+      "polarity": "high",
+      "type": "async",
+      "location": {
+        "file": "bad_marked_reset_polarity.sv",
+        "start_line": 35,
+        "start_column": 5,
+        "end_line": 38,
+        "end_column": 8
+      }
+    }
+  ],
+  "reset_crossings": [
+    {
+      "instance_path": "bad_marked_reset_polarity.$procdff$2",
+      "kind": "polarity-mismatch",
+      "flop_clock": "clk",
+      "reset": "rst_n",
+      "reset_kind": "port",
+      "polarity": "high",
+      "type": "async",
+      "location": {
+        "file": "bad_marked_reset_polarity.sv",
+        "start_line": 35,
+        "start_column": 5,
+        "end_line": 38,
+        "end_column": 8
+      }
+    }
+  ]
+}
