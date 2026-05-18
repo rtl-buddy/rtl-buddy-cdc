@@ -125,6 +125,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: emit `$dlatch` for `always_latch` blocks** (#39).
+  The frontend used to silently drop every ``always_latch`` block —
+  no cell emitted, so legitimate latches (the ICG enable-latch in
+  the ``clock_gating`` fixture and any other glitch-free integrated
+  clock gate) had no driver in the resulting netlist. The
+  procedural-block dispatch now recognises ``AlwaysLatch`` and lowers
+  the canonical single-arm ``if (en) lhs = rhs;`` shape to a
+  ``$dlatch`` with ``EN`` / ``D`` / ``Q`` connections and the
+  ``WIDTH`` / ``EN_POLARITY`` parameters Yosys writes for the same
+  shape. Inverted-enable conditions (``if (~clk)``) lower the
+  inversion through a ``$not`` cell driving ``EN`` rather than
+  folding into ``EN_POLARITY=0``, matching the slang frontend's
+  existing convention for conditional polarity. The latch type
+  intentionally stays outside ``flops.FF_CELL_TYPES`` — latches
+  don't bound clock domains and stay transparent to
+  ``find_crossings`` by design (out-of-scope per #39). Multi-arm /
+  case / explicit-else latch bodies and ``$adlatch`` (async-reset
+  latch) remain unmodelled and fall through silently, matching
+  Yosys's ``proc_dlatch`` envelope.
 - **slang frontend: `case` statement completeness** (#84, #85).
   Two paired holes in the `CaseStatement` lowering, both visible only
   on parameter-driven or FSM-style RTL the procedural walker reaches

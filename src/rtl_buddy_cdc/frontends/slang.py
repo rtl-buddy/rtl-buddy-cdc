@@ -702,8 +702,11 @@ class _ModuleBuilder:
         if kind_name == "AlwaysComb":
             self._emit_always_comb(block)
             return
+        if kind_name == "AlwaysLatch":
+            self._emit_always_latch(block)
+            return
         if kind_name != "AlwaysFF":
-            return  # initial / always_latch / final — not modelled
+            return  # initial / final — not modelled
         body = block.body
         # Expected shape: TimedStatement(timing=EventListControl, stmt=...)
         if self._kind_name(body) != "TimedStatement":
@@ -2293,6 +2296,115 @@ class _ModuleBuilder:
             attributes={},
         )
         return bits
+
+    # -- always_latch ---------------------------------------------------
+
+    def _emit_always_latch(self, block: Any) -> None:
+        """Walk an ``always_latch`` body and emit a ``$dlatch`` cell
+        for each ``if (en) lhs = rhs;`` single-arm shape.
+
+        Issue #39: pre-fix the slang frontend silently dropped every
+        ``always_latch`` block, so the ICG enable-latch in the
+        ``clock_gating`` fixture (and any other legitimate latch) had
+        no driver in the resulting netlist. The latch is intentionally
+        outside ``flops.FF_CELL_TYPES`` — latches don't bound clock
+        domains and stay transparent to ``find_crossings``; making
+        them visible is purely about netlist completeness so the rule
+        pack and any future latch-aware rule see them.
+
+        Only the single-arm ``if (cond) lhs = rhs;`` shape is
+        modelled (the canonical pattern Yosys's ``proc_dlatch``
+        infers). Multi-arm if/else, case, and explicit-`else` shapes
+        fall through silently — they don't synthesise to a clean
+        ``$dlatch`` either, so leaving them unmodelled mirrors the
+        Yosys frontend's behaviour. ``$adlatch`` (latch with async
+        reset) is explicitly out of scope per #39.
+        """
+        self._walk_latch_statement(block.body)
+
+    def _walk_latch_statement(self, stmt: Any) -> None:
+        if stmt is None:
+            return
+        kind = self._kind_name(stmt)
+        if kind == "BlockStatement":
+            self._walk_latch_statement(stmt.body)
+            return
+        if kind in {"StatementList", "ListStatement"}:
+            for s in getattr(stmt, "list", []) or []:
+                self._walk_latch_statement(s)
+            return
+        if kind != "ConditionalStatement":
+            return
+        en_bit = self._lower_condition_to_bit(getattr(stmt, "conditions", None))
+        if en_bit is None:
+            return
+        # Drill through the optional BlockStatement on the ifTrue arm.
+        arm = stmt.ifTrue
+        while arm is not None and self._kind_name(arm) == "BlockStatement":
+            arm = arm.body
+        if arm is None or self._kind_name(arm) != "ExpressionStatement":
+            return
+        expr = arm.expr
+        if type(expr).__name__ != "AssignmentExpression":
+            return
+        # Latch bodies should use blocking assigns (``=``); a
+        # nonblocking write here would be a SV style violation that
+        # we'd rather surface as "latch dropped" than silently model.
+        if getattr(expr, "isNonBlocking", False):
+            return
+        q_bits = self._lvalue_bits(expr.left)
+        if q_bits is None:
+            return
+        d_bits = self._bits_of_expression(expr.right)
+        if d_bits is None:
+            d_bits = self._unknown_driver(width=len(q_bits))
+        self._emit_dlatch_cell(en_bit, q_bits, d_bits, src_node=stmt)
+        # An explicit ``else`` would write a second value and break
+        # the single-arm-implicit-hold semantics — uncommon, and Yosys
+        # ``proc_dlatch`` doesn't infer a clean ``$dlatch`` for it
+        # either. Conservative skip; the analyzer surfaces the
+        # missing driver if it bites.
+
+    def _emit_dlatch_cell(
+        self,
+        en: Bit,
+        q_bits: tuple[Bit, ...],
+        d_bits: tuple[Bit, ...],
+        src_node: Any,
+    ) -> None:
+        """Allocate a ``$dlatch`` with the given enable / data / Q.
+
+        ``EN_POLARITY`` is hard-coded to active-high. Inverted-
+        enable shapes (``if (~en) lhs = rhs``) come through here with
+        ``en`` already routed through a ``$not`` cell by
+        ``_lower_condition_to_bit`` → ``_bits_of_expression``, which
+        mirrors how the slang frontend models conditional polarity
+        elsewhere. Folding the inversion into ``EN_POLARITY=0`` would
+        diverge from that convention; the rule pack doesn't read the
+        polarity parameter today, so the netlist shape is what
+        matters.
+        """
+        width = len(q_bits)
+        parameters: dict[str, str] = {
+            "EN_POLARITY": "1",
+            "WIDTH": _param_int32(width),
+        }
+        attrs: dict[str, str] = {}
+        src = self._src_attr(src_node) if src_node is not None else None
+        if src is not None:
+            attrs["src"] = src
+        name = self._fresh_cell_name("$dlatch")
+        self._cells[name] = Cell(
+            name=name,
+            type="$dlatch",
+            connections={
+                "EN": (en,),
+                "D": d_bits,
+                "Q": q_bits,
+            },
+            parameters=parameters,
+            attributes=attrs,
+        )
 
     # -- always_comb ----------------------------------------------------
 
