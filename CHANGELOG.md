@@ -125,6 +125,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: `case` statement completeness** (#84, #85).
+  Two paired holes in the `CaseStatement` lowering, both visible only
+  on parameter-driven or FSM-style RTL the procedural walker reaches
+  but previously mishandled:
+  - **Compile-time-constant case-expr folding** (#84). `case (MODE)`
+    with a parameter-bound `MODE` used to walk every arm, so dead
+    arms' RHS bits leaked into the deferred-emission mux tree and the
+    rule pack reported false-positive crossings through statically-
+    unreachable case items. Folds via `_const_int` (mirroring #72's
+    if/else fold) and walks only the live arm — or `defaultCase` when
+    no explicit match — so the resulting netlist matches what Yosys-
+    flatten + `opt_clean` would prune.
+  - **Per-arm enable inference for dynamic case-expr** (#85). Each
+    arm's body used to walk with no enable pushed, so writes
+    collapsed to a last-write-wins (or unconditional) value at drain
+    time and the gated-bus detector couldn't see arm-gated loads —
+    the standard FSM "load bus inside a case arm" shape. Each item's
+    enable is now the `$eq` of the case-expr with its match (chained
+    `$or` for multi-match items such as `2'd0, 2'd1:`); the default
+    arm's enable is `$not` of the OR of explicit-match equalities.
+    Pushed onto `_enable_stack` so the deferred-emission drain builds
+    a `$mux` tree gated by the arm-selection bits. Bails to walking
+    every arm unconditionally when the case-expr can't be lowered
+    (same conservative shape as the pre-PR behaviour, so any design
+    that previously hit the walker still does).
+  Casez / casex / `inside`-set match remain out of scope and bail via
+  `_bits_of_expression` returning None, same as today.
 - **slang frontend: `always_comb if/else` both-arms emission** (#64).
   An if/else where both arms wrote the same LHS dropped one arm
   because the per-LHS `$mux` emission keyed on the canonical
