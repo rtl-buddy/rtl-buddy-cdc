@@ -195,6 +195,37 @@ def user_sync_flop_names(module: Module) -> set[str]:
 USER_GRAY_ATTRS: frozenset[str] = frozenset({"cdc_gray", "gray_code"})
 
 
+# Reset-side counterpart of USER_SYNC_ATTRS — mark a flop as a
+# user-vetted reset-synchroniser stage. Consumed by
+# :func:`rtl_buddy_cdc.reset_domain.find_reset_synchronizers` as an
+# alternate match path so RDC-002 / RDC-004 / RDC-005 skip the marked
+# flops without needing to match the constant-fed-D structural shape.
+# Useful for sync chains whose head's D is fed by an upstream signal
+# (rather than a literal constant) — the structural recogniser is
+# deliberately conservative and would otherwise miss them.
+USER_RESET_SYNC_ATTRS: frozenset[str] = frozenset({"reset_sync", "reset_synchronizer"})
+
+
+def user_reset_sync_flop_names(module: Module) -> set[str]:
+    """Cell names of flops whose Q is named via a wire annotated with
+    ``(* reset_sync *)`` (or :data:`USER_RESET_SYNC_ATTRS` aliases).
+    Treated by the RDC rule pack as a vetted reset-synchroniser stage
+    regardless of the flop's structural shape."""
+    sync_bits: set[Bit] = set()
+    for nn in module.netnames.values():
+        if USER_RESET_SYNC_ATTRS & set(nn.attributes):
+            for b in nn.bits:
+                if isinstance(b, int):
+                    sync_bits.add(b)
+    if not sync_bits:
+        return set()
+    out: set[str] = set()
+    for f in find_flops(module):
+        if any(isinstance(b, int) and b in sync_bits for b in f.q):
+            out.add(f.cell.name)
+    return out
+
+
 def user_gray_flop_names(module: Module) -> set[str]:
     """Cell names of source flops whose Q is named via a wire annotated
     with ``(* cdc_gray *)``. CDC-004 treats those bus crossings as safe
@@ -1588,7 +1619,9 @@ def check_rdc_004(
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+    recognised_syncs = find_reset_synchronizers(
+        module, ctx.domains, extra_synchronizers=user_reset_sync_flop_names(module)
+    )
 
     violations: list[Violation] = []
     for f in ctx.flops:
@@ -1674,7 +1707,9 @@ def check_rdc_005(
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+    recognised_syncs = find_reset_synchronizers(
+        module, ctx.domains, extra_synchronizers=user_reset_sync_flop_names(module)
+    )
 
     violations: list[Violation] = []
     for f in ctx.flops:
@@ -1823,7 +1858,9 @@ def check_rdc_002(
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+    recognised_syncs = find_reset_synchronizers(
+        module, ctx.domains, extra_synchronizers=user_reset_sync_flop_names(module)
+    )
 
     # Group by (producer, producer_arst_value, consumer_polarity_bit)
     # so the typical "one upstream polarity wiring bug, N downstream
@@ -1850,6 +1887,13 @@ def check_rdc_002(
         producer_name = rd.reset.name
         producer = module.cells.get(producer_name)
         if producer is None:
+            continue
+        # If the producer is itself a recognised reset-synchroniser
+        # stage, the user has vetted that the reset arrives cleanly —
+        # any polarity inversion in the chain is intentional. Catches
+        # the ``(* reset_sync *)``-marked-tail shape where the user
+        # explicitly declared the chain trustworthy.
+        if producer_name in recognised_syncs:
             continue
         producer_arst_value = _trailing_bit(producer.parameters.get("ARST_VALUE", "0"))
         consumer_polarity_bit = "1" if rd.reset.polarity == "high" else "0"

@@ -204,6 +204,7 @@ def find_reset_synchronizers(
     clock_domains: dict[str, str | None],
     *,
     min_depth: int = 2,
+    extra_synchronizers: set[str] | None = None,
 ) -> set[str]:
     """Identify flop cells that participate in a reset-synchronizer chain.
 
@@ -235,13 +236,22 @@ def find_reset_synchronizers(
     avoid re-running :func:`rtl_buddy_cdc.domain.assign_domains`. The
     recogniser tolerates ``None`` entries (untraceable clock); those
     flops never match because their domain cannot be compared.
+
+    ``extra_synchronizers`` (optional) is the set of flop cell names
+    the caller wants treated as sync stages regardless of structural
+    shape — typically the result of
+    :func:`rtl_buddy_cdc.rules.user_reset_sync_flop_names` (flops the
+    user has marked with ``(* reset_sync *)``). Useful when the chain
+    head's D is fed by an upstream signal rather than a literal
+    constant — the structural recogniser is deliberately conservative
+    and would otherwise miss them.
     """
     if min_depth < 1:
         raise ValueError("min_depth must be >= 1")
     domains = assign_reset_domains(module)
     flop_by_name = {f.cell.name: f for f in find_flops(module)}
     bit_drivers = _bit_drivers(module)
-    out: set[str] = set()
+    out: set[str] = set(extra_synchronizers or ())
 
     for name, rd in domains.items():
         if rd.reset is None or rd.reset.type != "async":

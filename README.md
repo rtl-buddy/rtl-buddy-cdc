@@ -4,7 +4,7 @@ Python-based open-source CDC (Clock Domain Crossing) linting tool for RTL design
 
 ## Status
 
-Usable on IP-block-sized designs. Fourteen rules implemented (CDC-001 through CDC-006, CDC-008, CDC-009, CDC-011, plus the RDC family RDC-001 through RDC-005 — RDC-001 is the reset-crossing rule formerly known as CDC-007), three output formats (text / JSON / SARIF), waiver-file suppression, `(* cdc_sync *)` / `(* cdc_gray *)` SV attributes for user-vetted synchronizers and gray-coded buses, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule.
+Usable on IP-block-sized designs. Fourteen rules implemented (CDC-001 through CDC-006, CDC-008, CDC-009, CDC-011, plus the RDC family RDC-001 through RDC-005 — RDC-001 is the reset-crossing rule formerly known as CDC-007), three output formats (text / JSON / SARIF), waiver-file suppression, `(* cdc_sync *)` / `(* cdc_gray *)` / `(* reset_sync *)` SV attributes for user-vetted synchronizers, gray-coded buses, and reset-synchroniser stages, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule.
 
 Known gaps and roadmap items are tracked at the end of this README.
 
@@ -197,11 +197,15 @@ Mark a flop as a user-vetted synchronizer first stage by attaching an attribute 
 (* async_reg = "TRUE" *) logic dst_q;   // Vivado-compatible alias
 (* cdc_gray *) logic [N-1:0] src_bus;   // source bus is gray-coded
 (* gray_code *) logic [N-1:0] src_bus;  // alias
+(* reset_sync *) logic rst_sync;        // vetted reset-synchroniser stage
+(* reset_synchronizer *) logic rst_sync;// alias
 ```
 
 `cdc_sync` / aliases mark a flop as a vetted synchronizer first stage — skipped by CDC-001, -002, -003, and -006. CDC-004 (bus crossings) and CDC-005 (reconvergence) still fire — those failure modes don't depend on individual sync-shape correctness.
 
 `cdc_gray` / `gray_code` mark a source bus as gray-coded so CDC-004 accepts it as a safe multi-bit crossing without needing the structural detector to find the canonical XOR-shift shape.
+
+`reset_sync` / `reset_synchronizer` mark a flop as a vetted reset-synchroniser stage — the structural recogniser in `rtl_buddy_cdc.reset_domain.find_reset_synchronizers` deliberately requires a constant-fed chain head, so chains whose head's D is fed by an upstream signal (rather than a literal constant) would normally be missed. RDC-002 / RDC-004 / RDC-005 skip flops marked with this attribute and skip consumers whose ARST is driven by a marked flop's Q.
 
 Yosys preserves SV attributes on the netname rather than the cell, so the analyzer maps tagged bits back to the originating flop's `Q` pin.
 

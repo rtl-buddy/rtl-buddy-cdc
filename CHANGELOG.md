@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`(* reset_sync *)` SV attribute escape hatch** (#115, eighth
+  instalment of #107). Parallel to the existing
+  ``(* cdc_sync *)`` / ``(* cdc_gray *)`` annotations. Marks a flop
+  as a vetted reset-synchroniser stage even when the structural
+  recogniser in ``rtl_buddy_cdc.reset_domain.find_reset_synchronizers``
+  wouldn't match — the structural pass deliberately requires a
+  constant-fed chain head, so chains whose head's D is fed by an
+  upstream signal (rather than a literal constant) are otherwise
+  missed. RDC-002 / RDC-004 / RDC-005 skip flops marked with this
+  attribute and also skip consumers whose ARST is driven by a marked
+  flop's Q (matching the user's intent that "this reset arrives
+  cleanly downstream"). New helper
+  ``rtl_buddy_cdc.rules.user_reset_sync_flop_names(module)`` mirrors
+  the existing ``user_sync_flop_names`` shape. New optional
+  ``extra_synchronizers`` parameter on ``find_reset_synchronizers``
+  folds user-marked flops into the recogniser's output set.
+  Accepted aliases: ``reset_sync``, ``reset_synchronizer``. Coverage
+  fixture ``marked_reset_sync`` with a dedicated test module
+  (``test_marked_reset_sync.py``) pinning the attribute discovery,
+  recogniser overlay, and end-to-end RDC-002 suppression. The
+  companion ``(* reset_polarity *)`` attribute from the #115 scope
+  is deferred — no rule consumes source-side port polarity today,
+  so it would be dead code without a consumer rule extension.
 - **RDC-005 — Multiple reset sources converging without muxing**
   (fourth and final sub-PR of #114, seventh instalment of #107).
   New rule: a flop's async reset pin is the output of comb logic
