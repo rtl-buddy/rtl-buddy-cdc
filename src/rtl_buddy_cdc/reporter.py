@@ -57,6 +57,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "RDC-002": "Reset polarity mismatch on a direct flop→flop reset",
     "RDC-003": "Sync reset crossing without a reset synchroniser",
     "RDC-004": "Reset driven by combinational logic with no synchroniser",
+    "RDC-005": "Multiple reset sources converging on a flop without muxing",
 }
 
 

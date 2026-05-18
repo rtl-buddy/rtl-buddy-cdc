@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RDC-005 — Multiple reset sources converging without muxing**
+  (fourth and final sub-PR of #114, seventh instalment of #107).
+  New rule: a flop's async reset pin is the output of comb logic
+  whose backward fanin reaches two or more distinct top-level
+  reset ports, with no ``$mux``/``$pmux`` selecting which source is
+  active. Both resets are simultaneously active and the user has
+  no control over which dominates. Complementary to RDC-004:
+  fires precisely on the comb-of-ports case RDC-004 deliberately
+  skips, so every comb-on-reset shape ends up owned by exactly one
+  of the two rules. Severity ``warning`` — the AND-of-resets
+  pattern is common enough in SoC designs that ``error`` would be
+  too strong; the rule invites review. Suppressed when the
+  immediate driver cell is ``$mux``/``$pmux`` (explicit-muxing
+  exemption) or when the consumer is recognised as a
+  reset-synchroniser chain member. Paired fixtures
+  ``bad_rdc_005_multi_source_reset`` /
+  ``good_rdc_005_muxed_reset``. Closes #114.
 - **RDC-004 — Reset driven by combinational logic** (third sub-PR of
   #114, sixth instalment of #107). New rule: a flop's async reset
   pin is the output of a combinational gate (``$and``/``$or``/

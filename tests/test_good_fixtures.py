@@ -112,6 +112,11 @@ GOOD_FIXTURES = [
     # polarities matched (every flop active-low) — RDC-002 silent.
     # Single-clock design — zero async crossings.
     ("good_rdc_004_registered_reset", 0),
+    # RDC-005 positive shape: $mux explicitly selects between two
+    # reset ports on a control signal. The user's intent is
+    # unambiguous — exactly one source is active at a time — so the
+    # mux-on-reset exemption keeps RDC-005 silent. Single-clock.
+    ("good_rdc_005_muxed_reset", 0),
     # CDC-009 (#47/#101/#102) positive shapes: textbook fixes for the
     # fast-to-slow pulse-loss case.
     #
