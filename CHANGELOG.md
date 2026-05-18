@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RDC-004 — Reset driven by combinational logic** (third sub-PR of
+  #114, sixth instalment of #107). New rule: a flop's async reset
+  pin is the output of a combinational gate (``$and``/``$or``/
+  ``$mux``/etc.) whose backward fanin reaches one or more flops.
+  Comb outputs can glitch when inputs transition asynchronously,
+  producing spurious reset assertions. Fires on ``$adff*`` consumers
+  only (sync resets filter sub-cycle glitches at the clock edge);
+  pure comb-of-ports (e.g. ``rst_a_n & test_mode_n``) is accepted
+  as the user's responsibility and doesn't fire — keeps the noise
+  floor low on designs that legitimately AND two external reset
+  ports. Severity ``error``. Suppressed when the consumer is
+  recognised as a reset-synchroniser chain member. Paired fixtures
+  ``bad_rdc_004_comb_driven_reset`` /
+  ``good_rdc_004_registered_reset`` (the good case demonstrates
+  the textbook fix: register the comb output on the local clock
+  before using as a reset).
 - **RDC-003 — Sync reset crossing** (second sub-PR of #114, fifth
   instalment of #107). New rule: a flop's synchronous reset pin
   (``SRST``) is driven — directly or through combinational logic —
