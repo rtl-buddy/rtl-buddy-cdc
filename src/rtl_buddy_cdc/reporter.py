@@ -54,6 +54,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "CDC-006": "Glitchy combinational source on a control crossing",
     "CDC-008": "Clock signal used as data",
     "RDC-001": "Async reset crossing without a reset synchronizer (was CDC-007)",
+    "RDC-002": "Reset polarity mismatch on a direct flop→flop reset",
 }
 
 

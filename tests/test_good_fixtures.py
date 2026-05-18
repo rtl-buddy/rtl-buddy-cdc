@@ -92,6 +92,12 @@ GOOD_FIXTURES = [
     # _muxed_clock_typed: port typed to whichever mux side
     # trace_clock_root picks → same domain → 0 async crossings.
     ("good_unconstrained_input_muxed_clock_typed", 0),
+    # RDC-002 positive shape: matched-polarity gated reset. Both
+    # flops are active-low ($adff ARST_POLARITY=0), so when the
+    # producer enters reset (Q=0) the consumer sees ARST=0 == its
+    # polarity expectation. No async clock crossings — single-clock
+    # design.
+    ("good_rdc_002_polarity_match", 0),
     # CDC-009 (#47/#101/#102) positive shapes: textbook fixes for the
     # fast-to-slow pulse-loss case.
     #

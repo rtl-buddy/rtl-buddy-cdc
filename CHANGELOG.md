@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RDC-002 — Reset polarity mismatch** (first sub-PR of #114, fourth
+  instalment of #107). New rule: a flop's reset pin is driven
+  *directly* (no inverter, no comb between) by another flop's ``Q``,
+  and the consumer's ``ARST_POLARITY`` doesn't match the producer's
+  ``ARST_VALUE`` — so the consumer never enters reset when the
+  producer does (a polarity wiring bug). Severity ``error``.
+  Consumes the foundation pass from #110 and the reset-synchroniser
+  recogniser from #112 — flops the recogniser identifies as a sync
+  stage are skipped (the user may have built an intentional
+  polarity-inverting sync on purpose; the recogniser's constant-fed-
+  head check is what distinguishes that from accidental wiring).
+  Findings are grouped by ``(producer, polarities)`` so a single
+  upstream wiring bug feeding N consumers becomes one report listing
+  every affected destination — matches RDC-001's reset-tree grouping
+  convention and the fix-shape the user has to take. Paired fixtures
+  ``bad_rdc_002_polarity_mismatch`` / ``good_rdc_002_polarity_match``.
+  A pre-existing polarity asymmetry in ``bad_reset_tree`` (source
+  flop resets to ``1'b1``, consumers expect active-low) is now caught
+  too — the slang test that pinned the rule list updated to
+  ``["RDC-001", "RDC-002"]``.
+
 ### Changed
 
 - **Rule `CDC-007` renamed to `RDC-001`** (#113, third instalment of
