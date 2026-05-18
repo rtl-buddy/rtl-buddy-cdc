@@ -16,6 +16,7 @@ from typing import Callable
 from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.pulse import classify_d_pin_shape
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
 
@@ -1543,6 +1544,78 @@ def check_cdc_011(
     return violations
 
 
+# Cummings's rule of thumb: the src pulse must be ≥ PULSE_FACTOR × dst
+# period for the dst flop to reliably capture it. 1.5× absorbs a
+# typical dst-clock phase + metastability resolution budget. Hard-coded
+# for v1 — a CLI flag is deferred (see #47 §7).
+PULSE_FACTOR = 1.5
+
+
+def check_cdc_009(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-009: pulse-width risk on fast-to-slow data crossings.
+
+    Fires when a single-bit, flop-sourced crossing has:
+    - both clocks declared with periods in the SDC,
+    - ``src_period * PULSE_FACTOR < dst_period`` (src enough faster
+      that a 1-cycle pulse may slip between dst rising edges), and
+    - the src flop's D pin matches the edge-detector pattern
+      ``A & ~A_d`` (per :func:`rtl_buddy_cdc.pulse.classify_d_pin_shape`).
+
+    Severity is ``warning`` — single-bit pulse loss is a methodology
+    smell, not unconditional breakage. Pairs with CDC-001/002 (missing
+    sync). See issue #47 for the full design.
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    if clock_spec is None:
+        return []
+
+    out: list[Violation] = []
+    for c in crossings:
+        if c.src_clock == UNCONSTRAINED_SENTINEL:
+            continue
+        if c.src_flop is None or c.width != 1:
+            continue
+        src_clk = clock_spec.clocks.get(c.src_clock)
+        dst_clk = clock_spec.clocks.get(c.dst_clock)
+        if src_clk is None or dst_clk is None:
+            continue
+        if src_clk.period * PULSE_FACTOR >= dst_clk.period:
+            continue
+        d_bits = c.src_flop.cell.connections.get("D", ())
+        if len(d_bits) != 1:
+            continue
+        shape = classify_d_pin_shape(
+            d_bits[0], c.src_clock, module, ctx.bit_drivers, ctx.domains
+        )
+        if shape != "pulse":
+            continue
+        out.append(
+            Violation(
+                rule_id="CDC-009",
+                severity="warning",
+                message=(
+                    f"pulse-width risk on {c.src_flop.name!r} → "
+                    f"{c.dst_flop.name!r}: src clock {c.src_clock!r} "
+                    f"(period {src_clk.period}) is faster than dst "
+                    f"clock {c.dst_clock!r} (period {dst_clk.period}); "
+                    f"a 1-cycle src pulse may not be captured. "
+                    f"Consider a pulse-stretcher, toggle synchronizer, "
+                    f"or req/ack handshake."
+                ),
+                crossing=c,
+                cell_name=c.src_flop.cell.name,
+            )
+        )
+    return out
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -1552,6 +1625,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-006": check_cdc_006,
     "CDC-007": check_cdc_007,
     "CDC-008": check_cdc_008,
+    "CDC-009": check_cdc_009,
     "CDC-011": check_cdc_011,
 }
 

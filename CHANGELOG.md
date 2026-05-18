@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CDC-009 — Pulse-width / fast-to-slow data-loss** (#47 design,
+  #101 detection, #102 fixtures, #103 integration). Catches the
+  textbook fast-to-slow case where a single-cycle src-domain pulse may
+  land entirely between two slower dst-clock rising edges and be lost
+  (data loss without metastability ever entering the picture). Fires
+  on flop-sourced, single-bit, async crossings when the SDC declares
+  both clock periods, ``src_period * 1.5 < dst_period``, and the src
+  flop's ``D`` pin matches the edge-detector pattern ``A & ~A_d``
+  (with ``A_d`` the 1-cycle delay of ``A``). Severity ``warning`` —
+  single-bit pulse loss is a methodology smell, pairs cleanly with
+  CDC-001/002 (missing sync). Detection lives in
+  ``rtl_buddy_cdc.pulse.classify_d_pin_shape``; the rule is
+  deliberately false-negative-biased so handshake / pulse-stretcher /
+  toggle-sync idioms naturally fall outside the matched pattern and
+  stay silent without an explicit waiver. Three paired fixtures:
+  ``bad_pulse_width_fast_to_slow`` (must fire), and good counterparts
+  ``good_pulse_width_stretched`` (counter-based pulse stretcher) and
+  ``good_pulse_width_handshake`` (req/ack handshake with synced-back
+  ack). The implementation deviates from the issue body's §2 in one
+  detail — see ``pulse.py``'s module docstring; the corrected pattern
+  is the textbook one from Cummings SNUG 2008 §4.5.
 - **CDC-011 — Unconstrained primary input captured by clocked logic**
   (#97). Surfaces the SDC-discipline gap where a top-level input port
   has no `set_input_delay -clock <name>` typing but physically reaches
