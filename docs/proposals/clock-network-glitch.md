@@ -309,10 +309,73 @@ violation count `0`.
 
 - This document exists at `docs/proposals/clock-network-glitch.md`
   and is reviewable.
-- Follow-up issues are spawned for: (a) rule implementation +
-  helpers, (b) paired fixtures (`bad_async_clock_mux/`,
-  `good_sync_clock_mux/`), (c) `wiki/raw/articles/rtl-buddy-cdc-architecture.md`
-  + `README.md` updates (rule table row, roadmap line, severity entry).
+- A follow-up issue for the rule implementation is open as
+  [#95](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/95). The
+  remaining implementation phases are tracked here in §8 below
+  rather than as separate issues — they can be promoted to issues
+  if/when someone picks them up.
+
+## 8. Follow-up plan
+
+The implementation lands in three independent phases. Phase 1 is
+issue-tracked (#95); phases 2–3 are tracked inline here and can be
+graduated to issues when work starts.
+
+### 8.1 Phase 1 — rule implementation + helpers (#95)
+
+- `check_cdc_010` in `rules.py` per §3.
+- `_control_pins_for(cell_type)` map covering `$mux.S`, `$dffe.EN`,
+  `$dlatch.EN` (Yosys primitives only).
+- `_clock_input_domains_for(module, cell, ctx)` per §3.
+- Register in `RULES`; severity `error`.
+- README rule table gains the CDC-010 row;
+  `wiki/raw/articles/rtl-buddy-cdc-architecture.md` gets the rule
+  + helper bullets.
+
+Acceptance: rule registered, README updated, architecture spec
+updated, docstring cross-references CDC-008.
+
+### 8.2 Phase 2 — paired fixtures (`bad_async_clock_mux/` /
+`good_sync_clock_mux/`)
+
+- Author both fixtures per §5.1 / §5.2 of this proposal.
+- Build pre-flattened Yosys JSON for each and commit them (the
+  test suite must not require Yosys at runtime; see AGENTS.md
+  "Adding a fixture").
+- `tests/test_bad_async_clock_mux.py` asserts CDC-010 fires
+  exactly once, names the mux cell + the foreign-domain source
+  flop, and no other rule fires (CDC-001/004 cannot see this
+  shape; CDC-008 must stay silent).
+- Append `("good_sync_clock_mux", 0)` to `GOOD_FIXTURES` in
+  `tests/test_good_fixtures.py`.
+- Cross-check both fixtures elaborate cleanly under the slang
+  frontend (`tests/test_slang_elaboration.py` pattern).
+
+Blocked-by: phase 1 (the bad-fixture assertion can't be written
+until `check_cdc_010` is in).
+
+### 8.3 Phase 3 — tech-mapped control-pin support
+
+The first-pass rule (phase 1) is limited to Yosys primitives. A
+flattened netlist that has been tech-mapped through a real library
+carries library-specific control-pin names (`E`, `CE`, `GATE`,
+`EN`, `SE`, …). Extend to:
+
+- A hard-coded cell-type → control-pin map covering the standard
+  `abc`-emitted ICG / mux shapes.
+- A conservative heuristic fallback: for an unknown cell type with
+  an input pin name matching `{EN, SE, CE, GATE}` (case-insensitive),
+  classify it as a control pin. Opt-out via flag or per-cell-type
+  allow-list for libraries with naming conflicts.
+- Test coverage: extend the bad/good fixture pair (or add a
+  tech-mapped sibling) with a `synth -lut 4` / `abc` pass producing
+  a non-primitive netlist, asserting the rule still fires.
+
+Acceptance: README documents the supported cell shapes and the
+heuristic-fallback policy; map + heuristic both covered by tests.
+
+Out of scope (deferred to a v3 follow-up if needed): a
+library-specific YAML mapping of cell-type → control pin.
 
 ## 8. Out of scope
 
