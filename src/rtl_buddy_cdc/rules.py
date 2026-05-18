@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Literal
 
 from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
@@ -242,6 +242,62 @@ def user_gray_flop_names(module: Module) -> set[str]:
     for f in find_flops(module):
         if any(isinstance(b, int) and b in gray_bits for b in f.q):
             out.add(f.cell.name)
+    return out
+
+
+# Reset-port polarity declaration (issue #107). Attach to a top-level
+# reset port to assert "this signal is active-<low|high>" regardless of
+# what Yosys infers from a downstream flop's edge sensitivity. Consumed
+# by RDC-002, which fires when a flop's inferred reset-pin polarity
+# disagrees with the user's port-level declaration — the classic
+# "designer added a posedge flop on a port the rest of the design
+# treats as active-low" wiring bug.
+#
+# Value syntax: ``(* reset_polarity = "low" *)`` or ``"high"``. Anything
+# else is ignored (warned-quietly). The bare form
+# ``(* reset_polarity *)`` (no value) is also ignored — without a
+# polarity string the attribute conveys nothing useful.
+USER_RESET_POLARITY_ATTRS: frozenset[str] = frozenset({"reset_polarity"})
+
+
+def user_reset_polarity_overrides(
+    module: Module,
+) -> dict[str, Literal["high", "low"]]:
+    """Map top-level reset *port* name → user-declared polarity.
+
+    Walks ``module.netnames`` looking for the
+    :data:`USER_RESET_POLARITY_ATTRS` attribute. When the netname
+    coincides with a top-level input port and the attribute value is
+    one of ``"high"`` / ``"low"`` (case-insensitive), the port is
+    recorded in the returned map.
+
+    The attribute is interpreted as a *port-level* declaration only;
+    internal nets with the attribute are silently ignored. Rationale:
+    the consumer rule (RDC-002 port-override variant) reconciles flop
+    polarity against an external source-of-truth, which only the
+    top-level port boundary represents.
+
+    Values that don't decode (numeric strings, typos like ``"lo"``)
+    are skipped rather than raised — the analyzer's tolerance for
+    malformed-but-non-fatal user input matches the rest of the SV
+    attribute handling.
+    """
+    out: dict[str, Literal["high", "low"]] = {}
+    port_names = {p.name for p in module.ports.values() if p.direction == "input"}
+    for nn_name, nn in module.netnames.items():
+        if nn_name not in port_names:
+            continue
+        for attr in USER_RESET_POLARITY_ATTRS:
+            raw = nn.attributes.get(attr)
+            if raw is None:
+                continue
+            value = raw.strip().lower()
+            if value == "high":
+                out[nn_name] = "high"
+                break
+            if value == "low":
+                out[nn_name] = "low"
+                break
     return out
 
 
@@ -1828,12 +1884,14 @@ def check_rdc_002(
     *,
     ctx: _RuleContext | None = None,
 ) -> list[Violation]:
-    """RDC-002 — Reset polarity mismatch on a direct flop→flop reset.
+    """RDC-002 — Reset polarity mismatch.
 
-    Fires when a flop's reset pin is driven *directly* (no inverter,
-    no comb between) by another flop's ``Q``, and the consumer's
-    polarity expectation doesn't match the producer's reset-value
-    output. Concretely:
+    Two variants fire under this rule:
+
+    *Flop→flop variant.* A flop's reset pin is driven *directly* (no
+    inverter, no comb between) by another flop's ``Q``, and the
+    consumer's polarity expectation doesn't match the producer's
+    reset-value output. Concretely:
 
     * Let *P* be the producer flop and *C* the consumer flop.
     * When *P* enters reset, ``P.Q = P.ARST_VALUE``.
@@ -1841,11 +1899,21 @@ def check_rdc_002(
     * If ``P.ARST_VALUE != C.ARST_POLARITY``, *C* does **not** enter
       reset when *P* does — a polarity wiring bug.
 
-    Suppressed when *C* is recognised as a member of a reset-
-    synchroniser chain by :func:`rtl_buddy_cdc.reset_domain.find_reset_synchronizers`
-    (the user may have built an intentional polarity-inverting sync
-    on purpose; the recogniser's constant-fed-head check is what
-    distinguishes that from accidental wiring).
+    *Port-declared variant* (issue #107). When a top-level reset port
+    carries a ``(* reset_polarity = "<low|high>" *)`` attribute, treat
+    that declaration as authoritative. Any flop whose async reset
+    traces back to that port (``ResetSource.source == "port"``) and
+    whose inferred polarity disagrees with the declaration is reported.
+    This catches the "designer added a ``posedge rst_n`` flop on a port
+    the rest of the design treats as active-low" wiring bug — the
+    structural fanin walk hides it because the connection is just a
+    plain wire, but the user's declared intent gives us the reference
+    to compare against.
+
+    Both variants are suppressed when the consumer flop is a recognised
+    reset-synchroniser stage (a polarity-inverting sync may be the
+    deliberate fix, marked by ``(* reset_sync *)`` or matched by the
+    constant-fed-head structural recogniser).
 
     This is a structural rule — it does not depend on the SDC clock
     declarations. It runs whether or not ``clock_spec`` is supplied.
@@ -1861,6 +1929,7 @@ def check_rdc_002(
     recognised_syncs = find_reset_synchronizers(
         module, ctx.domains, extra_synchronizers=user_reset_sync_flop_names(module)
     )
+    polarity_overrides = user_reset_polarity_overrides(module)
 
     # Group by (producer, producer_arst_value, consumer_polarity_bit)
     # so the typical "one upstream polarity wiring bug, N downstream
@@ -1868,11 +1937,15 @@ def check_rdc_002(
     # consumer — matches RDC-001's reset-tree grouping convention and
     # the fix-shape the user has to take.
     groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    # Port-declared variant uses a parallel grouping key: (port_name,
+    # declared_polarity_bit, consumer_polarity_bit). Keeping the two
+    # buckets separate avoids cross-contaminating their messages.
+    port_groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for f in ctx.flops:
         if f.cell.name in recognised_syncs:
             continue
         rd = reset_domains.get(f.cell.name)
-        if rd is None or rd.reset is None or rd.reset.source != "inferred":
+        if rd is None or rd.reset is None:
             continue
         # Only fire on async-reset consumers (ARST). Sync-reset (SRST)
         # signals are intentional gating — e.g. a "kill" signal that
@@ -1884,24 +1957,35 @@ def check_rdc_002(
         # invariant actually holds.
         if rd.reset.type != "async":
             continue
-        producer_name = rd.reset.name
-        producer = module.cells.get(producer_name)
-        if producer is None:
-            continue
-        # If the producer is itself a recognised reset-synchroniser
-        # stage, the user has vetted that the reset arrives cleanly —
-        # any polarity inversion in the chain is intentional. Catches
-        # the ``(* reset_sync *)``-marked-tail shape where the user
-        # explicitly declared the chain trustworthy.
-        if producer_name in recognised_syncs:
-            continue
-        producer_arst_value = _trailing_bit(producer.parameters.get("ARST_VALUE", "0"))
         consumer_polarity_bit = "1" if rd.reset.polarity == "high" else "0"
-        if producer_arst_value == consumer_polarity_bit:
-            continue  # polarities match — wiring is correct
-        groups[(producer_name, producer_arst_value, consumer_polarity_bit)].append(
-            f.cell.name
-        )
+        if rd.reset.source == "inferred":
+            producer_name = rd.reset.name
+            producer = module.cells.get(producer_name)
+            if producer is None:
+                continue
+            # If the producer is itself a recognised reset-synchroniser
+            # stage, the user has vetted that the reset arrives cleanly —
+            # any polarity inversion in the chain is intentional. Catches
+            # the ``(* reset_sync *)``-marked-tail shape where the user
+            # explicitly declared the chain trustworthy.
+            if producer_name in recognised_syncs:
+                continue
+            producer_arst_value = _trailing_bit(
+                producer.parameters.get("ARST_VALUE", "0")
+            )
+            if producer_arst_value == consumer_polarity_bit:
+                continue  # polarities match — wiring is correct
+            groups[(producer_name, producer_arst_value, consumer_polarity_bit)].append(
+                f.cell.name
+            )
+        elif rd.reset.source == "port" and rd.reset.name in polarity_overrides:
+            declared = polarity_overrides[rd.reset.name]
+            declared_bit = "1" if declared == "high" else "0"
+            if declared_bit == consumer_polarity_bit:
+                continue
+            port_groups[(rd.reset.name, declared_bit, consumer_polarity_bit)].append(
+                f.cell.name
+            )
 
     violations: list[Violation] = []
     for (producer_name, prod_val, cons_pol), consumers in groups.items():
@@ -1929,6 +2013,37 @@ def check_rdc_002(
                     f"will never enter reset when the producer does. Add "
                     f"an inverter between them, or flip the consumer's "
                     f"reset edge sensitivity to match. {dst_desc}"
+                ),
+                cell_name=repr_cell,
+            )
+        )
+    for (port_name, decl_bit, cons_pol), consumers in port_groups.items():
+        dsts = sorted(set(consumers))
+        repr_cell = dsts[0]
+        declared = "high" if decl_bit == "1" else "low"
+        if len(dsts) == 1:
+            dst_desc = f"destination flop: {dsts[0]}"
+        else:
+            dst_desc = (
+                f"{len(dsts)} destination flops disagree with the "
+                f"port-declared polarity: "
+                f"{', '.join(dsts[:3])}" + (", ..." if len(dsts) > 3 else "")
+            )
+        violations.append(
+            Violation(
+                rule_id="RDC-002",
+                severity="error",
+                message=(
+                    f"reset polarity mismatch with port-level declaration: "
+                    f"port '{port_name}' is annotated "
+                    f'(* reset_polarity = "{declared}" *) (active-{declared}, '
+                    f"asserts on '{decl_bit}'), but the consumer flop(s) "
+                    f"are wired active-{'high' if cons_pol == '1' else 'low'} "
+                    f"(ARST_POLARITY={cons_pol}); the declared port "
+                    f"polarity disagrees with the flop's reset edge "
+                    f"sensitivity. Fix the flop's edge to match the port "
+                    f"declaration, or remove the (* reset_polarity *) "
+                    f"attribute if the declaration is wrong. {dst_desc}"
                 ),
                 cell_name=repr_cell,
             )
