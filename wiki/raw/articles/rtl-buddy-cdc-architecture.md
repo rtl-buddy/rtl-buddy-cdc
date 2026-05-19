@@ -758,6 +758,23 @@ against the same inputs. `--no-findings` short-circuits rule
 evaluation when the map is the sole deliverable. Primary consumer
 today is [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view).
 
+A parallel sidecar — the **reset-domain-map artifact** — is emitted
+by `--emit-reset-domain-map FILE.json` and implemented in
+`rtl_buddy_cdc.reset_domain_map.build_reset_domain_map`. Same
+contract shape (own `schema_version`, deterministic sort, additive
+backward-compatible evolution) but a different payload: distinct
+upstream reset sources (port / inferred / constant), the recognised
+reset-synchroniser stages, per-flop reset assignments, and structural
+reset crossings (kinds `async-deassert`, `polarity-mismatch`,
+`sync-crossing`, `comb-driven`). The two maps are intentionally
+separate artefacts — clock and reset analyses evolve on different
+schedules, and consumers enable each overlay independently. Both
+flags compose in a single run; the shared `design.top` /
+`design.frontend` envelope blocks let consumers join the two
+artefacts safely. See
+[`rtl-buddy-cdc-reset-domain-map-schema.md`](rtl-buddy-cdc-reset-domain-map-schema.md)
+for the field reference.
+
 The SARIF output is validated against the OASIS-published 2.1.0
 schema by `tests/test_sarif_schema.py`, vendored at
 `tests/schemas/sarif-2.1.0.json` so CI does not depend on
