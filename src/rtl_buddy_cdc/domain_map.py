@@ -139,6 +139,7 @@ def _serialize_flop_domains(
         cell_name = fd.flop.cell.name
         entry: dict[str, Any] = {
             "instance_path": _hier_path(module, cell_name),
+            "source_instance_path": _source_instance_path(module, cell_name),
             "clock": fd.clock,
         }
         loc = _source_location(module, cell_name)
@@ -207,12 +208,18 @@ def _serialize_crossings(
             "src_clock": c.src_clock,
             "dst_clock": c.dst_clock,
             "dst_flop": dst_path,
+            "dst_source_instance_path": _source_instance_path(
+                module, c.dst_flop.cell.name
+            ),
             "min_hops": c.min_hops,
             "width": c.width,
             "async_per_sdc": key in async_keys,
         }
         if c.src_flop is not None:
             entry["src_flop"] = src_path
+            entry["src_source_instance_path"] = _source_instance_path(
+                module, c.src_flop.cell.name
+            )
         if c.src_port is not None:
             entry["src_port"] = c.src_port
         out.append(entry)
@@ -257,6 +264,31 @@ def _hier_path(module: Module, cell_name: str) -> str:
     leaf = _cell_leaf_name(cell_name)
     parts = [module.name, *parents, leaf]
     return ".".join(parts)
+
+
+def _source_instance_path(module: Module, cell_name: str | None) -> str | None:
+    """Dotted path of the deepest source-level module instance owning a cell.
+
+    The analyzer already walks the elaboration tree; the source-level
+    enclosing instance is the upward chain reachable by stripping the
+    synth-generated leaf handle (``$slang$sdff$N``, ``$procdff$N``,
+    etc.) from the cell's flattened name. Returns the chain rooted at
+    the design top — never includes the leaf cell itself. For a cell
+    instantiated at top, the result is just the top module name.
+
+    Returns ``None`` when the analyzer can't resolve the chain (kept
+    distinct from a missing field so consumers can tell "unresolvable"
+    from "older producer that didn't emit this field"). With today's
+    Yosys and slang frontends the chain is always resolvable for cells
+    the analyzer holds a :class:`Module` reference to, so this branch
+    is reserved for future frontends whose flop-naming convention is
+    less amenable to a name-only path-walk (e.g. Yosys runs that skip
+    ``proc``/``flatten``).
+    """
+    if cell_name is None:
+        return None
+    parents = _instance_path(module, cell_name)
+    return ".".join([module.name, *parents])
 
 
 def _cell_leaf_name(cell_name: str) -> str:

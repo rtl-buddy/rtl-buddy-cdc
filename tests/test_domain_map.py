@@ -155,6 +155,74 @@ def test_crossings_have_async_flag() -> None:
             assert c["src_flop"] in flop_paths
 
 
+def test_flop_domains_carry_source_instance_path() -> None:
+    """Every flop entry exposes ``source_instance_path`` (issue #136).
+
+    The field is the deepest enclosing SystemVerilog-source module
+    instance — the chain reachable by stripping the synth-generated
+    leaf handle (``$procdff$N``, ``$slang$sdff$N``) from
+    ``instance_path``. Always rooted at the top module name; never
+    omitted (``null`` when unresolvable so consumers can distinguish
+    "no resolution" from "old producer").
+    """
+    payload = _build(SDC)
+    assert payload["flop_domains"], "fixture has flops"
+    for fd in payload["flop_domains"]:
+        assert "source_instance_path" in fd
+        sip = fd["source_instance_path"]
+        assert sip is None or isinstance(sip, str)
+        # In this fixture every flop is resolvable to the top or a child
+        # module instance — null would signal a regression.
+        assert sip is not None
+        assert sip == "ip_cdc_handshake" or sip.startswith("ip_cdc_handshake.")
+        # The source-instance path is a strict prefix of the synth
+        # leaf's instance path: dropping the trailing dot-segment of
+        # ``instance_path`` must reproduce it.
+        ip = fd["instance_path"]
+        assert ip.rsplit(".", 1)[0] == sip
+
+
+def test_flop_domains_source_instance_path_buckets_synth_flops() -> None:
+    """Top-level synth flops collapse to the top instance; nested ones
+    keep the parent chain. Bucket assertion documents the resolver
+    contract for the two shapes present in the fixture."""
+    payload = _build(SDC)
+    buckets: dict[str, int] = {}
+    for fd in payload["flop_domains"]:
+        sip = fd["source_instance_path"]
+        assert sip is not None
+        buckets[sip] = buckets.get(sip, 0) + 1
+    # ip_cdc_handshake has six top-level $procdff cells and two
+    # u_sync_{req,ack} instances each holding two synth flops.
+    assert buckets == {
+        "ip_cdc_handshake": 6,
+        "ip_cdc_handshake.u_sync_req": 2,
+        "ip_cdc_handshake.u_sync_ack": 2,
+    }
+
+
+def test_crossings_carry_source_instance_path() -> None:
+    """Crossings expose ``dst_source_instance_path`` and, when the
+    source endpoint is a flop, ``src_source_instance_path`` (issue #136).
+    ``src_source_instance_path`` is omitted (not null) when the source
+    is a top-level port — port-driven crossings already carry
+    ``src_port`` and don't need a source-instance pointer."""
+    payload = _build(SDC)
+    sip_by_path = {
+        fd["instance_path"]: fd["source_instance_path"]
+        for fd in payload["flop_domains"]
+    }
+    assert payload["crossings"], "fixture has crossings"
+    for c in payload["crossings"]:
+        assert "dst_source_instance_path" in c
+        assert c["dst_source_instance_path"] == sip_by_path[c["dst_flop"]]
+        if "src_flop" in c:
+            assert "src_source_instance_path" in c
+            assert c["src_source_instance_path"] == sip_by_path[c["src_flop"]]
+        else:
+            assert "src_source_instance_path" not in c
+
+
 def test_crossings_sorted_deterministic() -> None:
     """Two builds on the same inputs must emit the same byte sequence."""
     a = json.dumps(_build(SDC), indent=2, sort_keys=False)
