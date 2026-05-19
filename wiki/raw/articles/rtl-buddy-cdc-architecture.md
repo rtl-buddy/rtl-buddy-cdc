@@ -773,7 +773,10 @@ flags compose in a single run; the shared `design.top` /
 `design.frontend` envelope blocks let consumers join the two
 artefacts safely. See
 [`rtl-buddy-cdc-reset-domain-map-schema.md`](rtl-buddy-cdc-reset-domain-map-schema.md)
-for the field reference.
+for the field reference and
+[`rtl-buddy-cdc-reset-domain-analysis.md`](rtl-buddy-cdc-reset-domain-analysis.md)
+for the producer-side pipeline (data model, source classification,
+synchroniser recogniser, and the RDC rule family built on top).
 
 The SARIF output is validated against the OASIS-published 2.1.0
 schema by `tests/test_sarif_schema.py`, vendored at
