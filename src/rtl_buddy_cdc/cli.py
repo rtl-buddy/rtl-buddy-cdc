@@ -143,6 +143,17 @@ _NO_FINDINGS_OPT = typer.Option(
     "map emission, 2 on elaboration failure. Suppresses the normal "
     "report.",
 )
+_CDC_010_NO_HEURISTIC_OPT = typer.Option(
+    False,
+    "--cdc-010-no-heuristic",
+    help="Disable CDC-010's pin-name heuristic fallback for "
+    "tech-mapped cells. By default CDC-010 classifies an input pin "
+    "named E / EN / CE / GATE / SE (case-insensitive) as a control "
+    "pin on cell types not covered by the explicit map. Pass this "
+    "flag when a library's pin naming conflicts with the heuristic "
+    "(e.g. a vendor that uses `EN` for something other than enable) "
+    "and you'd rather take the false negative than a false positive.",
+)
 
 
 @app.command()
@@ -184,6 +195,7 @@ def analyze(
     emit_reset_domain_map: Path | None = _EMIT_RESET_DOMAIN_MAP_OPT,
     reset_hints_path: Path | None = _RESET_HINTS_OPT,
     no_findings: bool = _NO_FINDINGS_OPT,
+    cdc_010_no_heuristic: bool = _CDC_010_NO_HEURISTIC_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
     code = _analyze_and_report(
@@ -201,6 +213,7 @@ def analyze(
         emit_reset_domain_map=emit_reset_domain_map,
         reset_hints_path=reset_hints_path,
         no_findings=no_findings,
+        cdc_010_no_heuristic=cdc_010_no_heuristic,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -273,6 +286,7 @@ def lint(
     emit_reset_domain_map: Path | None = _EMIT_RESET_DOMAIN_MAP_OPT,
     reset_hints_path: Path | None = _RESET_HINTS_OPT,
     no_findings: bool = _NO_FINDINGS_OPT,
+    cdc_010_no_heuristic: bool = _CDC_010_NO_HEURISTIC_OPT,
 ) -> None:
     """Convenience wrapper: elaborate the sources using the chosen
     frontend, then analyze. With ``--frontend yosys`` (the default)
@@ -338,6 +352,7 @@ def lint(
         emit_reset_domain_map=emit_reset_domain_map,
         reset_hints_path=reset_hints_path,
         no_findings=no_findings,
+        cdc_010_no_heuristic=cdc_010_no_heuristic,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -387,6 +402,7 @@ def _analyze_and_report(
     emit_reset_domain_map: Path | None = None,
     reset_hints_path: Path | None = None,
     no_findings: bool = False,
+    cdc_010_no_heuristic: bool = False,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module = netlist.load(netlist_path)
@@ -405,6 +421,7 @@ def _analyze_and_report(
         emit_reset_domain_map=emit_reset_domain_map,
         reset_hints_path=reset_hints_path,
         no_findings=no_findings,
+        cdc_010_no_heuristic=cdc_010_no_heuristic,
     )
 
 
@@ -424,6 +441,7 @@ def _analyze_module_and_report(
     emit_reset_domain_map: Path | None = None,
     reset_hints_path: Path | None = None,
     no_findings: bool = False,
+    cdc_010_no_heuristic: bool = False,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
@@ -475,6 +493,7 @@ def _analyze_module_and_report(
                 spec,
                 required_depth=sync_depth,
                 reset_hints=reset_hints,
+                cdc_010_heuristic=not cdc_010_no_heuristic,
             )
     else:
         domains = assign_domains(module)

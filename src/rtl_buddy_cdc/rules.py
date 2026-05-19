@@ -1496,31 +1496,111 @@ def check_cdc_008(
     return violations
 
 
-# Yosys-primitive control-pin map for CDC-010. Library-specific names
-# (``CE`` / ``E`` / ``GATE`` / ``SE``) are deferred to a follow-up
-# (proposal §8.3 in ``docs/proposals/clock-network-glitch.md``).
+# Explicit control-pin map for CDC-010. Covers the cell types whose
+# control-pin name is fixed by Yosys's own definitions:
+#
+# - Higher-level parametric cells (phase 1): ``$mux``, ``$dffe``,
+#   ``$dlatch``.
+# - Yosys gate-level primitives emitted by ``simplemap`` / ``abc``
+#   (phase 3): ``$_DLATCH_*``, ``$_MUX_`` family, ``$_DFFE_*`` /
+#   ``$_SDFFE_*`` families. The ``$_DFFE`` / ``$_SDFFE`` / ``$_DLATCH``
+#   prefixes are handled by the prefix paths below so we don't have
+#   to enumerate every polarity / reset-shape variant.
+#
+# Vendor library cells (``ICG_*``, ``CKMUX2_*``) are intentionally
+# *not* enumerated here — the namespace is too large and varies per
+# library. The heuristic fallback below catches the common
+# enable-style names; vendor-specific outliers should be added here
+# in a follow-up rather than expanding the heuristic.
 _CDC_010_CONTROL_PINS: dict[str, frozenset[str]] = {
+    # Higher-level Yosys cells (phase 1).
     "$mux": frozenset({"S"}),
     "$dffe": frozenset({"EN"}),
     "$dlatch": frozenset({"EN"}),
+    # Gate-level mux family. Yosys's ``$_MUX{4,8,16}_`` carry their
+    # selects on consecutive letters starting at ``S``.
+    "$_MUX_": frozenset({"S"}),
+    "$_MUX4_": frozenset({"S", "T"}),
+    "$_MUX8_": frozenset({"S", "T", "U"}),
+    "$_MUX16_": frozenset({"S", "T", "U", "V"}),
 }
 
+# Case-insensitive input-pin names treated as control pins for cells
+# that aren't in the explicit map. Conservative — these are the
+# enable-style names that almost always indicate an ICG / clock-gate
+# control input on tech-mapped library cells. Mux-style select names
+# (``S`` / ``SEL`` / numbered variants) are *not* heuristic targets:
+# they collide with too many non-control pins on unrelated cells, so
+# mux shapes have to be in the explicit map above.
+#
+# Rationale for each:
+#   ``E``     — Yosys gate-level latch / enable-flop convention
+#               (``$_DLATCH_P_.E``, ``$_DFFE_*.E``).
+#   ``EN``    — most-common SV / library enable-pin name.
+#   ``CE``    — clock-enable (``CE`` = "Clock Enable"), classic
+#               flip-flop and ICG nomenclature.
+#   ``GATE``  — ICG library cells (e.g. ``GATE`` on TSMC-style ICGs).
+#   ``SE``    — scan-enable, often wired into a clock gate's enable
+#               path on tech-mapped designs (DFT bypass).
+_CDC_010_HEURISTIC_PINS: frozenset[str] = frozenset({"E", "EN", "CE", "GATE", "SE"})
 
-def _control_pins_for(cell_type: str) -> frozenset[str]:
-    """Control-pin names for a clock-network cell type.
 
-    A *control pin* is a non-clock input whose transition can chop the
-    cell's output clock — the select on a clock mux (``$mux.S``), the
-    enable on a ``$dffe`` integrated clock gate, or the enable on a
-    ``$dlatch`` ICG. Buffers / inverters / AND-tree gates have no
-    such pin: any control comes via the input clocks, which is
-    CDC-008 territory (a clock arriving on a non-CLK pin), not
-    CDC-010 (a wrong-domain control transitioning the gate).
+def _control_pins_for(cell: Cell, *, use_heuristic: bool = True) -> frozenset[str]:
+    """Control-pin names for a clock-network cell.
 
-    Yosys primitives only. Tech-mapped library shapes (``CE`` / ``E``
-    / ``GATE`` / ``SE``) are tracked under the phase-3 follow-up.
+    A *control pin* is a non-clock input whose transition can chop
+    the cell's output clock — the select on a clock mux (``$mux.S``,
+    ``$_MUX_.S``), the enable on an integrated clock gate
+    (``$dffe.EN``, ``$dlatch.EN``, ``$_DLATCH_P_.E``,
+    ``$_DFFE_*.E``), or the analogous pin on a tech-mapped library
+    cell.
+
+    Resolution order:
+
+    1. **Explicit map** (:data:`_CDC_010_CONTROL_PINS`) for
+       higher-level Yosys cells (phase 1) and the gate-level mux
+       family (phase 3).
+    2. **Prefix path** for the Yosys gate-level latch and
+       enable-flop families: any cell type starting with
+       ``$_DLATCH``, ``$_DFFE_``, or ``$_SDFFE_`` reports ``E`` as
+       the control pin. Avoids enumerating the polarity-/reset-/
+       set-shape variant explosion (``$_DFFE_PP0P_`` and friends).
+    3. **Heuristic fallback** (when ``use_heuristic`` is True, the
+       default): scan the cell's input pins for names matching
+       :data:`_CDC_010_HEURISTIC_PINS` case-insensitively. Designed
+       to catch the enable-style pin names common to standard-cell
+       ICG library cells (``ICG_*``, vendor-specific names) without
+       needing a per-library cell map.
+
+    Buffers / inverters / AND-tree gates ($buf / $not / $_AND_ /
+    …) fall through every step and return the empty set — their
+    output is a function of all inputs, none of which gate the
+    clock-network signal in a way that produces a glitch when
+    transitioned mid-cycle.
     """
-    return _CDC_010_CONTROL_PINS.get(cell_type, frozenset())
+    explicit = _CDC_010_CONTROL_PINS.get(cell.type)
+    if explicit is not None:
+        return explicit
+    # Yosys gate-level latch / enable-flop families. Cover the
+    # prefix once instead of enumerating $_DFFE_PP0P_, $_DFFE_NP1N_,
+    # etc. — every variant carries the enable on ``E``.
+    if (
+        cell.type.startswith("$_DLATCH")
+        or cell.type.startswith("$_DFFE_")
+        or cell.type.startswith("$_SDFFE_")
+    ):
+        return frozenset({"E"})
+    if not use_heuristic:
+        return frozenset()
+    matches: set[str] = set()
+    for port_name, bits in cell.connections.items():
+        if port_name in _OUTPUT_PINS:
+            continue
+        if not bits:
+            continue
+        if port_name.upper() in _CDC_010_HEURISTIC_PINS:
+            matches.add(port_name)
+    return frozenset(matches)
 
 
 def _clock_input_domains_for(
@@ -1597,6 +1677,7 @@ def check_cdc_010(
     clock_spec: ClockSpec | None = None,
     *,
     ctx: _RuleContext | None = None,
+    use_heuristic: bool = True,
 ) -> list[Violation]:
     """CDC-010 — Glitch on the clock network from a wrong-domain control signal.
 
@@ -1619,10 +1700,18 @@ def check_cdc_010(
     declaring the pair synchronous suppresses naturally via
     :meth:`ClockSpec.are_async`.
 
-    Coverage is Yosys-primitive only: ``$mux.S``, ``$dffe.EN``,
-    ``$dlatch.EN``. Tech-mapped library cell shapes (``CE`` / ``E``
-    / ``GATE`` / ``SE``) are tracked under the phase-3 follow-up
-    (proposal §8.3).
+    Coverage:
+
+    - Yosys higher-level cells (``$mux.S``, ``$dffe.EN``,
+      ``$dlatch.EN``) and the gate-level cells emitted by
+      ``simplemap`` / ``abc`` (``$_MUX_`` / ``$_MUX{4,8,16}_``,
+      ``$_DLATCH_*``, ``$_DFFE_*``, ``$_SDFFE_*``) — see the
+      explicit map and prefix paths in :func:`_control_pins_for`.
+    - Tech-mapped library cells via a conservative pin-name
+      heuristic (``E`` / ``EN`` / ``CE`` / ``GATE`` / ``SE``).
+      Pass ``use_heuristic=False`` (CLI:
+      ``--cdc-010-no-heuristic``) to disable when the heuristic
+      false-positives on a library with conflicting pin naming.
 
     Severity is ``error``: the glitch propagates to every downstream
     flop and cannot be recovered at the sink.
@@ -1643,7 +1732,7 @@ def check_cdc_010(
 
     for cell_name in sorted(clock_net_cells):
         cell = module.cells[cell_name]
-        control_ports = _control_pins_for(cell.type)
+        control_ports = _control_pins_for(cell, use_heuristic=use_heuristic)
         if not control_ports:
             continue
         cell_clock_domains: set[str] | None = None
@@ -2490,6 +2579,7 @@ def run_all(
     required_depth: int = 2,
     *,
     reset_hints: ResetHints | None = None,
+    cdc_010_heuristic: bool = True,
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -2503,6 +2593,16 @@ def run_all(
         if rule_id == "CDC-002":
             out.extend(
                 check_cdc_002(module, crossings, clock_spec, required_depth, ctx=ctx)
+            )
+        elif rule_id == "CDC-010":
+            out.extend(
+                check_cdc_010(
+                    module,
+                    crossings,
+                    clock_spec,
+                    ctx=ctx,
+                    use_heuristic=cdc_010_heuristic,
+                )
             )
         else:
             out.extend(rule(module, crossings, clock_spec, ctx=ctx))
