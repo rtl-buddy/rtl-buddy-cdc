@@ -1,5 +1,6 @@
 create_clock -name ck0 -period 10.0 [get_ports ck0]
 create_clock -name ck1 -period  7.5 [get_ports ck1]
+set_input_delay -clock ck0 1.0 [get_ports d_in]
 # Declare async (so the rule pack would normally check this crossing
 # as a CDC issue) AND physically_exclusive (so the analyzer treats
 # the apparent crossing as unreachable and drops it before rule

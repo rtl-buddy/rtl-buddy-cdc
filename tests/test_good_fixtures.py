@@ -152,6 +152,7 @@ def test_good_fixture_has_no_violations(name: str, expected_async: int) -> None:
 
     module = netlist.load(json_path)
     spec = sdc_mod.parse_file(sdc_path)
+    sdc_mod.synthesize_unconstrained_inputs(spec, module)
     crossings = find_crossings(
         module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
     )
