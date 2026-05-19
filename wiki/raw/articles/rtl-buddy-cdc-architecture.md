@@ -435,9 +435,42 @@ taxonomy needs to land in both.
 
 `sdc.py` is intentionally **not a Tcl interpreter**. SDC is Tcl
 syntactically, but the CDC-relevant subset is small enough that a
-hand-rolled `shlex` tokenizer is the right tool: real Tcl
-interpreters (`tkinter.Tcl()`) execute user code, complicate
-deployment, and add a non-Python dependency to the wheel.
+hand-rolled Tcl-aware tokenizer plus a per-command arg-spec table is
+the right tool: real Tcl interpreters (`tkinter.Tcl()`) execute user
+code, complicate deployment, and add a non-Python dependency to the
+wheel. The trade-off and the conditions under which we'd revisit it
+are recorded on rtl-buddy-cdc#144.
+
+The implementation has two layers, introduced together in the #144
+rewrite (after the pointwise fixes for #140 and #142 made clear the
+old shlex-based shape was generating bugs of the same class):
+
+1. **Layer 1 — Tcl word tokenizer** (`_tokenize`). Consumes the SDC
+   source and emits a list of word lists, one per logical command
+   line. ``{...}`` braces and ``[...]`` brackets are single tokens
+   with nesting respected, ``\<newline>`` collapses line continuation
+   to a space, ``"..."`` strips quoting (backslash escapes the next
+   character inside), ``#`` at a word boundary comments to
+   end-of-line. The single-token form ``{ck_a}`` / ``[ck_a]`` —
+   ground zero for #142 — comes through as one word, not two.
+
+2. **Layer 2 — Per-command arg-spec table** (`ARG_SPECS`). Each
+   supported command declares its flags with arity:
+   `Arity.ZERO` (bare flag), `Arity.ONE` (flag plus one word), or
+   `Arity.GREEDY` (flag slurps non-flag words until the next
+   `-flag`). `_slice` walks the word list against the spec and
+   returns a `Parsed(flags, tail)` bag the handlers consume
+   directly. No per-command "walk forward until the next `-flag`"
+   loop — that pattern, used in the pre-#144 parser, is what
+   produced #140 (the source-swallowing-target bug).
+
+The collection-valued operands every command takes — port lists,
+clock lists, pin lists — classify as `Arity.ONE` because the
+tokenizer hands them through as a single word: `[get_ports clk]` is
+one word, `{ck_a ck_b}` is one word, `clk` is one word.
+`Arity.GREEDY` exists for `-group`, `-from`, and `-to` so the parser
+tolerates the un-collection form (`-group ck_a ck_b` without braces)
+that some SDC files in the wild use.
 
 ### 6.1 What the parser handles today
 
@@ -453,9 +486,19 @@ set_input_delay  -clock <name> … [get_ports <port>]
 set_output_delay -clock <name> … [get_ports <port>]
 ```
 
-Plus: `#` comments, `\` line continuation, and a permissive
+Every collection-valued operand on every supported command accepts
+all three Tcl-flavoured forms: bracket (`[get_ports clk]`), brace
+(`{clk}` — single or multi-token), and bare identifier (`clk`). The
+test suite pins each form for each command in
+`tests/test_sdc.py` (see the "issue #144: brace / bracket / bare
+form coverage per command" section).
+
+Plus: `#` comments, `\<newline>` line continuation, and a permissive
 flag-skipping pattern for unrecognised options on otherwise-known
-commands (so vendor-specific dialects don't choke).
+commands (so vendor-specific dialects don't choke). The unknown-flag
+heuristic in `_slice`: if the next token doesn't look like another
+flag, the unknown flag is assumed to take one operand and both are
+skipped; otherwise only the flag itself is skipped.
 
 Generated clocks fold back into their master via `ClockSpec.resolve`
 unless an explicit `set_clock_groups -asynchronous` overrides the
@@ -467,13 +510,6 @@ chains. `set_false_path -from [get_clocks A] -to [get_clocks B]` is
 treated as a pairwise async hint (equivalent to async groups for that
 specific pair). Exclusive groups drop crossings as unreachable in
 `_filter_async` before any rule sees them.
-
-The `-source` argument is consumed by scanning forward to the next
-`-` flag rather than skipping a fixed token count, because shlex
-splits `[get_ports ck_a]` into two tokens (`[get_ports` and `ck_a]`).
-A fixed skip would leak the trailing-`]` half into the target list
-and silently mis-attribute the generated clock to whichever name fell
-out of the bracket parsing.
 
 ### 6.2 What it deliberately ignores
 
@@ -488,7 +524,9 @@ section's intro). Constructs not supported: command substitution
 beyond `[get_clocks …]` / `[get_ports …]` / `[get_pins …]`, `set`
 variables, `expr`, `-filter` clauses inside collection commands,
 and `set_false_path -through` (path-specific, not a clock-pair
-hint).
+hint). If any of these become real requirements, the right move is
+to switch to `tkinter.Tcl()` (the rejected alternative recorded on
+#144), not to grow them onto this tokenizer.
 
 ### 6.3 Diagnostics policy
 

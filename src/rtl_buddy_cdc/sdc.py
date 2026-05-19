@@ -16,24 +16,33 @@ Supported commands:
 Numeric delays, slack, drive, load — all silently dropped. The parser
 only cares about clock topology and async-partitioning, not timing.
 
-This is a hand-rolled tokenizer (shlex), **not** a Tcl interpreter.
-That choice is deliberate: real Tcl interpreters execute user code,
-add a non-Python dependency, and complicate deployment. The
-documented unsupported constructs are command substitution beyond
-``[get_clocks …]`` / ``[get_ports …]`` / ``[get_pins …]``, ``set``
-variables, ``expr``, and ``-filter`` clauses. When the parser sees a
-CDC-relevant command it can't fully understand it appends to
-``ClockSpec.partial_warnings`` so the caller can surface a single
-end-of-parse warning rather than spamming line-by-line.
+The implementation has two layers (see issue #144 for the design
+discussion). Layer 1 is a Tcl-aware word tokenizer: ``{...}`` braces
+and ``[...]`` brackets are single tokens with nesting respected, ``\\``
+collapses line continuation to a space, ``"..."`` strips quoting, ``#``
+at a word boundary comments to end-of-line. Layer 2 is a per-command
+:data:`ARG_SPECS` table — each command declares its flags with arity
+(:class:`Arity.ZERO` / ``ONE`` / ``GREEDY``); the slicer turns a word
+list into a (flags, tail) bag the handlers consume directly. No
+per-command "walk forward until the next ``-flag``" loops.
+
+This is **not** a Tcl interpreter. The choice is deliberate: real Tcl
+interpreters execute user code, add a non-Python dependency, and
+complicate deployment. The documented unsupported constructs are
+command substitution beyond ``[get_clocks …]`` / ``[get_ports …]`` /
+``[get_pins …]``, ``set`` variables, ``expr``, and ``-filter`` clauses.
+When the parser sees a CDC-relevant command it can't fully understand
+it appends to :attr:`ClockSpec.partial_warnings` so the caller can
+surface a single end-of-parse warning rather than spamming line-by-line.
 """
 
 from __future__ import annotations
 
+import enum
 import logging
-import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rtl_buddy_cdc.netlist import Module
@@ -212,36 +221,24 @@ class ClockSpec:
         return False
 
 
-# ---- parser -----------------------------------------------------------------
+# ---- parser entry points ----------------------------------------------------
 
 
 def parse(text: str) -> ClockSpec:
     spec = ClockSpec()
-    for raw_line in _logical_lines(text):
-        try:
-            tokens = shlex.split(raw_line, comments=False, posix=True)
-        except ValueError:
-            # Tokenizer choked (unbalanced braces in an unsupported
-            # command, etc.); skip rather than fail the whole file.
+    for words in _tokenize(text):
+        if not words:
             continue
-        if not tokens:
-            continue
-        cmd, args = tokens[0], tokens[1:]
-        if cmd == "create_clock":
-            _handle_create_clock(spec, args)
-        elif cmd == "create_generated_clock":
-            _handle_create_generated_clock(spec, args)
-        elif cmd == "set_clock_groups":
-            _handle_set_clock_groups(spec, args)
-        elif cmd == "set_false_path":
-            _handle_set_false_path(spec, args)
-        elif cmd in {"set_input_delay", "set_output_delay"}:
-            _handle_set_delay(spec, args)
-        else:
+        cmd, args = words[0], words[1:]
+        spec_for_cmd = ARG_SPECS.get(cmd)
+        if spec_for_cmd is None:
             # Drop noise (set_max_delay, set_load, set_drive, …) at
             # DEBUG level so users can see what was skipped via
             # ``--verbose`` without the report being flooded.
             logger.debug("sdc: ignoring unsupported command %r", cmd)
+            continue
+        parsed = _slice(args, spec_for_cmd)
+        _DISPATCH[cmd](spec, parsed)
     return spec
 
 
@@ -280,61 +277,355 @@ def synthesize_unconstrained_inputs(spec: ClockSpec, module: "Module") -> list[s
     return sentinel_ports
 
 
-# ---- internals --------------------------------------------------------------
+# ---- Layer 1: Tcl-aware word tokenizer --------------------------------------
 
 
-def _logical_lines(text: str):
-    """Yield logical SDC lines: strip comments, join \\-continuations."""
-    buf: list[str] = []
-    for line in text.splitlines():
-        stripped = line.split("#", 1)[0].rstrip()
-        if not stripped:
-            if buf:
-                yield "".join(buf)
-                buf = []
-            continue
-        if stripped.endswith("\\"):
-            buf.append(stripped[:-1] + " ")
-        else:
-            buf.append(stripped)
-            yield "".join(buf)
-            buf = []
-    if buf:
-        yield "".join(buf)
+def _tokenize(text: str) -> list[list[str]]:
+    """Tokenize SDC source into a list of word lists, one per command line.
 
+    Handles the Tcl-flavoured syntax that SDC actually uses:
 
-def _handle_create_clock(spec: ClockSpec, args: list[str]) -> None:
-    name: str | None = None
-    period: float | None = None
-    ports: list[str] = []
-    saw_filter = False
+    - Whitespace splits words at the top level.
+    - ``{...}`` braces — single word, nested braces respected, content
+      kept literal (we don't substitute inside).
+    - ``[...]`` brackets — single word, nested brackets respected,
+      content kept literal (we treat the bracket span as opaque; the
+      handler peels ``get_ports`` / ``get_pins`` / ``get_clocks``).
+    - ``"..."`` double-quotes — single word; the quotes are stripped
+      and ``\\<c>`` escapes the next character inside.
+    - ``\\<newline>`` line continuation collapses to a single space.
+    - ``#`` at a word boundary starts a comment to end-of-line; the
+      partial command (if any) is flushed, matching the existing
+      "comments break continuation" behaviour.
+    - ``\\n`` ends a logical command.
 
+    Out-of-scope on purpose (see issue #144's "Rejected alternative"
+    section): variable expansion (``$x``), ``expr``, ``proc``, command
+    substitution evaluation, ``source`` includes. If any of these
+    become real requirements, switch to ``tkinter.Tcl()`` rather than
+    grow them onto this tokenizer.
+    """
+    lines: list[list[str]] = []
+    current: list[str] = []
+    word: list[str] = []
     i = 0
-    while i < len(args):
-        tok = args[i]
-        if tok == "-name" and i + 1 < len(args):
-            name = args[i + 1]
+    n = len(text)
+
+    def flush_word() -> None:
+        if word:
+            current.append("".join(word))
+            word.clear()
+
+    def flush_line() -> None:
+        flush_word()
+        if current:
+            lines.append(current.copy())
+            current.clear()
+
+    while i < n:
+        c = text[i]
+
+        # Line continuation: backslash-newline collapses to whitespace.
+        if c == "\\" and i + 1 < n and text[i + 1] == "\n":
+            flush_word()
             i += 2
-        elif tok == "-period" and i + 1 < len(args):
-            period = float(args[i + 1])
-            i += 2
-        elif tok == "-waveform" and i + 1 < len(args):
-            i += 2  # ignore (CDC doesn't care about edge phase)
-        elif tok in {"-add", "-comment"} or tok.startswith("-"):
-            if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            continue
+
+        # Newline ends the logical command.
+        if c == "\n":
+            flush_line()
+            i += 1
+            continue
+
+        # Top-level whitespace splits words.
+        if c in " \t\r":
+            flush_word()
+            i += 1
+            continue
+
+        # Comment at word boundary: skip to end-of-line. A comment that
+        # appears between continued lines breaks the continuation,
+        # matching the previous line-based behaviour.
+        if c == "#" and not word:
+            flush_line()
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+
+        # Brace word — nested braces respected, content kept literal.
+        if c == "{" and not word:
+            depth = 1
+            start = i
+            i += 1
+            while i < n and depth > 0:
+                ch = text[i]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                i += 1
+            current.append(text[start:i])
+            continue
+
+        # Bracket word — nested brackets respected, content kept literal.
+        if c == "[" and not word:
+            depth = 1
+            start = i
+            i += 1
+            while i < n and depth > 0:
+                ch = text[i]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                i += 1
+            current.append(text[start:i])
+            continue
+
+        # Double-quoted word — strip quotes; backslash escapes the next char.
+        if c == '"' and not word:
+            i += 1
+            buf: list[str] = []
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n:
+                    buf.append(text[i + 1])
+                    i += 2
+                else:
+                    buf.append(text[i])
+                    i += 1
+            current.append("".join(buf))
+            if i < n:
+                i += 1  # closing quote
+            continue
+
+        word.append(c)
+        i += 1
+
+    flush_line()
+    return lines
+
+
+# ---- Layer 2: per-command argument specs ------------------------------------
+
+
+class Arity(enum.Enum):
+    """Operand shape a flag carries in an SDC command.
+
+    - :attr:`ZERO` — bare flag with no operand (``-asynchronous``).
+    - :attr:`ONE` — flag followed by exactly one word
+      (``-name foo``, ``-period 10``). With a Tcl-aware tokenizer
+      ``{ck_a ck_b}`` and ``[get_ports clk]`` are *single words*, so
+      collection-valued flags still classify as :attr:`ONE`.
+    - :attr:`GREEDY` — flag slurps every non-flag word up to the next
+      ``-flag`` or end-of-command. Used for endpoint flags
+      (``-from``/``-to``) and ``-group`` where SDC files in the wild
+      sometimes drop the braces and supply bare names directly.
+    """
+
+    ZERO = enum.auto()
+    ONE = enum.auto()
+    GREEDY = enum.auto()
+
+
+@dataclass(frozen=True)
+class ArgSpec:
+    """Per-command flag table.
+
+    :attr:`flags` maps a flag name (with leading dash) to its arity.
+    :attr:`repeated` lists the flags whose multiple occurrences are
+    semantically distinct (e.g. ``-group``); unlisted flags overwrite
+    on re-occurrence, which matches "last write wins" SDC semantics
+    for flags like ``-name``.
+    """
+
+    flags: dict[str, Arity]
+    repeated: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class Parsed:
+    """Result of slicing a word list against an :class:`ArgSpec`.
+
+    ``flags`` is keyed by every flag in the spec (so a handler can
+    distinguish "flag absent" from "flag present with falsy value"
+    without a ``KeyError``). Each value is a list of *occurrences*:
+
+    - :attr:`Arity.ZERO`: each occurrence is ``True``.
+    - :attr:`Arity.ONE`: each occurrence is the operand word (``str``).
+    - :attr:`Arity.GREEDY`: each occurrence is the list of slurped
+      non-flag words (``list[str]``).
+
+    Use :meth:`present`, :meth:`first`, and :meth:`all` for ergonomic
+    access — handlers should rarely touch ``flags`` directly.
+    """
+
+    flags: dict[str, list[Any]]
+    tail: list[str]
+
+    def present(self, flag: str) -> bool:
+        """Return True if ``flag`` appeared at least once."""
+        return bool(self.flags.get(flag))
+
+    def first(self, flag: str) -> Any:
+        """Return the first occurrence of ``flag``'s operand, or ``None``."""
+        v = self.flags.get(flag)
+        return v[0] if v else None
+
+    def all(self, flag: str) -> list[Any]:
+        """Return every occurrence of ``flag``'s operand (empty list if absent)."""
+        return self.flags.get(flag, []) or []
+
+
+def _slice(words: list[str], spec: ArgSpec) -> Parsed:
+    """Walk a tokenized command and bucket its operands per :class:`ArgSpec`.
+
+    Unknown flags (anything starting with ``-`` not in the spec's flag
+    table) are tolerated using a heuristic: if the next word doesn't
+    look like another flag, both are skipped (assume one-operand
+    arity); otherwise just the flag is skipped. This preserves the
+    previous parser's "ignore vendor dialect quietly" behaviour for
+    flags the CDC pack doesn't care about.
+    """
+    flags: dict[str, list[Any]] = {f: [] for f in spec.flags}
+    tail: list[str] = []
+    i = 0
+    n = len(words)
+    while i < n:
+        w = words[i]
+        if w in spec.flags:
+            arity = spec.flags[w]
+            if arity is Arity.ZERO:
+                flags[w].append(True)
+                i += 1
+            elif arity is Arity.ONE:
+                if i + 1 < n:
+                    flags[w].append(words[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            else:  # GREEDY
+                j = i + 1
+                slurp: list[str] = []
+                while j < n and not words[j].startswith("-"):
+                    slurp.append(words[j])
+                    j += 1
+                flags[w].append(slurp)
+                i = j
+        elif w.startswith("-"):
+            # Unknown flag — apply the conservative skip heuristic.
+            if i + 1 < n and not words[i + 1].startswith("-"):
                 i += 2
             else:
                 i += 1
         else:
-            ports_chunk, saw_filter_chunk = _extract_ports_or_pins(args[i:])
-            ports.extend(ports_chunk)
-            saw_filter = saw_filter or saw_filter_chunk
-            break
+            tail.append(w)
+            i += 1
+    return Parsed(flags=flags, tail=tail)
+
+
+# Shared spec for set_input_delay / set_output_delay — same flag table,
+# same handler, only the docstring differs.
+_DELAY_SPEC = ArgSpec(
+    flags={
+        "-clock": Arity.ONE,
+        "-min": Arity.ZERO,
+        "-max": Arity.ZERO,
+        "-add_delay": Arity.ZERO,
+        "-network_latency_included": Arity.ZERO,
+        "-source_latency_included": Arity.ZERO,
+        "-clock_fall": Arity.ZERO,
+        "-rise": Arity.ZERO,
+        "-fall": Arity.ZERO,
+        "-reference_pin": Arity.ONE,
+        "-level_sensitive": Arity.ONE,
+    },
+)
+
+ARG_SPECS: dict[str, ArgSpec] = {
+    "create_clock": ArgSpec(
+        flags={
+            "-name": Arity.ONE,
+            "-period": Arity.ONE,
+            "-waveform": Arity.ONE,
+            "-add": Arity.ZERO,
+            "-comment": Arity.ONE,
+        },
+    ),
+    "create_generated_clock": ArgSpec(
+        flags={
+            "-name": Arity.ONE,
+            "-source": Arity.ONE,
+            "-master_clock": Arity.ONE,
+            "-divide_by": Arity.ONE,
+            "-multiply_by": Arity.ONE,
+            "-edges": Arity.ONE,
+            "-edge_shift": Arity.ONE,
+            "-duty_cycle": Arity.ONE,
+            "-invert": Arity.ZERO,
+            "-add": Arity.ZERO,
+            "-combinational": Arity.ZERO,
+            "-comment": Arity.ONE,
+        },
+    ),
+    "set_clock_groups": ArgSpec(
+        flags={
+            "-asynchronous": Arity.ZERO,
+            "-logically_exclusive": Arity.ZERO,
+            "-physically_exclusive": Arity.ZERO,
+            "-allow_paths": Arity.ZERO,
+            "-name": Arity.ONE,
+            "-comment": Arity.ONE,
+            "-group": Arity.GREEDY,
+        },
+        repeated=frozenset({"-group"}),
+    ),
+    "set_false_path": ArgSpec(
+        flags={
+            "-from": Arity.GREEDY,
+            "-to": Arity.GREEDY,
+            "-rise_from": Arity.GREEDY,
+            "-fall_from": Arity.GREEDY,
+            "-rise_to": Arity.GREEDY,
+            "-fall_to": Arity.GREEDY,
+            "-through": Arity.GREEDY,
+            "-rise_through": Arity.GREEDY,
+            "-fall_through": Arity.GREEDY,
+            "-comment": Arity.ONE,
+            "-reset_path": Arity.ZERO,
+            "-setup": Arity.ZERO,
+            "-hold": Arity.ZERO,
+        },
+    ),
+    "set_input_delay": _DELAY_SPEC,
+    "set_output_delay": _DELAY_SPEC,
+}
+
+
+# ---- handlers ---------------------------------------------------------------
+
+
+def _handle_create_clock(spec: ClockSpec, p: Parsed) -> None:
+    name = p.first("-name")
+    period_word = p.first("-period")
+    if period_word is None:
+        return
+    try:
+        period = float(period_word)
+    except ValueError:
+        return
+
+    ports: list[str] = []
+    saw_filter = False
+    for word in p.tail:
+        names, sf = _extract_names(word)
+        ports.extend(names)
+        saw_filter = saw_filter or sf
 
     if name is None and ports:
         name = ports[0]
-    if name is None or period is None:
+    if name is None:
         return
+
     if saw_filter:
         spec.partial_warnings.append(
             f"create_clock {name}: ignored unsupported [get_ports -filter ...]"
@@ -342,77 +633,32 @@ def _handle_create_clock(spec: ClockSpec, args: list[str]) -> None:
     spec.clocks[name] = Clock(name=name, period=period, ports=tuple(ports))
 
 
-def _handle_create_generated_clock(spec: ClockSpec, args: list[str]) -> None:
+def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
     """Parse ``create_generated_clock``.
 
     The CDC-relevant fields are ``-name`` and either ``-master_clock``
     or ``-source`` (both indicate the upstream clock). ``-divide_by`` /
     ``-multiply_by`` only matter for the period; CDC treats the
     generated clock as synchronous to its master regardless of ratio.
-    The pin/port target is captured for completeness but unused (the
-    analyzer's clock-domain tracing already follows divider flops to
-    their master clock).
+    The pin/port target is captured for completeness — pin targets
+    land in :attr:`ClockSpec.pin_clocks` so the clock-trace pass can
+    stop walking at the divider boundary instead of collapsing every
+    downstream flop to the upstream port.
     """
-    name: str | None = None
-    master: str | None = None
-    divide_by = 1
-    multiply_by = 1
-    period: float | None = None
-    targets: list[str] = []
-    target_is_pin = False
-    saw_filter = False
+    name = p.first("-name")
+    master_word = p.first("-master_clock")
+    master = _strip_get_clocks(master_word) if master_word is not None else None
 
-    i = 0
-    while i < len(args):
-        tok = args[i]
-        if tok == "-name" and i + 1 < len(args):
-            name = args[i + 1]
-            i += 2
-        elif tok == "-master_clock" and i + 1 < len(args):
-            master = _strip_get_clocks(args[i + 1])
-            i += 2
-        elif tok == "-source":
-            # The source expression is bracketed (``[get_ports ck_a]``
-            # or ``[get_pins u_a/clk_out]``) and shlex splits the
-            # opening bracket from the trailing ``]``-suffixed name.
-            # Consume exactly that one collection; the following
-            # collection is the generated-clock target.
-            i = _skip_collection_arg(args, i + 1)
-        elif tok == "-divide_by" and i + 1 < len(args):
-            try:
-                divide_by = int(args[i + 1])
-            except ValueError:
-                pass
-            i += 2
-        elif tok == "-multiply_by" and i + 1 < len(args):
-            try:
-                multiply_by = int(args[i + 1])
-            except ValueError:
-                pass
-            i += 2
-        elif tok == "-edges" and i + 1 < len(args):
-            # Edge-list form: period derivable but we don't compute it
-            # — CDC doesn't care about edge phase.
-            i += 2
-        elif tok == "-add" or tok == "-combinational":
-            i += 1
-        elif tok in {"-edge_shift", "-comment", "-duty_cycle", "-invert"}:
-            if i + 1 < len(args) and not args[i + 1].startswith("-"):
-                i += 2
-            else:
-                i += 1
-        elif tok.startswith("-"):
-            if i + 1 < len(args) and not args[i + 1].startswith("-"):
-                i += 2
-            else:
-                i += 1
-        else:
-            target_blob = " ".join(args[i:])
-            target_is_pin = "get_pins" in target_blob
-            targets_chunk, saw_filter_chunk = _extract_ports_or_pins(args[i:])
-            targets.extend(targets_chunk)
-            saw_filter = saw_filter or saw_filter_chunk
-            break
+    divide_by = _safe_int(p.first("-divide_by"), default=1)
+    multiply_by = _safe_int(p.first("-multiply_by"), default=1)
+
+    targets: list[str] = []
+    saw_filter = False
+    target_is_pin = any("get_pins" in w for w in p.tail)
+    for word in p.tail:
+        names, sf = _extract_names(word)
+        targets.extend(names)
+        saw_filter = saw_filter or sf
 
     if name is None and targets:
         name = targets[0]
@@ -423,13 +669,12 @@ def _handle_create_generated_clock(spec: ClockSpec, args: list[str]) -> None:
         return
 
     # Derive a placeholder period so downstream code that reads
-    # `clock.period` doesn't crash on generated clocks. If the master
+    # ``clock.period`` doesn't crash on generated clocks. If the master
     # is known and has a period, scale; otherwise default to 0.0 (CDC
     # ignores period anyway).
+    period = 0.0
     if master is not None and master in spec.clocks and divide_by > 0:
         period = spec.clocks[master].period * divide_by / max(multiply_by, 1)
-    if period is None:
-        period = 0.0
 
     if saw_filter:
         spec.partial_warnings.append(
@@ -457,103 +702,10 @@ def _handle_create_generated_clock(spec: ClockSpec, args: list[str]) -> None:
     )
 
 
-def _extract_ports_or_pins(rest: list[str]) -> tuple[list[str], bool]:
-    """Pull port/pin names out of a trailing ``[get_ports …]`` /
-    ``[get_pins …]`` / ``[get_clocks …]`` argument.
-
-    Returns ``(names, saw_unsupported_filter)``. The second tuple
-    element is True if a ``-filter`` clause was present (we can't
-    evaluate Tcl expressions, so the clause is silently dropped and
-    the caller is expected to surface a partial-parse warning).
-    """
-    blob = " ".join(rest)
-    saw_filter = "-filter" in blob
-    for chunk in ("[", "]", "{", "}"):
-        blob = blob.replace(chunk, " ")
-    parts = blob.split()
-    # Drop the get_* command head if present.
-    if parts and parts[0] in {"get_ports", "get_pins", "get_clocks"}:
-        parts = parts[1:]
-    # If there was a -filter, throw away the filter expression — we
-    # can't evaluate it. Names that came before -filter are still
-    # valid, but in the common case nothing precedes it and we end up
-    # with an empty list.
-    if saw_filter:
-        try:
-            cut = parts.index("-filter")
-            parts = parts[:cut]
-        except ValueError:
-            pass
-    # Drop -include_generated_clocks and similar flags but keep their
-    # operands as candidate names if they don't look like flags.
-    cleaned: list[str] = []
-    skip_next = False
-    for tok in parts:
-        if skip_next:
-            skip_next = False
-            continue
-        if tok in {"-include_generated_clocks"}:
-            continue
-        if tok.startswith("-"):
-            # Conservative: skip the flag. If it has an operand we
-            # can't tell from here, but in practice the unsupported
-            # ones we'd hit are -filter (handled above) and
-            # -hierarchical (operand-less).
-            continue
-        cleaned.append(tok)
-    return cleaned, saw_filter
-
-
-def _skip_collection_arg(args: list[str], index: int) -> int:
-    """Return the index after one Tcl-ish collection argument.
-
-    ``shlex`` turns ``[get_ports clk]`` into ``["[get_ports", "clk]"]``.
-    It also leaves simple clock names as a single token. This helper is
-    deliberately small: it is used for option operands such as
-    ``create_generated_clock -source`` where the operand is syntactically
-    one collection, not the rest of the command.
-    """
-    if index >= len(args):
-        return index
-    first = args[index]
-    if first.startswith("["):
-        index += 1
-        if first.endswith("]"):
-            return index
-        while index < len(args):
-            token = args[index]
-            index += 1
-            if token.endswith("]"):
-                break
-        return index
-    if first.startswith("{"):
-        index += 1
-        if first.endswith("}"):
-            return index
-        while index < len(args):
-            token = args[index]
-            index += 1
-            if token.endswith("}"):
-                break
-        return index
-    return index + 1
-
-
-def _strip_get_clocks(token: str) -> str:
-    """Turn ``"[get_clocks foo]"`` or ``"{foo}"`` or ``"foo"`` into ``"foo"``."""
-    cleaned = token
-    for chunk in ("[", "]", "{", "}"):
-        cleaned = cleaned.replace(chunk, " ")
-    parts = [p for p in cleaned.split() if p]
-    if parts and parts[0] == "get_clocks":
-        parts = parts[1:]
-    return parts[0] if parts else token
-
-
-def _handle_set_clock_groups(spec: ClockSpec, args: list[str]) -> None:
-    is_async = "-asynchronous" in args
-    is_logical = "-logically_exclusive" in args
-    is_physical = "-physically_exclusive" in args
+def _handle_set_clock_groups(spec: ClockSpec, p: Parsed) -> None:
+    is_async = p.present("-asynchronous")
+    is_logical = p.present("-logically_exclusive")
+    is_physical = p.present("-physically_exclusive")
 
     if not (is_async or is_logical or is_physical):
         spec.partial_warnings.append(
@@ -562,26 +714,17 @@ def _handle_set_clock_groups(spec: ClockSpec, args: list[str]) -> None:
         )
         return
 
-    # Slurp every non-flag token after each ``-group`` and let
-    # ``_extract_clock_list`` strip braces wholesale. Matches the
-    # pattern ``_handle_set_false_path`` already uses for its endpoint
-    # flags. This is the form that survives ``shlex`` splitting
-    # ``-group { ck0 ck1 }`` into five tokens — see issue #23 for the
-    # earlier bug where the previous "re-glob the next token" fallback
-    # only recovered the first clock.
     groups: list[set[str]] = []
-    i = 0
-    while i < len(args):
-        if args[i] == "-group":
-            j = i + 1
-            while j < len(args) and not args[j].startswith("-"):
-                j += 1
-            members = _extract_clock_list(" ".join(args[i + 1 : j]))
-            if members:
-                groups.append(set(members))
-            i = j
-        else:
-            i += 1
+    for slurped in p.all("-group"):
+        # ``slurped`` is a list[str] of words after ``-group``, up to
+        # the next ``-flag``. With a Tcl-aware tokenizer the common
+        # case is a single word like ``{ck_a ck_b}`` or
+        # ``[get_clocks ck_a]``; the GREEDY arity also tolerates the
+        # un-collection form ``-group ck_a ck_b`` real SDC sometimes
+        # uses.
+        members = _extract_clock_list(" ".join(slurped))
+        if members:
+            groups.append(set(members))
 
     if len(groups) < 2:
         spec.partial_warnings.append(
@@ -595,14 +738,18 @@ def _handle_set_clock_groups(spec: ClockSpec, args: list[str]) -> None:
         spec.exclusive_groups.append(groups)
 
 
-def _handle_set_false_path(spec: ClockSpec, args: list[str]) -> None:
+def _handle_set_false_path(spec: ClockSpec, p: Parsed) -> None:
     """Parse ``set_false_path -from [get_clocks A] -to [get_clocks B]``.
 
     Treated as a pairwise async declaration when both endpoints are
     clock collections. ``-through`` makes this path-specific (not a
     clock-pair hint) — we drop those with a partial-parse warning.
     """
-    if "-through" in args:
+    if (
+        p.present("-through")
+        or p.present("-rise_through")
+        or p.present("-fall_through")
+    ):
         spec.partial_warnings.append(
             "set_false_path: -through clauses are path-specific and "
             "not interpreted as clock-pair async hints"
@@ -613,45 +760,24 @@ def _handle_set_false_path(spec: ClockSpec, args: list[str]) -> None:
     to_clocks: list[str] = []
     saw_non_clock_endpoint = False
 
-    i = 0
-    _ENDPOINT_FLAGS = {
-        "-from",
-        "-to",
-        "-rise_from",
-        "-fall_from",
-        "-rise_to",
-        "-fall_to",
-    }
-    while i < len(args):
-        tok = args[i]
-        if tok in _ENDPOINT_FLAGS:
-            target = "from" if "from" in tok else "to"
-            # Glob forward until the next -flag or end. shlex splits
-            # ``[get_clocks a]`` into ``[get_clocks`` and ``a]`` so we
-            # can't just look at args[i+1].
-            j = i + 1
-            blob_parts: list[str] = []
-            while j < len(args) and not args[j].startswith("-"):
-                blob_parts.append(args[j])
-                j += 1
-            blob = " ".join(blob_parts)
+    for flag, sink in (
+        ("-from", from_clocks),
+        ("-rise_from", from_clocks),
+        ("-fall_from", from_clocks),
+        ("-to", to_clocks),
+        ("-rise_to", to_clocks),
+        ("-fall_to", to_clocks),
+    ):
+        for slurped in p.all(flag):
+            blob = " ".join(slurped)
             if "get_pins" in blob or "get_cells" in blob or "get_ports" in blob:
                 saw_non_clock_endpoint = True
-                i = j
                 continue
-            names, _ = _extract_ports_or_pins(blob_parts)
-            if target == "from":
-                from_clocks.extend(names)
-            else:
-                to_clocks.extend(names)
-            i = j
-        elif tok.startswith("-"):
-            if i + 1 < len(args) and not args[i + 1].startswith("-"):
-                i += 2
-            else:
-                i += 1
-        else:
-            i += 1
+            names: list[str] = []
+            for word in slurped:
+                ns, _ = _extract_names(word)
+                names.extend(ns)
+            sink.extend(names)
 
     if saw_non_clock_endpoint:
         spec.partial_warnings.append(
@@ -672,57 +798,24 @@ def _handle_set_false_path(spec: ClockSpec, args: list[str]) -> None:
                 spec.false_path_pairs.add(frozenset({a, b}))
 
 
-def _handle_set_delay(spec: ClockSpec, args: list[str]) -> None:
+def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
     """Parse ``set_input_delay`` / ``set_output_delay``.
 
     The only CDC-relevant fields are ``-clock <name>`` and the
-    trailing ``[get_ports <port>]``. The numeric delay value, the
-    ``-min``/``-max``/``-add_delay``/``-clock_fall``/``-source_latency_included``
-    flags are all ignored.
+    trailing ``[get_ports <port>]``. The numeric delay value lands in
+    ``p.tail`` alongside the port collection — we pick out anything
+    that looks like a collection and ignore the rest.
     """
-    clock: str | None = None
+    clock_word = p.first("-clock")
+    clock = _strip_get_clocks(clock_word) if clock_word is not None else None
+
     ports: list[str] = []
     saw_filter = False
-
-    i = 0
-    while i < len(args):
-        tok = args[i]
-        if tok == "-clock" and i + 1 < len(args):
-            clock = _strip_get_clocks(args[i + 1])
-            i += 2
-        elif tok in {
-            "-min",
-            "-max",
-            "-add_delay",
-            "-network_latency_included",
-            "-source_latency_included",
-            "-clock_fall",
-            "-rise",
-            "-fall",
-        }:
-            i += 1
-        elif tok in {"-reference_pin", "-level_sensitive"}:
-            if i + 1 < len(args) and not args[i + 1].startswith("-"):
-                i += 2
-            else:
-                i += 1
-        elif tok.startswith("-"):
-            if i + 1 < len(args) and not args[i + 1].startswith("-"):
-                i += 2
-            else:
-                i += 1
-        else:
-            # First non-flag token: either the numeric delay (skip)
-            # or the [get_ports …] target.
-            if "get_ports" in tok or tok.startswith("[") or tok.startswith("{"):
-                names, saw = _extract_ports_or_pins(args[i:])
-                ports.extend(names)
-                saw_filter = saw_filter or saw
-                break
-            else:
-                # Numeric delay: skip and continue to consume the
-                # trailing port spec.
-                i += 1
+    for word in p.tail:
+        if word.startswith("[") or word.startswith("{") or "get_ports" in word:
+            names, sf = _extract_names(word)
+            ports.extend(names)
+            saw_filter = saw_filter or sf
 
     if saw_filter:
         spec.partial_warnings.append("set_*_delay: ignored unsupported -filter clause")
@@ -744,15 +837,81 @@ def _handle_set_delay(spec: ClockSpec, args: list[str]) -> None:
             "set_input_transition / set_load for slew or load defaults."
         )
         return
-    for p in ports:
-        spec.port_clock[p] = clock
+    for port in ports:
+        spec.port_clock[port] = clock
+
+
+_DISPATCH = {
+    "create_clock": _handle_create_clock,
+    "create_generated_clock": _handle_create_generated_clock,
+    "set_clock_groups": _handle_set_clock_groups,
+    "set_false_path": _handle_set_false_path,
+    "set_input_delay": _handle_set_delay,
+    "set_output_delay": _handle_set_delay,
+}
+
+
+# ---- collection-peeling helpers --------------------------------------------
+
+
+def _extract_names(word: str) -> tuple[list[str], bool]:
+    """Peel a single tokenized word into a list of identifier names.
+
+    Accepts the three shapes a port/pin/clock argument can take:
+
+    - ``{ck0 ck1}`` — brace collection, names are whitespace-separated.
+    - ``[get_ports ck0 ck1]`` — bracket form, optional ``get_*`` head
+      stripped, ``-filter`` clauses dropped (returns ``saw_filter=True``
+      so the caller can surface a partial-parse warning).
+    - ``ck0`` — bare identifier.
+
+    Returns ``(names, saw_filter)``.
+    """
+    saw_filter = "-filter" in word
+    cleaned = word
+    for chunk in ("[", "]", "{", "}"):
+        cleaned = cleaned.replace(chunk, " ")
+    parts = cleaned.split()
+    if parts and parts[0] in {"get_ports", "get_pins", "get_clocks"}:
+        parts = parts[1:]
+    if saw_filter:
+        # Filter expressions can contain anything; drop everything
+        # from -filter onwards. Names that appeared before -filter are
+        # still valid, but in practice nothing precedes it and the
+        # list ends up empty.
+        try:
+            cut = parts.index("-filter")
+            parts = parts[:cut]
+        except ValueError:
+            pass
+    cleaned_names: list[str] = []
+    for tok in parts:
+        if tok == "-include_generated_clocks":
+            continue
+        if tok.startswith("-"):
+            # Conservative: skip vendor flags inside a get_* expression.
+            continue
+        cleaned_names.append(tok)
+    return cleaned_names, saw_filter
+
+
+def _strip_get_clocks(token: str) -> str:
+    """Reduce ``"[get_clocks foo]"`` / ``"{foo}"`` / ``"foo"`` to ``"foo"``."""
+    names, _ = _extract_names(token)
+    return names[0] if names else token
 
 
 def _extract_clock_list(token: str) -> list[str]:
-    """Turn ``"{src_clk dst_clk}"`` or ``"src_clk"`` into a list of names."""
-    cleaned = token.replace("{", " ").replace("}", " ")
-    cleaned = cleaned.replace("[", " ").replace("]", " ")
-    parts = [p for p in cleaned.split() if p]
-    if parts and parts[0] == "get_clocks":
-        parts = parts[1:]
-    return parts
+    """Turn ``"{src_clk dst_clk}"`` / ``"src_clk"`` into a name list."""
+    names, _ = _extract_names(token)
+    return names
+
+
+def _safe_int(word: Any, *, default: int) -> int:
+    """``int(word)`` with a default fallback (mirrors the old try/except)."""
+    if word is None:
+        return default
+    try:
+        return int(word)
+    except (TypeError, ValueError):
+        return default

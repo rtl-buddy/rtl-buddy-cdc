@@ -478,3 +478,135 @@ def test_set_input_delay_without_clock_and_without_ports_stays_silent() -> None:
         """
     )
     assert spec.partial_warnings == []
+
+
+# ---- issue #144: brace / bracket / bare form coverage per command ----------
+#
+# Every collection-valued operand on a supported SDC command can take
+# one of three forms with the Tcl-aware tokenizer:
+#
+#     [get_ports x]     bracket / command-substitution form
+#     {x y}             brace / Tcl-list form
+#     x                 bare identifier
+#
+# These tests pin each form for each supported command. With the old
+# shlex layer, single-token braces and brackets were chronic
+# correctness foot-guns (#140 / #142); under the rewrite the
+# tokenizer hands them through as one word and the handlers stay
+# uniform across forms.
+
+
+def test_create_clock_brace_target_form() -> None:
+    spec = parse("create_clock -name clk -period 10.0 {clk}")
+    assert spec.clocks["clk"].ports == ("clk",)
+
+
+def test_create_clock_bare_target_form() -> None:
+    spec = parse("create_clock -name clk -period 10.0 clk")
+    assert spec.clocks["clk"].ports == ("clk",)
+
+
+def test_create_generated_clock_brace_source_brace_target() -> None:
+    """Both endpoints in brace form. The brace-source case was the
+    #142 regression; pinning the brace-target alongside it covers
+    the symmetric shape."""
+    spec = parse(
+        """
+        create_clock -name ck_a -period 10.0 [get_ports ck_a]
+        create_generated_clock -name ck_b -master_clock ck_a \\
+            -source {ck_a} {ck_b}
+        """
+    )
+    assert spec.clocks["ck_b"].ports == ("ck_b",)
+
+
+def test_create_generated_clock_bare_source_bare_target() -> None:
+    """Bare identifiers on both sides — the most permissive shape.
+    Older shlex-based parser handled this too, but the rewrite has
+    to keep handling it (real SDC files use bare names for forwarded
+    clocks)."""
+    spec = parse(
+        """
+        create_clock -name ck_a -period 10.0 [get_ports ck_a]
+        create_generated_clock -name ck_b -master_clock ck_a \\
+            -source ck_a ck_b
+        """
+    )
+    assert spec.clocks["ck_b"].ports == ("ck_b",)
+
+
+def test_set_clock_groups_bracket_form_group() -> None:
+    """``-group [get_clocks ck_a ck_b]`` — the bracket form most
+    vendor SDC writers prefer when groups have many members."""
+    spec = parse(
+        """
+        create_clock -name ck0 -period 10 [get_ports ck0]
+        create_clock -name ck1 -period 7  [get_ports ck1]
+        set_clock_groups -asynchronous \\
+            -group [get_clocks ck0] -group [get_clocks ck1]
+        """
+    )
+    assert spec.are_async("ck0", "ck1")
+
+
+def test_set_clock_groups_bare_form_group() -> None:
+    """``-group ck0 -group ck1`` without any brace / bracket markers.
+    Survives via the GREEDY arity in the arg-spec layer — bare names
+    after ``-group`` are slurped until the next ``-flag``."""
+    spec = parse(
+        """
+        create_clock -name ck0 -period 10 [get_ports ck0]
+        create_clock -name ck1 -period 7  [get_ports ck1]
+        set_clock_groups -asynchronous -group ck0 -group ck1
+        """
+    )
+    assert spec.are_async("ck0", "ck1")
+
+
+def test_set_false_path_brace_endpoints() -> None:
+    """Brace-form ``-from``/``-to`` endpoint collections."""
+    spec = parse(
+        """
+        create_clock -name a -period 10 [get_ports a]
+        create_clock -name b -period 7  [get_ports b]
+        set_false_path -from {a} -to {b}
+        """
+    )
+    assert spec.are_async("a", "b")
+
+
+def test_set_false_path_bare_endpoints() -> None:
+    """Bare-name ``-from`` / ``-to`` endpoints — uncommon but legal."""
+    spec = parse(
+        """
+        create_clock -name a -period 10 [get_ports a]
+        create_clock -name b -period 7  [get_ports b]
+        set_false_path -from a -to b
+        """
+    )
+    assert spec.are_async("a", "b")
+
+
+def test_set_input_delay_brace_port_form() -> None:
+    """Brace-form target port for ``set_input_delay``."""
+    spec = parse(
+        """
+        create_clock -name clk -period 10 [get_ports clk]
+        set_input_delay -clock clk 1.5 {d_in}
+        """
+    )
+    assert spec.clock_for_port("d_in") == "clk"
+
+
+def test_set_input_delay_bracket_clock_argument() -> None:
+    """``-clock [get_clocks clk]`` — the bracket form for the clock
+    operand itself. Existing tests all use the bare-name shape; this
+    one pins the bracket shape so the rewrite's _strip_get_clocks
+    keeps handling it."""
+    spec = parse(
+        """
+        create_clock -name clk -period 10 [get_ports clk]
+        set_input_delay -clock [get_clocks clk] 1.5 [get_ports d_in]
+        """
+    )
+    assert spec.clock_for_port("d_in") == "clk"
