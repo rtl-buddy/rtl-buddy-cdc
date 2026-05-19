@@ -1,0 +1,9 @@
+# External polarity declaration for issue #129's --reset-hints path.
+# Parallel to (* reset_polarity = "low" *) on the rst_n port; here
+# we ship it externally so the SV file can stay attribute-free.
+reset-hints:
+  schema_version: "1.0"
+  ports:
+    - name: rst_n
+      polarity: low
+      type: async

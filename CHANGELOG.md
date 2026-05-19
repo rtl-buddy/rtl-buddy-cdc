@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **External reset hints (`--reset-hints FILE.yaml`)** (#129). New
+  CLI flag on both ``analyze`` and ``lint`` that loads an external
+  YAML declaration of reset-port polarity / synchroniser
+  annotations, parallel to the in-RTL ``(* reset_polarity *)`` /
+  ``(* reset_sync *)`` SV attributes. Same vocabulary, external
+  file when the user can't touch RTL (vendor IP, generated
+  wrappers, multi-block boards where one file beats scattered
+  attributes). Schema is the ``reset-hints:`` block with optional
+  ``ports`` (``name`` / ``polarity`` / ``type`` / ``clock``) and
+  ``synchronizers`` (exact ``instance`` or shell-glob
+  ``instance_glob``; matched against the resolved hierarchical
+  path, so the same hint covers both Yosys-flatten and slang
+  cell-name shapes). Schema version pinned by
+  ``rtl_buddy_cdc.reset_hints.SCHEMA_VERSION`` (``"1.0"``); strict
+  parsing fails loudly on unknown keys / malformed enum values
+  with file context. Hints **win** on disagreement with the SV
+  attribute path; synchroniser sets union with no precedence
+  question. Threaded into ``run_all`` via the new
+  ``reset_hints=`` keyword, and into the ``--emit-reset-domain-map``
+  pipeline so the artefact reflects the merged view. Gated on a
+  new ``[hints]`` install extra
+  (``pip install 'rtl-buddy-cdc[hints]'``) — default installs stay
+  ``typer``-only; PyYAML pulls in only when the extra is requested,
+  matching the ``[slang]`` precedent. Missing-extra path raises
+  ``ResetHintsUnavailable`` with the install command, the loader
+  raises ``ResetHintsError`` on validation failures (both surface
+  through the CLI as exit 2). Schema reference at
+  ``wiki/raw/articles/rtl-buddy-cdc-reset-hints-schema.md``;
+  analysis-doc §8.3 promoted from "planned" to a working
+  reference.
 - **`--emit-reset-domain-map` reset-domain artifact** (#108). New CLI
   flag on both ``analyze`` and ``lint`` that writes a stable v1.0
   JSON sidecar capturing the reset-tree view of the design, parallel
