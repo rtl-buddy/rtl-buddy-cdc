@@ -38,7 +38,7 @@ src/rtl_buddy_cdc/
 ├── netlist.py         # Yosys write_json loader (Module / Cell / Port / Netname)
 ├── flops.py           # FF cell zoo (FF_CELL_TYPES) + Flop dataclass
 ├── domain.py          # trace_clock_root + find_crossings (BFS) + Crossing
-├── sdc.py             # shlex-based SDC parser (create_clock, set_clock_groups -async)
+├── sdc.py             # SDC parser: Tcl tokenizer + per-command arg-spec table
 ├── rules.py           # CDC-001..-008 + RULES registry + run_all + helpers
 ├── waivers.py         # Spyglass-.swl-style waiver parser + apply()
 └── reporter.py        # AnalysisResult + render_text / render_json / render_sarif
@@ -170,25 +170,47 @@ pairing is the regression net for false positives.
 
 ## Extending the SDC parser
 
-The parser is intentionally `shlex`-based, **not** a Tcl
-interpreter. Don't pull in `tkinter.Tcl()` or a third-party Tcl host
-without first opening an issue — the design choice is documented in
+The parser is intentionally a Tcl-aware tokenizer plus per-command
+arg-spec table, **not** a Tcl interpreter. Don't pull in
+`tkinter.Tcl()` or a third-party Tcl host without first opening an
+issue — the design choice is documented in
 `wiki/raw/articles/rtl-buddy-cdc-architecture.md` §6.
+
+The two-layer shape landed in #144 (after the pointwise fixes
+#140 / #142 made the underlying bug class clear). Layer 1 is
+`_tokenize`: a Tcl-aware word tokenizer where `{...}` braces and
+`[...]` brackets are single tokens with nesting respected. Layer 2
+is `ARG_SPECS`: a per-command table declaring each flag's arity
+(`ZERO` / `ONE` / `GREEDY`); the dispatcher slices the word list
+into a typed `Parsed(flags, tail)` bag the handlers consume directly.
+The #144 issue thread records the rejected `tkinter.Tcl()`
+alternative and the conditions under which we'd switch tracks
+(`$var` expansion, `source` includes, `unknown` / `proc`-driven
+vendor commands). If your work motivates any of those triggers,
+raise it as a new issue referencing the #144 discussion rather than
+growing variable expansion onto the current tokenizer.
 
 When adding a new SDC command:
 
 1. Extend `ClockSpec` with the new field (default-empty so existing
    callers keep working).
-2. Add a `_handle_<command>` function in `sdc.py`; dispatch from the
-   `parse()` switch.
-3. Tolerate unknown sub-flags using the same peek-and-skip pattern
-   as `_handle_create_clock`.
-4. Per the documented diagnostics policy: log a debug line for any
-   ignored command at `--verbose`, and accumulate a warning when a
-   CDC-relevant command was present but couldn't be fully parsed
-   (e.g. `set_false_path -through`).
+2. Add a new entry to `ARG_SPECS` declaring each flag's arity and any
+   flags whose multiple occurrences are semantically distinct
+   (`repeated=...`).
+3. Add a `_handle_<command>` function in `sdc.py` that consumes a
+   `Parsed` bag via `p.first(flag)` / `p.present(flag)` / `p.all(flag)`;
+   wire it up in the `_DISPATCH` table.
+4. Per the documented diagnostics policy: truly unrecognised commands
+   are dropped at the `logging.DEBUG` level by the central dispatcher.
+   Accumulate a `partial_warnings` entry when a CDC-relevant command
+   was present but couldn't be fully parsed (e.g.
+   `set_false_path -through`).
 5. Add a `tests/test_sdc.py` case for the new command and a fixture
-   exercising it end-to-end.
+   exercising it end-to-end. Cover the three forms every
+   collection-valued operand can take: bracket (`[get_ports x]`),
+   brace (`{x}`), and bare identifier (`x`) — the
+   "issue #144: brace / bracket / bare form coverage per command"
+   section is the canonical example.
 
 ## Design proposals live on GitHub, not in `docs/proposals/`
 
