@@ -15,7 +15,7 @@ from typing import Callable, Literal
 
 from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.pulse import classify_d_pin_shape
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
@@ -1455,6 +1455,210 @@ def check_cdc_008(
     return violations
 
 
+# Yosys-primitive control-pin map for CDC-010. Library-specific names
+# (``CE`` / ``E`` / ``GATE`` / ``SE``) are deferred to a follow-up
+# (proposal §8.3 in ``docs/proposals/clock-network-glitch.md``).
+_CDC_010_CONTROL_PINS: dict[str, frozenset[str]] = {
+    "$mux": frozenset({"S"}),
+    "$dffe": frozenset({"EN"}),
+    "$dlatch": frozenset({"EN"}),
+}
+
+
+def _control_pins_for(cell_type: str) -> frozenset[str]:
+    """Control-pin names for a clock-network cell type.
+
+    A *control pin* is a non-clock input whose transition can chop the
+    cell's output clock — the select on a clock mux (``$mux.S``), the
+    enable on a ``$dffe`` integrated clock gate, or the enable on a
+    ``$dlatch`` ICG. Buffers / inverters / AND-tree gates have no
+    such pin: any control comes via the input clocks, which is
+    CDC-008 territory (a clock arriving on a non-CLK pin), not
+    CDC-010 (a wrong-domain control transitioning the gate).
+
+    Yosys primitives only. Tech-mapped library shapes (``CE`` / ``E``
+    / ``GATE`` / ``SE``) are tracked under the phase-3 follow-up.
+    """
+    return _CDC_010_CONTROL_PINS.get(cell_type, frozenset())
+
+
+def _clock_input_domains_for(
+    module: Module,
+    cell: Cell,
+    ctx: _RuleContext,
+    clock_spec: ClockSpec | None,
+    control_ports: frozenset[str],
+) -> set[str]:
+    """Set of clock-domain names that drive ``cell``'s non-control inputs.
+
+    Walks backward through combinational cells from every non-control,
+    non-output input pin and collects:
+
+    * the clock domain of any flop whose ``Q`` is reached (via
+      ``ctx.domains``); and
+    * the SDC clock name of any top-level clock port reached directly.
+
+    Empty set means none of the non-control inputs trace back to a
+    classifiable clock source — the rule treats that as "can't prove
+    async-ness" and stays silent, matching the false-negative-biased
+    posture of CDC-009 / CDC-011.
+    """
+    domains: set[str] = set()
+    seen: set[Bit] = set()
+    frontier: list[tuple[Bit, int]] = []
+    for port_name, bits in cell.connections.items():
+        if port_name in _OUTPUT_PINS or port_name in control_ports:
+            continue
+        for b in bits:
+            if isinstance(b, int):
+                frontier.append((b, 0))
+
+    max_depth = 12
+    while frontier:
+        nxt: list[tuple[Bit, int]] = []
+        for bit, depth in frontier:
+            if bit in seen:
+                continue
+            seen.add(bit)
+            drv = ctx.bit_drivers.get(bit)
+            if drv is None:
+                if clock_spec is None:
+                    continue
+                port = module.port_of_bit(bit)
+                if port is None:
+                    continue
+                clk = clock_spec.clock_for_port(port.name)
+                if clk is not None:
+                    domains.add(clk)
+                continue
+            src_cell_name, out_port, _idx = drv
+            if out_port == "Q":
+                src_clk = ctx.domains.get(src_cell_name)
+                if src_clk is not None:
+                    domains.add(src_clk)
+                continue
+            if depth >= max_depth:
+                continue
+            src_cell = module.cells[src_cell_name]
+            for in_port, in_bits in src_cell.connections.items():
+                if in_port in _OUTPUT_PINS:
+                    continue
+                for b in in_bits:
+                    if isinstance(b, int):
+                        nxt.append((b, depth + 1))
+        frontier = nxt
+    return domains
+
+
+def check_cdc_010(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001 — flop-D-pin enumeration doesn't apply
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-010 — Glitch on the clock network from a wrong-domain control signal.
+
+    Dual of :func:`check_cdc_008`. CDC-008 fires when a clock arrives
+    on a data pin; CDC-010 fires when the *control* pin of a clock-
+    network cell (a clock mux's ``S``, an ICG's ``EN``) is driven by
+    a flop in a clock domain asynchronous to every one of the cell's
+    own clock inputs. The async control transition chops the output
+    clock — every downstream flop sees a runt edge and the damage is
+    not recoverable by any synchronizer at the sink.
+
+    Detection is structural: walk every cell in
+    :func:`_clock_network_cells`, take each control pin from
+    :func:`_control_pins_for`, backward-walk the control bits via
+    :func:`_backward_flop_fanin`, and compare each source flop's
+    domain against the cell's own clock-input domains from
+    :func:`_clock_input_domains_for`. Fires when the source domain
+    is async to *every* clock-input domain — a control flop sharing
+    one of the gated clocks is fine, and an SDC ``set_clock_groups``
+    declaring the pair synchronous suppresses naturally via
+    :meth:`ClockSpec.are_async`.
+
+    Coverage is Yosys-primitive only: ``$mux.S``, ``$dffe.EN``,
+    ``$dlatch.EN``. Tech-mapped library cell shapes (``CE`` / ``E``
+    / ``GATE`` / ``SE``) are tracked under the phase-3 follow-up
+    (proposal §8.3).
+
+    Severity is ``error``: the glitch propagates to every downstream
+    flop and cannot be recovered at the sink.
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    violations: list[Violation] = []
+
+    def _async(a: str, b: str) -> bool:
+        if clock_spec is None:
+            return a != b
+        ca = clock_spec.clock_for_port(a) or a
+        cb = clock_spec.clock_for_port(b) or b
+        return clock_spec.are_async(ca, cb)
+
+    clock_net_cells = _clock_network_cells(module, ctx.bit_drivers)
+    seen: set[tuple[str, str, str]] = set()
+
+    for cell_name in sorted(clock_net_cells):
+        cell = module.cells[cell_name]
+        control_ports = _control_pins_for(cell.type)
+        if not control_ports:
+            continue
+        cell_clock_domains: set[str] | None = None
+        for ctrl_port in sorted(control_ports):
+            ctrl_bits = cell.connections.get(ctrl_port, ())
+            if not ctrl_bits:
+                continue
+            ctrl_fanin = _backward_flop_fanin(module, ctrl_bits, ctx.bit_drivers)
+            if not ctrl_fanin:
+                # Control driven by a top-level port or a constant —
+                # same posture RDC-001 takes for ARST sourced from ports.
+                continue
+            if cell_clock_domains is None:
+                cell_clock_domains = _clock_input_domains_for(
+                    module, cell, ctx, clock_spec, control_ports
+                )
+            if not cell_clock_domains:
+                # Cell's own clock-input domains aren't classifiable
+                # (e.g. inputs sit behind unmapped library cells). Stay
+                # silent rather than fire blind.
+                continue
+            for src_flop in sorted(ctrl_fanin):
+                src_clk = ctx.domains.get(src_flop)
+                if src_clk is None:
+                    continue
+                if src_clk in cell_clock_domains:
+                    continue
+                if not all(_async(src_clk, d) for d in cell_clock_domains):
+                    continue
+                key = (cell_name, ctrl_port, src_flop)
+                if key in seen:
+                    continue
+                seen.add(key)
+                violations.append(
+                    Violation(
+                        rule_id="CDC-010",
+                        severity="error",
+                        message=(
+                            f"clock-network cell {cell_name} "
+                            f"({cell.type}) control pin {ctrl_port} is "
+                            f"driven by flop {src_flop} in domain "
+                            f"{src_clk}, asynchronous to the cell's "
+                            f"clock-input domain(s) "
+                            f"({sorted(cell_clock_domains)}); an async "
+                            f"control transition can chop the output "
+                            f"clock into runt pulses on every "
+                            f"downstream flop. Synchronize {src_flop} "
+                            f"into one of the gated-clock domains, or "
+                            f"use a glitch-free clock-mux library cell."
+                        ),
+                        cell_name=cell_name,
+                    )
+                )
+    return violations
+
+
 def check_rdc_001(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -2233,6 +2437,7 @@ RULES: dict[str, RuleFn] = {
     "RDC-005": check_rdc_005,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
+    "CDC-010": check_cdc_010,
     "CDC-011": check_cdc_011,
 }
 
