@@ -175,6 +175,15 @@ interpreter. Don't pull in `tkinter.Tcl()` or a third-party Tcl host
 without first opening an issue — the design choice is documented in
 `wiki/raw/articles/rtl-buddy-cdc-architecture.md` §6.
 
+There is an active proposal (#144) to replace the shlex layer with
+a small Tcl-aware tokenizer plus a per-command arg-spec table —
+motivated by the bug class that produced #140 / #142. The issue
+records the rejected `tkinter.Tcl()` alternative and the conditions
+under which we'd switch tracks (`$var` expansion, `source` includes,
+`unknown`/`proc`-driven vendor commands). Read it before adding a
+new SDC command — if your work motivates any of those triggers,
+flag it on #144 rather than growing more hand-rolled walks.
+
 When adding a new SDC command:
 
 1. Extend `ClockSpec` with the new field (default-empty so existing
