@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from rtl_buddy_cdc.sdc import parse
 
 
@@ -165,26 +163,31 @@ def test_cgc_source_last_pin_source_with_pin_target() -> None:
     assert spec.resolve("ck_c0") == "ck_a"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "_skip_collection_arg pre-increments past the first token before "
-        "checking for the closer, so a single-token collection like "
-        "``{ck_a}`` or ``[clk]`` is mis-counted and the trailing target "
-        "gets swallowed. Fix: add an ``if first.endswith(...)`` early "
-        "return after the initial ``index += 1`` in each branch. Flip "
-        "this xfail when the helper is corrected."
-    ),
-)
 def test_cgc_source_last_brace_source_retains_target() -> None:
     """Tcl brace-form source ``{ck_a}`` — uncommon but legal. Same
     failure shape (and same one-line fix) applies to single-token
-    bracket sources like ``[clk]``."""
+    bracket sources like ``[clk]``. Regression for issue #142: the
+    helper used to pre-increment past the first token before checking
+    for the closer, so a single-token collection got mis-counted and
+    the trailing target was swallowed."""
     spec = parse(
         """
         create_clock -name ck_a -period 10.0 [get_ports ck_a]
         create_generated_clock -name ck_b0 -master_clock ck_a \\
             -source {ck_a} [get_ports ck_b0]
+        """
+    )
+    assert spec.clocks["ck_b0"].ports == ("ck_b0",)
+
+
+def test_cgc_source_last_single_token_bracket_source_retains_target() -> None:
+    """Single-token bracket form ``[clk]`` — the other shape covered
+    by the issue #142 fix. Pair to the brace test above."""
+    spec = parse(
+        """
+        create_clock -name ck_a -period 10.0 [get_ports ck_a]
+        create_generated_clock -name ck_b0 -master_clock ck_a \\
+            -source [ck_a] [get_ports ck_b0]
         """
     )
     assert spec.clocks["ck_b0"].ports == ("ck_b0",)
