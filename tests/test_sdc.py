@@ -99,6 +99,20 @@ def test_create_generated_clock_div2_resolves_to_master() -> None:
     assert not spec2.are_async("clk", "clk_div2")
 
 
+def test_create_generated_clock_source_does_not_consume_target_port() -> None:
+    spec = parse(
+        """
+        create_clock -name clk -period 10.0 [get_ports clk]
+        create_generated_clock -name clk_fwd -master_clock clk \\
+            -source [get_ports clk] [get_ports clk_fwd]
+        """
+    )
+
+    assert spec.clocks["clk_fwd"].ports == ("clk_fwd",)
+    assert spec.clock_for_port("clk_fwd") == "clk_fwd"
+    assert spec.resolve("clk_fwd") == "clk"
+
+
 def test_generated_clock_async_override_wins() -> None:
     spec = parse(
         """

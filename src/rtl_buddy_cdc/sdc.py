@@ -374,15 +374,10 @@ def _handle_create_generated_clock(spec: ClockSpec, args: list[str]) -> None:
         elif tok == "-source":
             # The source expression is bracketed (``[get_ports ck_a]``
             # or ``[get_pins u_a/clk_out]``) and shlex splits the
-            # opening bracket from the trailing ``]``-suffixed name —
-            # so we consume forward until the next ``-`` flag rather
-            # than a fixed token count. The source is currently used
-            # only as documentation; the master identity comes from
-            # ``-master_clock``.
-            j = i + 1
-            while j < len(args) and not args[j].startswith("-"):
-                j += 1
-            i = j
+            # opening bracket from the trailing ``]``-suffixed name.
+            # Consume exactly that one collection; the following
+            # collection is the generated-clock target.
+            i = _skip_collection_arg(args, i + 1)
         elif tok == "-divide_by" and i + 1 < len(args):
             try:
                 divide_by = int(args[i + 1])
@@ -507,6 +502,37 @@ def _extract_ports_or_pins(rest: list[str]) -> tuple[list[str], bool]:
             continue
         cleaned.append(tok)
     return cleaned, saw_filter
+
+
+def _skip_collection_arg(args: list[str], index: int) -> int:
+    """Return the index after one Tcl-ish collection argument.
+
+    ``shlex`` turns ``[get_ports clk]`` into ``["[get_ports", "clk]"]``.
+    It also leaves simple clock names as a single token. This helper is
+    deliberately small: it is used for option operands such as
+    ``create_generated_clock -source`` where the operand is syntactically
+    one collection, not the rest of the command.
+    """
+    if index >= len(args):
+        return index
+    first = args[index]
+    if first.startswith("["):
+        index += 1
+        while index < len(args):
+            token = args[index]
+            index += 1
+            if token.endswith("]"):
+                break
+        return index
+    if first.startswith("{"):
+        index += 1
+        while index < len(args):
+            token = args[index]
+            index += 1
+            if token.endswith("}"):
+                break
+        return index
+    return index + 1
 
 
 def _strip_get_clocks(token: str) -> str:
