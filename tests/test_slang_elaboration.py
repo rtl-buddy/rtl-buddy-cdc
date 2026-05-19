@@ -96,6 +96,20 @@ def test_cdc_008_fires_on_bad_clock_as_data() -> None:
     assert _run("bad_clock_as_data") == ["CDC-008"]
 
 
+def test_cdc_010_fires_on_bad_async_clock_mux() -> None:
+    """Clock-mux select driven by a foreign-domain flop — CDC-010
+    must fire under slang too. Relies on the slang frontend emitting
+    a Yosys-shape ``$mux`` for the SV ternary on the clock signal."""
+    assert _run("bad_async_clock_mux") == ["CDC-010"]
+
+
+def test_cdc_010_silent_on_good_sync_clock_mux() -> None:
+    """Paired positive case — synchronizing the select into the
+    gated-clock domain via a (* cdc_sync *) 2FF chain makes the
+    rule silent (and CDC-001 too, via the chain-depth detector)."""
+    assert _run("good_sync_clock_mux") == []
+
+
 def test_cdc_004_silent_on_good_gray_counter_crossing() -> None:
     """Gray-coded bus crossing into a multi-bit sync chain — the
     structural gray-code detector should accept it.

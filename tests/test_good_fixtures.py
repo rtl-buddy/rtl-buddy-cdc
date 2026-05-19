@@ -117,6 +117,13 @@ GOOD_FIXTURES = [
     # unambiguous — exactly one source is active at a time — so the
     # mux-on-reset exemption keeps RDC-005 silent. Single-clock.
     ("good_rdc_005_muxed_reset", 0),
+    # CDC-010 (#95/#134) positive shape: foreign-domain mux select
+    # passed through a (* cdc_sync *) 2FF synchroniser into the
+    # gated-clock (ck0) domain before reaching the mux. The mux's S
+    # is then driven by a same-domain flop, so CDC-010 stays silent
+    # and the 2FF chain keeps CDC-001 silent on the underlying
+    # async crossing. 1 async crossing (ck1 sel_q → ck0 sel_meta).
+    ("good_sync_clock_mux", 1),
     # CDC-009 (#47/#101/#102) positive shapes: textbook fixes for the
     # fast-to-slow pulse-loss case.
     #
