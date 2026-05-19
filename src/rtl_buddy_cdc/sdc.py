@@ -518,6 +518,8 @@ def _skip_collection_arg(args: list[str], index: int) -> int:
     first = args[index]
     if first.startswith("["):
         index += 1
+        if first.endswith("]"):
+            return index
         while index < len(args):
             token = args[index]
             index += 1
@@ -526,6 +528,8 @@ def _skip_collection_arg(args: list[str], index: int) -> int:
         return index
     if first.startswith("{"):
         index += 1
+        if first.endswith("}"):
+            return index
         while index < len(args):
             token = args[index]
             index += 1
