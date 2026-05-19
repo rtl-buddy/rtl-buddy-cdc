@@ -267,25 +267,33 @@ a message naming the port and both polarities. This catches the
 invisible to the inferred-source path (no producer flop to compare
 against, no clock-domain crossing).
 
-### 8.3 Deferred: `reset-hints:` YAML config
+### 8.3 `--reset-hints FILE.yaml` (external hints)
 
-The original #107 issue proposed a YAML config block for cases
-where source modification isn't possible:
+For the "can't touch the source" cases (vendor IP, generated
+wrappers, multi-block boards where one external file beats
+scattered attributes) the same facts can be declared in an
+external YAML file consumed via `--reset-hints` (issue #129):
 
 ```yaml
 reset-hints:
-  - port: rst_n
-    polarity: low
-    type: async
-  - instance: top.u_rstgen.u_sync
-    role: reset_synchronizer
+  schema_version: "1.0"
+  ports:
+    - name: rst_n
+      polarity: low
+      type: async
+  synchronizers:
+    - instance_glob: "top.u_*.u_rst_sync_q[12]"
+      role: reset_synchronizer
 ```
 
-Deferred against the AGENTS.md no-deps policy — would need PyYAML
-or a hand-rolled parser. The SV attribute path covers the most
-common case (user has source); the YAML path is a delta for the
-"can't touch the source" use case. Re-open as a separate issue if
-a real consumer needs it.
+Opt-in via the `[hints]` install extra (`pip install
+'rtl-buddy-cdc[hints]'`) — default installs stay `typer`-only;
+PyYAML pulls in only when this extra is requested. Mirrors the
+slang frontend's `[slang]`-extra pattern. Hints **win** on
+disagreement with the SV-attribute path; synchroniser sets
+union with no precedence question. Loader:
+`rtl_buddy_cdc.reset_hints.load`. Field-by-field reference:
+[`rtl-buddy-cdc-reset-hints-schema.md`](rtl-buddy-cdc-reset-hints-schema.md).
 
 ## 9. The RDC rule family
 

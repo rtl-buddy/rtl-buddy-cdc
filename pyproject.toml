@@ -27,6 +27,15 @@ dependencies = [
 slang = [
     "pyslang>=10,<11",
 ]
+# Opt-in YAML hints loader (issue #129). `--reset-hints FILE.yaml`
+# reads an external file declaring reset-port polarity / synchroniser
+# annotations, parallel to the in-RTL `(* reset_polarity *)` /
+# `(* reset_sync *)` SV attributes. Default install stays typer-only;
+# PyYAML pulls in only when this extra is requested. See AGENTS.md
+# "Development rules" for the runtime-dep policy.
+hints = [
+    "PyYAML>=6.0",
+]
 
 [project.scripts]
 rtl-buddy-cdc = "rtl_buddy_cdc:main"

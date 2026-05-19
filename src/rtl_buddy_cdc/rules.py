@@ -17,6 +17,7 @@ from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.pulse import classify_d_pin_shape
+from rtl_buddy_cdc.reset_hints import ResetHints
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
 
@@ -85,9 +86,21 @@ class _RuleContext:
     # chain walker previously did ``for f in find_flops(module):`` per
     # step; this turns each step into an O(1) lookup.
     d_bit_to_single_bit_flop: dict[Bit, Flop]
+    # Reset-side user input (SV attributes + optional ``--reset-hints``
+    # YAML overlay), merged once at context-build time so the RDC rules
+    # consult ``ctx.reset_sync_flop_names`` / ``ctx.reset_polarity_overrides``
+    # instead of re-walking ``module.netnames`` per rule. Hints win on
+    # disagreement with SV attributes — see :mod:`rtl_buddy_cdc.reset_hints`.
+    reset_sync_flop_names: frozenset[str]
+    reset_polarity_overrides: dict[str, Literal["high", "low"]]
 
 
-def _build_context(module: Module, clock_spec: ClockSpec | None) -> _RuleContext:
+def _build_context(
+    module: Module,
+    clock_spec: ClockSpec | None,
+    *,
+    reset_hints: ResetHints | None = None,
+) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
 
     Pure function of ``(module, clock_spec)``; safe to call multiple
@@ -148,6 +161,12 @@ def _build_context(module: Module, clock_spec: ClockSpec | None) -> _RuleContext
         user_syncs=frozenset(user_sync_flop_names(module)),
         user_grays=frozenset(user_gray_flop_names(module)),
         d_bit_to_single_bit_flop=d_bit_to_single_bit_flop,
+        reset_sync_flop_names=frozenset(
+            user_reset_sync_flop_names(module, hints=reset_hints)
+        ),
+        reset_polarity_overrides=user_reset_polarity_overrides(
+            module, hints=reset_hints
+        ),
     )
 
 
@@ -206,23 +225,33 @@ USER_GRAY_ATTRS: frozenset[str] = frozenset({"cdc_gray", "gray_code"})
 USER_RESET_SYNC_ATTRS: frozenset[str] = frozenset({"reset_sync", "reset_synchronizer"})
 
 
-def user_reset_sync_flop_names(module: Module) -> set[str]:
+def user_reset_sync_flop_names(
+    module: Module, *, hints: ResetHints | None = None
+) -> set[str]:
     """Cell names of flops whose Q is named via a wire annotated with
-    ``(* reset_sync *)`` (or :data:`USER_RESET_SYNC_ATTRS` aliases).
-    Treated by the RDC rule pack as a vetted reset-synchroniser stage
-    regardless of the flop's structural shape."""
+    ``(* reset_sync *)`` (or :data:`USER_RESET_SYNC_ATTRS` aliases),
+    optionally unioned with synchroniser entries from a YAML hints
+    file (issue #129). Treated by the RDC rule pack as a vetted
+    reset-synchroniser stage regardless of the flop's structural
+    shape.
+
+    SV attribute and hints set-union with no precedence question:
+    both sides mark the same kind of fact (this cell is a sync
+    stage). Disagreement isn't possible — neither side has a "not
+    a sync stage" assertion."""
     sync_bits: set[Bit] = set()
     for nn in module.netnames.values():
         if USER_RESET_SYNC_ATTRS & set(nn.attributes):
             for b in nn.bits:
                 if isinstance(b, int):
                     sync_bits.add(b)
-    if not sync_bits:
-        return set()
     out: set[str] = set()
-    for f in find_flops(module):
-        if any(isinstance(b, int) and b in sync_bits for b in f.q):
-            out.add(f.cell.name)
+    if sync_bits:
+        for f in find_flops(module):
+            if any(isinstance(b, int) and b in sync_bits for b in f.q):
+                out.add(f.cell.name)
+    if hints is not None:
+        out |= hints.synchronizer_cell_names(module)
     return out
 
 
@@ -261,7 +290,7 @@ USER_RESET_POLARITY_ATTRS: frozenset[str] = frozenset({"reset_polarity"})
 
 
 def user_reset_polarity_overrides(
-    module: Module,
+    module: Module, *, hints: ResetHints | None = None
 ) -> dict[str, Literal["high", "low"]]:
     """Map top-level reset *port* name → user-declared polarity.
 
@@ -281,6 +310,14 @@ def user_reset_polarity_overrides(
     are skipped rather than raised — the analyzer's tolerance for
     malformed-but-non-fatal user input matches the rest of the SV
     attribute handling.
+
+    When ``hints`` is supplied, port hints from the YAML file (#129)
+    overlay the SV-attribute map: hints win on disagreement (the
+    file is the explicit override; the attribute is the in-RTL
+    default). Hints are *only* applied to ports that actually exist
+    on the module — a hint for an unknown port name is silently
+    ignored here, but the loader's strict validation catches
+    anything earlier in the pipeline that's obviously wrong.
     """
     out: dict[str, Literal["high", "low"]] = {}
     port_names = {p.name for p in module.ports.values() if p.direction == "input"}
@@ -298,6 +335,10 @@ def user_reset_polarity_overrides(
             if value == "low":
                 out[nn_name] = "low"
                 break
+    if hints is not None:
+        for name, pol in hints.port_polarity_overrides().items():
+            if name in port_names:
+                out[name] = pol
     return out
 
 
@@ -1880,7 +1921,7 @@ def check_rdc_004(
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
     recognised_syncs = find_reset_synchronizers(
-        module, ctx.domains, extra_synchronizers=user_reset_sync_flop_names(module)
+        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
     )
 
     violations: list[Violation] = []
@@ -1968,7 +2009,7 @@ def check_rdc_005(
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
     recognised_syncs = find_reset_synchronizers(
-        module, ctx.domains, extra_synchronizers=user_reset_sync_flop_names(module)
+        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
     )
 
     violations: list[Violation] = []
@@ -2131,9 +2172,9 @@ def check_rdc_002(
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
     recognised_syncs = find_reset_synchronizers(
-        module, ctx.domains, extra_synchronizers=user_reset_sync_flop_names(module)
+        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
     )
-    polarity_overrides = user_reset_polarity_overrides(module)
+    polarity_overrides = ctx.reset_polarity_overrides
 
     # Group by (producer, producer_arst_value, consumer_polarity_bit)
     # so the typical "one upstream polarity wiring bug, N downstream
@@ -2447,6 +2488,8 @@ def run_all(
     crossings: list[Crossing],
     clock_spec: ClockSpec | None = None,
     required_depth: int = 2,
+    *,
+    reset_hints: ResetHints | None = None,
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -2454,7 +2497,7 @@ def run_all(
     # ``_bit_drivers`` were each rebuilt per rule, with
     # ``_sync_chain_depth`` re-scanning every flop per chain-extension
     # step (the worst hot path).
-    ctx = _build_context(module, clock_spec)
+    ctx = _build_context(module, clock_spec, reset_hints=reset_hints)
     out: list[Violation] = []
     for rule_id, rule in RULES.items():
         if rule_id == "CDC-002":

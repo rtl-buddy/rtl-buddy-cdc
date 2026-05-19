@@ -40,6 +40,7 @@ Out of scope here, by design:
 
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Literal
 
@@ -210,7 +211,7 @@ def find_reset_synchronizers(
     clock_domains: dict[str, str | None],
     *,
     min_depth: int = 2,
-    extra_synchronizers: set[str] | None = None,
+    extra_synchronizers: AbstractSet[str] | None = None,
 ) -> set[str]:
     """Identify flop cells that participate in a reset-synchronizer chain.
 
