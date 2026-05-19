@@ -44,6 +44,7 @@
   "flop_domains": [
     {
       "instance_path": "ip_cdc_handshake.$procdff$42",
+      "source_instance_path": "ip_cdc_handshake",
       "clock": "dst_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
@@ -55,6 +56,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.$procdff$47",
+      "source_instance_path": "ip_cdc_handshake",
       "clock": "dst_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
@@ -66,6 +68,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.$procdff$52",
+      "source_instance_path": "ip_cdc_handshake",
       "clock": "dst_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
@@ -77,6 +80,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.$procdff$57",
+      "source_instance_path": "ip_cdc_handshake",
       "clock": "dst_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
@@ -88,6 +92,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.$procdff$62",
+      "source_instance_path": "ip_cdc_handshake",
       "clock": "src_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
@@ -99,6 +104,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.$procdff$67",
+      "source_instance_path": "ip_cdc_handshake",
       "clock": "src_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_handshake.sv",
@@ -110,6 +116,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.u_sync_ack.$procdff$84",
+      "source_instance_path": "ip_cdc_handshake.u_sync_ack",
       "clock": "src_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv",
@@ -121,6 +128,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.u_sync_ack.$procdff$89",
+      "source_instance_path": "ip_cdc_handshake.u_sync_ack",
       "clock": "src_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv",
@@ -132,6 +140,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.u_sync_req.$procdff$84",
+      "source_instance_path": "ip_cdc_handshake.u_sync_req",
       "clock": "dst_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv",
@@ -143,6 +152,7 @@
     },
     {
       "instance_path": "ip_cdc_handshake.u_sync_req.$procdff$89",
+      "source_instance_path": "ip_cdc_handshake.u_sync_req",
       "clock": "dst_clk",
       "location": {
         "file": "tests/fixtures/ip_cdc_handshake/ip_cdc_sync.sv",
@@ -172,28 +182,34 @@
       "src_clock": "dst_clk",
       "dst_clock": "src_clk",
       "dst_flop": "ip_cdc_handshake.u_sync_ack.$procdff$84",
+      "dst_source_instance_path": "ip_cdc_handshake.u_sync_ack",
       "min_hops": 0,
       "width": 1,
       "async_per_sdc": true,
-      "src_flop": "ip_cdc_handshake.$procdff$57"
+      "src_flop": "ip_cdc_handshake.$procdff$57",
+      "src_source_instance_path": "ip_cdc_handshake"
     },
     {
       "src_clock": "src_clk",
       "dst_clock": "dst_clk",
       "dst_flop": "ip_cdc_handshake.$procdff$47",
+      "dst_source_instance_path": "ip_cdc_handshake",
       "min_hops": 1,
       "width": 8,
       "async_per_sdc": true,
-      "src_flop": "ip_cdc_handshake.$procdff$67"
+      "src_flop": "ip_cdc_handshake.$procdff$67",
+      "src_source_instance_path": "ip_cdc_handshake"
     },
     {
       "src_clock": "src_clk",
       "dst_clock": "dst_clk",
       "dst_flop": "ip_cdc_handshake.u_sync_req.$procdff$84",
+      "dst_source_instance_path": "ip_cdc_handshake.u_sync_req",
       "min_hops": 0,
       "width": 1,
       "async_per_sdc": true,
-      "src_flop": "ip_cdc_handshake.$procdff$62"
+      "src_flop": "ip_cdc_handshake.$procdff$62",
+      "src_source_instance_path": "ip_cdc_handshake"
     }
   ]
 }

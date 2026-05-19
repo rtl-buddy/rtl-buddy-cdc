@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Domain-map: `source_instance_path` on flops and crossings**
+  (#136). The `--emit-domain-map` artifact's `flop_domains[]`
+  entries now carry a `source_instance_path` sibling to
+  `instance_path` — the deepest enclosing SystemVerilog-source
+  module instance for the flop, rooted at the design top.
+  `crossings[]` mirror this with `dst_source_instance_path` and
+  (when the source endpoint is a flop) `src_source_instance_path`.
+  Downstream consumers no longer need to re-derive the source
+  hierarchy by stripping `$slang$…`/`$procdff$…` leaves themselves
+  (see `_flop_resolver` in rtl-buddy-view#27 — this issue is the
+  producer-side cleanup that lets the consumer drop it). The
+  fields are additive optionals; `schema_version` stays at `"1.0"`.
+  Emitted as `null` (never omitted) when the analyzer can't
+  resolve the chain — distinct from an older producer that didn't
+  emit the field.
 - **RDC-005 — Multiple reset sources converging without muxing**
   (fourth and final sub-PR of #114, seventh instalment of #107).
   New rule: a flop's async reset pin is the output of comb logic

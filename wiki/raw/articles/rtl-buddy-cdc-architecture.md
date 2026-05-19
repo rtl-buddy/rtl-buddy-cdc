@@ -758,6 +758,21 @@ against the same inputs. `--no-findings` short-circuits rule
 evaluation when the map is the sole deliverable. Primary consumer
 today is [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view).
 
+Both `instance_path` (synth-leaf form) and `source_instance_path`
+(deepest enclosing SystemVerilog-source module instance, rooted at
+the design top) are emitted on every `flop_domains[]` entry; each
+`crossings[]` entry mirrors them with `dst_source_instance_path`
+and — when the source endpoint is a flop — `src_source_instance_path`.
+These are the additive fields from issue #136: consumers map the map
+back onto source-level hierarchy without having to re-derive the
+chain by stripping `$slang$…`/`$procdff$…` leaves themselves. The
+fields are emitted as `null` (kept in the dict, never omitted) when
+the analyzer can't resolve the chain, so a `null` is distinct from
+an older producer that didn't emit the field at all. With today's
+Yosys (`proc; flatten`) and slang frontends the chain is always
+resolvable. Yosys runs that skip `proc`/`flatten` are out of scope —
+the analyzer assumes a flattened netlist.
+
 The SARIF output is validated against the OASIS-published 2.1.0
 schema by `tests/test_sarif_schema.py`, vendored at
 `tests/schemas/sarif-2.1.0.json` so CI does not depend on
