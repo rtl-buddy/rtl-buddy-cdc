@@ -18,7 +18,24 @@ from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import AnalysisResult, _instance_path
-from rtl_buddy_cdc.rules import Violation, run_all as run_all_rules
+from rtl_buddy_cdc.reset_domain import (
+    assign_reset_domains,
+    find_reset_crossings,
+    find_reset_synchronizers,
+)
+from rtl_buddy_cdc.reset_domain_map import build_reset_domain_map
+from rtl_buddy_cdc.reset_hints import (
+    ResetHints,
+    ResetHintsError,
+    ResetHintsUnavailable,
+    load as load_reset_hints,
+)
+from rtl_buddy_cdc.rules import (
+    Violation,
+    run_all as run_all_rules,
+    user_reset_polarity_overrides,
+    user_reset_sync_flop_names,
+)
 from rtl_buddy_cdc.waivers import SuppressedViolation
 
 app = typer.Typer(help="CDC linting tool for RTL designs.")
@@ -93,13 +110,49 @@ _EMIT_DOMAIN_MAP_OPT = typer.Option(
     "`async_per_sdc`). Designed for downstream tools like "
     "rtl-buddy-view; see issue #106.",
 )
+_EMIT_RESET_DOMAIN_MAP_OPT = typer.Option(
+    None,
+    "--emit-reset-domain-map",
+    help="Write a structured reset-domain map (JSON, schema "
+    "v1.0) to this path alongside the normal report. Captures "
+    "reset sources, recognised reset-synchroniser stages, per-flop "
+    "reset assignments, and structural reset crossings. Parallel to "
+    "`--emit-domain-map`; the two can be passed in a single run. "
+    "Designed for downstream tools like rtl-buddy-view; see issue "
+    "#108.",
+)
+_RESET_HINTS_OPT = typer.Option(
+    None,
+    "--reset-hints",
+    exists=True,
+    readable=True,
+    help="YAML file declaring reset-port polarity / synchroniser "
+    "annotations, parallel to the in-RTL `(* reset_polarity *)` / "
+    "`(* reset_sync *)` SV attributes. Hints win on disagreement "
+    "with the attribute path. Requires the `[hints]` optional "
+    "extra (`pip install 'rtl-buddy-cdc[hints]'`). See issue #129 "
+    "and the schema reference at "
+    "wiki/raw/articles/rtl-buddy-cdc-reset-hints-schema.md.",
+)
 _NO_FINDINGS_OPT = typer.Option(
     False,
     "--no-findings",
     help="Skip rule evaluation entirely. Only meaningful with "
-    "`--emit-domain-map`: produces just the domain map and exits 0 "
-    "on successful elaboration + map emission, 2 on elaboration "
-    "failure. Suppresses the normal report.",
+    "`--emit-domain-map` or `--emit-reset-domain-map`: produces just "
+    "the requested map(s) and exits 0 on successful elaboration + "
+    "map emission, 2 on elaboration failure. Suppresses the normal "
+    "report.",
+)
+_CDC_010_NO_HEURISTIC_OPT = typer.Option(
+    False,
+    "--cdc-010-no-heuristic",
+    help="Disable CDC-010's pin-name heuristic fallback for "
+    "tech-mapped cells. By default CDC-010 classifies an input pin "
+    "named E / EN / CE / GATE / SE (case-insensitive) as a control "
+    "pin on cell types not covered by the explicit map. Pass this "
+    "flag when a library's pin naming conflicts with the heuristic "
+    "(e.g. a vendor that uses `EN` for something other than enable) "
+    "and you'd rather take the false negative than a false positive.",
 )
 
 
@@ -139,7 +192,10 @@ def analyze(
     strict: bool = _STRICT_OPT,
     baseline_path: Path | None = _BASELINE_OPT,
     emit_domain_map: Path | None = _EMIT_DOMAIN_MAP_OPT,
+    emit_reset_domain_map: Path | None = _EMIT_RESET_DOMAIN_MAP_OPT,
+    reset_hints_path: Path | None = _RESET_HINTS_OPT,
     no_findings: bool = _NO_FINDINGS_OPT,
+    cdc_010_no_heuristic: bool = _CDC_010_NO_HEURISTIC_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
     code = _analyze_and_report(
@@ -154,7 +210,10 @@ def analyze(
         strict=strict,
         baseline_path=baseline_path,
         emit_domain_map=emit_domain_map,
+        emit_reset_domain_map=emit_reset_domain_map,
+        reset_hints_path=reset_hints_path,
         no_findings=no_findings,
+        cdc_010_no_heuristic=cdc_010_no_heuristic,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -224,7 +283,10 @@ def lint(
     strict: bool = _STRICT_OPT,
     baseline_path: Path | None = _BASELINE_OPT,
     emit_domain_map: Path | None = _EMIT_DOMAIN_MAP_OPT,
+    emit_reset_domain_map: Path | None = _EMIT_RESET_DOMAIN_MAP_OPT,
+    reset_hints_path: Path | None = _RESET_HINTS_OPT,
     no_findings: bool = _NO_FINDINGS_OPT,
+    cdc_010_no_heuristic: bool = _CDC_010_NO_HEURISTIC_OPT,
 ) -> None:
     """Convenience wrapper: elaborate the sources using the chosen
     frontend, then analyze. With ``--frontend yosys`` (the default)
@@ -287,7 +349,10 @@ def lint(
         strict=strict,
         baseline_path=baseline_path,
         emit_domain_map=emit_domain_map,
+        emit_reset_domain_map=emit_reset_domain_map,
+        reset_hints_path=reset_hints_path,
         no_findings=no_findings,
+        cdc_010_no_heuristic=cdc_010_no_heuristic,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -334,7 +399,10 @@ def _analyze_and_report(
     strict: bool = False,
     baseline_path: Path | None = None,
     emit_domain_map: Path | None = None,
+    emit_reset_domain_map: Path | None = None,
+    reset_hints_path: Path | None = None,
     no_findings: bool = False,
+    cdc_010_no_heuristic: bool = False,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module = netlist.load(netlist_path)
@@ -350,7 +418,10 @@ def _analyze_and_report(
         strict=strict,
         baseline_path=baseline_path,
         emit_domain_map=emit_domain_map,
+        emit_reset_domain_map=emit_reset_domain_map,
+        reset_hints_path=reset_hints_path,
         no_findings=no_findings,
+        cdc_010_no_heuristic=cdc_010_no_heuristic,
     )
 
 
@@ -367,7 +438,10 @@ def _analyze_module_and_report(
     strict: bool = False,
     baseline_path: Path | None = None,
     emit_domain_map: Path | None = None,
+    emit_reset_domain_map: Path | None = None,
+    reset_hints_path: Path | None = None,
     no_findings: bool = False,
+    cdc_010_no_heuristic: bool = False,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
@@ -380,6 +454,20 @@ def _analyze_module_and_report(
     rule evaluation is skipped, the normal report is suppressed, and
     the exit code is 0 on successful map emission (elaboration failure
     still exits 2 from the lint wrapper before we get here)."""
+    # Load --reset-hints early so an unreadable / malformed file
+    # fails the run before any analysis cost — same pattern the SDC
+    # loader uses. Loud failure with file:line context; see #129.
+    reset_hints: ResetHints | None = None
+    if reset_hints_path is not None:
+        try:
+            reset_hints = load_reset_hints(reset_hints_path)
+        except ResetHintsUnavailable as e:
+            typer.echo(f"error: {e}", err=True)
+            return 2
+        except ResetHintsError as e:
+            typer.echo(f"error: {e}", err=True)
+            return 2
+
     spec: sdc_mod.ClockSpec | None = None
     async_crossings: list[Crossing] = []
     violations: list[Violation] = []
@@ -400,7 +488,12 @@ def _analyze_module_and_report(
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:
             violations = run_all_rules(
-                module, async_crossings, spec, required_depth=sync_depth
+                module,
+                async_crossings,
+                spec,
+                required_depth=sync_depth,
+                reset_hints=reset_hints,
+                cdc_010_heuristic=not cdc_010_no_heuristic,
             )
     else:
         domains = assign_domains(module)
@@ -484,6 +577,33 @@ def _analyze_module_and_report(
         )
         with emit_domain_map.open("w") as fh:
             json.dump(payload, fh, indent=2)
+            fh.write("\n")
+
+    if emit_reset_domain_map is not None:
+        flop_clocks = {fd.flop.cell.name: fd.clock for fd in domains}
+        reset_domains_map = assign_reset_domains(module)
+        polarity_overrides = user_reset_polarity_overrides(module, hints=reset_hints)
+        recognised_syncs = find_reset_synchronizers(
+            module,
+            flop_clocks,
+            extra_synchronizers=user_reset_sync_flop_names(module, hints=reset_hints),
+        )
+        reset_crossings = find_reset_crossings(
+            module,
+            flop_clocks,
+            recognised_syncs=recognised_syncs,
+            polarity_overrides=polarity_overrides,
+        )
+        reset_payload = build_reset_domain_map(
+            module,
+            reset_domains_map,
+            flop_clocks,
+            recognised_syncs,
+            polarity_overrides,
+            reset_crossings,
+        )
+        with emit_reset_domain_map.open("w") as fh:
+            json.dump(reset_payload, fh, indent=2)
             fh.write("\n")
 
     # ``--no-findings`` suppresses the normal report entirely (the run

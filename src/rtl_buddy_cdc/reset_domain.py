@@ -40,6 +40,7 @@ Out of scope here, by design:
 
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Literal
 
@@ -118,6 +119,12 @@ def assign_reset_domains(module: Module) -> dict[str, ResetDomain]:
     ``None``; reset-bearing cells get a populated :class:`ResetSource`
     derived from the cell type, its polarity parameter, and a one-hop
     walk back through the netlist's bit-drivers table.
+
+    ``polarity`` on the returned source is the *flop pin*'s polarity as
+    inferred by Yosys. A user-level override (e.g. ``(* reset_polarity
+    = "low" *)`` on a top-level port) is **not** applied here — the
+    consumer rule pack reconciles port-declared vs. flop-inferred
+    polarity itself; see :func:`rtl_buddy_cdc.rules.user_reset_polarity_overrides`.
     """
     drivers = _bit_drivers(module)
     out: dict[str, ResetDomain] = {}
@@ -204,6 +211,7 @@ def find_reset_synchronizers(
     clock_domains: dict[str, str | None],
     *,
     min_depth: int = 2,
+    extra_synchronizers: AbstractSet[str] | None = None,
 ) -> set[str]:
     """Identify flop cells that participate in a reset-synchronizer chain.
 
@@ -235,13 +243,22 @@ def find_reset_synchronizers(
     avoid re-running :func:`rtl_buddy_cdc.domain.assign_domains`. The
     recogniser tolerates ``None`` entries (untraceable clock); those
     flops never match because their domain cannot be compared.
+
+    ``extra_synchronizers`` (optional) is the set of flop cell names
+    the caller wants treated as sync stages regardless of structural
+    shape — typically the result of
+    :func:`rtl_buddy_cdc.rules.user_reset_sync_flop_names` (flops the
+    user has marked with ``(* reset_sync *)``). Useful when the chain
+    head's D is fed by an upstream signal rather than a literal
+    constant — the structural recogniser is deliberately conservative
+    and would otherwise miss them.
     """
     if min_depth < 1:
         raise ValueError("min_depth must be >= 1")
     domains = assign_reset_domains(module)
     flop_by_name = {f.cell.name: f for f in find_flops(module)}
     bit_drivers = _bit_drivers(module)
-    out: set[str] = set()
+    out: set[str] = set(extra_synchronizers or ())
 
     for name, rd in domains.items():
         if rd.reset is None or rd.reset.type != "async":
@@ -328,3 +345,151 @@ def _polarity_from_param(raw: str) -> ResetPolarity:
     if not raw:
         return "low"
     return "high" if raw[-1] == "1" else "low"
+
+
+ResetCrossingKind = Literal[
+    "async-deassert",
+    "polarity-mismatch",
+    "sync-crossing",
+    "comb-driven",
+]
+
+
+@dataclass(frozen=True)
+class ResetCrossing:
+    """A single problematic reset arrival at a flop.
+
+    Unified record consumed by external tooling (e.g. ``rtl-buddy-view``)
+    that wants the reset-domain view without re-running each RDC rule
+    individually. The rule pack still owns the *reporting* surface
+    (rule-id, severity, grouped messages); :func:`find_reset_crossings`
+    just emits the structural facts.
+
+    Fields:
+
+    * ``flop`` — destination flop cell name.
+    * ``reset`` — the upstream reset source classification (from
+      :func:`assign_reset_domains`).
+    * ``flop_clock`` — the clock domain that samples ``flop``'s ``D``
+      (i.e. the value passed in via ``clock_domains[flop]``). ``None``
+      when the flop's clock isn't traceable.
+    * ``kind`` — what about the crossing is worth flagging; see
+      :data:`ResetCrossingKind`.
+    """
+
+    flop: str
+    reset: ResetSource
+    flop_clock: str | None
+    kind: ResetCrossingKind
+
+
+def find_reset_crossings(
+    module: Module,
+    clock_domains: dict[str, str | None],
+    *,
+    recognised_syncs: set[str] | None = None,
+    polarity_overrides: dict[str, ResetPolarity] | None = None,
+) -> list[ResetCrossing]:
+    """Unified view of every reset arrival worth flagging in ``module``.
+
+    Iterates :func:`assign_reset_domains` and emits one
+    :class:`ResetCrossing` per flop whose reset would draw a rule
+    finding. The kinds produced parallel the RDC rule family:
+
+    * ``"async-deassert"`` — an async reset whose source domain differs
+      from the consumer flop's clock domain and no reset-synchroniser
+      stage is present (RDC-001's structural shape).
+    * ``"polarity-mismatch"`` — a port-level ``(* reset_polarity *)``
+      override declares a polarity that disagrees with the flop's
+      inferred reset-pin polarity (RDC-002's port-declared variant).
+      Only emitted when ``polarity_overrides`` is supplied.
+    * ``"sync-crossing"`` — a sync reset whose source flop is in a
+      different clock domain from the consumer (RDC-003's shape).
+    * ``"comb-driven"`` — the reset is driven by combinational logic
+      (RDC-004's shape).
+
+    ``recognised_syncs`` lists flop cell names that the analyzer has
+    already classified as reset-synchroniser members (the union of
+    :func:`find_reset_synchronizers`'s output and any user-marked
+    flops); those flops are skipped — by construction they bridge the
+    crossing safely.
+
+    ``polarity_overrides`` maps top-level reset *port* names to the
+    declared polarity (``"high"`` / ``"low"``). When a flop's reset
+    source is one of these ports and the flop's inferred polarity
+    disagrees with the declaration, a ``"polarity-mismatch"`` crossing
+    is emitted in addition to any crossing-kind that would also fire.
+
+    This function is intentionally additive: the existing RDC-001..-005
+    rule checks keep their own walks. ``find_reset_crossings`` is the
+    public surface for *consumers* of the analyzer (downstream tooling
+    and tests that want to enumerate the reset-domain facts directly).
+    """
+    out: list[ResetCrossing] = []
+    syncs = recognised_syncs or set()
+    domains = assign_reset_domains(module)
+
+    for name, rd in domains.items():
+        if name in syncs:
+            continue
+        if rd.reset is None:
+            continue
+        flop_clock = clock_domains.get(name)
+        rsrc = rd.reset
+
+        # comb-driven: structural reset shape is combinational; clock
+        # domain comparison is moot here — the issue is upstream of
+        # any crossing question.
+        if rsrc.source == "comb":
+            out.append(
+                ResetCrossing(
+                    flop=name,
+                    reset=rsrc,
+                    flop_clock=flop_clock,
+                    kind="comb-driven",
+                )
+            )
+            continue
+
+        # Domain-crossing kinds. A source flop in a different clock
+        # domain (inferred reset source) is the shape that drives
+        # RDC-001 (async) and RDC-003 (sync).
+        if rsrc.source == "inferred":
+            src_clock = clock_domains.get(rsrc.name)
+            if (
+                flop_clock is not None
+                and src_clock is not None
+                and flop_clock != src_clock
+            ):
+                kind: ResetCrossingKind = (
+                    "async-deassert" if rsrc.type == "async" else "sync-crossing"
+                )
+                out.append(
+                    ResetCrossing(
+                        flop=name,
+                        reset=rsrc,
+                        flop_clock=flop_clock,
+                        kind=kind,
+                    )
+                )
+
+        # Port-declared polarity override disagrees with the flop's
+        # inferred polarity. Emitted independently of any
+        # crossing-kind above; a single flop can be both an
+        # async-deassert and a polarity-mismatch crossing.
+        if (
+            polarity_overrides
+            and rsrc.source == "port"
+            and rsrc.name in polarity_overrides
+            and polarity_overrides[rsrc.name] != rsrc.polarity
+        ):
+            out.append(
+                ResetCrossing(
+                    flop=name,
+                    reset=rsrc,
+                    flop_clock=flop_clock,
+                    kind="polarity-mismatch",
+                )
+            )
+
+    return out

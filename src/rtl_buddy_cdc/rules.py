@@ -11,12 +11,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Literal
 
 from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.pulse import classify_d_pin_shape
+from rtl_buddy_cdc.reset_hints import ResetHints
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
 
@@ -85,9 +86,21 @@ class _RuleContext:
     # chain walker previously did ``for f in find_flops(module):`` per
     # step; this turns each step into an O(1) lookup.
     d_bit_to_single_bit_flop: dict[Bit, Flop]
+    # Reset-side user input (SV attributes + optional ``--reset-hints``
+    # YAML overlay), merged once at context-build time so the RDC rules
+    # consult ``ctx.reset_sync_flop_names`` / ``ctx.reset_polarity_overrides``
+    # instead of re-walking ``module.netnames`` per rule. Hints win on
+    # disagreement with SV attributes — see :mod:`rtl_buddy_cdc.reset_hints`.
+    reset_sync_flop_names: frozenset[str]
+    reset_polarity_overrides: dict[str, Literal["high", "low"]]
 
 
-def _build_context(module: Module, clock_spec: ClockSpec | None) -> _RuleContext:
+def _build_context(
+    module: Module,
+    clock_spec: ClockSpec | None,
+    *,
+    reset_hints: ResetHints | None = None,
+) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
 
     Pure function of ``(module, clock_spec)``; safe to call multiple
@@ -148,6 +161,12 @@ def _build_context(module: Module, clock_spec: ClockSpec | None) -> _RuleContext
         user_syncs=frozenset(user_sync_flop_names(module)),
         user_grays=frozenset(user_gray_flop_names(module)),
         d_bit_to_single_bit_flop=d_bit_to_single_bit_flop,
+        reset_sync_flop_names=frozenset(
+            user_reset_sync_flop_names(module, hints=reset_hints)
+        ),
+        reset_polarity_overrides=user_reset_polarity_overrides(
+            module, hints=reset_hints
+        ),
     )
 
 
@@ -195,6 +214,47 @@ def user_sync_flop_names(module: Module) -> set[str]:
 USER_GRAY_ATTRS: frozenset[str] = frozenset({"cdc_gray", "gray_code"})
 
 
+# Reset-side counterpart of USER_SYNC_ATTRS — mark a flop as a
+# user-vetted reset-synchroniser stage. Consumed by
+# :func:`rtl_buddy_cdc.reset_domain.find_reset_synchronizers` as an
+# alternate match path so RDC-002 / RDC-004 / RDC-005 skip the marked
+# flops without needing to match the constant-fed-D structural shape.
+# Useful for sync chains whose head's D is fed by an upstream signal
+# (rather than a literal constant) — the structural recogniser is
+# deliberately conservative and would otherwise miss them.
+USER_RESET_SYNC_ATTRS: frozenset[str] = frozenset({"reset_sync", "reset_synchronizer"})
+
+
+def user_reset_sync_flop_names(
+    module: Module, *, hints: ResetHints | None = None
+) -> set[str]:
+    """Cell names of flops whose Q is named via a wire annotated with
+    ``(* reset_sync *)`` (or :data:`USER_RESET_SYNC_ATTRS` aliases),
+    optionally unioned with synchroniser entries from a YAML hints
+    file (issue #129). Treated by the RDC rule pack as a vetted
+    reset-synchroniser stage regardless of the flop's structural
+    shape.
+
+    SV attribute and hints set-union with no precedence question:
+    both sides mark the same kind of fact (this cell is a sync
+    stage). Disagreement isn't possible — neither side has a "not
+    a sync stage" assertion."""
+    sync_bits: set[Bit] = set()
+    for nn in module.netnames.values():
+        if USER_RESET_SYNC_ATTRS & set(nn.attributes):
+            for b in nn.bits:
+                if isinstance(b, int):
+                    sync_bits.add(b)
+    out: set[str] = set()
+    if sync_bits:
+        for f in find_flops(module):
+            if any(isinstance(b, int) and b in sync_bits for b in f.q):
+                out.add(f.cell.name)
+    if hints is not None:
+        out |= hints.synchronizer_cell_names(module)
+    return out
+
+
 def user_gray_flop_names(module: Module) -> set[str]:
     """Cell names of source flops whose Q is named via a wire annotated
     with ``(* cdc_gray *)``. CDC-004 treats those bus crossings as safe
@@ -211,6 +271,74 @@ def user_gray_flop_names(module: Module) -> set[str]:
     for f in find_flops(module):
         if any(isinstance(b, int) and b in gray_bits for b in f.q):
             out.add(f.cell.name)
+    return out
+
+
+# Reset-port polarity declaration (issue #107). Attach to a top-level
+# reset port to assert "this signal is active-<low|high>" regardless of
+# what Yosys infers from a downstream flop's edge sensitivity. Consumed
+# by RDC-002, which fires when a flop's inferred reset-pin polarity
+# disagrees with the user's port-level declaration — the classic
+# "designer added a posedge flop on a port the rest of the design
+# treats as active-low" wiring bug.
+#
+# Value syntax: ``(* reset_polarity = "low" *)`` or ``"high"``. Anything
+# else is ignored (warned-quietly). The bare form
+# ``(* reset_polarity *)`` (no value) is also ignored — without a
+# polarity string the attribute conveys nothing useful.
+USER_RESET_POLARITY_ATTRS: frozenset[str] = frozenset({"reset_polarity"})
+
+
+def user_reset_polarity_overrides(
+    module: Module, *, hints: ResetHints | None = None
+) -> dict[str, Literal["high", "low"]]:
+    """Map top-level reset *port* name → user-declared polarity.
+
+    Walks ``module.netnames`` looking for the
+    :data:`USER_RESET_POLARITY_ATTRS` attribute. When the netname
+    coincides with a top-level input port and the attribute value is
+    one of ``"high"`` / ``"low"`` (case-insensitive), the port is
+    recorded in the returned map.
+
+    The attribute is interpreted as a *port-level* declaration only;
+    internal nets with the attribute are silently ignored. Rationale:
+    the consumer rule (RDC-002 port-override variant) reconciles flop
+    polarity against an external source-of-truth, which only the
+    top-level port boundary represents.
+
+    Values that don't decode (numeric strings, typos like ``"lo"``)
+    are skipped rather than raised — the analyzer's tolerance for
+    malformed-but-non-fatal user input matches the rest of the SV
+    attribute handling.
+
+    When ``hints`` is supplied, port hints from the YAML file (#129)
+    overlay the SV-attribute map: hints win on disagreement (the
+    file is the explicit override; the attribute is the in-RTL
+    default). Hints are *only* applied to ports that actually exist
+    on the module — a hint for an unknown port name is silently
+    ignored here, but the loader's strict validation catches
+    anything earlier in the pipeline that's obviously wrong.
+    """
+    out: dict[str, Literal["high", "low"]] = {}
+    port_names = {p.name for p in module.ports.values() if p.direction == "input"}
+    for nn_name, nn in module.netnames.items():
+        if nn_name not in port_names:
+            continue
+        for attr in USER_RESET_POLARITY_ATTRS:
+            raw = nn.attributes.get(attr)
+            if raw is None:
+                continue
+            value = raw.strip().lower()
+            if value == "high":
+                out[nn_name] = "high"
+                break
+            if value == "low":
+                out[nn_name] = "low"
+                break
+    if hints is not None:
+        for name, pol in hints.port_polarity_overrides().items():
+            if name in port_names:
+                out[name] = pol
     return out
 
 
@@ -1368,6 +1496,299 @@ def check_cdc_008(
     return violations
 
 
+# Explicit control-pin map for CDC-010. Covers the cell types whose
+# control-pin name is fixed by Yosys's own definitions:
+#
+# - Higher-level parametric cells (phase 1): ``$mux``, ``$dffe``,
+#   ``$dlatch``.
+# - Yosys gate-level primitives emitted by ``simplemap`` / ``abc``
+#   (phase 3): ``$_DLATCH_*``, ``$_MUX_`` family, ``$_DFFE_*`` /
+#   ``$_SDFFE_*`` families. The ``$_DFFE`` / ``$_SDFFE`` / ``$_DLATCH``
+#   prefixes are handled by the prefix paths below so we don't have
+#   to enumerate every polarity / reset-shape variant.
+#
+# Vendor library cells (``ICG_*``, ``CKMUX2_*``) are intentionally
+# *not* enumerated here — the namespace is too large and varies per
+# library. The heuristic fallback below catches the common
+# enable-style names; vendor-specific outliers should be added here
+# in a follow-up rather than expanding the heuristic.
+_CDC_010_CONTROL_PINS: dict[str, frozenset[str]] = {
+    # Higher-level Yosys cells (phase 1).
+    "$mux": frozenset({"S"}),
+    "$dffe": frozenset({"EN"}),
+    "$dlatch": frozenset({"EN"}),
+    # Gate-level mux family. Yosys's ``$_MUX{4,8,16}_`` carry their
+    # selects on consecutive letters starting at ``S``.
+    "$_MUX_": frozenset({"S"}),
+    "$_MUX4_": frozenset({"S", "T"}),
+    "$_MUX8_": frozenset({"S", "T", "U"}),
+    "$_MUX16_": frozenset({"S", "T", "U", "V"}),
+}
+
+# Case-insensitive input-pin names treated as control pins for cells
+# that aren't in the explicit map. Conservative — these are the
+# enable-style names that almost always indicate an ICG / clock-gate
+# control input on tech-mapped library cells. Mux-style select names
+# (``S`` / ``SEL`` / numbered variants) are *not* heuristic targets:
+# they collide with too many non-control pins on unrelated cells, so
+# mux shapes have to be in the explicit map above.
+#
+# Rationale for each:
+#   ``E``     — Yosys gate-level latch / enable-flop convention
+#               (``$_DLATCH_P_.E``, ``$_DFFE_*.E``).
+#   ``EN``    — most-common SV / library enable-pin name.
+#   ``CE``    — clock-enable (``CE`` = "Clock Enable"), classic
+#               flip-flop and ICG nomenclature.
+#   ``GATE``  — ICG library cells (e.g. ``GATE`` on TSMC-style ICGs).
+#   ``SE``    — scan-enable, often wired into a clock gate's enable
+#               path on tech-mapped designs (DFT bypass).
+_CDC_010_HEURISTIC_PINS: frozenset[str] = frozenset({"E", "EN", "CE", "GATE", "SE"})
+
+
+def _control_pins_for(cell: Cell, *, use_heuristic: bool = True) -> frozenset[str]:
+    """Control-pin names for a clock-network cell.
+
+    A *control pin* is a non-clock input whose transition can chop
+    the cell's output clock — the select on a clock mux (``$mux.S``,
+    ``$_MUX_.S``), the enable on an integrated clock gate
+    (``$dffe.EN``, ``$dlatch.EN``, ``$_DLATCH_P_.E``,
+    ``$_DFFE_*.E``), or the analogous pin on a tech-mapped library
+    cell.
+
+    Resolution order:
+
+    1. **Explicit map** (:data:`_CDC_010_CONTROL_PINS`) for
+       higher-level Yosys cells (phase 1) and the gate-level mux
+       family (phase 3).
+    2. **Prefix path** for the Yosys gate-level latch and
+       enable-flop families: any cell type starting with
+       ``$_DLATCH``, ``$_DFFE_``, or ``$_SDFFE_`` reports ``E`` as
+       the control pin. Avoids enumerating the polarity-/reset-/
+       set-shape variant explosion (``$_DFFE_PP0P_`` and friends).
+    3. **Heuristic fallback** (when ``use_heuristic`` is True, the
+       default): scan the cell's input pins for names matching
+       :data:`_CDC_010_HEURISTIC_PINS` case-insensitively. Designed
+       to catch the enable-style pin names common to standard-cell
+       ICG library cells (``ICG_*``, vendor-specific names) without
+       needing a per-library cell map.
+
+    Buffers / inverters / AND-tree gates ($buf / $not / $_AND_ /
+    …) fall through every step and return the empty set — their
+    output is a function of all inputs, none of which gate the
+    clock-network signal in a way that produces a glitch when
+    transitioned mid-cycle.
+    """
+    explicit = _CDC_010_CONTROL_PINS.get(cell.type)
+    if explicit is not None:
+        return explicit
+    # Yosys gate-level latch / enable-flop families. Cover the
+    # prefix once instead of enumerating $_DFFE_PP0P_, $_DFFE_NP1N_,
+    # etc. — every variant carries the enable on ``E``.
+    if (
+        cell.type.startswith("$_DLATCH")
+        or cell.type.startswith("$_DFFE_")
+        or cell.type.startswith("$_SDFFE_")
+    ):
+        return frozenset({"E"})
+    if not use_heuristic:
+        return frozenset()
+    matches: set[str] = set()
+    for port_name, bits in cell.connections.items():
+        if port_name in _OUTPUT_PINS:
+            continue
+        if not bits:
+            continue
+        if port_name.upper() in _CDC_010_HEURISTIC_PINS:
+            matches.add(port_name)
+    return frozenset(matches)
+
+
+def _clock_input_domains_for(
+    module: Module,
+    cell: Cell,
+    ctx: _RuleContext,
+    clock_spec: ClockSpec | None,
+    control_ports: frozenset[str],
+) -> set[str]:
+    """Set of clock-domain names that drive ``cell``'s non-control inputs.
+
+    Walks backward through combinational cells from every non-control,
+    non-output input pin and collects:
+
+    * the clock domain of any flop whose ``Q`` is reached (via
+      ``ctx.domains``); and
+    * the SDC clock name of any top-level clock port reached directly.
+
+    Empty set means none of the non-control inputs trace back to a
+    classifiable clock source — the rule treats that as "can't prove
+    async-ness" and stays silent, matching the false-negative-biased
+    posture of CDC-009 / CDC-011.
+    """
+    domains: set[str] = set()
+    seen: set[Bit] = set()
+    frontier: list[tuple[Bit, int]] = []
+    for port_name, bits in cell.connections.items():
+        if port_name in _OUTPUT_PINS or port_name in control_ports:
+            continue
+        for b in bits:
+            if isinstance(b, int):
+                frontier.append((b, 0))
+
+    max_depth = 12
+    while frontier:
+        nxt: list[tuple[Bit, int]] = []
+        for bit, depth in frontier:
+            if bit in seen:
+                continue
+            seen.add(bit)
+            drv = ctx.bit_drivers.get(bit)
+            if drv is None:
+                if clock_spec is None:
+                    continue
+                port = module.port_of_bit(bit)
+                if port is None:
+                    continue
+                clk = clock_spec.clock_for_port(port.name)
+                if clk is not None:
+                    domains.add(clk)
+                continue
+            src_cell_name, out_port, _idx = drv
+            if out_port == "Q":
+                src_clk = ctx.domains.get(src_cell_name)
+                if src_clk is not None:
+                    domains.add(src_clk)
+                continue
+            if depth >= max_depth:
+                continue
+            src_cell = module.cells[src_cell_name]
+            for in_port, in_bits in src_cell.connections.items():
+                if in_port in _OUTPUT_PINS:
+                    continue
+                for b in in_bits:
+                    if isinstance(b, int):
+                        nxt.append((b, depth + 1))
+        frontier = nxt
+    return domains
+
+
+def check_cdc_010(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001 — flop-D-pin enumeration doesn't apply
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+    use_heuristic: bool = True,
+) -> list[Violation]:
+    """CDC-010 — Glitch on the clock network from a wrong-domain control signal.
+
+    Dual of :func:`check_cdc_008`. CDC-008 fires when a clock arrives
+    on a data pin; CDC-010 fires when the *control* pin of a clock-
+    network cell (a clock mux's ``S``, an ICG's ``EN``) is driven by
+    a flop in a clock domain asynchronous to every one of the cell's
+    own clock inputs. The async control transition chops the output
+    clock — every downstream flop sees a runt edge and the damage is
+    not recoverable by any synchronizer at the sink.
+
+    Detection is structural: walk every cell in
+    :func:`_clock_network_cells`, take each control pin from
+    :func:`_control_pins_for`, backward-walk the control bits via
+    :func:`_backward_flop_fanin`, and compare each source flop's
+    domain against the cell's own clock-input domains from
+    :func:`_clock_input_domains_for`. Fires when the source domain
+    is async to *every* clock-input domain — a control flop sharing
+    one of the gated clocks is fine, and an SDC ``set_clock_groups``
+    declaring the pair synchronous suppresses naturally via
+    :meth:`ClockSpec.are_async`.
+
+    Coverage:
+
+    - Yosys higher-level cells (``$mux.S``, ``$dffe.EN``,
+      ``$dlatch.EN``) and the gate-level cells emitted by
+      ``simplemap`` / ``abc`` (``$_MUX_`` / ``$_MUX{4,8,16}_``,
+      ``$_DLATCH_*``, ``$_DFFE_*``, ``$_SDFFE_*``) — see the
+      explicit map and prefix paths in :func:`_control_pins_for`.
+    - Tech-mapped library cells via a conservative pin-name
+      heuristic (``E`` / ``EN`` / ``CE`` / ``GATE`` / ``SE``).
+      Pass ``use_heuristic=False`` (CLI:
+      ``--cdc-010-no-heuristic``) to disable when the heuristic
+      false-positives on a library with conflicting pin naming.
+
+    Severity is ``error``: the glitch propagates to every downstream
+    flop and cannot be recovered at the sink.
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    violations: list[Violation] = []
+
+    def _async(a: str, b: str) -> bool:
+        if clock_spec is None:
+            return a != b
+        ca = clock_spec.clock_for_port(a) or a
+        cb = clock_spec.clock_for_port(b) or b
+        return clock_spec.are_async(ca, cb)
+
+    clock_net_cells = _clock_network_cells(module, ctx.bit_drivers)
+    seen: set[tuple[str, str, str]] = set()
+
+    for cell_name in sorted(clock_net_cells):
+        cell = module.cells[cell_name]
+        control_ports = _control_pins_for(cell, use_heuristic=use_heuristic)
+        if not control_ports:
+            continue
+        cell_clock_domains: set[str] | None = None
+        for ctrl_port in sorted(control_ports):
+            ctrl_bits = cell.connections.get(ctrl_port, ())
+            if not ctrl_bits:
+                continue
+            ctrl_fanin = _backward_flop_fanin(module, ctrl_bits, ctx.bit_drivers)
+            if not ctrl_fanin:
+                # Control driven by a top-level port or a constant —
+                # same posture RDC-001 takes for ARST sourced from ports.
+                continue
+            if cell_clock_domains is None:
+                cell_clock_domains = _clock_input_domains_for(
+                    module, cell, ctx, clock_spec, control_ports
+                )
+            if not cell_clock_domains:
+                # Cell's own clock-input domains aren't classifiable
+                # (e.g. inputs sit behind unmapped library cells). Stay
+                # silent rather than fire blind.
+                continue
+            for src_flop in sorted(ctrl_fanin):
+                src_clk = ctx.domains.get(src_flop)
+                if src_clk is None:
+                    continue
+                if src_clk in cell_clock_domains:
+                    continue
+                if not all(_async(src_clk, d) for d in cell_clock_domains):
+                    continue
+                key = (cell_name, ctrl_port, src_flop)
+                if key in seen:
+                    continue
+                seen.add(key)
+                violations.append(
+                    Violation(
+                        rule_id="CDC-010",
+                        severity="error",
+                        message=(
+                            f"clock-network cell {cell_name} "
+                            f"({cell.type}) control pin {ctrl_port} is "
+                            f"driven by flop {src_flop} in domain "
+                            f"{src_clk}, asynchronous to the cell's "
+                            f"clock-input domain(s) "
+                            f"({sorted(cell_clock_domains)}); an async "
+                            f"control transition can chop the output "
+                            f"clock into runt pulses on every "
+                            f"downstream flop. Synchronize {src_flop} "
+                            f"into one of the gated-clock domains, or "
+                            f"use a glitch-free clock-mux library cell."
+                        ),
+                        cell_name=cell_name,
+                    )
+                )
+    return violations
+
+
 def check_rdc_001(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -1588,7 +2009,9 @@ def check_rdc_004(
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+    recognised_syncs = find_reset_synchronizers(
+        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
+    )
 
     violations: list[Violation] = []
     for f in ctx.flops:
@@ -1674,7 +2097,9 @@ def check_rdc_005(
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+    recognised_syncs = find_reset_synchronizers(
+        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
+    )
 
     violations: list[Violation] = []
     for f in ctx.flops:
@@ -1793,12 +2218,14 @@ def check_rdc_002(
     *,
     ctx: _RuleContext | None = None,
 ) -> list[Violation]:
-    """RDC-002 — Reset polarity mismatch on a direct flop→flop reset.
+    """RDC-002 — Reset polarity mismatch.
 
-    Fires when a flop's reset pin is driven *directly* (no inverter,
-    no comb between) by another flop's ``Q``, and the consumer's
-    polarity expectation doesn't match the producer's reset-value
-    output. Concretely:
+    Two variants fire under this rule:
+
+    *Flop→flop variant.* A flop's reset pin is driven *directly* (no
+    inverter, no comb between) by another flop's ``Q``, and the
+    consumer's polarity expectation doesn't match the producer's
+    reset-value output. Concretely:
 
     * Let *P* be the producer flop and *C* the consumer flop.
     * When *P* enters reset, ``P.Q = P.ARST_VALUE``.
@@ -1806,11 +2233,21 @@ def check_rdc_002(
     * If ``P.ARST_VALUE != C.ARST_POLARITY``, *C* does **not** enter
       reset when *P* does — a polarity wiring bug.
 
-    Suppressed when *C* is recognised as a member of a reset-
-    synchroniser chain by :func:`rtl_buddy_cdc.reset_domain.find_reset_synchronizers`
-    (the user may have built an intentional polarity-inverting sync
-    on purpose; the recogniser's constant-fed-head check is what
-    distinguishes that from accidental wiring).
+    *Port-declared variant* (issue #107). When a top-level reset port
+    carries a ``(* reset_polarity = "<low|high>" *)`` attribute, treat
+    that declaration as authoritative. Any flop whose async reset
+    traces back to that port (``ResetSource.source == "port"``) and
+    whose inferred polarity disagrees with the declaration is reported.
+    This catches the "designer added a ``posedge rst_n`` flop on a port
+    the rest of the design treats as active-low" wiring bug — the
+    structural fanin walk hides it because the connection is just a
+    plain wire, but the user's declared intent gives us the reference
+    to compare against.
+
+    Both variants are suppressed when the consumer flop is a recognised
+    reset-synchroniser stage (a polarity-inverting sync may be the
+    deliberate fix, marked by ``(* reset_sync *)`` or matched by the
+    constant-fed-head structural recogniser).
 
     This is a structural rule — it does not depend on the SDC clock
     declarations. It runs whether or not ``clock_spec`` is supplied.
@@ -1823,7 +2260,10 @@ def check_rdc_002(
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(module, ctx.domains)
+    recognised_syncs = find_reset_synchronizers(
+        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
+    )
+    polarity_overrides = ctx.reset_polarity_overrides
 
     # Group by (producer, producer_arst_value, consumer_polarity_bit)
     # so the typical "one upstream polarity wiring bug, N downstream
@@ -1831,11 +2271,15 @@ def check_rdc_002(
     # consumer — matches RDC-001's reset-tree grouping convention and
     # the fix-shape the user has to take.
     groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    # Port-declared variant uses a parallel grouping key: (port_name,
+    # declared_polarity_bit, consumer_polarity_bit). Keeping the two
+    # buckets separate avoids cross-contaminating their messages.
+    port_groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for f in ctx.flops:
         if f.cell.name in recognised_syncs:
             continue
         rd = reset_domains.get(f.cell.name)
-        if rd is None or rd.reset is None or rd.reset.source != "inferred":
+        if rd is None or rd.reset is None:
             continue
         # Only fire on async-reset consumers (ARST). Sync-reset (SRST)
         # signals are intentional gating — e.g. a "kill" signal that
@@ -1847,17 +2291,35 @@ def check_rdc_002(
         # invariant actually holds.
         if rd.reset.type != "async":
             continue
-        producer_name = rd.reset.name
-        producer = module.cells.get(producer_name)
-        if producer is None:
-            continue
-        producer_arst_value = _trailing_bit(producer.parameters.get("ARST_VALUE", "0"))
         consumer_polarity_bit = "1" if rd.reset.polarity == "high" else "0"
-        if producer_arst_value == consumer_polarity_bit:
-            continue  # polarities match — wiring is correct
-        groups[(producer_name, producer_arst_value, consumer_polarity_bit)].append(
-            f.cell.name
-        )
+        if rd.reset.source == "inferred":
+            producer_name = rd.reset.name
+            producer = module.cells.get(producer_name)
+            if producer is None:
+                continue
+            # If the producer is itself a recognised reset-synchroniser
+            # stage, the user has vetted that the reset arrives cleanly —
+            # any polarity inversion in the chain is intentional. Catches
+            # the ``(* reset_sync *)``-marked-tail shape where the user
+            # explicitly declared the chain trustworthy.
+            if producer_name in recognised_syncs:
+                continue
+            producer_arst_value = _trailing_bit(
+                producer.parameters.get("ARST_VALUE", "0")
+            )
+            if producer_arst_value == consumer_polarity_bit:
+                continue  # polarities match — wiring is correct
+            groups[(producer_name, producer_arst_value, consumer_polarity_bit)].append(
+                f.cell.name
+            )
+        elif rd.reset.source == "port" and rd.reset.name in polarity_overrides:
+            declared = polarity_overrides[rd.reset.name]
+            declared_bit = "1" if declared == "high" else "0"
+            if declared_bit == consumer_polarity_bit:
+                continue
+            port_groups[(rd.reset.name, declared_bit, consumer_polarity_bit)].append(
+                f.cell.name
+            )
 
     violations: list[Violation] = []
     for (producer_name, prod_val, cons_pol), consumers in groups.items():
@@ -1885,6 +2347,37 @@ def check_rdc_002(
                     f"will never enter reset when the producer does. Add "
                     f"an inverter between them, or flip the consumer's "
                     f"reset edge sensitivity to match. {dst_desc}"
+                ),
+                cell_name=repr_cell,
+            )
+        )
+    for (port_name, decl_bit, cons_pol), consumers in port_groups.items():
+        dsts = sorted(set(consumers))
+        repr_cell = dsts[0]
+        declared = "high" if decl_bit == "1" else "low"
+        if len(dsts) == 1:
+            dst_desc = f"destination flop: {dsts[0]}"
+        else:
+            dst_desc = (
+                f"{len(dsts)} destination flops disagree with the "
+                f"port-declared polarity: "
+                f"{', '.join(dsts[:3])}" + (", ..." if len(dsts) > 3 else "")
+            )
+        violations.append(
+            Violation(
+                rule_id="RDC-002",
+                severity="error",
+                message=(
+                    f"reset polarity mismatch with port-level declaration: "
+                    f"port '{port_name}' is annotated "
+                    f'(* reset_polarity = "{declared}" *) (active-{declared}, '
+                    f"asserts on '{decl_bit}'), but the consumer flop(s) "
+                    f"are wired active-{'high' if cons_pol == '1' else 'low'} "
+                    f"(ARST_POLARITY={cons_pol}); the declared port "
+                    f"polarity disagrees with the flop's reset edge "
+                    f"sensitivity. Fix the flop's edge to match the port "
+                    f"declaration, or remove the (* reset_polarity *) "
+                    f"attribute if the declaration is wrong. {dst_desc}"
                 ),
                 cell_name=repr_cell,
             )
@@ -2074,6 +2567,7 @@ RULES: dict[str, RuleFn] = {
     "RDC-005": check_rdc_005,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
+    "CDC-010": check_cdc_010,
     "CDC-011": check_cdc_011,
 }
 
@@ -2083,6 +2577,9 @@ def run_all(
     crossings: list[Crossing],
     clock_spec: ClockSpec | None = None,
     required_depth: int = 2,
+    *,
+    reset_hints: ResetHints | None = None,
+    cdc_010_heuristic: bool = True,
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -2090,12 +2587,22 @@ def run_all(
     # ``_bit_drivers`` were each rebuilt per rule, with
     # ``_sync_chain_depth`` re-scanning every flop per chain-extension
     # step (the worst hot path).
-    ctx = _build_context(module, clock_spec)
+    ctx = _build_context(module, clock_spec, reset_hints=reset_hints)
     out: list[Violation] = []
     for rule_id, rule in RULES.items():
         if rule_id == "CDC-002":
             out.extend(
                 check_cdc_002(module, crossings, clock_spec, required_depth, ctx=ctx)
+            )
+        elif rule_id == "CDC-010":
+            out.extend(
+                check_cdc_010(
+                    module,
+                    crossings,
+                    clock_spec,
+                    ctx=ctx,
+                    use_heuristic=cdc_010_heuristic,
+                )
             )
         else:
             out.extend(rule(module, crossings, clock_spec, ctx=ctx))

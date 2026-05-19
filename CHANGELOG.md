@@ -24,6 +24,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Emitted as `null` (never omitted) when the analyzer can't
   resolve the chain — distinct from an older producer that didn't
   emit the field.
+- **External reset hints (`--reset-hints FILE.yaml`)** (#129). New
+  CLI flag on both ``analyze`` and ``lint`` that loads an external
+  YAML declaration of reset-port polarity / synchroniser
+  annotations, parallel to the in-RTL ``(* reset_polarity *)`` /
+  ``(* reset_sync *)`` SV attributes. Same vocabulary, external
+  file when the user can't touch RTL (vendor IP, generated
+  wrappers, multi-block boards where one file beats scattered
+  attributes). Schema is the ``reset-hints:`` block with optional
+  ``ports`` (``name`` / ``polarity`` / ``type`` / ``clock``) and
+  ``synchronizers`` (exact ``instance`` or shell-glob
+  ``instance_glob``; matched against the resolved hierarchical
+  path, so the same hint covers both Yosys-flatten and slang
+  cell-name shapes). Schema version pinned by
+  ``rtl_buddy_cdc.reset_hints.SCHEMA_VERSION`` (``"1.0"``); strict
+  parsing fails loudly on unknown keys / malformed enum values
+  with file context. Hints **win** on disagreement with the SV
+  attribute path; synchroniser sets union with no precedence
+  question. Threaded into ``run_all`` via the new
+  ``reset_hints=`` keyword, and into the ``--emit-reset-domain-map``
+  pipeline so the artefact reflects the merged view. Gated on a
+  new ``[hints]`` install extra
+  (``pip install 'rtl-buddy-cdc[hints]'``) — default installs stay
+  ``typer``-only; PyYAML pulls in only when the extra is requested,
+  matching the ``[slang]`` precedent. Missing-extra path raises
+  ``ResetHintsUnavailable`` with the install command, the loader
+  raises ``ResetHintsError`` on validation failures (both surface
+  through the CLI as exit 2). Schema reference at
+  ``wiki/raw/articles/rtl-buddy-cdc-reset-hints-schema.md``;
+  analysis-doc §8.3 promoted from "planned" to a working
+  reference.
+- **`--emit-reset-domain-map` reset-domain artifact** (#108). New CLI
+  flag on both ``analyze`` and ``lint`` that writes a stable v1.0
+  JSON sidecar capturing the reset-tree view of the design, parallel
+  to the clock-domain map (#106). Payload sections: ``reset_sources``
+  (distinct upstream resets, deduped by ``(name, source)`` —
+  ``"port"`` / ``"inferred"`` / ``"constant"``), ``reset_synchronizers``
+  (one entry per flop in the recognised reset-synchroniser set, union
+  of the structural recogniser and ``(* reset_sync *)``-marked
+  flops), ``flop_resets`` (per-flop reset assignments with source
+  locations), and ``reset_crossings`` (kinds ``async-deassert``,
+  ``polarity-mismatch``, ``sync-crossing``, ``comb-driven`` —
+  parallel to RDC-001..-004). Port-level ``(* reset_polarity *)``
+  declarations surface as ``declared_polarity`` on the
+  ``reset_sources`` entry. Schema version pinned by
+  ``rtl_buddy_cdc.reset_domain_map.SCHEMA_VERSION`` (``"1.0"``);
+  every collection is sorted by a documented key so two builds on
+  the same inputs emit the same byte sequence (pinned by
+  ``tests/test_reset_domain_map.py::test_deterministic``). Composable
+  with ``--emit-domain-map`` — both flags can be passed in a single
+  invocation; the shared ``design.top`` / ``design.frontend`` envelope
+  lets consumers join the two artefacts safely. ``--no-findings``
+  short-circuits rule evaluation when one or both maps are the sole
+  deliverable. Schema reference at
+  ``wiki/raw/articles/rtl-buddy-cdc-reset-domain-map-schema.md``.
+  Immediate consumer: rtl-buddy-view's Phase 3 reset-overlay.
+- **`(* reset_polarity *)` SV attribute + RDC-002 port-declared
+  polarity variant** (ninth instalment of #107). Top-level reset
+  ports can be annotated with ``(* reset_polarity = "low" *)`` /
+  ``"high"`` to declare the intended active polarity as authoritative.
+  RDC-002 grows a second firing path: when a flop's async reset
+  traces back to a declared port and the flop's inferred
+  ``ARST_POLARITY`` disagrees with the declaration, the rule fires
+  with a message naming the port and both polarities. This catches
+  the "designer added a ``posedge rst_n`` flop on a port the rest of
+  the design treats as active-low" wiring bug — invisible to every
+  prior rule (no clock crossing, no flop→flop reset path). Paired
+  fixtures ``bad_marked_reset_polarity`` /
+  ``good_marked_reset_polarity`` with a test covering the helper, the
+  port-only scoping rule (internal nets with the attribute are
+  ignored), and the end-to-end rule path.
+- **`find_reset_crossings` + `ResetCrossing` unified API**
+  (companion to the RDC family, issue #107). New public surface in
+  ``rtl_buddy_cdc.reset_domain`` that emits one record per flop whose
+  reset arrival is worth flagging — kinds ``async-deassert``,
+  ``sync-crossing``, ``comb-driven``, ``polarity-mismatch`` —
+  consolidating the structural facts the RDC rule pack would walk to
+  individually. Additive: the per-rule walks in ``check_rdc_00N`` are
+  unchanged; this is the surface external consumers (e.g.
+  ``rtl-buddy-view``) call when they want a unified reset-domain
+  view without rerunning the analyzer.
+- **`(* reset_sync *)` SV attribute escape hatch** (#115, eighth
+  instalment of #107). Parallel to the existing
+  ``(* cdc_sync *)`` / ``(* cdc_gray *)`` annotations. Marks a flop
+  as a vetted reset-synchroniser stage even when the structural
+  recogniser in ``rtl_buddy_cdc.reset_domain.find_reset_synchronizers``
+  wouldn't match — the structural pass deliberately requires a
+  constant-fed chain head, so chains whose head's D is fed by an
+  upstream signal (rather than a literal constant) are otherwise
+  missed. RDC-002 / RDC-004 / RDC-005 skip flops marked with this
+  attribute and also skip consumers whose ARST is driven by a marked
+  flop's Q (matching the user's intent that "this reset arrives
+  cleanly downstream"). New helper
+  ``rtl_buddy_cdc.rules.user_reset_sync_flop_names(module)`` mirrors
+  the existing ``user_sync_flop_names`` shape. New optional
+  ``extra_synchronizers`` parameter on ``find_reset_synchronizers``
+  folds user-marked flops into the recogniser's output set.
+  Accepted aliases: ``reset_sync``, ``reset_synchronizer``. Coverage
+  fixture ``marked_reset_sync`` with a dedicated test module
+  (``test_marked_reset_sync.py``) pinning the attribute discovery,
+  recogniser overlay, and end-to-end RDC-002 suppression.
 - **RDC-005 — Multiple reset sources converging without muxing**
   (fourth and final sub-PR of #114, seventh instalment of #107).
   New rule: a flop's async reset pin is the output of comb logic

@@ -566,6 +566,9 @@ RULES: dict[str, RuleFn] = {
     "CDC-002": check_cdc_002,
     ...
     "CDC-008": check_cdc_008,
+    "CDC-009": check_cdc_009,
+    "CDC-010": check_cdc_010,
+    "CDC-011": check_cdc_011,
 }
 
 def run_all(module, crossings, clock_spec, required_depth=2):
@@ -600,7 +603,9 @@ free functions in `rules.py`:
 | `_is_gray_encoded_source(...)` | CDC-004 | Backward-walk from src D, looking for the canonical `g = b ^ (b >> 1)` XOR pattern |
 | `_is_gated_bus_crossing(...)` | CDC-004 | Recognise handshake-style gating — D updates only when an enable from the dst domain has been synchronized across. Three shapes are accepted: (1) `$mux` directly driving `D` with a dst-domain `S` (the original handshake), (2) the same mux behind up to `_GATING_BUF_BUDGET`=2 transparent fanout buffers (`$buf`/`$_BUF_`/`$_NOT_`/`$not`/`$pos`), (3) destination cell is a `$dffe`-style flop with a dst-domain `EN` fanin |
 | `_trace_through_bus_buffers(module, bit, drivers, ...)` | CDC-004 | Walk one D bit backward through up to `_GATING_BUF_BUDGET` transparent single-input buffers and return the surviving upstream driver. Used by `_is_gated_bus_crossing`'s shape-2 path so Yosys-inserted fanout buffers don't hide the originating mux |
-| `_clock_network_cells(...)` | CDC-008 | Identify cells whose output transitively drives any flop CLK; they're exempted from "clock as data" |
+| `_clock_network_cells(...)` | CDC-008, -010 | Identify cells whose output transitively drives any flop CLK. CDC-008 *exempts* them ("clock as data" doesn't apply to the distribution itself); CDC-010 *targets* them (a wrong-domain control pin on one of these cells is the failure mode) |
+| `_control_pins_for(cell, *, use_heuristic=True)` | CDC-010 | Classify a clock-network cell's *control* pins (those whose transitions can glitch the output clock). Three resolution paths, tried in order: (1) explicit map for Yosys higher-level cells (`$mux.S`, `$dffe.EN`, `$dlatch.EN`) and the gate-level mux family (`$_MUX_` / `$_MUX{4,8,16}_`); (2) prefix paths for the gate-level latch and enable-flop families (`$_DLATCH*` / `$_DFFE_*` / `$_SDFFE_*` → all carry the enable on `E`); (3) a conservative pin-name heuristic — input pins named `E` / `EN` / `CE` / `GATE` / `SE` (case-insensitive) on any other cell are treated as control. `use_heuristic=False` (CLI: `--cdc-010-no-heuristic`) suppresses the heuristic only; the map and prefix paths remain active. Returns the empty set for non-glitch-producing cell types ($buf / $not / AND-trees / vendor cells that lack a heuristic-matching pin) so the rule's outer loop short-circuits |
+| `_clock_input_domains_for(module, cell, ctx, clock_spec, control_ports)` | CDC-010 | Set of clock-domain names that drive a clock-network cell's *non-control* inputs. Walks each non-control input backward through combinational cells; records the domain of any flop's Q reached (via `ctx.domains`) and the SDC clock name of any top-level clock port reached directly. Empty set means none of the inputs trace to a classifiable clock — the rule then stays silent (false-negative-biased) |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |
 
@@ -644,6 +649,70 @@ escape-hatch annotation is preferred when:
 For every rule that uses an attribute, the structural detector is
 still primary — the attribute is the relief valve, not the front
 door.
+
+### 8.4 CDC-010 — clock-network glitch from a wrong-domain control
+
+CDC-010 is the structural dual of CDC-008. CDC-008 flags a clock
+arriving on a *data* pin; CDC-010 flags a *control* pin on a
+clock-network cell driven from a foreign clock domain — the case
+where the cell is in the right place but the signal that gates it
+is not.
+
+The two rules partition the failure mode by which side of the gate
+is wrong. They are not redundant: a single bad design can trigger
+both, and the docstring on `check_cdc_010` cross-references
+`check_cdc_008` so a reader who lands on one rule's hit finds the
+sibling check.
+
+Detection composes existing helpers — no new cone-walking
+infrastructure:
+
+1. Enumerate clock-network cells with `_clock_network_cells`
+   (same set CDC-008 *exempts*).
+2. For each cell, look up its control pins via `_control_pins_for`
+   — Yosys-primitive only: `$mux.S`, `$dffe.EN`, `$dlatch.EN`.
+3. Backward-walk each control pin's fanin with
+   `_backward_flop_fanin` (same helper RDC-001 uses on `ARST`).
+4. Classify the cell's *non-control* inputs by source clock domain
+   via `_clock_input_domains_for`. Both flop-Q sources
+   (`ctx.domains`) and direct top-level clock ports
+   (`ClockSpec.clock_for_port`) feed the set.
+5. Fire when a control-pin fanin flop's domain is asynchronous to
+   *every* one of the cell's clock-input domains (per
+   `ClockSpec.are_async`). A source flop sharing one of the gated
+   clocks is fine; an SDC declaring the pair synchronous via
+   `set_clock_groups` suppresses naturally.
+
+Severity is `error`: an async control transition chops the output
+clock into runt pulses on every downstream flop, and no
+synchronizer at the sink can recover the lost edge.
+
+Cell-shape coverage is three-layered, all gated through
+`_control_pins_for`:
+
+1. **Explicit map** — Yosys higher-level cells (`$mux.S`,
+   `$dffe.EN`, `$dlatch.EN`, phase 1) and the gate-level mux
+   family emitted by `simplemap` / `abc` (`$_MUX_.S`,
+   `$_MUX4_.{S,T}`, `$_MUX8_.{S,T,U}`, `$_MUX16_.{S,T,U,V}`).
+2. **Prefix paths** for the gate-level latch and enable-flop
+   families: any cell type starting with `$_DLATCH`, `$_DFFE_`,
+   or `$_SDFFE_` reports `E` as the control pin. Absorbs the
+   polarity-/reset-/set-shape variant explosion (`$_DFFE_PP0P_`,
+   `$_DFFE_NN1N_`, `$_SDFFE_*`, …) without enumerating every
+   combination.
+3. **Pin-name heuristic** for tech-mapped library cells: an
+   input pin named `E`, `EN`, `CE`, `GATE`, or `SE`
+   (case-insensitive) on a cell type outside the map and prefix
+   paths is treated as a control pin. Mux-style names (`S` /
+   `SEL`) are intentionally *not* in the heuristic set —
+   they'd collide with too many non-control pins on unrelated
+   cells, so mux shapes have to live in the explicit map.
+
+The heuristic is opt-out via `--cdc-010-no-heuristic` for
+libraries whose pin naming conflicts (e.g. a vendor that uses
+`EN` for something other than enable). The flag suppresses only
+the heuristic path; the explicit map and prefix paths remain
+active.
 
 ## 9. Waivers
 
@@ -772,6 +841,26 @@ an older producer that didn't emit the field at all. With today's
 Yosys (`proc; flatten`) and slang frontends the chain is always
 resolvable. Yosys runs that skip `proc`/`flatten` are out of scope —
 the analyzer assumes a flattened netlist.
+
+A parallel sidecar — the **reset-domain-map artifact** — is emitted
+by `--emit-reset-domain-map FILE.json` and implemented in
+`rtl_buddy_cdc.reset_domain_map.build_reset_domain_map`. Same
+contract shape (own `schema_version`, deterministic sort, additive
+backward-compatible evolution) but a different payload: distinct
+upstream reset sources (port / inferred / constant), the recognised
+reset-synchroniser stages, per-flop reset assignments, and structural
+reset crossings (kinds `async-deassert`, `polarity-mismatch`,
+`sync-crossing`, `comb-driven`). The two maps are intentionally
+separate artefacts — clock and reset analyses evolve on different
+schedules, and consumers enable each overlay independently. Both
+flags compose in a single run; the shared `design.top` /
+`design.frontend` envelope blocks let consumers join the two
+artefacts safely. See
+[`rtl-buddy-cdc-reset-domain-map-schema.md`](rtl-buddy-cdc-reset-domain-map-schema.md)
+for the field reference and
+[`rtl-buddy-cdc-reset-domain-analysis.md`](rtl-buddy-cdc-reset-domain-analysis.md)
+for the producer-side pipeline (data model, source classification,
+synchroniser recogniser, and the RDC rule family built on top).
 
 The SARIF output is validated against the OASIS-published 2.1.0
 schema by `tests/test_sarif_schema.py`, vendored at
