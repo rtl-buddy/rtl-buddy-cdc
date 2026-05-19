@@ -254,6 +254,15 @@ authoritative. Attached to the input port:
 (* reset_polarity = "high" *) input logic rst;
 ```
 
+The two accepted values are the analyzer-wide convention for
+reset polarity throughout the codebase, the JSON artefacts, and
+the (planned) external YAML hints (#129):
+
+- `"low"` — **active-low** reset (asserts when the signal is `0`;
+  the classic `rst_n` idiom).
+- `"high"` — **active-high** reset (asserts when the signal is
+  `1`).
+
 Discovery via `rtl_buddy_cdc.rules.user_reset_polarity_overrides`,
 which returns `dict[port_name, "high"|"low"]`. Internal nets with
 the attribute are silently ignored — the declaration is a
