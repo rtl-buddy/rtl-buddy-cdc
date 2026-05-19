@@ -566,6 +566,9 @@ RULES: dict[str, RuleFn] = {
     "CDC-002": check_cdc_002,
     ...
     "CDC-008": check_cdc_008,
+    "CDC-009": check_cdc_009,
+    "CDC-010": check_cdc_010,
+    "CDC-011": check_cdc_011,
 }
 
 def run_all(module, crossings, clock_spec, required_depth=2):
@@ -600,7 +603,9 @@ free functions in `rules.py`:
 | `_is_gray_encoded_source(...)` | CDC-004 | Backward-walk from src D, looking for the canonical `g = b ^ (b >> 1)` XOR pattern |
 | `_is_gated_bus_crossing(...)` | CDC-004 | Recognise handshake-style gating — D updates only when an enable from the dst domain has been synchronized across. Three shapes are accepted: (1) `$mux` directly driving `D` with a dst-domain `S` (the original handshake), (2) the same mux behind up to `_GATING_BUF_BUDGET`=2 transparent fanout buffers (`$buf`/`$_BUF_`/`$_NOT_`/`$not`/`$pos`), (3) destination cell is a `$dffe`-style flop with a dst-domain `EN` fanin |
 | `_trace_through_bus_buffers(module, bit, drivers, ...)` | CDC-004 | Walk one D bit backward through up to `_GATING_BUF_BUDGET` transparent single-input buffers and return the surviving upstream driver. Used by `_is_gated_bus_crossing`'s shape-2 path so Yosys-inserted fanout buffers don't hide the originating mux |
-| `_clock_network_cells(...)` | CDC-008 | Identify cells whose output transitively drives any flop CLK; they're exempted from "clock as data" |
+| `_clock_network_cells(...)` | CDC-008, -010 | Identify cells whose output transitively drives any flop CLK. CDC-008 *exempts* them ("clock as data" doesn't apply to the distribution itself); CDC-010 *targets* them (a wrong-domain control pin on one of these cells is the failure mode) |
+| `_control_pins_for(cell_type)` | CDC-010 | Map a Yosys-primitive clock-network cell type to the set of *control* pins whose transitions can glitch the output clock: `$mux.S`, `$dffe.EN`, `$dlatch.EN`. Yosys-primitive only; tech-mapped library shapes (`CE` / `E` / `GATE` / `SE`) are deferred to a follow-up. Returns an empty set for non-glitch-producing cell types ($buf / $not / AND-trees) so the rule's outer loop short-circuits |
+| `_clock_input_domains_for(module, cell, ctx, clock_spec, control_ports)` | CDC-010 | Set of clock-domain names that drive a clock-network cell's *non-control* inputs. Walks each non-control input backward through combinational cells; records the domain of any flop's Q reached (via `ctx.domains`) and the SDC clock name of any top-level clock port reached directly. Empty set means none of the inputs trace to a classifiable clock — the rule then stays silent (false-negative-biased) |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |
 
@@ -644,6 +649,48 @@ escape-hatch annotation is preferred when:
 For every rule that uses an attribute, the structural detector is
 still primary — the attribute is the relief valve, not the front
 door.
+
+### 8.4 CDC-010 — clock-network glitch from a wrong-domain control
+
+CDC-010 is the structural dual of CDC-008. CDC-008 flags a clock
+arriving on a *data* pin; CDC-010 flags a *control* pin on a
+clock-network cell driven from a foreign clock domain — the case
+where the cell is in the right place but the signal that gates it
+is not.
+
+The two rules partition the failure mode by which side of the gate
+is wrong. They are not redundant: a single bad design can trigger
+both, and the docstring on `check_cdc_010` cross-references
+`check_cdc_008` so a reader who lands on one rule's hit finds the
+sibling check.
+
+Detection composes existing helpers — no new cone-walking
+infrastructure:
+
+1. Enumerate clock-network cells with `_clock_network_cells`
+   (same set CDC-008 *exempts*).
+2. For each cell, look up its control pins via `_control_pins_for`
+   — Yosys-primitive only: `$mux.S`, `$dffe.EN`, `$dlatch.EN`.
+3. Backward-walk each control pin's fanin with
+   `_backward_flop_fanin` (same helper RDC-001 uses on `ARST`).
+4. Classify the cell's *non-control* inputs by source clock domain
+   via `_clock_input_domains_for`. Both flop-Q sources
+   (`ctx.domains`) and direct top-level clock ports
+   (`ClockSpec.clock_for_port`) feed the set.
+5. Fire when a control-pin fanin flop's domain is asynchronous to
+   *every* one of the cell's clock-input domains (per
+   `ClockSpec.are_async`). A source flop sharing one of the gated
+   clocks is fine; an SDC declaring the pair synchronous via
+   `set_clock_groups` suppresses naturally.
+
+Severity is `error`: an async control transition chops the output
+clock into runt pulses on every downstream flop, and no
+synchronizer at the sink can recover the lost edge.
+
+Phase-1 scope is the Yosys-primitive map only. Tech-mapped library
+shapes (`CE` / `E` / `GATE` / `SE`) and the paired bad / good
+fixtures are tracked under follow-up phases (proposal
+§8.2 / §8.3 in `docs/proposals/clock-network-glitch.md`).
 
 ## 9. Waivers
 
