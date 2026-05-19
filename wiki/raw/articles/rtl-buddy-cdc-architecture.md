@@ -604,7 +604,7 @@ free functions in `rules.py`:
 | `_is_gated_bus_crossing(...)` | CDC-004 | Recognise handshake-style gating — D updates only when an enable from the dst domain has been synchronized across. Three shapes are accepted: (1) `$mux` directly driving `D` with a dst-domain `S` (the original handshake), (2) the same mux behind up to `_GATING_BUF_BUDGET`=2 transparent fanout buffers (`$buf`/`$_BUF_`/`$_NOT_`/`$not`/`$pos`), (3) destination cell is a `$dffe`-style flop with a dst-domain `EN` fanin |
 | `_trace_through_bus_buffers(module, bit, drivers, ...)` | CDC-004 | Walk one D bit backward through up to `_GATING_BUF_BUDGET` transparent single-input buffers and return the surviving upstream driver. Used by `_is_gated_bus_crossing`'s shape-2 path so Yosys-inserted fanout buffers don't hide the originating mux |
 | `_clock_network_cells(...)` | CDC-008, -010 | Identify cells whose output transitively drives any flop CLK. CDC-008 *exempts* them ("clock as data" doesn't apply to the distribution itself); CDC-010 *targets* them (a wrong-domain control pin on one of these cells is the failure mode) |
-| `_control_pins_for(cell_type)` | CDC-010 | Map a Yosys-primitive clock-network cell type to the set of *control* pins whose transitions can glitch the output clock: `$mux.S`, `$dffe.EN`, `$dlatch.EN`. Yosys-primitive only; tech-mapped library shapes (`CE` / `E` / `GATE` / `SE`) are deferred to a follow-up. Returns an empty set for non-glitch-producing cell types ($buf / $not / AND-trees) so the rule's outer loop short-circuits |
+| `_control_pins_for(cell, *, use_heuristic=True)` | CDC-010 | Classify a clock-network cell's *control* pins (those whose transitions can glitch the output clock). Three resolution paths, tried in order: (1) explicit map for Yosys higher-level cells (`$mux.S`, `$dffe.EN`, `$dlatch.EN`) and the gate-level mux family (`$_MUX_` / `$_MUX{4,8,16}_`); (2) prefix paths for the gate-level latch and enable-flop families (`$_DLATCH*` / `$_DFFE_*` / `$_SDFFE_*` → all carry the enable on `E`); (3) a conservative pin-name heuristic — input pins named `E` / `EN` / `CE` / `GATE` / `SE` (case-insensitive) on any other cell are treated as control. `use_heuristic=False` (CLI: `--cdc-010-no-heuristic`) suppresses the heuristic only; the map and prefix paths remain active. Returns the empty set for non-glitch-producing cell types ($buf / $not / AND-trees / vendor cells that lack a heuristic-matching pin) so the rule's outer loop short-circuits |
 | `_clock_input_domains_for(module, cell, ctx, clock_spec, control_ports)` | CDC-010 | Set of clock-domain names that drive a clock-network cell's *non-control* inputs. Walks each non-control input backward through combinational cells; records the domain of any flop's Q reached (via `ctx.domains`) and the SDC clock name of any top-level clock port reached directly. Empty set means none of the inputs trace to a classifiable clock — the rule then stays silent (false-negative-biased) |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |
@@ -687,10 +687,32 @@ Severity is `error`: an async control transition chops the output
 clock into runt pulses on every downstream flop, and no
 synchronizer at the sink can recover the lost edge.
 
-Phase-1 scope is the Yosys-primitive map only. Tech-mapped library
-shapes (`CE` / `E` / `GATE` / `SE`) and the paired bad / good
-fixtures are tracked under follow-up phases (proposal
-§8.2 / §8.3 in `docs/proposals/clock-network-glitch.md`).
+Cell-shape coverage is three-layered, all gated through
+`_control_pins_for`:
+
+1. **Explicit map** — Yosys higher-level cells (`$mux.S`,
+   `$dffe.EN`, `$dlatch.EN`, phase 1) and the gate-level mux
+   family emitted by `simplemap` / `abc` (`$_MUX_.S`,
+   `$_MUX4_.{S,T}`, `$_MUX8_.{S,T,U}`, `$_MUX16_.{S,T,U,V}`).
+2. **Prefix paths** for the gate-level latch and enable-flop
+   families: any cell type starting with `$_DLATCH`, `$_DFFE_`,
+   or `$_SDFFE_` reports `E` as the control pin. Absorbs the
+   polarity-/reset-/set-shape variant explosion (`$_DFFE_PP0P_`,
+   `$_DFFE_NN1N_`, `$_SDFFE_*`, …) without enumerating every
+   combination.
+3. **Pin-name heuristic** for tech-mapped library cells: an
+   input pin named `E`, `EN`, `CE`, `GATE`, or `SE`
+   (case-insensitive) on a cell type outside the map and prefix
+   paths is treated as a control pin. Mux-style names (`S` /
+   `SEL`) are intentionally *not* in the heuristic set —
+   they'd collide with too many non-control pins on unrelated
+   cells, so mux shapes have to live in the explicit map.
+
+The heuristic is opt-out via `--cdc-010-no-heuristic` for
+libraries whose pin naming conflicts (e.g. a vendor that uses
+`EN` for something other than enable). The flag suppresses only
+the heuristic path; the explicit map and prefix paths remain
+active.
 
 ## 9. Waivers
 
