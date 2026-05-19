@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from rtl_buddy_cdc.sdc import parse
 
 
@@ -97,6 +99,112 @@ def test_create_generated_clock_div2_resolves_to_master() -> None:
     assert spec2.resolve("clk_div2") == "clk"
     # Master and divided clock are *not* async by default.
     assert not spec2.are_async("clk", "clk_div2")
+
+
+def test_create_generated_clock_source_does_not_consume_target_port() -> None:
+    spec = parse(
+        """
+        create_clock -name clk -period 10.0 [get_ports clk]
+        create_generated_clock -name clk_fwd -master_clock clk \\
+            -source [get_ports clk] [get_ports clk_fwd]
+        """
+    )
+
+    assert spec.clocks["clk_fwd"].ports == ("clk_fwd",)
+    assert spec.clock_for_port("clk_fwd") == "clk_fwd"
+    assert spec.resolve("clk_fwd") == "clk"
+
+
+# --- Issue #140 shape coverage ------------------------------------------------
+#
+# The tests above pin the port-target shape. The cases below extend
+# the regression net to the other trailing-target forms that share
+# the same parser path:
+#
+#   1. pin target (lands in ``pin_clocks`` rather than ``Clock.ports``)
+#   2. pin source + pin target (chained-forwarded-clock idiom)
+#   3. brace-form source ``{ck_a}`` (Tcl-legal, single-token collection)
+#   4. ``-source`` not last (the ordering existing fixtures use today —
+#      kept here as a non-regression sentinel)
+
+
+def test_cgc_source_last_pin_target_retains_target() -> None:
+    """Pin target lands in ``pin_clocks``. With the bug, ``pin_clocks``
+    is empty and the analyzer's clock-network trace walks past the pin
+    to the upstream port — flops downstream get the wrong clock root."""
+    spec = parse(
+        """
+        create_clock -name ck_a -period 10.0 [get_ports ck_a]
+        create_generated_clock -name ck_b0 -master_clock ck_a \\
+            -source [get_ports ck_a] [get_pins u_buf/Y]
+        """
+    )
+    assert spec.pin_clocks == {"u_buf/Y": "ck_b0"}
+    assert spec.clocks["ck_b0"].ports == ()
+    assert spec.resolve("ck_b0") == "ck_a"
+
+
+def test_cgc_source_last_pin_source_with_pin_target() -> None:
+    """Pin-source + pin-target — the chained-forwarded-clock shape
+    (B0's pin source → C0). Both collections are pin-form, so neither
+    one would be mistaken for a flag even before the fix; the test
+    pins the parser's behaviour on the chained idiom end-to-end."""
+    spec = parse(
+        """
+        create_clock -name ck_a -period 10.0 [get_ports ck_a]
+        create_generated_clock -name ck_b0 -master_clock ck_a \\
+            -source [get_ports ck_a] [get_pins u_a/clk_out_b0]
+        create_generated_clock -name ck_c0 -master_clock ck_b0 \\
+            -source [get_pins u_a/clk_out_b0] [get_pins u_b0/clk_out]
+        """
+    )
+    assert spec.pin_clocks == {
+        "u_a/clk_out_b0": "ck_b0",
+        "u_b0/clk_out": "ck_c0",
+    }
+    assert spec.resolve("ck_c0") == "ck_a"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "_skip_collection_arg pre-increments past the first token before "
+        "checking for the closer, so a single-token collection like "
+        "``{ck_a}`` or ``[clk]`` is mis-counted and the trailing target "
+        "gets swallowed. Fix: add an ``if first.endswith(...)`` early "
+        "return after the initial ``index += 1`` in each branch. Flip "
+        "this xfail when the helper is corrected."
+    ),
+)
+def test_cgc_source_last_brace_source_retains_target() -> None:
+    """Tcl brace-form source ``{ck_a}`` — uncommon but legal. Same
+    failure shape (and same one-line fix) applies to single-token
+    bracket sources like ``[clk]``."""
+    spec = parse(
+        """
+        create_clock -name ck_a -period 10.0 [get_ports ck_a]
+        create_generated_clock -name ck_b0 -master_clock ck_a \\
+            -source {ck_a} [get_ports ck_b0]
+        """
+    )
+    assert spec.clocks["ck_b0"].ports == ("ck_b0",)
+
+
+def test_cgc_source_followed_by_other_flag_still_works() -> None:
+    """Non-regression: when ``-source`` is followed by another flag
+    (the ordering all existing fixtures use), the target must still
+    be captured. This case passed on the buggy parser too — it is
+    here so the fix doesn't accidentally trade one regression for
+    another."""
+    spec = parse(
+        """
+        create_clock -name clk -period 10.0 [get_ports clk]
+        create_generated_clock -name clk_div2 -master_clock clk \\
+            -source [get_ports clk] -divide_by 2 [get_pins div_q/Q]
+        """
+    )
+    assert spec.pin_clocks == {"div_q/Q": "clk_div2"}
+    assert spec.resolve("clk_div2") == "clk"
 
 
 def test_generated_clock_async_override_wins() -> None:
