@@ -62,6 +62,12 @@ GOOD_FIXTURES = [
     # must not fire. Two async crossings (src_q → each sync first
     # stage).
     ("good_disjoint_fanout_sync_chains", 2),
+    # Single-source variant of the same shape: one src_q fans out to
+    # two independent 2FF sync chains. Restores coverage of the
+    # "shared src flop, multiple chains" topology after the two-source
+    # rewrite landed in #150 (issue #149). Two async crossings, both
+    # rooted in the same src flop.
+    ("good_single_source_fanout_sync_chains", 2),
     # $dffe-style load-enable gating (issue #34). 8-bit data bus into
     # a $dffe whose EN is a dst-domain 2FF synchronizer's tail.
     # Yosys inference of $dffe is forced by ``opt_dff`` at fixture-

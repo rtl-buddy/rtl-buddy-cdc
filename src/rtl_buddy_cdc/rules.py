@@ -1107,6 +1107,15 @@ def check_cdc_004(
       ``(* cdc_gray *)`` (or ``(* gray_code *)``), telling the
       analyzer to trust the gray-counter promise even when the
       structural detector can't see the sync chain.
+
+    Port-sourced bus crossings (``src_flop is None``) can be cleared
+    only by the gating pattern. Both gray-coding paths key off a
+    source register — the structural detector pattern-matches the
+    canonical ``g = b ^ (b >> 1)`` shape in the source flop's fanin,
+    and the user-assertion path consults the source flop's attribute
+    set — so neither has a port-side equivalent. Typed top-level
+    buses crossing an async boundary must either be gated by a
+    synchronized load enable or be waived.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
