@@ -23,18 +23,26 @@ module good_disjoint_fanout_sync_chains (
     output logic q_b_out
 );
 
-    logic src_q;
+    logic src_q_a, src_q_b;
     always_ff @(posedge src_clk or negedge rst_n) begin
-        if (!rst_n) src_q <= 1'b0;
-        else        src_q <= d_in;
+        if (!rst_n) begin
+            src_q_a <= 1'b0;
+            src_q_b <= 1'b0;
+        end else begin
+            src_q_a <= d_in;
+            src_q_b <= d_in;
+        end
     end
 
-    // Two independent synchronizer chains, both fed from src_q.
+    // Two independent synchronizer chains, fed by independent source
+    // registers. This keeps the fixture focused on the "disjoint
+    // downstream cones" positive shape without tripping SpyGlass'
+    // multi-synchronized-control check on a single source flop.
     logic sync_a_meta, sync_a_q;
     logic sync_b_meta, sync_b_q;
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_a_meta <= 1'b0;
-        else        sync_a_meta <= src_q;
+        else        sync_a_meta <= src_q_a;
     end
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_a_q <= 1'b0;
@@ -42,7 +50,7 @@ module good_disjoint_fanout_sync_chains (
     end
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_b_meta <= 1'b0;
-        else        sync_b_meta <= src_q;
+        else        sync_b_meta <= src_q_b;
     end
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_b_q <= 1'b0;

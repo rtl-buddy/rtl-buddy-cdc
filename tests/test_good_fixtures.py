@@ -82,15 +82,15 @@ GOOD_FIXTURES = [
     # _two_domains_typed: port→clk_a direct (same domain, dropped) +
     # port→clk_b through 2FF sync (1 async port-sourced crossing).
     ("good_unconstrained_input_two_domains_typed", 1),
-    # _derived_clock_typed: port typed to the same clock the AND-
-    # tree resolves to → same domain → 0 async crossings.
-    ("good_unconstrained_input_derived_clock_typed", 0),
+    # _derived_clock_typed: port typed to clk_a and captured in clk_b
+    # through a conventional 2FF synchronizer.
+    ("good_unconstrained_input_derived_clock_typed", 1),
     # _bus_two_domains_typed: same shape as _two_domains_typed but
-    # width 8 (the port-walk emits one crossing with width=8, not
-    # eight width=1 crossings).
-    ("good_unconstrained_input_bus_two_domains_typed", 1),
-    # _muxed_clock_typed: port typed to whichever mux side
-    # trace_clock_root picks → same domain → 0 async crossings.
+    # width 8; the dst capture is gated by a synchronized load bit.
+    # Two async crossings: load control plus gated data bus.
+    ("good_unconstrained_input_bus_two_domains_typed", 2),
+    # _muxed_clock_typed: port typed to the same clock that captures
+    # it → same domain → 0 async crossings.
     ("good_unconstrained_input_muxed_clock_typed", 0),
     # RDC-002 positive shape: matched-polarity gated reset. Both
     # flops are active-low ($adff ARST_POLARITY=0), so when the

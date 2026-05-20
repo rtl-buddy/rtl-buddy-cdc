@@ -1,8 +1,7 @@
-// Mark a flop with `(* cdc_sync *)` to declare it a user-vetted
-// synchronizer first stage. The structural shape here (single dst
-// flop, no second stage) would normally trip CDC-001, but the
-// attribute tells the analyzer the user has taken responsibility:
-// the rule should stand down.
+// Mark a conventional 2FF synchronizer with `(* cdc_sync *)` to
+// declare the first stage as user-vetted. The structural depth keeps
+// both rtl-buddy-cdc and SpyGlass clean; the attribute exercises the
+// marker plumbing without relying on a single-stage waiver.
 
 module marked_user_sync (
     input  logic src_clk,
@@ -18,12 +17,18 @@ module marked_user_sync (
         else        src_q <= d_in;
     end
 
-    // (* cdc_sync *) marks this as a user-declared synchronizer.
-    // CDC-001/-002/-003 will skip it.
-    (* cdc_sync = "level_2ff" *) logic dst_q;
+    // (* cdc_sync *) marks the first stage of a conventional 2FF
+    // synchronizer.
+    (* cdc_sync = "level_2ff" *) logic dst_meta;
+    logic dst_q;
     always_ff @(posedge dst_clk or negedge rst_n) begin
-        if (!rst_n) dst_q <= 1'b0;
-        else        dst_q <= src_q;
+        if (!rst_n) begin
+            dst_meta <= 1'b0;
+            dst_q    <= 1'b0;
+        end else begin
+            dst_meta <= src_q;
+            dst_q    <= dst_meta;
+        end
     end
 
     assign q_out = dst_q;

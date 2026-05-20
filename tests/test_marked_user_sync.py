@@ -1,9 +1,8 @@
 """User-declared synchronizer marker (`(* cdc_sync *)`).
 
-The fixture is structurally identical to ``bad_single_ff_sync`` —
-single dst flop, no second stage — but its destination flop's wire is
-annotated. The structural rules CDC-001/-002/-003/-006 must skip
-user-marked flops; the user has taken responsibility."""
+The fixture uses a conventional 2FF synchronizer and annotates the
+first stage. It exercises marker detection without relying on a
+single-stage waiver that other CDC tools report as unsynchronized."""
 
 from __future__ import annotations
 
@@ -50,8 +49,7 @@ def test_user_sync_detected(context) -> None:
 
 
 def test_no_violations_with_attribute(context) -> None:
-    """The same shape would trip CDC-001 in bad_single_ff_sync; the
-    `(* cdc_sync *)` annotation must suppress it here."""
+    """The marked conventional 2FF synchronizer should stay clean."""
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     assert violations == [], (

@@ -1,10 +1,10 @@
 {
-  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "creator": "Yosys 0.65+16 (git sha1 6d101a37e, g++ 12.3.0 -fPIC -O3) [expsg-zubin/yosys at rtl-buddy]",
   "modules": {
     "good_disjoint_fanout_sync_chains": {
       "attributes": {
         "top": "00000000000000000000000000000001",
-        "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:17.1-68.10"
+        "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:17.1-76.10"
       },
       "ports": {
         "src_clk": {
@@ -33,279 +33,6 @@
         }
       },
       "cells": {
-        "$auto$proc_dff.cc:220:proc_dff$15": {
-          "hide_name": 1,
-          "type": "$not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 8 ]
-          }
-        },
-        "$auto$proc_dff.cc:220:proc_dff$20": {
-          "hide_name": 1,
-          "type": "$not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 9 ]
-          }
-        },
-        "$auto$proc_dff.cc:220:proc_dff$25": {
-          "hide_name": 1,
-          "type": "$not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 10 ]
-          }
-        },
-        "$auto$proc_dff.cc:220:proc_dff$30": {
-          "hide_name": 1,
-          "type": "$not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 11 ]
-          }
-        },
-        "$auto$proc_dff.cc:220:proc_dff$35": {
-          "hide_name": 1,
-          "type": "$not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 12 ]
-          }
-        },
-        "$auto$proc_dff.cc:220:proc_dff$40": {
-          "hide_name": 1,
-          "type": "$not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 13 ]
-          }
-        },
-        "$auto$proc_dff.cc:220:proc_dff$45": {
-          "hide_name": 1,
-          "type": "$not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 14 ]
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:28$2": {
-          "hide_name": 1,
-          "type": "$logic_not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:28.13-28.19"
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 15 ]
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:36$4": {
-          "hide_name": 1,
-          "type": "$logic_not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:36.13-36.19"
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 16 ]
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:40$6": {
-          "hide_name": 1,
-          "type": "$logic_not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:40.13-40.19"
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 17 ]
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:44$8": {
-          "hide_name": 1,
-          "type": "$logic_not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:44.13-44.19"
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 18 ]
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:48$10": {
-          "hide_name": 1,
-          "type": "$logic_not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:48.13-48.19"
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 19 ]
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:57$12": {
-          "hide_name": 1,
-          "type": "$logic_not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:57.13-57.19"
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 20 ]
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:61$14": {
-          "hide_name": 1,
-          "type": "$logic_not",
-          "parameters": {
-            "A_SIGNED": "00000000000000000000000000000000",
-            "A_WIDTH": "00000000000000000000000000000001",
-            "Y_WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:61.13-61.19"
-          },
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [ 4 ],
-            "Y": [ 21 ]
-          }
-        },
         "$procdff$19": {
           "hide_name": 1,
           "type": "$adff",
@@ -317,7 +44,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:60.5-63.8"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:68.5-71.8"
           },
           "port_directions": {
             "ARST": "input",
@@ -328,7 +55,7 @@
           "connections": {
             "ARST": [ 4 ],
             "CLK": [ 3 ],
-            "D": [ 22 ],
+            "D": [ 8 ],
             "Q": [ 7 ]
           }
         },
@@ -343,7 +70,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:56.5-59.8"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:64.5-67.8"
           },
           "port_directions": {
             "ARST": "input",
@@ -354,7 +81,7 @@
           "connections": {
             "ARST": [ 4 ],
             "CLK": [ 3 ],
-            "D": [ 23 ],
+            "D": [ 9 ],
             "Q": [ 6 ]
           }
         },
@@ -369,7 +96,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:47.5-50.8"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:55.5-58.8"
           },
           "port_directions": {
             "ARST": "input",
@@ -380,8 +107,8 @@
           "connections": {
             "ARST": [ 4 ],
             "CLK": [ 3 ],
-            "D": [ 24 ],
-            "Q": [ 22 ]
+            "D": [ 10 ],
+            "Q": [ 8 ]
           }
         },
         "$procdff$34": {
@@ -395,7 +122,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:43.5-46.8"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:51.5-54.8"
           },
           "port_directions": {
             "ARST": "input",
@@ -406,8 +133,8 @@
           "connections": {
             "ARST": [ 4 ],
             "CLK": [ 3 ],
-            "D": [ 25 ],
-            "Q": [ 24 ]
+            "D": [ 11 ],
+            "Q": [ 10 ]
           }
         },
         "$procdff$39": {
@@ -421,7 +148,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:39.5-42.8"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:47.5-50.8"
           },
           "port_directions": {
             "ARST": "input",
@@ -432,8 +159,8 @@
           "connections": {
             "ARST": [ 4 ],
             "CLK": [ 3 ],
-            "D": [ 26 ],
-            "Q": [ 23 ]
+            "D": [ 12 ],
+            "Q": [ 9 ]
           }
         },
         "$procdff$44": {
@@ -447,7 +174,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:35.5-38.8"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:43.5-46.8"
           },
           "port_directions": {
             "ARST": "input",
@@ -458,8 +185,8 @@
           "connections": {
             "ARST": [ 4 ],
             "CLK": [ 3 ],
-            "D": [ 25 ],
-            "Q": [ 26 ]
+            "D": [ 13 ],
+            "Q": [ 12 ]
           }
         },
         "$procdff$49": {
@@ -473,7 +200,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:27.5-30.8"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:27.5-35.8"
           },
           "port_directions": {
             "ARST": "input",
@@ -485,193 +212,37 @@
             "ARST": [ 4 ],
             "CLK": [ 2 ],
             "D": [ 5 ],
-            "Q": [ 25 ]
+            "Q": [ 13 ]
+          }
+        },
+        "$procdff$54": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:27.5-35.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 11 ]
           }
         }
       },
       "netnames": {
-        "$0\\out_a_reg[0:0]": {
-          "hide_name": 1,
-          "bits": [ 23 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:56.5-59.8"
-          }
-        },
-        "$0\\out_b_reg[0:0]": {
-          "hide_name": 1,
-          "bits": [ 22 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:60.5-63.8"
-          }
-        },
-        "$0\\src_q[0:0]": {
-          "hide_name": 1,
-          "bits": [ 5 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:27.5-30.8"
-          }
-        },
-        "$0\\sync_a_meta[0:0]": {
-          "hide_name": 1,
-          "bits": [ 25 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:35.5-38.8"
-          }
-        },
-        "$0\\sync_a_q[0:0]": {
-          "hide_name": 1,
-          "bits": [ 26 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:39.5-42.8"
-          }
-        },
-        "$0\\sync_b_meta[0:0]": {
-          "hide_name": 1,
-          "bits": [ 25 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:43.5-46.8"
-          }
-        },
-        "$0\\sync_b_q[0:0]": {
-          "hide_name": 1,
-          "bits": [ 24 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:47.5-50.8"
-          }
-        },
-        "$auto$rtlil.cc:3255:Not$16": {
-          "hide_name": 1,
-          "bits": [ 8 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3255:Not$21": {
-          "hide_name": 1,
-          "bits": [ 9 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3255:Not$26": {
-          "hide_name": 1,
-          "bits": [ 10 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3255:Not$31": {
-          "hide_name": 1,
-          "bits": [ 11 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3255:Not$36": {
-          "hide_name": 1,
-          "bits": [ 12 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3255:Not$41": {
-          "hide_name": 1,
-          "bits": [ 13 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3255:Not$46": {
-          "hide_name": 1,
-          "bits": [ 14 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3259:ReduceOr$18": {
-          "hide_name": 1,
-          "bits": [ 8 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3259:ReduceOr$23": {
-          "hide_name": 1,
-          "bits": [ 9 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3259:ReduceOr$28": {
-          "hide_name": 1,
-          "bits": [ 10 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3259:ReduceOr$33": {
-          "hide_name": 1,
-          "bits": [ 11 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3259:ReduceOr$38": {
-          "hide_name": 1,
-          "bits": [ 12 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3259:ReduceOr$43": {
-          "hide_name": 1,
-          "bits": [ 13 ],
-          "attributes": {
-          }
-        },
-        "$auto$rtlil.cc:3259:ReduceOr$48": {
-          "hide_name": 1,
-          "bits": [ 14 ],
-          "attributes": {
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:28$2_Y": {
-          "hide_name": 1,
-          "bits": [ 15 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:28.13-28.19"
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:36$4_Y": {
-          "hide_name": 1,
-          "bits": [ 16 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:36.13-36.19"
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:40$6_Y": {
-          "hide_name": 1,
-          "bits": [ 17 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:40.13-40.19"
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:44$8_Y": {
-          "hide_name": 1,
-          "bits": [ 18 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:44.13-44.19"
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:48$10_Y": {
-          "hide_name": 1,
-          "bits": [ 19 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:48.13-48.19"
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:57$12_Y": {
-          "hide_name": 1,
-          "bits": [ 20 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:57.13-57.19"
-          }
-        },
-        "$logic_not$tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:61$14_Y": {
-          "hide_name": 1,
-          "bits": [ 21 ],
-          "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:61.13-61.19"
-          }
-        },
         "d_in": {
           "hide_name": 0,
           "bits": [ 5 ],
@@ -690,14 +261,14 @@
           "hide_name": 0,
           "bits": [ 6 ],
           "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:55.11-55.20"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:63.11-63.20"
           }
         },
         "out_b_reg": {
           "hide_name": 0,
           "bits": [ 7 ],
           "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:55.22-55.31"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:63.22-63.31"
           }
         },
         "q_a_out": {
@@ -728,39 +299,46 @@
             "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:18.18-18.25"
           }
         },
-        "src_q": {
+        "src_q_a": {
           "hide_name": 0,
-          "bits": [ 25 ],
+          "bits": [ 13 ],
           "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:26.11-26.16"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:26.11-26.18"
+          }
+        },
+        "src_q_b": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:26.20-26.27"
           }
         },
         "sync_a_meta": {
           "hide_name": 0,
-          "bits": [ 26 ],
+          "bits": [ 12 ],
           "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:33.11-33.22"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:41.11-41.22"
           }
         },
         "sync_a_q": {
           "hide_name": 0,
-          "bits": [ 23 ],
+          "bits": [ 9 ],
           "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:33.24-33.32"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:41.24-41.32"
           }
         },
         "sync_b_meta": {
           "hide_name": 0,
-          "bits": [ 24 ],
+          "bits": [ 10 ],
           "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:34.11-34.22"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:42.11-42.22"
           }
         },
         "sync_b_q": {
           "hide_name": 0,
-          "bits": [ 22 ],
+          "bits": [ 8 ],
           "attributes": {
-            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:34.24-34.32"
+            "src": "tests/fixtures/good_disjoint_fanout_sync_chains/good_disjoint_fanout_sync_chains.sv:42.24-42.32"
           }
         }
       }

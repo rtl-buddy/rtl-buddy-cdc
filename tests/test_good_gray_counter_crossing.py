@@ -1,9 +1,8 @@
-"""Positive fixture for gray-coded bus crossings.
+"""Positive fixture for a gated gray-coded bus crossing.
 
 A 4-bit gray counter increments in src_clk; its value is sampled by a
-4-bit 2FF synchronizer in dst_clk. The structural detector recognises
-the canonical gray-encode XOR pattern at the source and the multi-bit
-sync chain at the destination, so CDC-004 must not fire."""
+dst_clk register only under a synchronized control bit. The destination
+does not sample the bus freely, so CDC-004 must not fire."""
 
 from __future__ import annotations
 
@@ -38,14 +37,12 @@ def context():
     return module, async_crossings, spec
 
 
-def test_one_4bit_crossing(context) -> None:
-    """A single 4-bit gray bus crosses src_clk → dst_clk."""
+def test_gated_gray_bus_crossings(context) -> None:
+    """The fixture has one control crossing and one 4-bit bus crossing."""
     _module, async_crossings, _spec = context
-    assert len(async_crossings) == 1
-    c = async_crossings[0]
-    assert c.width == 4
-    assert c.src_clock == "src_clk"
-    assert c.dst_clock == "dst_clk"
+    assert len(async_crossings) == 2
+    widths = sorted(c.width for c in async_crossings)
+    assert widths == [1, 4]
 
 
 def test_no_violations(context) -> None:
