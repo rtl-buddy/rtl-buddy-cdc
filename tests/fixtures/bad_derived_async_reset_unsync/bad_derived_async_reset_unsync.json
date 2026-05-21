@@ -1,0 +1,138 @@
+{
+  "creator": "Yosys 0.65+16 (git sha1 6d101a37e, g++ 12.3.0 -fPIC -O3) [expsg-zubin/yosys at rtl-buddy]",
+  "modules": {
+    "bad_derived_async_reset_unsync": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:8.1-25.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "global_rst_n": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "block_rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "use_block_rst": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 7 ]
+        }
+      },
+      "cells": {
+        "$procdff$8": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:20.5-23.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 8 ],
+            "CLK": [ 2 ],
+            "D": [ 6 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$ternary$tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:18$1": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:18.29-18.71"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "B": [ 4 ],
+            "S": [ 5 ],
+            "Y": [ 8 ]
+          }
+        }
+      },
+      "netnames": {
+        "block_rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:11.18-11.29"
+          }
+        },
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:9.18-9.21"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:13.18-13.22"
+          }
+        },
+        "global_rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:10.18-10.30"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:14.18-14.23"
+          }
+        },
+        "selected_rst_n": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:17.11-17.25"
+          }
+        },
+        "use_block_rst": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_derived_async_reset_unsync/bad_derived_async_reset_unsync.sv:12.18-12.31"
+          }
+        }
+      }
+    }
+  }
+}
