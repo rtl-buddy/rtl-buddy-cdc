@@ -454,6 +454,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CDC-004 now checks typed port-sourced bus crossings** (#149). The
+  rule used to exit early on any port-sourced multi-bit crossing,
+  exempting typed top-level buses from the same coherence check
+  applied to flop-sourced buses. A typed input could cross into an
+  async destination through a per-bit synchronizer and stay silent —
+  the input typing suppressed CDC-011 but said nothing about whether
+  the bits are sampled coherently. The early-exit is gone; typed
+  port-sourced bus crossings now fire CDC-004 unless they're cleared
+  by load-enable gating (the gray-coding acceptance paths still
+  require a flop source — there is no port-side equivalent for
+  asserting a gray invariant). Violation messages render the source
+  endpoint as ``"port <name>"`` via ``Crossing.src_name`` instead of
+  the (previously assumed) ``src_flop.name``. The new
+  ``bad_typed_port_bus_crossing`` fixture exercises the firing case;
+  three companion good fixtures (``good_gray_bus_sync_chain``,
+  ``marked_single_ff_sync``, ``good_single_source_fanout_sync_chains``)
+  preserve coverage of the CDC-004 structural-gray arm, the
+  ``(* cdc_sync *)`` single-stage waiver, and the shared-source
+  fan-out shape after several positive fixtures were rewritten
+  toward shapes that pass more third-party CDC linters cleanly.
 - **slang frontend: emit `$dlatch` for `always_latch` blocks** (#39).
   The frontend used to silently drop every ``always_latch`` block —
   no cell emitted, so legitimate latches (the ICG enable-latch in

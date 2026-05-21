@@ -1,0 +1,152 @@
+{
+  "creator": "Yosys 0.65+16 (git sha1 6d101a37e, g++ 12.3.0 -fPIC -O3) [expsg-zubin/yosys at rtl-buddy]",
+  "modules": {
+    "bad_typed_port_bus_crossing": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:9.1-25.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "in": {
+          "direction": "input",
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ]
+        },
+        "q_a": {
+          "direction": "output",
+          "bits": [ 12, 13, 14, 15, 16, 17, 18, 19 ]
+        },
+        "q_b": {
+          "direction": "output",
+          "bits": [ 20, 21, 22, 23, 24, 25, 26, 27 ]
+        }
+      },
+      "cells": {
+        "$procdff$4": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:22.5-22.55"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 28, 29, 30, 31, 32, 33, 34, 35 ],
+            "Q": [ 20, 21, 22, 23, 24, 25, 26, 27 ]
+          }
+        },
+        "$procdff$5": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:21.5-21.48"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+            "Q": [ 28, 29, 30, 31, 32, 33, 34, 35 ]
+          }
+        },
+        "$procdff$6": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:17.5-17.42"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+            "Q": [ 12, 13, 14, 15, 16, 17, 18, 19 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:10.24-10.29"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:11.24-11.29"
+          }
+        },
+        "in": {
+          "hide_name": 0,
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:12.24-12.26"
+          }
+        },
+        "q_a": {
+          "hide_name": 0,
+          "bits": [ 12, 13, 14, 15, 16, 17, 18, 19 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:13.24-13.27"
+          }
+        },
+        "q_b": {
+          "hide_name": 0,
+          "bits": [ 20, 21, 22, 23, 24, 25, 26, 27 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:14.24-14.27"
+          }
+        },
+        "sync_meta": {
+          "hide_name": 0,
+          "bits": [ 28, 29, 30, 31, 32, 33, 34, 35 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:19.17-19.26"
+          }
+        },
+        "sync_q": {
+          "hide_name": 0,
+          "bits": [ 20, 21, 22, 23, 24, 25, 26, 27 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_typed_port_bus_crossing/bad_typed_port_bus_crossing.sv:20.17-20.23"
+          }
+        }
+      }
+    }
+  }
+}

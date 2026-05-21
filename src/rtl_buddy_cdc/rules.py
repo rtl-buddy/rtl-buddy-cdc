@@ -1107,6 +1107,15 @@ def check_cdc_004(
       ``(* cdc_gray *)`` (or ``(* gray_code *)``), telling the
       analyzer to trust the gray-counter promise even when the
       structural detector can't see the sync chain.
+
+    Port-sourced bus crossings (``src_flop is None``) can be cleared
+    only by the gating pattern. Both gray-coding paths key off a
+    source register — the structural detector pattern-matches the
+    canonical ``g = b ^ (b >> 1)`` shape in the source flop's fanin,
+    and the user-assertion path consults the source flop's attribute
+    set — so neither has a port-side equivalent. Typed top-level
+    buses crossing an async boundary must either be gated by a
+    synchronized load enable or be waived.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -1115,18 +1124,16 @@ def check_cdc_004(
     for c in crossings:
         if c.width <= 1:
             continue
-        if c.src_flop is None:
-            # CDC-004 reasons about gray encoding at a register source;
-            # port-sourced crossings can't be gray-encoded by the same
-            # mechanism. Bus crossings from typed ports are vanishingly
-            # rare in practice; defer to user judgment.
-            continue
-        if c.src_flop.cell.name in ctx.user_grays:
+        if c.src_flop is not None and c.src_flop.cell.name in ctx.user_grays:
             # Explicit user assertion of gray-coding.
             continue
-        if _is_multibit_sync_first_stage(
-            module, c.dst_flop, c.dst_clock, ctx.domains
-        ) and _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers):
+        if (
+            c.src_flop is not None
+            and _is_multibit_sync_first_stage(
+                module, c.dst_flop, c.dst_clock, ctx.domains
+            )
+            and _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers)
+        ):
             # Structural gray-coded crossing: source has the canonical
             # gray-encode XOR pattern AND the destination is a
             # multi-bit synchronizer chain. This is the async-FIFO
@@ -1142,7 +1149,7 @@ def check_cdc_004(
                     f"unprotected bus crossing on {c.src_clock} → "
                     f"{c.dst_clock}: {c.width}-bit path with no "
                     f"recognized gating or gray-coding "
-                    f"(src flop: {c.src_flop.name}, "
+                    f"(src: {c.src_name}, "
                     f"dst flop: {c.dst_flop.name})"
                 ),
                 crossing=c,

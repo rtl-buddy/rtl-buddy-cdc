@@ -32,17 +32,34 @@ module good_gray_counter_crossing (
         end
     end
 
-    // Multi-bit 2FF synchronizer in dst_clk.
+    logic incr_q;
+    always_ff @(posedge src_clk or negedge rst_n) begin
+        if (!rst_n) incr_q <= 1'b0;
+        else        incr_q <= incr;
+    end
+
+    logic incr_meta, incr_sync;
+    always_ff @(posedge dst_clk or negedge rst_n) begin
+        if (!rst_n) begin
+            incr_meta <= 1'b0;
+            incr_sync <= 1'b0;
+        end else begin
+            incr_meta <= incr_q;
+            incr_sync <= incr_meta;
+        end
+    end
+
+    // Multi-bit bus transfer gated by a synchronized control bit.
     logic [3:0] sync_meta;
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_meta <= 4'd0;
-        else        sync_meta <= gray;
+        else if (incr_sync) sync_meta <= gray;
     end
 
     logic [3:0] sync_q;
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_q <= 4'd0;
-        else        sync_q <= sync_meta;
+        else if (incr_sync) sync_q <= sync_meta;
     end
 
     assign dst_gray = sync_q;

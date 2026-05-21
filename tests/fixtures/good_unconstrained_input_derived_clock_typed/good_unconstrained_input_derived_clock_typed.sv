@@ -1,10 +1,8 @@
 // Positive counterpart to bad_unconstrained_input_derived_clock.
 //
-// The SDC types `in` against the same clock the derived-clock flop
-// resolves to (whichever input of the AND tree trace_clock_root picks
-// first). CDC-011 stays silent because the port is typed; CDC-001
-// stays silent because the resolved source domain matches the
-// destination.
+// The SDC types `in` against clk_a, and the clk_b capture uses a
+// textbook 2FF synchronizer. CDC-011 stays silent because the port is
+// typed; CDC-001 stays silent because the async path is synchronized.
 
 module good_unconstrained_input_derived_clock_typed (
     input  logic clk_a,
@@ -14,7 +12,10 @@ module good_unconstrained_input_derived_clock_typed (
     output logic q
 );
 
-    wire derived = clk_a & clk_b & clk_c;
-    always_ff @(posedge derived) q <= in;
+    (* cdc_sync *) logic meta;
+    always_ff @(posedge clk_b) begin
+        meta <= in;
+        q    <= meta;
+    end
 
 endmodule

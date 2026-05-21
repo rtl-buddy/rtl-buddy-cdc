@@ -1,8 +1,10 @@
-"""Positive fixture for a gated gray-coded bus crossing.
+"""Positive fixture for an ungated gray-coded bus crossing.
 
-A 4-bit gray counter increments in src_clk; its value is sampled by a
-dst_clk register only under a synchronized control bit. The destination
-does not sample the bus freely, so CDC-004 must not fire."""
+A 4-bit gray counter increments in src_clk; its value is sampled every
+dst_clk cycle by a per-bit 2FF synchronizer with no handshake. Only the
+gray encoding keeps the bus coherent. CDC-004's structural-gray
+detector (rules.py `_is_multibit_sync_first_stage` paired with
+`_is_gray_encoded_source`) must accept this shape."""
 
 from __future__ import annotations
 
@@ -14,9 +16,9 @@ from rtl_buddy_cdc import netlist, sdc as sdc_mod
 from rtl_buddy_cdc.domain import find_crossings
 from rtl_buddy_cdc.rules import run_all as run_all_rules
 
-FIX_DIR = Path(__file__).parent / "fixtures" / "good_gray_counter_crossing"
-JSON = FIX_DIR / "good_gray_counter_crossing.json"
-SDC = FIX_DIR / "good_gray_counter_crossing.sdc"
+FIX_DIR = Path(__file__).parent / "fixtures" / "good_gray_bus_sync_chain"
+JSON = FIX_DIR / "good_gray_bus_sync_chain.json"
+SDC = FIX_DIR / "good_gray_bus_sync_chain.sdc"
 
 
 @pytest.fixture(scope="module")
@@ -37,21 +39,23 @@ def context():
     return module, async_crossings, spec
 
 
-def test_gated_gray_bus_crossings(context) -> None:
-    """The fixture has one control crossing and one 4-bit bus crossing."""
+def test_one_4bit_crossing(context) -> None:
+    """A single 4-bit gray bus crosses src_clk → dst_clk."""
     _module, async_crossings, _spec = context
-    assert len(async_crossings) == 2
-    widths = sorted(c.width for c in async_crossings)
-    assert widths == [1, 4]
+    assert len(async_crossings) == 1
+    c = async_crossings[0]
+    assert c.width == 4
+    assert c.src_clock == "src_clk"
+    assert c.dst_clock == "dst_clk"
 
 
 def test_no_violations(context) -> None:
-    """Structural gray-code recognition must accept this shape — both
+    """The structural-gray arm of CDC-004 must accept this shape — both
     the gray-encode XOR pattern at the source and the multi-bit sync
-    chain at the destination are present."""
+    chain at the destination are present, with no gating."""
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     assert violations == [], (
-        f"unexpected violations on gray-counter fixture: "
+        f"unexpected violations on structural-gray fixture: "
         f"{[(v.rule_id, v.message) for v in violations]}"
     )

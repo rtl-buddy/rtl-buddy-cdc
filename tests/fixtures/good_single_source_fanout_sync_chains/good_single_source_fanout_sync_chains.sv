@@ -1,20 +1,22 @@
-// Positive-case fixture: redundant synchronizers WITHOUT downstream
-// recombination.
+// Single source flop fanning out to two independent sync chains.
 //
-// A single source-domain flop fans out to two independent 2FF
-// synchronizer chains in the destination domain — same shape as
-// bad_reconvergent_sync.sv — BUT the two synchronized outputs drive
-// disjoint downstream registers and disjoint output ports. There's
-// no cell that observes both synchronized values together, so the
-// mismatched-resolution failure mode the rule guards against
-// cannot actually be triggered.
+// Same shape as `bad_reconvergent_sync` — one src_q feeds two
+// 2FF synchronizer chains in dst_clk — BUT the two synchronized
+// outputs drive disjoint downstream registers and disjoint output
+// ports. There is no cell observing both synchronized values, so
+// CDC-005's forward-cone reconvergence filter must NOT fire.
 //
-// Phase 2 of CDC-005 (issue #33) introduces a forward-cone
-// reconvergence filter: it should classify this fixture as harmless
-// and NOT fire, while keeping the bad_reconvergent_sync fixture
-// firing.
+// Distinct from `good_disjoint_fanout_sync_chains` (which uses two
+// independent source flops): this fixture keeps the "single source,
+// multiple chains" topology specifically. CDC-005's single-source
+// fan-out detection has to walk the shared src_q through both chains
+// and confirm the downstream cones are disjoint — testing that the
+// shared-source path resolves cleanly.
+//
+// Paired with `bad_reconvergent_sync` (must fire) and with
+// `good_disjoint_fanout_sync_chains` (two-source variant).
 
-module good_disjoint_fanout_sync_chains (
+module good_single_source_fanout_sync_chains (
     input  logic src_clk,
     input  logic dst_clk,
     input  logic rst_n,
@@ -23,26 +25,18 @@ module good_disjoint_fanout_sync_chains (
     output logic q_b_out
 );
 
-    logic src_q_a, src_q_b;
+    logic src_q;
     always_ff @(posedge src_clk or negedge rst_n) begin
-        if (!rst_n) begin
-            src_q_a <= 1'b0;
-            src_q_b <= 1'b0;
-        end else begin
-            src_q_a <= d_in;
-            src_q_b <= d_in;
-        end
+        if (!rst_n) src_q <= 1'b0;
+        else        src_q <= d_in;
     end
 
-    // Two independent synchronizer chains, fed by independent source
-    // registers. This keeps the fixture focused on the "disjoint
-    // downstream cones" positive shape without tripping SpyGlass'
-    // multi-synchronized-control check on a single source flop.
+    // Two independent synchronizer chains, both fed from src_q.
     logic sync_a_meta, sync_a_q;
     logic sync_b_meta, sync_b_q;
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_a_meta <= 1'b0;
-        else        sync_a_meta <= src_q_a;
+        else        sync_a_meta <= src_q;
     end
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_a_q <= 1'b0;
@@ -50,7 +44,7 @@ module good_disjoint_fanout_sync_chains (
     end
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_b_meta <= 1'b0;
-        else        sync_b_meta <= src_q_b;
+        else        sync_b_meta <= src_q;
     end
     always_ff @(posedge dst_clk or negedge rst_n) begin
         if (!rst_n) sync_b_q <= 1'b0;
