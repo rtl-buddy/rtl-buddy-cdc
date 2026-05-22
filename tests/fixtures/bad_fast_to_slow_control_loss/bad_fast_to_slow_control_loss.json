@@ -1,0 +1,317 @@
+{
+  "creator": "Yosys 0.65+16 (git sha1 6d101a37e, g++ 12.3.0 -fPIC -O3) [expsg-zubin/yosys at rtl-buddy]",
+  "modules": {
+    "bad_fast_to_slow_control_loss": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:9.1-40.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "event_in": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "event_seen": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$not$tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:20$3": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:20.42-20.53"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 8 ]
+          }
+        },
+        "$procdff$13": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:26.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 9 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$procdff$18": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:26.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 7 ],
+            "Q": [ 10 ]
+          }
+        },
+        "$procdff$23": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:26.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 10 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$procdff$28": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:26.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 11 ],
+            "Q": [ 12 ]
+          }
+        },
+        "$procdff$33": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:18.5-21.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 13 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procmux$7": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:20.18-20.26|tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:20.14-20.54"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "B": [ 8 ],
+            "S": [ 5 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:36$6": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:36.30-36.57"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 11 ],
+            "B": [ 12 ],
+            "Y": [ 9 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\event_seen[0:0]": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:26.5-38.8"
+          }
+        },
+        "$0\\src_toggle[0:0]": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:18.5-21.8"
+          }
+        },
+        "$not$tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:20$3_Y": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:20.42-20.53"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:11.18-11.25"
+          }
+        },
+        "event_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:13.18-13.26"
+          }
+        },
+        "event_seen": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:14.18-14.28"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:12.18-12.23"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:10.18-10.25"
+          }
+        },
+        "src_toggle": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:17.11-17.21"
+          }
+        },
+        "toggle_meta": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:23.11-23.22"
+          }
+        },
+        "toggle_sync": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:24.11-24.22"
+          }
+        },
+        "toggle_sync_d": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_fast_to_slow_control_loss/bad_fast_to_slow_control_loss.sv:25.11-25.24"
+          }
+        }
+      }
+    }
+  }
+}

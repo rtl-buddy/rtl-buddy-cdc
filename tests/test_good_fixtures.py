@@ -123,6 +123,13 @@ GOOD_FIXTURES = [
     # unambiguous — exactly one source is active at a time — so the
     # mux-on-reset exemption keeps RDC-005 silent. Single-clock.
     ("good_rdc_005_muxed_reset", 0),
+    # RDC-006 (proposed, issue #151) positive shape: muxed reset
+    # source first passes through a 2FF reset synchronizer in the
+    # consumer clock domain, then drives the downstream flop's async
+    # clear. Deassertion is aligned to clk. Single-clock — zero
+    # async crossings. Stays clean today (no RDC-006 yet) and must
+    # continue to stay clean once RDC-006 lands.
+    ("good_derived_async_reset_synced", 0),
     # CDC-010 (#95/#134) positive shape: foreign-domain mux select
     # passed through a (* cdc_sync *) 2FF synchroniser into the
     # gated-clock (ck0) domain before reaching the mux. The mux's S
