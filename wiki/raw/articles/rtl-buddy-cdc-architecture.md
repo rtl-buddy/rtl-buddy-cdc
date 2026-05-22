@@ -839,6 +839,79 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
+### 8.7 CDC-012 — functional data-hold on a gated multi-bit crossing
+
+CDC-012 layers a functional check on top of CDC-004's structural
+gated-bus exemption. CDC-004 accepts a multi-bit crossing whose
+destination only latches data when a destination-domain enable
+allows it (mux-on-D with sync'd select, or `$dffe` with sync'd
+`EN`). That structural shape ensures the destination samples on a
+clean enable but does not ensure that the source payload is stable
+across the enable's sync-chain latency. CDC-012 flags the gap.
+
+The bug pattern (canonical in `bad_functional_datahold_enable`):
+source registers a new payload every src cycle, asserts a request,
+the request propagates through a 2FF synchroniser into the
+destination, and the destination latches the payload it sees *N*
+dst cycles after the original request. By that time the source
+payload may have advanced. The destination captures an incoherent
+value — not the payload that motivated the original request.
+
+The textbook fix is a req/ack handshake: source holds the payload
+(and the request) until a synced-back ack proves the destination
+has sampled. The handshake's structural marker — and the rule's
+detection signal — is a src-clock flop with `D`-pin fanin from a
+dst-clock flop's `Q`: the `ack_sync` register. CDC-012 stays
+silent whenever that pattern exists anywhere between the same
+clock pair.
+
+The detection is intentionally module-global on the clock pair,
+not per-crossing:
+
+1. Multi-bit (`width > 1`) async crossing with a non-trivial src
+   flop.
+2. Crossing passes `_is_gated_bus_crossing` (so CDC-004 is silent
+   — CDC-012 does not duplicate CDC-004's territory on
+   un-gated buses).
+3. Source not gray-encoded (structural `g = b ^ (b >> 1)` detector
+   via `_is_gray_encoded_source`, or `(* cdc_gray *)` annotation
+   via `ctx.user_grays`). Gray-coded sources guarantee at most one
+   bit changes per src cycle, so any dst-side sample is coherent
+   regardless of the enable's sync-chain latency.
+4. No flop in `src_clock` has `D`-fanin from any flop in
+   `dst_clock`.
+
+The clock-pair feedback check is cached per `(src_clock,
+dst_clock)` so it runs once per pair regardless of how many gated
+bus crossings exist between them.
+
+The module-global heuristic is deliberately coarse: a handshake
+anywhere between the same clock pair suffices to silence the rule,
+even if it belongs to an unrelated transfer. In practice an
+IP-block-sized design that carries one handshake between two
+domains almost always uses that handshake to gate other crossings
+between the same pair — the false-negative rate is acceptable in
+exchange for the simpler implementation. Future tightening to a
+per-crossing check (walk back from the dst enable through the 2FF
+sync chain, find the src "request" flop, and check whether *that*
+flop's D has dst→src feedback) is straightforward but deferred.
+
+Severity is `warning` — the rule's heuristic for "handshake
+present" is module-scoped, so designs that legitimately rely on
+application-level guarantees (e.g. a slow-write config-register
+bus where the host writes once and waits many src cycles)
+correctly trip the rule. `warning` invites review rather than
+declaring an unambiguous bug.
+
+CDC-012's landing also tightened three CDC-004 positive fixtures
+(`good_dffe_gated_bus_crossing`, `good_buffered_gated_bus_crossing`,
+`good_unconstrained_input_bus_two_domains_typed`). Their original
+SV demonstrated only the destination-side gating shape, with no
+source-side handshake — exactly the pattern CDC-012 catches. Each
+was extended with a synced-back ack and source-held payload so
+they now demonstrate the real-world correct pattern rather than
+just "doesn't trigger CDC-004."
+
 ## 9. Waivers
 
 `waivers.py` implements the smallest waiver-file format that scales

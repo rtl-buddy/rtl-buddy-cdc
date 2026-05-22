@@ -3,11 +3,17 @@
 // destination flops.
 //
 // Same correctness story as the standard mux-on-D handshake (the
-// destination only latches src_data when ``load_sync1`` agrees), but
-// the fixture's JSON has a hand-inserted ``$_BUF_`` between the
-// gating mux's ``Y`` output and the destination flops' ``D`` pins.
-// CDC-004's shape-2 detector must follow the buffer hop and still
-// recognise the originating mux.
+// destination only latches the data when ``load_sync1`` agrees),
+// with the fixture's JSON post-processed to splice a ``$_BUF_``
+// between the gating mux's ``Y`` output and the destination flops'
+// ``D`` pins. CDC-004's shape-2 detector must follow the buffer hop
+// and still recognise the originating mux.
+//
+// The fixture also implements a full req/ack handshake on the src
+// side so CDC-012 (functional data-hold) stays silent: the source
+// payload is loaded only when arming a new request, held stable
+// across the round-trip, and the request clears only when a
+// synced-back ack confirms the destination has sampled.
 //
 // Build (two steps):
 //   1) Synthesize the base mux-on-D shape:
@@ -30,19 +36,35 @@ module good_buffered_gated_bus_crossing (
     output logic [7:0]  dst_data
 );
 
-    logic [7:0] src_q;
-    logic       src_load_q;
-    logic       load_sync0;
-    logic       load_sync1;
-
+    // Synced-back ack: src learns when dst has sampled.
+    logic dst_ack;
+    logic ack_meta, ack_sync;
     always_ff @(posedge src_clk) begin
-        src_q      <= src_data;
-        src_load_q <= src_load_req;
+        ack_meta <= dst_ack;
+        ack_sync <= ack_meta;
     end
 
+    // Held request: set on src_load_req, clear on synced-back ack.
+    logic       src_load_q;
+    always_ff @(posedge src_clk) begin
+        if (src_load_req)  src_load_q <= 1'b1;
+        else if (ack_sync) src_load_q <= 1'b0;
+    end
+
+    // Held payload: load only when arming a new request and no ack
+    // is pending. Holds stable across the round-trip.
+    logic [7:0] src_q;
+    always_ff @(posedge src_clk) begin
+        if (src_load_req && !src_load_q && !ack_sync) src_q <= src_data;
+    end
+
+    // 2FF synchroniser on the load-enable; ack on the synced enable.
+    logic       load_sync0;
+    logic       load_sync1;
     always_ff @(posedge dst_clk) begin
         load_sync0 <= src_load_q;
         load_sync1 <= load_sync0;
+        dst_ack    <= load_sync1;
     end
 
     // Mux-on-D gating: select is the dst-domain synced load signal.

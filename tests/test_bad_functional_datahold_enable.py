@@ -1,19 +1,16 @@
-"""Negative-case probe for the proposed CDC-012 — functional data-hold.
+"""Negative-case fixture for CDC-012 — functional data-hold on a gated bus.
 
 Issue #151 (signoff CDC coverage gaps).
 
-The load request is synchronized through a 2FF chain before
-controlling the destination bus capture, but the source payload
-keeps advancing every src_clk cycle while the request is in flight.
-The destination can therefore latch a payload from a later src
-cycle than the one that motivated the original request — a
-structurally-gated bus crossing that fails the functional
-data-hold property.
-
-xfail-strict until CDC-012 lands. The rule's PR should drop the
-marker and tighten the assertion to "and only CDC-012 fires" plus
-violation-shape checks, matching the convention used by the other
-``test_bad_*`` files.
+A multi-bit gated-bus crossing whose source payload updates every
+src_clk cycle while the request travels through the 2FF
+synchroniser. The structural shape is CDC-004-clean — the
+destination is a $dffe whose EN is the synced request — but the
+payload latched on the destination side may not be the one that
+motivated the original request because the source kept advancing
+the payload in the meantime. The textbook fix is a req/ack
+handshake (source holds the payload until a synced-back ack
+confirms the destination has sampled).
 """
 
 from __future__ import annotations
@@ -50,9 +47,28 @@ def context():
     return module, async_crossings, spec
 
 
-@pytest.mark.xfail(strict=True, reason="CDC-012 not yet implemented (issue #151)")
-def test_cdc_012_fires(context) -> None:
+def test_cdc_012_fires_as_warning(context) -> None:
+    module, async_crossings, spec = context
+    violations = run_all_rules(module, async_crossings, spec)
+    cdc_012 = [v for v in violations if v.rule_id == "CDC-012"]
+    assert len(cdc_012) == 1, (
+        f"expected exactly one CDC-012, got {[v.rule_id for v in violations]}"
+    )
+    v = cdc_012[0]
+    assert v.severity == "warning"
+    assert "functional data-hold risk" in v.message
+    assert "src_clk" in v.message and "dst_clk" in v.message
+    assert "8-bit gated bus" in v.message
+    assert "req/ack handshake" in v.message  # fix advice
+    assert v.crossing is not None
+    assert v.crossing.width == 8
+
+
+def test_no_other_rules_fire(context) -> None:
+    """CDC-004's gated-bus exemption is satisfied (dst is $dffe with
+    EN sourced from a dst-domain 2FF sync), and the 1-bit req sync
+    chain keeps CDC-001/-002/-003 silent. Only CDC-012 fires."""
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     rule_ids = {v.rule_id for v in violations}
-    assert "CDC-012" in rule_ids
+    assert rule_ids == {"CDC-012"}, f"unexpected rules fired: {rule_ids}"
