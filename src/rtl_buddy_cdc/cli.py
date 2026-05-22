@@ -11,7 +11,13 @@ from typing import IO
 
 import typer
 
-from rtl_buddy_cdc import netlist, reporter, sdc as sdc_mod, waivers as waivers_mod
+from rtl_buddy_cdc import (
+    netlist,
+    render as render_mod,
+    reporter,
+    sdc as sdc_mod,
+    waivers as waivers_mod,
+)
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
 from rtl_buddy_cdc.domain_map import build_domain_map
 from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
@@ -45,6 +51,10 @@ class OutputFormat(str, Enum):
     text = "text"
     json = "json"
     sarif = "sarif"
+
+
+class RenderFormat(str, Enum):
+    mermaid = "mermaid"
 
 
 _FORMAT_OPT = typer.Option(
@@ -356,6 +366,63 @@ def lint(
     )
     if code != 0:
         raise typer.Exit(code=code)
+
+
+@app.command()
+def render(
+    map_path: Path = typer.Option(
+        ...,
+        "--map",
+        "-m",
+        exists=True,
+        readable=True,
+        help="Path to a v1.0 domain map JSON (as produced by "
+        "`analyze --emit-domain-map`). The renderer is a pure "
+        "transformation over the existing artifact and does not re-run "
+        "the analyzer.",
+    ),
+    fmt: RenderFormat = typer.Option(
+        RenderFormat.mermaid,
+        "--format",
+        "-f",
+        case_sensitive=False,
+        help="Output format. Currently only `mermaid` (GitHub-renderable "
+        "fenced block). Additional formats may follow — see issue #162.",
+    ),
+    output_path: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write the diagram to this file (default: stdout).",
+    ),
+) -> None:
+    """Render a domain map as a diagram (mermaid for now).
+
+    The output groups flops into one subgraph per clock domain, draws
+    async-per-SDC crossings as dashed warning edges, and surfaces
+    top-level ports as stadium nodes anchored to their declared clock.
+    Designed for fixture-level documentation that renders inline on
+    GitHub.
+    """
+    try:
+        map_data = json.loads(map_path.read_text())
+    except json.JSONDecodeError as exc:
+        typer.echo(f"error: {map_path}: not valid JSON: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    # Only one format today; the enum exists so additional formats
+    # plug in with no flag-surface churn (see issue #162).
+    renderers = {RenderFormat.mermaid: render_mod.render_mermaid}
+    try:
+        out = renderers[fmt](map_data)
+    except render_mod.RenderError as exc:
+        typer.echo(f"error: {map_path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if output_path is None:
+        typer.echo(out, nl=False)
+    else:
+        output_path.write_text(out)
 
 
 @app.command()
