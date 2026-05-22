@@ -2768,6 +2768,151 @@ def check_cdc_013(
     return out
 
 
+def _has_dst_to_src_feedback(
+    module: Module,
+    src_clock: str,
+    dst_clock: str,
+    domains: dict[str, str | None],
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+) -> bool:
+    """Heuristic: does any ``src_clock`` flop's ``D`` fanin reach a
+    ``dst_clock`` flop's ``Q``?
+
+    The req/ack handshake is the structural marker we look for. In a
+    handshake design the source has an ``ack_sync`` flop in
+    ``src_clock`` whose ``D`` is the destination's ack (a
+    ``dst_clock`` flop's ``Q``); the source then conditions its
+    request / payload updates on ``ack_sync``. Absence of any such
+    feedback flop means the source has no signalling channel from
+    the destination — the payload can change independently of the
+    enable's in-flight progress, which is the failure mode CDC-012
+    flags.
+
+    The check is intentionally coarse: ANY dst→src flop edge in the
+    module suffices, even if it belongs to an unrelated handshake.
+    The signal-to-noise is acceptable because if a design carries
+    one handshake between a pair of domains it almost always uses
+    that handshake to gate other crossings between the same pair.
+    """
+    for f in find_flops(module):
+        if domains.get(f.cell.name) != src_clock:
+            continue
+        d_bits = tuple(b for b in f.d if isinstance(b, int))
+        if not d_bits:
+            continue
+        fanin_flops = _backward_flop_fanin(module, d_bits, bit_drivers)
+        for ff_name in fanin_flops:
+            if domains.get(ff_name) == dst_clock:
+                return True
+    return False
+
+
+def check_cdc_012(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-012 — Functional data-hold on a gated multi-bit crossing.
+
+    CDC-004's gated-bus exemption accepts a multi-bit crossing whose
+    destination only latches data when a destination-domain enable
+    allows it (mux-on-D with sync'd select, or ``$dffe`` with sync'd
+    ``EN``). That structural shape is necessary but not sufficient
+    for a signoff-clean crossing: it ensures the destination samples
+    on a clean enable, but does not ensure that the *source payload*
+    is stable across the enable's sync-chain latency.
+
+    The bug pattern: source registers a new payload every src_clk
+    cycle, asserts a request, the request propagates through a 2FF
+    synchroniser into the destination, and the destination latches
+    the payload it sees ``N`` dst_clk cycles after the original
+    request. By that time the source payload may have advanced one
+    or more times. The destination captures an incoherent value —
+    not the payload that motivated the original request.
+
+    The textbook fix is a req/ack handshake: the source holds the
+    payload (and the request) until a synced-back ack proves the
+    destination has sampled. The handshake's structural marker is a
+    src-clock flop with ``D``-pin fanin from a dst-clock flop's
+    ``Q`` — the ``ack_sync`` register. CDC-012 stays silent whenever
+    that pattern is present anywhere between the same clock pair.
+
+    Detection (v1):
+
+    * Multi-bit (`width > 1`) async crossing with a non-trivial src
+      flop.
+    * Crossing passes :func:`_is_gated_bus_crossing` (so CDC-004 is
+      silent — without that the crossing is already flagged
+      elsewhere; CDC-012 does not duplicate CDC-004's territory).
+    * No flop in ``src_clock`` has ``D``-fanin from any flop in
+      ``dst_clock`` (no handshake feedback).
+
+    Severity ``warning`` — the rule's heuristic for "handshake
+    present" is module-global; designs that legitimately rely on
+    application-level guarantees (e.g. a slow-write config-register
+    bus where the host writes once and waits many src cycles)
+    correctly trip the rule. ``warning`` invites review rather than
+    declaring an unambiguous bug.
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+
+    out: list[Violation] = []
+    feedback_cache: dict[tuple[str, str], bool] = {}
+
+    for c in crossings:
+        if c.src_clock == UNCONSTRAINED_SENTINEL:
+            continue
+        if c.src_flop is None or c.width <= 1:
+            continue
+        if not _is_gated_bus_crossing(module, c, ctx.domains, ctx.bit_drivers):
+            continue
+        # Gray-encoded sources are exempt: at most one bit changes
+        # per src cycle, so any dst-side sample mid-transition lands
+        # on either the previous gray code or the next — never an
+        # incoherent mix. CDC-012's failure mode doesn't apply.
+        # Honour both the structural detector (canonical
+        # ``g = b ^ (b >> 1)`` shape in src fanin) and the
+        # ``(* cdc_gray *)`` user annotation.
+        if c.src_flop.cell.name in ctx.user_grays:
+            continue
+        if _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers):
+            continue
+        key = (c.src_clock, c.dst_clock)
+        if key not in feedback_cache:
+            feedback_cache[key] = _has_dst_to_src_feedback(
+                module, c.src_clock, c.dst_clock, ctx.domains, ctx.bit_drivers
+            )
+        if feedback_cache[key]:
+            continue
+        out.append(
+            Violation(
+                rule_id="CDC-012",
+                severity="warning",
+                message=(
+                    f"functional data-hold risk on {c.src_flop.name!r} "
+                    f"→ {c.dst_flop.name!r}: {c.width}-bit gated bus "
+                    f"crossing from {c.src_clock!r} to {c.dst_clock!r} "
+                    f"has no synced-back handshake between the two "
+                    f"domains. The destination's enable is "
+                    f"synchronised, but nothing keeps the source "
+                    f"payload stable while the enable is in flight — "
+                    f"a payload change between request and capture "
+                    f"silently corrupts the latched value. Add a "
+                    f"req/ack handshake: hold the source payload "
+                    f"until an ack from the destination "
+                    f"(synchronised back through a 2FF chain) "
+                    f"confirms the sample."
+                ),
+                crossing=c,
+                cell_name=c.src_flop.cell.name,
+            )
+        )
+    return out
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -2785,6 +2930,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-009": check_cdc_009,
     "CDC-010": check_cdc_010,
     "CDC-011": check_cdc_011,
+    "CDC-012": check_cdc_012,
     "CDC-013": check_cdc_013,
 }
 

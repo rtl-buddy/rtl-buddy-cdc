@@ -71,16 +71,22 @@ GOOD_FIXTURES = [
     # $dffe-style load-enable gating (issue #34). 8-bit data bus into
     # a $dffe whose EN is a dst-domain 2FF synchronizer's tail.
     # Yosys inference of $dffe is forced by ``opt_dff`` at fixture-
-    # build time (see the fixture's SV header). Two async crossings:
-    # the 1-bit synced load_req and the 8-bit dffe-gated data path.
-    ("good_dffe_gated_bus_crossing", 2),
+    # build time (see the fixture's SV header). The fixture also
+    # carries a full req/ack handshake (synced-back ack into the src
+    # domain) so CDC-012 stays silent — without that feedback the
+    # bus would have the functional data-hold issue CDC-012 catches.
+    # Three async crossings: the 1-bit synced load_req, the 1-bit
+    # synced-back ack, and the 8-bit dffe-gated data path.
+    ("good_dffe_gated_bus_crossing", 3),
     # Mux-on-D gating with a transparent buffer hop between mux and
     # the dst flop's D (issue #35). The fixture's JSON is post-
     # processed (see insert_buffer.py) to splice a single $_BUF_
     # per lane; the gating-shape detector must walk through it and
-    # still recognise the originating mux. Two async crossings (the
-    # synced load_req + the gated data bus).
-    ("good_buffered_gated_bus_crossing", 2),
+    # still recognise the originating mux. Carries the same req/ack
+    # handshake as good_dffe_gated_bus_crossing so CDC-012 stays
+    # silent. Three async crossings (synced load_req, synced-back
+    # ack, gated data bus).
+    ("good_buffered_gated_bus_crossing", 3),
     # CDC-011 (#97) positive shapes: SDC types the unconstrained
     # input via ``set_input_delay -clock``, with a 2FF synchronizer
     # on any cross-domain capture.
@@ -93,8 +99,10 @@ GOOD_FIXTURES = [
     ("good_unconstrained_input_derived_clock_typed", 1),
     # _bus_two_domains_typed: same shape as _two_domains_typed but
     # width 8; the dst capture is gated by a synchronized load bit.
-    # Two async crossings: load control plus gated data bus.
-    ("good_unconstrained_input_bus_two_domains_typed", 2),
+    # Carries a full req/ack handshake (synced-back ack into clk_a)
+    # so CDC-012 stays silent. Three async crossings: load control,
+    # synced-back ack, and the gated data bus.
+    ("good_unconstrained_input_bus_two_domains_typed", 3),
     # _muxed_clock_typed: port typed to the same clock that captures
     # it → same domain → 0 async crossings.
     ("good_unconstrained_input_muxed_clock_typed", 0),
@@ -137,6 +145,14 @@ GOOD_FIXTURES = [
     # and the 2FF chain keeps CDC-001 silent on the underlying
     # async crossing. 1 async crossing (ck1 sel_q → ck0 sel_meta).
     ("good_sync_clock_mux", 1),
+    # CDC-012 (proposed, issue #151) positive shape: same gated-bus
+    # topology as bad_functional_datahold_enable, but with a textbook
+    # req/ack handshake — src_payload is loaded only when arming a
+    # new request, held stable across the round-trip, and the request
+    # clears only when a synced-back ack from dst confirms the
+    # sample. Three async crossings: held request, synced-back ack,
+    # and the gated 8-bit payload.
+    ("good_functional_datahold_handshake", 3),
     # CDC-009 (#47/#101/#102) positive shapes: textbook fixes for the
     # fast-to-slow pulse-loss case.
     #

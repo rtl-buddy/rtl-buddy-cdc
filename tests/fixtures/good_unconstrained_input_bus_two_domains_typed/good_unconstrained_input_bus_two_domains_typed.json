@@ -1,10 +1,10 @@
 {
-  "creator": "Yosys 0.65+16 (git sha1 6d101a37e, g++ 12.3.0 -fPIC -O3) [expsg-zubin/yosys at rtl-buddy]",
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
   "modules": {
     "good_unconstrained_input_bus_two_domains_typed": {
       "attributes": {
         "top": "00000000000000000000000000000001",
-        "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:9.1-34.10"
+        "src": "good_unconstrained_input_bus_two_domains_typed.sv:18.1-61.10"
       },
       "ports": {
         "clk_a": {
@@ -33,29 +33,95 @@
         }
       },
       "cells": {
-        "$procdff$10": {
+        "$logic_and$good_unconstrained_input_bus_two_domains_typed.sv:45$5": {
           "hide_name": 1,
-          "type": "$dff",
+          "type": "$logic_and",
           "parameters": {
-            "CLK_POLARITY": "1",
-            "WIDTH": "00000000000000000000000000000001"
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
           },
           "attributes": {
-            "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:19.5-22.8"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.13-45.28"
           },
           "port_directions": {
-            "CLK": "input",
-            "D": "input",
-            "Q": "output"
+            "A": "input",
+            "B": "input",
+            "Y": "output"
           },
           "connections": {
-            "CLK": [ 2 ],
-            "D": [ 4 ],
-            "Q": [ 29 ]
+            "A": [ 4 ],
+            "B": [ 29 ],
+            "Y": [ 30 ]
           }
         },
-        "$procdff$6": {
+        "$logic_and$good_unconstrained_input_bus_two_domains_typed.sv:45$7": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.13-45.41"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 30 ],
+            "B": [ 31 ],
+            "Y": [ 32 ]
+          }
+        },
+        "$logic_not$good_unconstrained_input_bus_two_domains_typed.sv:45$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.21-45.28"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 33 ],
+            "Y": [ 29 ]
+          }
+        },
+        "$logic_not$good_unconstrained_input_bus_two_domains_typed.sv:45$6": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.32-45.41"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 34 ],
+            "Y": [ 31 ]
+          }
+        },
+        "$procdff$19": {
           "hide_name": 1,
           "type": "$dff",
           "parameters": {
@@ -64,7 +130,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:30.5-32.8"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:57.5-59.8"
           },
           "port_directions": {
             "CLK": "input",
@@ -73,11 +139,11 @@
           },
           "connections": {
             "CLK": [ 3 ],
-            "D": [ 30, 31, 32, 33, 34, 35, 36, 37 ],
+            "D": [ 35, 36, 37, 38, 39, 40, 41, 42 ],
             "Q": [ 21, 22, 23, 24, 25, 26, 27, 28 ]
           }
         },
-        "$procdff$7": {
+        "$procdff$20": {
           "hide_name": 1,
           "type": "$dff",
           "parameters": {
@@ -86,7 +152,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:25.5-28.8"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:51.5-55.8"
           },
           "port_directions": {
             "CLK": "input",
@@ -95,11 +161,11 @@
           },
           "connections": {
             "CLK": [ 3 ],
-            "D": [ 29 ],
-            "Q": [ 38 ]
+            "D": [ 43 ],
+            "Q": [ 44 ]
           }
         },
-        "$procdff$8": {
+        "$procdff$21": {
           "hide_name": 1,
           "type": "$dff",
           "parameters": {
@@ -108,7 +174,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:25.5-28.8"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:51.5-55.8"
           },
           "port_directions": {
             "CLK": "input",
@@ -117,11 +183,33 @@
           },
           "connections": {
             "CLK": [ 3 ],
-            "D": [ 38 ],
-            "Q": [ 39 ]
+            "D": [ 33 ],
+            "Q": [ 45 ]
           }
         },
-        "$procdff$9": {
+        "$procdff$22": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:51.5-55.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 45 ],
+            "Q": [ 43 ]
+          }
+        },
+        "$procdff$23": {
           "hide_name": 1,
           "type": "$dff",
           "parameters": {
@@ -130,7 +218,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:19.5-22.8"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:44.5-46.8"
           },
           "port_directions": {
             "CLK": "input",
@@ -139,18 +227,84 @@
           },
           "connections": {
             "CLK": [ 2 ],
-            "D": [ 5, 6, 7, 8, 9, 10, 11, 12 ],
+            "D": [ 46, 47, 48, 49, 50, 51, 52, 53 ],
             "Q": [ 13, 14, 15, 16, 17, 18, 19, 20 ]
           }
         },
-        "$procmux$4": {
+        "$procdff$24": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:37.5-40.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 54 ],
+            "Q": [ 33 ]
+          }
+        },
+        "$procdff$25": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:30.5-33.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 44 ],
+            "Q": [ 55 ]
+          }
+        },
+        "$procdff$26": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:30.5-33.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 55 ],
+            "Q": [ 34 ]
+          }
+        },
+        "$procmux$10": {
           "hide_name": 1,
           "type": "$mux",
           "parameters": {
             "WIDTH": "00000000000000000000000000001000"
           },
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:31.13-31.22|tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:31.9-31.35"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:58.13-58.22|good_unconstrained_input_bus_two_domains_typed.sv:58.9-58.35"
           },
           "port_directions": {
             "A": "input",
@@ -161,80 +315,293 @@
           "connections": {
             "A": [ 21, 22, 23, 24, 25, 26, 27, 28 ],
             "B": [ 13, 14, 15, 16, 17, 18, 19, 20 ],
-            "S": [ 39 ],
-            "Y": [ 30, 31, 32, 33, 34, 35, 36, 37 ]
+            "S": [ 43 ],
+            "Y": [ 35, 36, 37, 38, 39, 40, 41, 42 ]
+          }
+        },
+        "$procmux$12": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.13-45.41|good_unconstrained_input_bus_two_domains_typed.sv:45.9-45.53"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 13, 14, 15, 16, 17, 18, 19, 20 ],
+            "B": [ 5, 6, 7, 8, 9, 10, 11, 12 ],
+            "S": [ 32 ],
+            "Y": [ 46, 47, 48, 49, 50, 51, 52, 53 ]
+          }
+        },
+        "$procmux$14": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:39.18-39.26|good_unconstrained_input_bus_two_domains_typed.sv:39.14-39.43"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 33 ],
+            "B": [ "0" ],
+            "S": [ 34 ],
+            "Y": [ 56 ]
+          }
+        },
+        "$procmux$17": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:38.13-38.17|good_unconstrained_input_bus_two_domains_typed.sv:38.9-39.43"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 56 ],
+            "B": [ "1" ],
+            "S": [ 4 ],
+            "Y": [ 54 ]
           }
         }
       },
       "netnames": {
+        "$0\\ack_meta[0:0]": {
+          "hide_name": 1,
+          "bits": [ 44 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:30.5-33.8"
+          }
+        },
+        "$0\\ack_sync[0:0]": {
+          "hide_name": 1,
+          "bits": [ 55 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:30.5-33.8"
+          }
+        },
+        "$0\\clk_b_ack[0:0]": {
+          "hide_name": 1,
+          "bits": [ 43 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:51.5-55.8"
+          }
+        },
+        "$0\\load_meta[0:0]": {
+          "hide_name": 1,
+          "bits": [ 33 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:51.5-55.8"
+          }
+        },
+        "$0\\load_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 54 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:37.5-40.8"
+          }
+        },
+        "$0\\load_sync[0:0]": {
+          "hide_name": 1,
+          "bits": [ 45 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:51.5-55.8"
+          }
+        },
+        "$0\\q_a[7:0]": {
+          "hide_name": 1,
+          "bits": [ 46, 47, 48, 49, 50, 51, 52, 53 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:44.5-46.8"
+          }
+        },
         "$0\\q_b[7:0]": {
           "hide_name": 1,
-          "bits": [ 30, 31, 32, 33, 34, 35, 36, 37 ],
+          "bits": [ 35, 36, 37, 38, 39, 40, 41, 42 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:30.5-32.8"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:57.5-59.8"
+          }
+        },
+        "$logic_and$good_unconstrained_input_bus_two_domains_typed.sv:45$5_Y": {
+          "hide_name": 1,
+          "bits": [ 30 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.13-45.28"
+          }
+        },
+        "$logic_and$good_unconstrained_input_bus_two_domains_typed.sv:45$7_Y": {
+          "hide_name": 1,
+          "bits": [ 32 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.13-45.41"
+          }
+        },
+        "$logic_not$good_unconstrained_input_bus_two_domains_typed.sv:45$4_Y": {
+          "hide_name": 1,
+          "bits": [ 29 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.21-45.28"
+          }
+        },
+        "$logic_not$good_unconstrained_input_bus_two_domains_typed.sv:45$6_Y": {
+          "hide_name": 1,
+          "bits": [ 31 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:45.32-45.41"
+          }
+        },
+        "$procmux$10_Y": {
+          "hide_name": 1,
+          "bits": [ 35, 36, 37, 38, 39, 40, 41, 42 ],
+          "attributes": {
+          }
+        },
+        "$procmux$11_CMP": {
+          "hide_name": 1,
+          "bits": [ 43 ],
+          "attributes": {
+          }
+        },
+        "$procmux$12_Y": {
+          "hide_name": 1,
+          "bits": [ 46, 47, 48, 49, 50, 51, 52, 53 ],
+          "attributes": {
+          }
+        },
+        "$procmux$13_CMP": {
+          "hide_name": 1,
+          "bits": [ 32 ],
+          "attributes": {
+          }
+        },
+        "$procmux$14_Y": {
+          "hide_name": 1,
+          "bits": [ 56 ],
+          "attributes": {
+          }
+        },
+        "$procmux$15_CMP": {
+          "hide_name": 1,
+          "bits": [ 34 ],
+          "attributes": {
+          }
+        },
+        "$procmux$17_Y": {
+          "hide_name": 1,
+          "bits": [ 54 ],
+          "attributes": {
+          }
+        },
+        "$procmux$18_CMP": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+          }
+        },
+        "ack_meta": {
+          "hide_name": 0,
+          "bits": [ 55 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:29.11-29.19"
+          }
+        },
+        "ack_sync": {
+          "hide_name": 0,
+          "bits": [ 34 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:29.21-29.29"
           }
         },
         "clk_a": {
           "hide_name": 0,
           "bits": [ 2 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:10.24-10.29"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:19.24-19.29"
           }
         },
         "clk_b": {
           "hide_name": 0,
           "bits": [ 3 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:11.24-11.29"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:20.24-20.29"
+          }
+        },
+        "clk_b_ack": {
+          "hide_name": 0,
+          "bits": [ 44 ],
+          "attributes": {
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:28.11-28.20"
           }
         },
         "in": {
           "hide_name": 0,
           "bits": [ 5, 6, 7, 8, 9, 10, 11, 12 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:13.24-13.26"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:22.24-22.26"
           }
         },
         "load": {
           "hide_name": 0,
           "bits": [ 4 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:12.24-12.28"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:21.24-21.28"
           }
         },
         "load_meta": {
           "hide_name": 0,
-          "bits": [ 38 ],
+          "bits": [ 45 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:24.11-24.20"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:50.11-50.20"
           }
         },
         "load_q": {
           "hide_name": 0,
-          "bits": [ 29 ],
+          "bits": [ 33 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:18.11-18.17"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:36.11-36.17"
           }
         },
         "load_sync": {
           "hide_name": 0,
-          "bits": [ 39 ],
+          "bits": [ 43 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:24.22-24.31"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:50.22-50.31"
           }
         },
         "q_a": {
           "hide_name": 0,
           "bits": [ 13, 14, 15, 16, 17, 18, 19, 20 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:14.24-14.27"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:23.24-23.27"
           }
         },
         "q_b": {
           "hide_name": 0,
           "bits": [ 21, 22, 23, 24, 25, 26, 27, 28 ],
           "attributes": {
-            "src": "tests/fixtures/good_unconstrained_input_bus_two_domains_typed/good_unconstrained_input_bus_two_domains_typed.sv:15.24-15.27"
+            "src": "good_unconstrained_input_bus_two_domains_typed.sv:24.24-24.27"
           }
         }
       }

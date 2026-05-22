@@ -4,7 +4,7 @@
     "good_dffe_gated_bus_crossing": {
       "attributes": {
         "top": "00000000000000000000000000000001",
-        "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:21.1-58.10"
+        "src": "good_dffe_gated_bus_crossing.sv:27.1-72.10"
       },
       "ports": {
         "src_clk": {
@@ -29,7 +29,7 @@
         }
       },
       "cells": {
-        "$auto$ff.cc:337:slice$11": {
+        "$auto$ff.cc:337:slice$27": {
           "hide_name": 1,
           "type": "$dffe",
           "parameters": {
@@ -39,7 +39,7 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:54.5-56.8"
+            "src": "good_dffe_gated_bus_crossing.sv:68.5-70.8"
           },
           "port_directions": {
             "CLK": "input",
@@ -54,102 +54,266 @@
             "Q": [ 13, 14, 15, 16, 17, 18, 19, 20 ]
           }
         },
-        "$procdff$10": {
+        "$auto$ff.cc:337:slice$28": {
           "hide_name": 1,
-          "type": "$dff",
+          "type": "$dffe",
           "parameters": {
-            "CLK_POLARITY": "1",
-            "WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:37.5-40.8"
-          },
-          "port_directions": {
-            "CLK": "input",
-            "D": "input",
-            "Q": "output"
-          },
-          "connections": {
-            "CLK": [ 2 ],
-            "D": [ 4 ],
-            "Q": [ 30 ]
-          }
-        },
-        "$procdff$7": {
-          "hide_name": 1,
-          "type": "$dff",
-          "parameters": {
-            "CLK_POLARITY": "1",
-            "WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:44.5-47.8"
-          },
-          "port_directions": {
-            "CLK": "input",
-            "D": "input",
-            "Q": "output"
-          },
-          "connections": {
-            "CLK": [ 3 ],
-            "D": [ 30 ],
-            "Q": [ 31 ]
-          }
-        },
-        "$procdff$8": {
-          "hide_name": 1,
-          "type": "$dff",
-          "parameters": {
-            "CLK_POLARITY": "1",
-            "WIDTH": "00000000000000000000000000000001"
-          },
-          "attributes": {
-            "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:44.5-47.8"
-          },
-          "port_directions": {
-            "CLK": "input",
-            "D": "input",
-            "Q": "output"
-          },
-          "connections": {
-            "CLK": [ 3 ],
-            "D": [ 31 ],
-            "Q": [ 29 ]
-          }
-        },
-        "$procdff$9": {
-          "hide_name": 1,
-          "type": "$dff",
-          "parameters": {
-            "CLK_POLARITY": "1",
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
             "WIDTH": "00000000000000000000000000001000"
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:37.5-40.8"
+            "src": "good_dffe_gated_bus_crossing.sv:53.5-55.8"
           },
           "port_directions": {
             "CLK": "input",
             "D": "input",
+            "EN": "input",
             "Q": "output"
           },
           "connections": {
             "CLK": [ 2 ],
             "D": [ 5, 6, 7, 8, 9, 10, 11, 12 ],
+            "EN": [ 30 ],
             "Q": [ 21, 22, 23, 24, 25, 26, 27, 28 ]
           }
         },
-        "$procmux$4": {
+        "$auto$ff.cc:337:slice$30": {
+          "hide_name": 1,
+          "type": "$sdffe",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_dffe_gated_bus_crossing.sv:45.5-48.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "EN": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ "0" ],
+            "EN": [ 31 ],
+            "Q": [ 32 ],
+            "SRST": [ 4 ]
+          }
+        },
+        "$logic_and$good_dffe_gated_bus_crossing.sv:54$5": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.13-54.40"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "B": [ 33 ],
+            "Y": [ 34 ]
+          }
+        },
+        "$logic_and$good_dffe_gated_bus_crossing.sv:54$7": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.13-54.53"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 34 ],
+            "B": [ 35 ],
+            "Y": [ 30 ]
+          }
+        },
+        "$logic_not$good_dffe_gated_bus_crossing.sv:54$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.29-54.40"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 32 ],
+            "Y": [ 33 ]
+          }
+        },
+        "$logic_not$good_dffe_gated_bus_crossing.sv:54$6": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.44-54.53"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 31 ],
+            "Y": [ 35 ]
+          }
+        },
+        "$procdff$20": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_dffe_gated_bus_crossing.sv:60.5-64.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 29 ],
+            "Q": [ 36 ]
+          }
+        },
+        "$procdff$21": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_dffe_gated_bus_crossing.sv:60.5-64.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 32 ],
+            "Q": [ 37 ]
+          }
+        },
+        "$procdff$22": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_dffe_gated_bus_crossing.sv:60.5-64.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 37 ],
+            "Q": [ 29 ]
+          }
+        },
+        "$procdff$25": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_dffe_gated_bus_crossing.sv:38.5-41.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 36 ],
+            "Q": [ 38 ]
+          }
+        },
+        "$procdff$26": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_dffe_gated_bus_crossing.sv:38.5-41.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 38 ],
+            "Q": [ 31 ]
+          }
+        },
+        "$procmux$10": {
           "hide_name": 1,
           "type": "$mux",
           "parameters": {
             "WIDTH": "00000000000000000000000000001000"
           },
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:55.13-55.23|tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:55.9-55.43"
+            "src": "good_dffe_gated_bus_crossing.sv:69.13-69.23|good_dffe_gated_bus_crossing.sv:69.9-69.43"
           },
           "port_directions": {
             "A": "input",
@@ -161,119 +325,292 @@
             "A": [ 13, 14, 15, 16, 17, 18, 19, 20 ],
             "B": [ 21, 22, 23, 24, 25, 26, 27, 28 ],
             "S": [ 29 ],
-            "Y": [ 32, 33, 34, 35, 36, 37, 38, 39 ]
+            "Y": [ 39, 40, 41, 42, 43, 44, 45, 46 ]
+          }
+        },
+        "$procmux$12": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.13-54.53|good_dffe_gated_bus_crossing.sv:54.9-54.73"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 21, 22, 23, 24, 25, 26, 27, 28 ],
+            "B": [ 5, 6, 7, 8, 9, 10, 11, 12 ],
+            "S": [ 30 ],
+            "Y": [ 47, 48, 49, 50, 51, 52, 53, 54 ]
+          }
+        },
+        "$procmux$14": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:47.18-47.26|good_dffe_gated_bus_crossing.sv:47.14-47.47"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 32 ],
+            "B": [ "0" ],
+            "S": [ 31 ],
+            "Y": [ 55 ]
+          }
+        },
+        "$procmux$17": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "good_dffe_gated_bus_crossing.sv:46.13-46.25|good_dffe_gated_bus_crossing.sv:46.9-47.47"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 55 ],
+            "B": [ "1" ],
+            "S": [ 4 ],
+            "Y": [ 56 ]
           }
         }
       },
       "netnames": {
+        "$0\\ack_meta[0:0]": {
+          "hide_name": 1,
+          "bits": [ 36 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:38.5-41.8"
+          }
+        },
+        "$0\\ack_sync[0:0]": {
+          "hide_name": 1,
+          "bits": [ 38 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:38.5-41.8"
+          }
+        },
+        "$0\\dst_ack[0:0]": {
+          "hide_name": 1,
+          "bits": [ 29 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:60.5-64.8"
+          }
+        },
         "$0\\dst_data[7:0]": {
           "hide_name": 1,
-          "bits": [ 32, 33, 34, 35, 36, 37, 38, 39 ],
+          "bits": [ 39, 40, 41, 42, 43, 44, 45, 46 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:54.5-56.8"
+            "src": "good_dffe_gated_bus_crossing.sv:68.5-70.8"
           }
         },
         "$0\\load_sync0[0:0]": {
           "hide_name": 1,
-          "bits": [ 30 ],
+          "bits": [ 32 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:44.5-47.8"
+            "src": "good_dffe_gated_bus_crossing.sv:60.5-64.8"
           }
         },
         "$0\\load_sync1[0:0]": {
           "hide_name": 1,
-          "bits": [ 31 ],
+          "bits": [ 37 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:44.5-47.8"
+            "src": "good_dffe_gated_bus_crossing.sv:60.5-64.8"
           }
         },
         "$0\\src_load_q[0:0]": {
           "hide_name": 1,
-          "bits": [ 4 ],
+          "bits": [ 56 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:37.5-40.8"
+            "src": "good_dffe_gated_bus_crossing.sv:45.5-48.8"
           }
         },
         "$0\\src_q[7:0]": {
           "hide_name": 1,
-          "bits": [ 5, 6, 7, 8, 9, 10, 11, 12 ],
+          "bits": [ 47, 48, 49, 50, 51, 52, 53, 54 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:37.5-40.8"
+            "src": "good_dffe_gated_bus_crossing.sv:53.5-55.8"
           }
         },
-        "$procmux$4_Y": {
+        "$logic_and$good_dffe_gated_bus_crossing.sv:54$5_Y": {
           "hide_name": 1,
-          "bits": [ 32, 33, 34, 35, 36, 37, 38, 39 ],
+          "bits": [ 34 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.13-54.40"
+          }
+        },
+        "$logic_and$good_dffe_gated_bus_crossing.sv:54$7_Y": {
+          "hide_name": 1,
+          "bits": [ 30 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.13-54.53"
+          }
+        },
+        "$logic_not$good_dffe_gated_bus_crossing.sv:54$4_Y": {
+          "hide_name": 1,
+          "bits": [ 33 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.29-54.40"
+          }
+        },
+        "$logic_not$good_dffe_gated_bus_crossing.sv:54$6_Y": {
+          "hide_name": 1,
+          "bits": [ 35 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:54.44-54.53"
+          }
+        },
+        "$procmux$10_Y": {
+          "hide_name": 1,
+          "bits": [ 39, 40, 41, 42, 43, 44, 45, 46 ],
           "attributes": {
           }
         },
-        "$procmux$5_CMP": {
+        "$procmux$11_CMP": {
           "hide_name": 1,
           "bits": [ 29 ],
           "attributes": {
+          }
+        },
+        "$procmux$12_Y": {
+          "hide_name": 1,
+          "bits": [ 47, 48, 49, 50, 51, 52, 53, 54 ],
+          "attributes": {
+          }
+        },
+        "$procmux$13_CMP": {
+          "hide_name": 1,
+          "bits": [ 30 ],
+          "attributes": {
+          }
+        },
+        "$procmux$14_Y": {
+          "hide_name": 1,
+          "bits": [ 55 ],
+          "attributes": {
+          }
+        },
+        "$procmux$15_CMP": {
+          "hide_name": 1,
+          "bits": [ 31 ],
+          "attributes": {
+          }
+        },
+        "$procmux$17_Y": {
+          "hide_name": 1,
+          "bits": [ 56 ],
+          "attributes": {
+          }
+        },
+        "$procmux$18_CMP": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+          }
+        },
+        "ack_meta": {
+          "hide_name": 0,
+          "bits": [ 38 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:37.11-37.19"
+          }
+        },
+        "ack_sync": {
+          "hide_name": 0,
+          "bits": [ 31 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:37.21-37.29"
+          }
+        },
+        "dst_ack": {
+          "hide_name": 0,
+          "bits": [ 36 ],
+          "attributes": {
+            "src": "good_dffe_gated_bus_crossing.sv:36.11-36.18"
           }
         },
         "dst_clk": {
           "hide_name": 0,
           "bits": [ 3 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:23.25-23.32"
+            "src": "good_dffe_gated_bus_crossing.sv:29.25-29.32"
           }
         },
         "dst_data": {
           "hide_name": 0,
           "bits": [ 13, 14, 15, 16, 17, 18, 19, 20 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:26.25-26.33"
+            "src": "good_dffe_gated_bus_crossing.sv:32.25-32.33"
           }
         },
         "load_sync0": {
           "hide_name": 0,
-          "bits": [ 31 ],
+          "bits": [ 37 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:31.17-31.27"
+            "src": "good_dffe_gated_bus_crossing.sv:58.17-58.27"
           }
         },
         "load_sync1": {
           "hide_name": 0,
           "bits": [ 29 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:32.17-32.27"
+            "src": "good_dffe_gated_bus_crossing.sv:59.17-59.27"
           }
         },
         "src_clk": {
           "hide_name": 0,
           "bits": [ 2 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:22.25-22.32"
+            "src": "good_dffe_gated_bus_crossing.sv:28.25-28.32"
           }
         },
         "src_data": {
           "hide_name": 0,
           "bits": [ 5, 6, 7, 8, 9, 10, 11, 12 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:25.25-25.33"
+            "src": "good_dffe_gated_bus_crossing.sv:31.25-31.33"
           }
         },
         "src_load_q": {
           "hide_name": 0,
-          "bits": [ 30 ],
+          "bits": [ 32 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:30.17-30.27"
+            "src": "good_dffe_gated_bus_crossing.sv:44.17-44.27"
           }
         },
         "src_load_req": {
           "hide_name": 0,
           "bits": [ 4 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:24.25-24.37"
+            "src": "good_dffe_gated_bus_crossing.sv:30.25-30.37"
           }
         },
         "src_q": {
           "hide_name": 0,
           "bits": [ 21, 22, 23, 24, 25, 26, 27, 28 ],
           "attributes": {
-            "src": "tests/fixtures/good_dffe_gated_bus_crossing/good_dffe_gated_bus_crossing.sv:29.17-29.22"
+            "src": "good_dffe_gated_bus_crossing.sv:52.17-52.22"
           }
         }
       }
