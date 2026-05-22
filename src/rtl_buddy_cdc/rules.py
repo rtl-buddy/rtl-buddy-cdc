@@ -2218,6 +2218,120 @@ def _backward_port_fanin(
     return ports
 
 
+def check_rdc_006(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """RDC-006 — Muxed/derived async reset without a local synchroniser.
+
+    Fires when a flop's async reset pin is driven *directly* by a
+    ``$mux`` / ``$pmux`` output and the flop is not part of a
+    recognised reset-synchroniser chain. RDC-005 deliberately
+    exempts the ``$mux`` shape — explicit selection is the user's
+    declared intent for which reset source dominates. RDC-006 fills
+    the resulting gap: making source selection explicit does not
+    make the deassertion edge synchronous to the consumer clock.
+    Whichever leg the mux currently selects will deassert
+    asynchronously to ``CLK``; the textbook fix is a 2FF reset
+    synchroniser between the mux and the downstream consumers.
+
+    Severity ``warning`` — the muxed-reset pattern is common in SoC
+    designs that route a chip-level reset through a control
+    register, and the local block may legitimately consume an
+    upstream-synchronised reset. ``warning`` invites review rather
+    than declaring an unambiguous bug.
+
+    The rule is suppressed on:
+
+    * flops recognised as reset-synchroniser stages (their own
+      ARST may legitimately be the muxed source — that's the
+      sync chain's job),
+    * flops marked with ``(* reset_sync *)`` (the user-annotation
+      escape hatch, threaded through
+      :attr:`_RuleContext.reset_sync_flop_names`).
+    """
+    from rtl_buddy_cdc.reset_domain import (
+        assign_reset_domains,
+        find_reset_synchronizers,
+    )
+
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    reset_domains = assign_reset_domains(module)
+    recognised_syncs = find_reset_synchronizers(
+        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
+    )
+
+    violations: list[Violation] = []
+    for f in ctx.flops:
+        if f.cell.name in recognised_syncs:
+            continue
+        rd = reset_domains.get(f.cell.name)
+        if rd is None or rd.reset is None:
+            continue
+        if rd.reset.type != "async" or rd.reset.source != "comb":
+            continue
+        rst_bits: tuple[Bit, ...] = ()
+        for pin in ("ARST", "ALOAD", "CLR"):
+            bits = f.cell.connections.get(pin, ())
+            if bits:
+                rst_bits = bits
+                break
+        if not rst_bits:
+            continue
+        rst_bit = rst_bits[0]
+        if not isinstance(rst_bit, int):
+            continue
+        drv = ctx.bit_drivers.get(rst_bit)
+        if drv is None:
+            continue
+        drv_cell_name, _, _ = drv
+        drv_cell = module.cells.get(drv_cell_name)
+        if drv_cell is None or drv_cell.type not in {"$mux", "$pmux"}:
+            continue
+        # Walk only the mux's *data* legs for the message — the
+        # select pin is a control signal, not a reset source, and
+        # surfacing it as one is confusing. ``$mux`` has data pins
+        # A / B and select S; ``$pmux`` has A (default) / B (cases)
+        # / S (one-hot select).
+        data_bits: list[Bit] = []
+        for pin in ("A", "B"):
+            data_bits.extend(drv_cell.connections.get(pin, ()))
+        fanin_ports = _backward_port_fanin(module, tuple(data_bits), ctx.bit_drivers)
+        port_list = sorted(fanin_ports)
+        if port_list:
+            sources_phrase = (
+                f"{len(port_list)} reset sources "
+                f"({', '.join(port_list[:3])}"
+                + ("..." if len(port_list) > 3 else "")
+                + ")"
+            )
+        else:
+            sources_phrase = "multiple reset sources"
+        violations.append(
+            Violation(
+                rule_id="RDC-006",
+                severity="warning",
+                message=(
+                    f"muxed async reset without local synchroniser: "
+                    f"flop {f.cell.name}'s reset pin is driven by a "
+                    f"{drv_cell.type} selecting between {sources_phrase}. "
+                    f"The mux makes source selection explicit (why "
+                    f"RDC-005 stays silent), but the selected reset's "
+                    f"deassertion edge is still asynchronous to this "
+                    f"flop's clock. Add a 2FF reset synchroniser in "
+                    f"the consumer clock domain between the mux and "
+                    f"this flop's reset pin."
+                ),
+                cell_name=f.cell.name,
+            )
+        )
+    return violations
+
+
 def check_rdc_002(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -2572,6 +2686,7 @@ RULES: dict[str, RuleFn] = {
     "RDC-003": check_rdc_003,
     "RDC-004": check_rdc_004,
     "RDC-005": check_rdc_005,
+    "RDC-006": check_rdc_006,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
     "CDC-010": check_cdc_010,

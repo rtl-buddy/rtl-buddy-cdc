@@ -1,21 +1,12 @@
-"""Negative-case probe for the proposed RDC-006 — derived async reset.
+"""Negative-case fixture for RDC-006 — muxed async reset without local sync.
 
 Issue #151 (signoff CDC coverage gaps).
 
 A reset source selected through a $mux feeds the consumer flop's
-async clear directly, with no local reset synchronizer in the
-consumer clock domain. RDC-005 stays silent by design (the mux
-makes selection unambiguous), but reset deassertion is still
-unaligned to clk — the gap RDC-006 is meant to cover.
-
-Today this exact topology is also the body of
-``good_rdc_005_muxed_reset``. When RDC-006 lands, that fixture will
-need a downstream sync stage so it remains clean for both rules
-(see issue #151 acceptance criteria).
-
-xfail-strict until RDC-006 lands. The rule's PR should drop the
-marker and tighten the assertion to "and only RDC-006 fires" plus
-violation-shape checks.
+async clear directly, with no local reset synchroniser in the
+consumer clock domain. RDC-005 stays silent by design — the mux
+makes selection unambiguous — but the selected reset's deassertion
+edge is still asynchronous to ``clk``. RDC-006 fills the gap.
 """
 
 from __future__ import annotations
@@ -52,9 +43,29 @@ def context():
     return module, async_crossings, spec
 
 
-@pytest.mark.xfail(strict=True, reason="RDC-006 not yet implemented (issue #151)")
-def test_rdc_006_fires(context) -> None:
+def test_rdc_006_fires_as_warning(context) -> None:
+    module, async_crossings, spec = context
+    violations = run_all_rules(module, async_crossings, spec)
+    rdc_006 = [v for v in violations if v.rule_id == "RDC-006"]
+    assert len(rdc_006) == 1, (
+        f"expected exactly one RDC-006, got {[v.rule_id for v in violations]}"
+    )
+    v = rdc_006[0]
+    assert v.severity == "warning"
+    assert "muxed async reset without local synchroniser" in v.message
+    assert "$mux" in v.message
+    assert "block_rst_n" in v.message and "global_rst_n" in v.message
+    # The select signal is a control, not a reset source — it must
+    # NOT be reported as one in the message.
+    assert "use_block_rst" not in v.message
+    assert "2FF reset synchroniser" in v.message  # fix advice
+
+
+def test_no_other_rules_fire(context) -> None:
+    """Single-clock design, mux exemption keeps RDC-005 silent,
+    no foreign-domain flops in the ARST path so RDC-001 is silent
+    too. Only RDC-006."""
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     rule_ids = {v.rule_id for v in violations}
-    assert "RDC-006" in rule_ids
+    assert rule_ids == {"RDC-006"}, f"unexpected rules fired: {rule_ids}"

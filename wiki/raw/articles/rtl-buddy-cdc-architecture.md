@@ -752,6 +752,59 @@ libraries whose pin naming conflicts (e.g. a vendor that uses
 the heuristic path; the explicit map and prefix paths remain
 active.
 
+### 8.5 RDC-006 — muxed async reset without local synchroniser
+
+RDC-006 is the structural complement of RDC-005. RDC-005 flags a
+multi-source reset converging through combinational AND/OR
+without a `$mux`; RDC-006 flags the inverse — a `$mux` *is*
+present, source selection is unambiguous, but the selected
+reset's deassertion is still asynchronous to the consumer clock.
+RDC-005's mux exemption (issue #114) was deliberate: the explicit
+selection makes the multi-source pattern intentional, not a
+wiring bug. That exemption is correct for RDC-005's failure mode
+but silent on the orthogonal one — async deassertion — which
+RDC-006 owns.
+
+The two rules partition the muxed-reset failure mode: RDC-005
+asks "is the selection explicit?", RDC-006 asks "is the selected
+reset synchronised before downstream consumption?". A muxed
+reset that immediately reaches a flop's `ARST` triggers RDC-006
+but not RDC-005; the same mux feeding a recognised reset-sync
+chain triggers neither (the sync chain's own flops are exempted
+because the synchroniser is the whole point).
+
+Detection is intentionally narrow in v1:
+
+1. Skip flops in `find_reset_synchronizers(...)` (the chain
+   itself is fine; its own ARST is the muxed source by design)
+   and flops marked `(* reset_sync *)`.
+2. Require `ResetDomain.reset.source == "comb"` and that the
+   immediate driver of the reset bit is `$mux` / `$pmux`.
+3. Walk the mux's *data* legs (`A`, `B`) — not its select pin
+   (`S`) — via `_backward_port_fanin` so the message lists the
+   reset sources without conflating the control signal.
+
+Severity is `warning` — the muxed-reset pattern is common in SoC
+designs that gate a chip-level reset through a control register,
+and the local block may legitimately consume an
+upstream-synchronised reset (in which case the user marks the
+flop `(* reset_sync *)` or accepts the warning as expected for
+their topology). The textbook fix is a 2FF reset synchroniser
+between the mux output and downstream consumers; the
+`good_derived_async_reset_synced` fixture is the canonical
+shape.
+
+The rule's existence also tightened the existing
+`good_rdc_005_muxed_reset` fixture: that fixture's original
+SV had a muxed reset feeding the data flop's `ARST` directly,
+identical to `bad_derived_async_reset_unsync`. Once RDC-006
+landed, the fixture was extended to route the mux output through
+a local 2FF synchroniser so it stays clean for both rules. The
+RDC-005 mux exemption is still exercised — now on the
+synchroniser's own flops — and the fixture demonstrates the
+real-world correct pattern rather than just "doesn't trigger
+RDC-005."
+
 ## 9. Waivers
 
 `waivers.py` implements the smallest waiver-file format that scales
