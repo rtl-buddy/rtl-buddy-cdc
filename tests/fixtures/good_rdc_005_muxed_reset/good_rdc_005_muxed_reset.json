@@ -4,7 +4,7 @@
     "good_rdc_005_muxed_reset": {
       "attributes": {
         "top": "00000000000000000000000000000001",
-        "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:12.1-29.10"
+        "src": "good_rdc_005_muxed_reset.sv:24.1-53.10"
       },
       "ports": {
         "clk": {
@@ -33,7 +33,104 @@
         }
       },
       "cells": {
-        "$procdff$8": {
+        "$auto$proc_dff.cc:220:proc_dff$11": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 8 ],
+            "Y": [ 9 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$16": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 8 ],
+            "Y": [ 10 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$6": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 11 ],
+            "Y": [ 12 ]
+          }
+        },
+        "$logic_not$good_rdc_005_muxed_reset.sv:39$3": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:39.13-39.28"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 8 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$logic_not$good_rdc_005_muxed_reset.sv:49$5": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:49.13-49.24"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 11 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$procdff$10": {
           "hide_name": 1,
           "type": "$adff",
           "parameters": {
@@ -44,7 +141,33 @@
           },
           "attributes": {
             "always_ff": "00000000000000000000000000000001",
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:24.5-27.8"
+            "src": "good_rdc_005_muxed_reset.sv:48.5-51.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 11 ],
+            "CLK": [ 2 ],
+            "D": [ 6 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procdff$15": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_rdc_005_muxed_reset.sv:38.5-46.8"
           },
           "port_directions": {
             "ARST": "input",
@@ -55,18 +178,44 @@
           "connections": {
             "ARST": [ 8 ],
             "CLK": [ 2 ],
-            "D": [ 6 ],
-            "Q": [ 7 ]
+            "D": [ "1" ],
+            "Q": [ 15 ]
           }
         },
-        "$ternary$tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:22$1": {
+        "$procdff$20": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_rdc_005_muxed_reset.sv:38.5-46.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 8 ],
+            "CLK": [ 2 ],
+            "D": [ 15 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$ternary$good_rdc_005_muxed_reset.sv:34$1": {
           "hide_name": 1,
           "type": "$mux",
           "parameters": {
             "WIDTH": "00000000000000000000000000000001"
           },
           "attributes": {
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:22.29-22.71"
+            "src": "good_rdc_005_muxed_reset.sv:34.29-34.71"
           },
           "port_directions": {
             "A": "input",
@@ -83,53 +232,145 @@
         }
       },
       "netnames": {
+        "$0\\q_out[0:0]": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:48.5-51.8"
+          }
+        },
+        "$0\\rst_meta_n[0:0]": {
+          "hide_name": 1,
+          "bits": [ "1" ],
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:38.5-46.8"
+          }
+        },
+        "$0\\rst_sync_n[0:0]": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:38.5-46.8"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$12": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$17": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$7": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$14": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$19": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$9": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$logic_not$good_rdc_005_muxed_reset.sv:39$3_Y": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:39.13-39.28"
+          }
+        },
+        "$logic_not$good_rdc_005_muxed_reset.sv:49$5_Y": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:49.13-49.24"
+          }
+        },
+        "$ternary$good_rdc_005_muxed_reset.sv:34$1_Y": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:34.29-34.71"
+          }
+        },
         "block_rst_n": {
           "hide_name": 0,
           "bits": [ 4 ],
           "attributes": {
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:15.18-15.29"
+            "src": "good_rdc_005_muxed_reset.sv:27.18-27.29"
           }
         },
         "clk": {
           "hide_name": 0,
           "bits": [ 2 ],
           "attributes": {
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:13.18-13.21"
+            "src": "good_rdc_005_muxed_reset.sv:25.18-25.21"
           }
         },
         "d_in": {
           "hide_name": 0,
           "bits": [ 6 ],
           "attributes": {
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:17.18-17.22"
+            "src": "good_rdc_005_muxed_reset.sv:29.18-29.22"
           }
         },
         "global_rst_n": {
           "hide_name": 0,
           "bits": [ 3 ],
           "attributes": {
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:14.18-14.30"
+            "src": "good_rdc_005_muxed_reset.sv:26.18-26.30"
           }
         },
         "q_out": {
           "hide_name": 0,
           "bits": [ 7 ],
           "attributes": {
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:18.18-18.23"
+            "src": "good_rdc_005_muxed_reset.sv:30.18-30.23"
+          }
+        },
+        "rst_meta_n": {
+          "hide_name": 0,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:36.11-36.21"
+          }
+        },
+        "rst_sync_n": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "good_rdc_005_muxed_reset.sv:37.11-37.21"
           }
         },
         "selected_rst_n": {
           "hide_name": 0,
           "bits": [ 8 ],
           "attributes": {
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:21.11-21.25"
+            "src": "good_rdc_005_muxed_reset.sv:33.11-33.25"
           }
         },
         "use_block_rst": {
           "hide_name": 0,
           "bits": [ 5 ],
           "attributes": {
-            "src": "tests/fixtures/good_rdc_005_muxed_reset/good_rdc_005_muxed_reset.sv:16.18-16.31"
+            "src": "good_rdc_005_muxed_reset.sv:28.18-28.31"
           }
         }
       }
