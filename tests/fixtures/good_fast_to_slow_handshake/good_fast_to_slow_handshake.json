@@ -1,0 +1,841 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_fast_to_slow_handshake": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "good_fast_to_slow_handshake.sv:19.1-70.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "event_in": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "event_seen": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$and$good_fast_to_slow_handshake.sv:66$8": {
+          "hide_name": 1,
+          "type": "$and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:66.27-66.49"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "B": [ 8 ],
+            "Y": [ 9 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$14": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 10 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$19": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 11 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$24": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 12 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$29": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$34": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$39": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 15 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$44": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 16 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$49": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 17 ]
+          }
+        },
+        "$logic_not$good_fast_to_slow_handshake.sv:32$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:32.13-32.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 18 ]
+          }
+        },
+        "$logic_not$good_fast_to_slow_handshake.sv:46$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:46.13-46.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 19 ]
+          }
+        },
+        "$logic_not$good_fast_to_slow_handshake.sv:55$6": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:55.13-55.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 20 ]
+          }
+        },
+        "$not$good_fast_to_slow_handshake.sv:66$7": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:66.38-66.49"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 21 ],
+            "Y": [ 8 ]
+          }
+        },
+        "$procdff$18": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 9 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$procdff$23": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 7 ],
+            "Q": [ 22 ]
+          }
+        },
+        "$procdff$28": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 23 ],
+            "Q": [ 24 ]
+          }
+        },
+        "$procdff$33": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 24 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procdff$38": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 7 ],
+            "Q": [ 21 ]
+          }
+        },
+        "$procdff$43": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:45.5-49.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 25 ],
+            "Q": [ 23 ]
+          }
+        },
+        "$procdff$48": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:31.5-39.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 22 ],
+            "Q": [ 26 ]
+          }
+        },
+        "$procdff$53": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:31.5-39.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 26 ],
+            "Q": [ 27 ]
+          }
+        },
+        "$procmux$12": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "good_fast_to_slow_handshake.sv:47.18-47.26|good_fast_to_slow_handshake.sv:47.14-48.45"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 28 ],
+            "B": [ "1" ],
+            "S": [ 5 ],
+            "Y": [ 25 ]
+          }
+        },
+        "$procmux$9": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:48.18-48.26|good_fast_to_slow_handshake.sv:48.14-48.45"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 23 ],
+            "B": [ "0" ],
+            "S": [ 27 ],
+            "Y": [ 28 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\ack_meta[0:0]": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:31.5-39.8"
+          }
+        },
+        "$0\\ack_sync[0:0]": {
+          "hide_name": 1,
+          "bits": [ 26 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:31.5-39.8"
+          }
+        },
+        "$0\\dst_ack[0:0]": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          }
+        },
+        "$0\\event_seen[0:0]": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          }
+        },
+        "$0\\req_held[0:0]": {
+          "hide_name": 1,
+          "bits": [ 25 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:45.5-49.8"
+          }
+        },
+        "$0\\req_meta[0:0]": {
+          "hide_name": 1,
+          "bits": [ 23 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          }
+        },
+        "$0\\req_sync[0:0]": {
+          "hide_name": 1,
+          "bits": [ 24 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          }
+        },
+        "$0\\req_sync_d[0:0]": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:54.5-68.8"
+          }
+        },
+        "$and$good_fast_to_slow_handshake.sv:66$8_Y": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:66.27-66.49"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$15": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$20": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$25": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$30": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$35": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$40": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$45": {
+          "hide_name": 1,
+          "bits": [ 16 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$50": {
+          "hide_name": 1,
+          "bits": [ 17 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$17": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$22": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$27": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$32": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$37": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$42": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$47": {
+          "hide_name": 1,
+          "bits": [ 16 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$52": {
+          "hide_name": 1,
+          "bits": [ 17 ],
+          "attributes": {
+          }
+        },
+        "$logic_not$good_fast_to_slow_handshake.sv:32$2_Y": {
+          "hide_name": 1,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:32.13-32.19"
+          }
+        },
+        "$logic_not$good_fast_to_slow_handshake.sv:46$4_Y": {
+          "hide_name": 1,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:46.13-46.19"
+          }
+        },
+        "$logic_not$good_fast_to_slow_handshake.sv:55$6_Y": {
+          "hide_name": 1,
+          "bits": [ 20 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:55.13-55.19"
+          }
+        },
+        "$not$good_fast_to_slow_handshake.sv:66$7_Y": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:66.38-66.49"
+          }
+        },
+        "$procmux$10_CMP": {
+          "hide_name": 1,
+          "bits": [ 27 ],
+          "attributes": {
+          }
+        },
+        "$procmux$12_Y": {
+          "hide_name": 1,
+          "bits": [ 25 ],
+          "attributes": {
+          }
+        },
+        "$procmux$13_CMP": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+          }
+        },
+        "$procmux$9_Y": {
+          "hide_name": 1,
+          "bits": [ 28 ],
+          "attributes": {
+          }
+        },
+        "ack_meta": {
+          "hide_name": 0,
+          "bits": [ 26 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:29.11-29.19"
+          }
+        },
+        "ack_sync": {
+          "hide_name": 0,
+          "bits": [ 27 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:29.21-29.29"
+          }
+        },
+        "dst_ack": {
+          "hide_name": 0,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:30.11-30.18"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:21.18-21.25"
+          }
+        },
+        "event_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:23.18-23.26"
+          }
+        },
+        "event_seen": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:24.18-24.28"
+          }
+        },
+        "req_held": {
+          "hide_name": 0,
+          "bits": [ 23 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:44.11-44.19"
+          }
+        },
+        "req_meta": {
+          "hide_name": 0,
+          "bits": [ 24 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:53.11-53.19"
+          }
+        },
+        "req_sync": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:53.21-53.29"
+          }
+        },
+        "req_sync_d": {
+          "hide_name": 0,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:53.31-53.41"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:22.18-22.23"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "good_fast_to_slow_handshake.sv:20.18-20.25"
+          }
+        }
+      }
+    }
+  }
+}

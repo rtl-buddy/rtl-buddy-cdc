@@ -118,6 +118,73 @@ def _is_edge_detector_pair(
     return delay_d == direct_bit
 
 
+ToggleShape = Literal["toggle", "other"]
+
+
+def classify_toggle_d_pin(
+    d_bit: Bit,
+    src_q_bit: Bit,
+    module: Module,
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+) -> ToggleShape:
+    """Classify whether ``d_bit`` is a toggle-with-enable pattern.
+
+    Returns ``"toggle"`` iff ``d_bit`` is the ``Y`` of a ``$mux`` whose
+    two data inputs (``A``, ``B``) are ``(src_q_bit, ~src_q_bit)`` in
+    either order — where ``~src_q_bit`` is the ``Y`` of a cell in
+    :data:`_NOT_TYPES` whose ``A`` is ``src_q_bit``. The mux's ``S``
+    pin can be anything: the load-enable for the toggle.
+
+    This is the structural shape of ``always_ff @(posedge clk)
+    if (en) q <= ~q;`` after Yosys' ``proc`` pass — Yosys synthesises
+    the conditional as ``D = en ? ~Q : Q`` (or the mirror), which
+    materialises as the ``$mux(A=Q, B=~Q, S=en)`` cell shape.
+
+    The classifier is shape-only; it does not look at the select pin
+    and does not check the post-sync side of the crossing. CDC-013's
+    rule body composes this with the fast-to-slow clock-ratio
+    condition (parallel to how CDC-009 composes
+    :func:`classify_d_pin_shape` with the same ratio check).
+
+    Returns ``"other"`` for handshake / req-ack patterns whose ``D``
+    is a priority-encoded ``$mux`` nest with non-``Q`` data inputs,
+    for counter / pulse-stretcher patterns whose ``D`` is a reduction
+    or adder, and for ``$dffe``-style enable flops whose ``D`` is just
+    ``~Q`` (no mux — the enable is on a separate pin).
+    """
+    if not isinstance(d_bit, int) or not isinstance(src_q_bit, int):
+        return "other"
+    drv = bit_drivers.get(d_bit)
+    if drv is None:
+        return "other"
+    cell_name, port, _ = drv
+    cell = module.cells.get(cell_name)
+    if cell is None or cell.type != "$mux" or port != "Y":
+        return "other"
+    a_bits = cell.connections.get("A", ())
+    b_bits = cell.connections.get("B", ())
+    if len(a_bits) != 1 or len(b_bits) != 1:
+        return "other"
+    a_bit, b_bit = a_bits[0], b_bits[0]
+    if not (isinstance(a_bit, int) and isinstance(b_bit, int)):
+        return "other"
+    # Either ordering: A=Q,B=~Q or A=~Q,B=Q.
+    for direct, inverted in ((a_bit, b_bit), (b_bit, a_bit)):
+        if direct != src_q_bit:
+            continue
+        not_drv = bit_drivers.get(inverted)
+        if not_drv is None:
+            continue
+        not_cell_name, not_port, _ = not_drv
+        not_cell = module.cells.get(not_cell_name)
+        if not_cell is None or not_cell.type not in _NOT_TYPES or not_port != "Y":
+            continue
+        not_a = not_cell.connections.get("A", ())
+        if len(not_a) == 1 and not_a[0] == src_q_bit:
+            return "toggle"
+    return "other"
+
+
 def _src_flop_d_pin(
     q_bit: Bit,
     src_clock: str,

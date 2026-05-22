@@ -16,7 +16,7 @@ from typing import Callable, Literal
 from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
-from rtl_buddy_cdc.pulse import classify_d_pin_shape
+from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.reset_hints import ResetHints
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
@@ -2674,6 +2674,100 @@ def check_cdc_009(
     return out
 
 
+def check_cdc_013(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-013 — Fast-to-slow control-event loss on a toggle synchroniser.
+
+    A toggle synchroniser ( ``always_ff @(posedge src_clk) if (en)
+    src_q <= ~src_q;`` ) is the textbook fix for CDC-009's pulse-
+    width problem when consecutive events are guaranteed to be far
+    enough apart at the application level. The destination
+    typically synchronises ``src_q`` through a 2FF chain and runs an
+    XOR edge detector ``toggle_sync ^ toggle_sync_d`` to recover one
+    pulse per event.
+
+    The pattern is *structurally* safe for metastability — the 2FF
+    sync handles that — but it does not guarantee event accounting.
+    If two events occur close enough together that ``src_q`` toggles
+    twice between two destination samples, the destination observes
+    zero edges and both events are silently lost. CDC-013 flags the
+    pattern for review.
+
+    Fires when:
+
+    - Both clocks declared with periods in the SDC.
+    - ``src_period * PULSE_FACTOR < dst_period`` (parallel to
+      CDC-009's threshold).
+    - The src flop's ``D`` pin matches the toggle pattern
+      ``D = en ? ~Q : Q`` per
+      :func:`rtl_buddy_cdc.pulse.classify_toggle_d_pin`.
+
+    Severity ``warning`` — many designs use this pattern correctly
+    by rate-limiting events at the application level (or by
+    guaranteeing one-in-flight via downstream backpressure). The
+    rule invites review rather than declaring an unambiguous bug.
+    Handshake / counter-with-backpressure patterns naturally fall
+    outside the classifier (their ``D`` is a priority-encoded mux
+    nest or an adder, not the ``Q``/``~Q`` mux shape) and stay
+    silent.
+
+    Complement to CDC-009 — both flag fast-to-slow data-loss
+    classes but on different ``D``-pin shapes; CDC-009 owns the
+    raw-pulse case, CDC-013 owns the toggle case.
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    if clock_spec is None:
+        return []
+
+    out: list[Violation] = []
+    for c in crossings:
+        if c.src_clock == UNCONSTRAINED_SENTINEL:
+            continue
+        if c.src_flop is None or c.width != 1:
+            continue
+        src_clk = clock_spec.clocks.get(c.src_clock)
+        dst_clk = clock_spec.clocks.get(c.dst_clock)
+        if src_clk is None or dst_clk is None:
+            continue
+        if src_clk.period * PULSE_FACTOR >= dst_clk.period:
+            continue
+        d_bits = c.src_flop.cell.connections.get("D", ())
+        q_bits = c.src_flop.cell.connections.get("Q", ())
+        if len(d_bits) != 1 or len(q_bits) != 1:
+            continue
+        shape = classify_toggle_d_pin(d_bits[0], q_bits[0], module, ctx.bit_drivers)
+        if shape != "toggle":
+            continue
+        out.append(
+            Violation(
+                rule_id="CDC-013",
+                severity="warning",
+                message=(
+                    f"toggle-synchroniser event-loss risk on "
+                    f"{c.src_flop.name!r} → {c.dst_flop.name!r}: src "
+                    f"clock {c.src_clock!r} (period {src_clk.period}) "
+                    f"is faster than dst clock {c.dst_clock!r} (period "
+                    f"{dst_clk.period}); the src flop toggles on an "
+                    f"enable (D = en ? ~Q : Q) and two events between "
+                    f"dst samples cancel to zero edges at the destination. "
+                    f"Use a req/ack handshake (source holds value until "
+                    f"ack returns) or an event counter with backpressure "
+                    f"to prevent a second event before the first is "
+                    f"observed."
+                ),
+                crossing=c,
+                cell_name=c.src_flop.cell.name,
+            )
+        )
+    return out
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -2691,6 +2785,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-009": check_cdc_009,
     "CDC-010": check_cdc_010,
     "CDC-011": check_cdc_011,
+    "CDC-013": check_cdc_013,
 }
 
 

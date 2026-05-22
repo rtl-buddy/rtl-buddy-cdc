@@ -805,6 +805,40 @@ synchroniser's own flops — and the fixture demonstrates the
 real-world correct pattern rather than just "doesn't trigger
 RDC-005."
 
+### 8.6 CDC-013 — fast-to-slow control-event loss on a toggle sync
+
+CDC-013 is the structural complement of CDC-009. CDC-009 owns the
+raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
+that may slip between dst rising edges); CDC-013 owns the toggle
+case (`D = en ? ~Q : Q` toggle-with-enable — two src events
+between dst samples that cancel to zero edges at the destination).
+Both fire under the same fast-to-slow clock ratio
+(`src_period × PULSE_FACTOR < dst_period`), but they classify
+different `D`-pin shapes and so cannot both fire on the same
+crossing.
+
+The classifier lives in `rtl_buddy_cdc.pulse` alongside CDC-009's
+edge-detector classifier. `classify_toggle_d_pin` matches the
+Yosys-synthesised shape of `always_ff if (en) q <= ~q;`: a `$mux`
+whose `Y` is the src flop's `D`, whose data pins (`A`, `B`) are
+`(Q, ~Q)` in either order (Yosys picks the ordering based on the
+condition polarity), and whose `S` is the load-enable (unconstrained
+by the classifier — the rule body doesn't care what the enable is).
+The classifier is shape-only and returns `"other"` for handshake /
+counter / pulse-stretcher patterns whose `D` is a priority-encoded
+mux nest, an adder, or a reduction — those naturally fall outside
+the toggle shape and stay silent without needing an explicit
+exemption.
+
+Severity is `warning`. Many designs use the toggle synchroniser
+pattern correctly by guaranteeing inter-event spacing at the
+application level (or by gating event re-arming on a downstream
+backpressure signal). The rule invites review rather than declaring
+an unambiguous bug; the textbook fix is a req/ack handshake (source
+holds value until ack returns, synced back through a 2FF) or an
+event counter with backpressure, both of which produce a non-toggle
+`D` and silence the rule structurally.
+
 ## 9. Waivers
 
 `waivers.py` implements the smallest waiver-file format that scales
