@@ -152,6 +152,14 @@ GOOD_FIXTURES = [
     # $mux nest, not an $and edge-detector. 2 async crossings (the
     # synced-back ack and the held request).
     ("good_pulse_width_handshake", 2),
+    # CDC-013 (proposed, issue #151) positive shape: same fast-to-slow
+    # ratio as bad_fast_to_slow_control_loss but the source uses a
+    # req/ack handshake instead of a toggle. The src request flop's D
+    # is a priority-encoded $mux nest (set on event_in, clear on
+    # synced ack, hold otherwise), not the Q/~Q toggle pattern, so
+    # CDC-013 stays silent. Two async crossings (synced-back ack and
+    # held request).
+    ("good_fast_to_slow_handshake", 2),
 ]
 
 

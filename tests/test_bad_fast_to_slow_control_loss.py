@@ -1,17 +1,13 @@
-"""Negative-case probe for the proposed CDC-013 — fast-to-slow event loss.
+"""Negative-case fixture for CDC-013 — fast-to-slow control-event loss.
 
 Issue #151 (signoff CDC coverage gaps).
 
-A fast-domain toggle is sampled by a conventional 2FF synchronizer
-in a slower destination domain. If two source events occur between
-destination samples, the toggle returns to its prior value and the
-destination observes zero edges. The synchronizer is structurally
-safe for metastability; the failure is event accounting / protocol
-loss, not metastability.
-
-xfail-strict until CDC-013 lands. The rule's PR should drop the
-marker and tighten the assertion to "and only CDC-013 fires" plus
-violation-shape checks.
+A fast-domain toggle is sampled by a 2FF synchroniser in a slower
+destination domain. If two source events occur between destination
+samples, the toggle returns to its prior value and the destination
+observes zero edges. The synchroniser is structurally safe for
+metastability; the failure is event accounting / protocol loss,
+not metastability.
 """
 
 from __future__ import annotations
@@ -48,9 +44,28 @@ def context():
     return module, async_crossings, spec
 
 
-@pytest.mark.xfail(strict=True, reason="CDC-013 not yet implemented (issue #151)")
-def test_cdc_013_fires(context) -> None:
+def test_cdc_013_fires_as_warning(context) -> None:
+    module, async_crossings, spec = context
+    violations = run_all_rules(module, async_crossings, spec)
+    cdc_013 = [v for v in violations if v.rule_id == "CDC-013"]
+    assert len(cdc_013) == 1, (
+        f"expected exactly one CDC-013, got {[v.rule_id for v in violations]}"
+    )
+    v = cdc_013[0]
+    assert v.severity == "warning"
+    assert "toggle-synchroniser event-loss risk" in v.message
+    assert "src_clk" in v.message and "dst_clk" in v.message
+    assert "D = en ? ~Q : Q" in v.message
+    assert "req/ack handshake" in v.message  # fix advice
+    assert v.crossing is not None
+
+
+def test_no_other_rules_fire(context) -> None:
+    """The 2FF dst-side synchroniser keeps CDC-001/-002/-003 silent;
+    the src flop's D is a $mux not an $and edge-detector so CDC-009
+    is silent; the design is single-bit so CDC-004 is silent. Only
+    CDC-013 fires."""
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     rule_ids = {v.rule_id for v in violations}
-    assert "CDC-013" in rule_ids
+    assert rule_ids == {"CDC-013"}, f"unexpected rules fired: {rule_ids}"
