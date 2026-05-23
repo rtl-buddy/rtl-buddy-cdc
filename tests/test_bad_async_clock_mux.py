@@ -142,6 +142,39 @@ def test_find_crossings_canonicalises_dst_clock_into_same_domain_pair(
     )
 
 
+def test_clock_network_crossings_surface_sel_q_to_q_out_pair(context) -> None:
+    """rtl-buddy-cdc#168: ``find_clock_network_crossings`` exposes the
+    sel_q → q_out_flop relationship that travels through the clock
+    mux. CDC-010 fires structurally on the ``(cell, control_pin,
+    src_flop)`` triple but doesn't enumerate the downstream flops —
+    this surface records the flop-pair so a renderer can draw the
+    edge.
+    """
+    from rtl_buddy_cdc.clock_network import find_clock_network_crossings
+
+    module, _crossings, _async_crossings, spec = context
+    cn_crossings = find_clock_network_crossings(
+        module, spec, clock_for_port=spec.clock_for_port
+    )
+    assert len(cn_crossings) == 1, (
+        f"expected one clock-network crossing (sel_q→q_out_flop via "
+        f"the clock mux), got {len(cn_crossings)}: "
+        f"{[(c.src_flop.cell.name, c.dst_flop.cell.name) for c in cn_crossings]}"
+    )
+    cnc = cn_crossings[0]
+    assert cnc.src_clock == "ck1"
+    assert cnc.dst_clock == "ck0"
+    assert cnc.control_pin == "S"
+    assert cnc.control_kind == "mux-select"
+    assert cnc.control_cell_type == "$mux"
+    # Identify src/dst by the netname they own — Yosys auto-names
+    # ($procdff$N) are not stable across regenerations.
+    sel_q_bits = module.netnames["sel_q"].bits
+    q_out_bits = module.netnames["q_out"].bits
+    assert cnc.src_flop.cell.connections.get("Q", ()) == sel_q_bits
+    assert cnc.dst_flop.cell.connections.get("Q", ()) == q_out_bits
+
+
 def test_no_other_rule_fires(context) -> None:
     """CDC-001 / -004 can't see a select-on-$mux shape (it's not a
     flop D); CDC-008 must stay silent here (no clock signal sits on
