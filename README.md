@@ -210,6 +210,8 @@ Mark a flop as a user-vetted synchronizer first stage by attaching an attribute 
 (* async_reg = "TRUE" *) logic dst_q;   // Vivado-compatible alias
 (* cdc_gray *) logic [N-1:0] src_bus;   // source bus is gray-coded
 (* gray_code *) logic [N-1:0] src_bus;  // alias
+(* cdc_static *) logic [N-1:0] cfg_q;   // quasi-static source (config bit / mode reg)
+(* quasi_static *) logic [N-1:0] cfg_q; // alias
 (* reset_sync *) logic rst_sync;        // vetted reset-synchroniser stage
 (* reset_synchronizer *) logic rst_sync;// alias
 ```
@@ -224,6 +226,8 @@ Reset-port polarity declaration (on an input port):
 `cdc_sync` / aliases mark a flop as a vetted synchronizer first stage — skipped by CDC-001, -002, -003, and -006. CDC-004 (bus crossings) and CDC-005 (reconvergence) still fire — those failure modes don't depend on individual sync-shape correctness.
 
 `cdc_gray` / `gray_code` mark a source bus as gray-coded so CDC-004 accepts it as a safe multi-bit crossing without needing the structural detector to find the canonical XOR-shift shape.
+
+`cdc_static` / `quasi_static` mark a source flop as runtime-constant — programmed once at boot and held during the operating window, e.g. configuration registers, mode bits, calibration values. Suppresses CDC-001, -002, -003, and -004 on crossings whose source is the tagged flop (no metastability can occur on a non-transitioning value). CDC-005 (reconvergence) stays live — reconvergent fanout of a static signal merged with a non-static signal is still a coherent hazard.
 
 `reset_sync` / `reset_synchronizer` mark a flop as a vetted reset-synchroniser stage — the structural recogniser in `rtl_buddy_cdc.reset_domain.find_reset_synchronizers` deliberately requires a constant-fed chain head, so chains whose head's D is fed by an upstream signal (rather than a literal constant) would normally be missed. RDC-002 / RDC-004 / RDC-005 skip flops marked with this attribute and skip consumers whose ARST is driven by a marked flop's Q.
 
@@ -299,7 +303,7 @@ Implemented:
 - [x] `lint` standalone wrapper (yosys → analyzer)
 - [x] Text / JSON / SARIF reporters with source locations
 - [x] Waiver file suppression
-- [x] `(* cdc_sync *)` and `(* cdc_gray *)` SV-attribute support
+- [x] `(* cdc_sync *)`, `(* cdc_gray *)`, and `(* cdc_static *)` SV-attribute support
 - [x] Gray-coded bus recognition for CDC-004 (canonical `g = b ^ (b >> 1)` structural detection + multi-bit 2FF chain at the destination)
 - [x] Paired positive (`good_*`) fixtures for every implemented rule
 - [x] rtl-buddy `rb cdc` / `rb cdc-regression` integration (lives in the rtl_buddy repo)

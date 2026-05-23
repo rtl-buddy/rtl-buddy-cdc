@@ -646,6 +646,7 @@ free functions in `rules.py`:
 | `_clock_input_domains_for(module, cell, ctx, clock_spec, control_ports)` | CDC-010 | Set of clock-domain names that drive a clock-network cell's *non-control* inputs. Walks each non-control input backward through combinational cells; records the domain of any flop's Q reached (via `ctx.domains`) and the SDC clock name of any top-level clock port reached directly. Empty set means none of the inputs trace to a classifiable clock — the rule then stays silent (false-negative-biased) |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |
+| `user_static_flop_names(module)` | CDC-001..-004 | Return cell names of source-side flops the user has annotated `(* cdc_static *)` — runtime-constant config/mode registers; suppresses CDC-001..-004 on crossings sourced from the tagged flop |
 
 Each rule is a self-contained function; new rules don't have to learn
 the helper APIs unless they need them. Adding a rule is a one-line
