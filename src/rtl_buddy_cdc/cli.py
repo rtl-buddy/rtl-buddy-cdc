@@ -554,7 +554,10 @@ def _analyze_module_and_report(
             clock_for_port=spec.clock_for_port,
         )
         crossings = find_crossings(
-            module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+            module,
+            port_clock=spec.port_clock,
+            pin_clocks=spec.pin_clocks,
+            clock_for_port=spec.clock_for_port,
         )
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:

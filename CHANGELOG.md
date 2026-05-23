@@ -9,21 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Domain-map: flop `clock` now canonicalises through the SDC
-  port→clock table** (#166). Previously, when `trace_clock_root`
-  walked through a clock mux and stopped at a literal port name
-  (e.g. `ck0_b`), the `FlopDomain.clock` field — and therefore the
-  `--emit-domain-map` JSON — carried the raw port name instead of
-  the SDC-declared clock name (`ck0` from
-  `create_clock -name ck0 [get_ports {ck0_a ck0_b}]`). External
-  consumers couldn't join that name back to the `clocks[]` table.
-  `assign_domains` now takes an optional `clock_for_port=` keyword
+- **Domain-map: flop and crossing clock names canonicalise through
+  the SDC port→clock table** (#166). Previously, when
+  `trace_clock_root` walked through a clock mux and stopped at a
+  literal port name (e.g. `ck0_b`), both the `FlopDomain.clock`
+  field and the `Crossing.dst_clock` it flowed into carried the
+  raw port name instead of the SDC-declared clock name (`ck0`
+  from `create_clock -name ck0 [get_ports {ck0_a ck0_b}]`). The
+  `--emit-domain-map` JSON's `flop_domains[].clock` and
+  `crossings[].dst_clock` then disagreed with each other on the
+  same physical domain, and external consumers couldn't join
+  either back to the `clocks[]` table. Both `assign_domains` and
+  `find_crossings` now take an optional `clock_for_port=` keyword
   (passed `ClockSpec.clock_for_port` at the CLI boundary) and
-  normalises the trace result before constructing the `FlopDomain`.
-  Rule-pack behaviour is unchanged (`find_crossings` does its own
-  port-domain comparison via `set_clock_groups`); the bug only
-  surfaced in the consumer-facing artefact. Regression pinned by
-  `tests/test_bad_async_clock_mux.py::test_q_out_flop_domain_normalises_to_sdc_clock_name`.
+  normalise the trace result before constructing each `FlopDomain`
+  / `Crossing` record. Rule-pack behaviour is unchanged (the rules
+  already perform their own port-domain comparison via
+  `set_clock_groups`); the bug only surfaced in the consumer-facing
+  artefact. Regression pinned by
+  `tests/test_bad_async_clock_mux.py::test_q_out_flop_domain_normalises_to_sdc_clock_name`
+  and `test_crossings_dst_clock_normalises_to_sdc_clock_name`.
 
 ### Added
 
