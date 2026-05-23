@@ -1,0 +1,269 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_marked_user_sync_src_flop": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "bad_marked_user_sync_src_flop.sv:11.1-37.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$auto$proc_dff.cc:220:proc_dff$10": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 7 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$5": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 8 ]
+          }
+        },
+        "$logic_not$bad_marked_user_sync_src_flop.sv:24$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:24.13-24.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 9 ]
+          }
+        },
+        "$logic_not$bad_marked_user_sync_src_flop.sv:31$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:31.13-31.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 10 ]
+          }
+        },
+        "$procdff$14": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_marked_user_sync_src_flop.sv:23.5-26.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$procdff$9": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_marked_user_sync_src_flop.sv:30.5-33.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 11 ],
+            "Q": [ 6 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\dst_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:30.5-33.8"
+          }
+        },
+        "$0\\src_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:23.5-26.8"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$11": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$6": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$13": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$8": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+          }
+        },
+        "$logic_not$bad_marked_user_sync_src_flop.sv:24$2_Y": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:24.13-24.19"
+          }
+        },
+        "$logic_not$bad_marked_user_sync_src_flop.sv:31$4_Y": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:31.13-31.19"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:15.18-15.22"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:13.18-13.25"
+          }
+        },
+        "dst_q": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:29.11-29.16"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:16.18-16.23"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:14.18-14.23"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "bad_marked_user_sync_src_flop.sv:12.18-12.25"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "cdc_sync": "level_2ff",
+            "src": "bad_marked_user_sync_src_flop.sv:22.40-22.45"
+          }
+        }
+      }
+    }
+  }
+}
