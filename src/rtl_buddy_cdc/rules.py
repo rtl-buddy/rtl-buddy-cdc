@@ -2967,6 +2967,115 @@ def check_cdc_012(
     return out
 
 
+def _clk_polarity(flop: Flop) -> int:
+    """Return 1 for posedge / 0 for negedge.
+
+    Resolution order:
+
+    1. Parametric Yosys FF cells (``$dff`` / ``$adff`` / ``$sdff`` /
+       ``$dffe`` / etc.) — read the ``CLK_POLARITY`` parameter.
+       Yosys encodes scalar params as ``"0"`` or ``"1"``.
+    2. Gate-level cells (``$_DFF_N_``, ``$_DFF_P_``, ``$_DFFE_PP0P_``,
+       ``$_SDFFE_PP0P_``, ``$_ALDFF_*_``, …) — the first letter after
+       the family prefix encodes the clock-edge polarity (``P`` /
+       ``N``). Covered by walking the underscore-separated segments
+       and picking the first ``P`` / ``N`` token.
+    3. Fall back to positive — unknown cell types are treated as
+       posedge, which keeps the rule false-negative-biased on
+       library cells the heuristic can't classify.
+    """
+    params = flop.cell.parameters or {}
+    p = params.get("CLK_POLARITY")
+    if p is not None:
+        return 1 if p == "1" else 0
+    for seg in flop.cell.type.split("_"):
+        if seg == "P":
+            return 1
+        if seg == "N":
+            return 0
+    return 1
+
+
+def _clk_polarity_str(flop: Flop) -> str:
+    return "posedge" if _clk_polarity(flop) == 1 else "negedge"
+
+
+def check_cdc_016(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-016 — Opposite-edge synchroniser halves MTBF.
+
+    A two-stage synchroniser whose adjacent stages sample on opposite
+    edges of the same clock gives each metastable value only half a
+    clock period to resolve. The mean-time-between-failure is roughly
+    halved versus a same-edge chain; the failure is silent because
+    the RTL looks syntactically symmetric.
+
+    Walks each recognised sync chain starting from every crossing's
+    destination flop (via :func:`_sync_chain_flops`). Fires when two
+    *adjacent* flops in the chain disagree on clock-pin polarity.
+    Severity ``error`` — same physics class as CDC-001 (silently
+    broken synchroniser).
+
+    Suppression composes with the existing ``(* cdc_sync *)`` escape
+    hatch: a marked head asserts user intent for the whole chain and
+    the rule skips it. Same dst-flop-keyed convention as CDC-001..003.
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    violations: list[Violation] = []
+    reported_heads: set[str] = set()
+
+    for c in crossings:
+        if c.width != 1:
+            # Multi-bit syncs collapse to per-bit chains in the
+            # netlist; the polarity check makes sense per bit, but
+            # the chain walker keys off a 1-bit head. Defer multi-bit
+            # opposite-edge to a follow-up.
+            continue
+        head = c.dst_flop
+        if head.cell.name in reported_heads:
+            continue
+        if head.cell.name in ctx.user_syncs:
+            continue
+        chain = _sync_chain_flops(
+            module,
+            head,
+            c.dst_clock,
+            ctx.domains,
+            ctx.reader_counts,
+            ctx.d_bit_to_single_bit_flop,
+        )
+        if len(chain) < 2:
+            continue
+        for i in range(len(chain) - 1):
+            a, b = chain[i], chain[i + 1]
+            if _clk_polarity(a) != _clk_polarity(b):
+                reported_heads.add(head.cell.name)
+                violations.append(
+                    Violation(
+                        rule_id="CDC-016",
+                        severity="error",
+                        message=(
+                            f"opposite-edge synchroniser on "
+                            f"{c.src_clock} → {c.dst_clock}: chain "
+                            f"stage {a.name} ({_clk_polarity_str(a)}) "
+                            f"and {b.name} ({_clk_polarity_str(b)}) "
+                            f"sample on different edges of "
+                            f"{c.dst_clock} — halves MTBF"
+                        ),
+                        crossing=c,
+                        cell_name=head.cell.name,
+                    )
+                )
+                break
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -2986,6 +3095,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-011": check_cdc_011,
     "CDC-012": check_cdc_012,
     "CDC-013": check_cdc_013,
+    "CDC-016": check_cdc_016,
 }
 
 
