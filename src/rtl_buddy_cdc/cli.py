@@ -548,9 +548,16 @@ def _analyze_module_and_report(
         if spec.partial_warnings and fmt is OutputFormat.text and not no_findings:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)
-        domains = assign_domains(module, pin_clocks=spec.pin_clocks)
+        domains = assign_domains(
+            module,
+            pin_clocks=spec.pin_clocks,
+            clock_for_port=spec.clock_for_port,
+        )
         crossings = find_crossings(
-            module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+            module,
+            port_clock=spec.port_clock,
+            pin_clocks=spec.pin_clocks,
+            clock_for_port=spec.clock_for_port,
         )
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:

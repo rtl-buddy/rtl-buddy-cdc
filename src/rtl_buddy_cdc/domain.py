@@ -10,6 +10,7 @@ small heuristic in :func:`trace_clock_root`.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypedDict
 
@@ -267,17 +268,34 @@ def _build_bit_to_clock(
 
 
 def assign_domains(
-    module: Module, pin_clocks: dict[str, str] | None = None
+    module: Module,
+    pin_clocks: dict[str, str] | None = None,
+    *,
+    clock_for_port: Callable[[str], str | None] | None = None,
 ) -> list[FlopDomain]:
+    """Build per-flop ``FlopDomain`` records from clock-network tracing.
+
+    When ``clock_for_port`` is supplied (typically
+    :meth:`rtl_buddy_cdc.sdc.ClockSpec.clock_for_port`), the raw name
+    returned by :func:`trace_clock_root` is normalised through it
+    before being stored. This matters when the trace stops at a port
+    that the SDC declared as part of a named clock — e.g.
+    ``create_clock -name ck0 [get_ports {ck0_a ck0_b}]`` followed by a
+    clock mux whose ``B`` leg is ``ck0_b``: without normalisation the
+    downstream flop's domain leaks as ``"ck0_b"`` (the port name) when
+    the SDC-canonical answer is ``"ck0"``. See issue #166.
+    """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
-    return [
-        FlopDomain(
-            flop=f,
-            clock=trace_clock_root(module, f.clk, drivers, bit_to_clock=bit_to_clock),
-        )
-        for f in find_flops(module)
-    ]
+    out: list[FlopDomain] = []
+    for f in find_flops(module):
+        root = trace_clock_root(module, f.clk, drivers, bit_to_clock=bit_to_clock)
+        if root is not None and clock_for_port is not None:
+            resolved = clock_for_port(root)
+            if resolved is not None:
+                root = resolved
+        out.append(FlopDomain(flop=f, clock=root))
+    return out
 
 
 def _build_bit_consumers(
@@ -304,6 +322,8 @@ def find_crossings(
     max_hops: int = 4,
     port_clock: dict[str, str] | None = None,
     pin_clocks: dict[str, str] | None = None,
+    *,
+    clock_for_port: Callable[[str], str | None] | None = None,
 ) -> list[Crossing]:
     """Find every fanout path whose endpoints are in different domains.
 
@@ -320,8 +340,20 @@ def find_crossings(
     ``src_flop`` left None). The destination's clock is the flop's
     physical CLK domain; the port's clock is treated as the source
     domain for the async-pair check.
+
+    The ``clock_for_port`` keyword mirrors :func:`assign_domains` —
+    when supplied (typically ``ClockSpec.clock_for_port``), the
+    per-flop clock names that flow into each emitted ``Crossing``
+    carry the SDC-canonical clock name rather than the raw port
+    name a clock-mux trace stopped on. Without it, the dst_clock can
+    leak as e.g. ``ck0_b`` while ``flop_domains[].clock`` shows
+    ``ck0`` — two views of the same domain disagreeing. See
+    issue #166.
     """
-    domains = {fd.flop.cell.name: fd for fd in assign_domains(module, pin_clocks)}
+    domains = {
+        fd.flop.cell.name: fd
+        for fd in assign_domains(module, pin_clocks, clock_for_port=clock_for_port)
+    }
     consumers = _build_bit_consumers(module)
     flop_by_d_bit: dict[Bit, list[Flop]] = defaultdict(list)
     for fd in domains.values():
