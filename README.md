@@ -158,6 +158,12 @@ Each violation carries:
 - the offending crossing (when applicable)
 - a source location (file + line/column) parsed from the cell's `attributes["src"]`
 
+## Unsupported patterns
+
+rtl-buddy-cdc is a flop-based analyzer — the BFS walker traces nets between `$dff*` / `$adff*` / `$sdff*` / `$dffsr*` cells. Crossings that flow through structures the walker does not model are silently invisible to the rule pack:
+
+- **Dual-port memory crossings** (write port on clock A, read port on clock B). Yosys keeps inferred memories as `$memwr_v2` / `$memrd` cells; the analyzer does not walk across that boundary. Use the vendor memory-compiler CDC report for this shape, or black-box the macro in a CDC-only build with a behavioural model that uses register storage. Pinned by `tests/fixtures/unsupported_dualport_ram_crossing/` as a regression sentinel (issue #176).
+
 ## Pipeline
 
 1. **Ingest netlist** — load Yosys `write_json` output; build an in-memory cell/net graph (`netlist.py`).
