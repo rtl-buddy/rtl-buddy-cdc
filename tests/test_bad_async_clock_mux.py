@@ -15,7 +15,7 @@ import pytest
 
 from rtl_buddy_cdc import netlist, sdc as sdc_mod
 from rtl_buddy_cdc.cli import _filter_async
-from rtl_buddy_cdc.domain import find_crossings
+from rtl_buddy_cdc.domain import assign_domains, find_crossings
 from rtl_buddy_cdc.rules import run_all as run_all_rules
 
 FIX_DIR = Path(__file__).parent / "fixtures" / "bad_async_clock_mux"
@@ -84,6 +84,31 @@ def test_violation_names_sel_q_as_source(context) -> None:
     # And the domains — sel_q is ck1, the gated clock is ck0.
     assert "ck1" in cdc_010[0].message
     assert "ck0" in cdc_010[0].message
+
+
+def test_q_out_flop_domain_normalises_to_sdc_clock_name(context) -> None:
+    """Regression for rtl-buddy-cdc#166: ``trace_clock_root`` stops at the
+    literal port name picked by the mux trace (``ck0_b``), but the SDC
+    declared both mux legs (``ck0_a`` + ``ck0_b``) as a single named
+    clock ``ck0``. ``assign_domains`` must normalise the trace result
+    through ``ClockSpec.clock_for_port`` so downstream consumers
+    (chiefly the ``--emit-domain-map`` JSON) see the canonical name.
+    """
+    module, _, spec = context
+    domains = assign_domains(
+        module, pin_clocks=spec.pin_clocks, clock_for_port=spec.clock_for_port
+    )
+    q_out_bits = module.netnames["q_out"].bits
+    target = None
+    for fd in domains:
+        if fd.flop.cell.connections.get("Q", ()) == q_out_bits:
+            target = fd
+            break
+    assert target is not None, "no flop drives q_out"
+    assert target.clock == "ck0", (
+        f"expected the domain to canonicalise through port→clock to 'ck0', "
+        f"got {target.clock!r} (the raw port name picked by the mux trace)"
+    )
 
 
 def test_no_other_rule_fires(context) -> None:

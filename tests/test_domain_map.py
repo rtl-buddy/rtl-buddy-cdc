@@ -34,7 +34,11 @@ def _build(sdc_path: Path | None) -> dict:
         sdc_mod.synthesize_unconstrained_inputs(spec, module)
         pin_clocks = spec.pin_clocks
         port_clock = spec.port_clock
-    domains = assign_domains(module, pin_clocks=pin_clocks)
+    domains = assign_domains(
+        module,
+        pin_clocks=pin_clocks,
+        clock_for_port=spec.clock_for_port if spec is not None else None,
+    )
     crossings = find_crossings(module, port_clock=port_clock, pin_clocks=pin_clocks)
     async_cs = []
     if spec is not None:

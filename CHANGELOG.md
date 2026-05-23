@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Domain-map: flop `clock` now canonicalises through the SDC
+  port→clock table** (#166). Previously, when `trace_clock_root`
+  walked through a clock mux and stopped at a literal port name
+  (e.g. `ck0_b`), the `FlopDomain.clock` field — and therefore the
+  `--emit-domain-map` JSON — carried the raw port name instead of
+  the SDC-declared clock name (`ck0` from
+  `create_clock -name ck0 [get_ports {ck0_a ck0_b}]`). External
+  consumers couldn't join that name back to the `clocks[]` table.
+  `assign_domains` now takes an optional `clock_for_port=` keyword
+  (passed `ClockSpec.clock_for_port` at the CLI boundary) and
+  normalises the trace result before constructing the `FlopDomain`.
+  Rule-pack behaviour is unchanged (`find_crossings` does its own
+  port-domain comparison via `set_clock_groups`); the bug only
+  surfaced in the consumer-facing artefact. Regression pinned by
+  `tests/test_bad_async_clock_mux.py::test_q_out_flop_domain_normalises_to_sdc_clock_name`.
+
 ### Added
 
 - **`rtl-buddy-cdc render` subcommand** (#162). New CLI command that
