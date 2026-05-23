@@ -3088,6 +3088,108 @@ def check_cdc_014(
     return violations
 
 
+def check_cdc_015(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-015 — Sync chain asynchronously reset from a foreign clock domain.
+
+    A synchroniser whose resolving flops are released by an async
+    reset from a *different* clock domain cannot reach steady state
+    on its own clock — every foreign-domain reset deassertion races
+    the dst-domain clock edge, restoring the flops at an arbitrary
+    point in pointer-value space.
+
+    CDC-shaped framing for the same underlying structural shape
+    RDC-001 detects on the reset path: the offended structure is a
+    synchroniser, the fix is "use dst_clk's reset for the chain", not
+    "add a reset synchroniser to the reset path". The two findings
+    are independent and can coexist — users can act on either one.
+
+    Walks each crossing's chain via :func:`_sync_chain_flops` and
+    checks every chain flop's ``ARST`` pin. Fires (one finding per
+    chain) when any chain flop's reset reaches back to a flop in a
+    clock domain async to ``c.dst_clock``. Suppressed when the chain
+    head is ``(* cdc_sync *)``-marked — user vouches for the chain
+    shape including its reset routing.
+
+    Single-bit only — multi-bit chain support is deferred (multi-bit
+    syncs typically use the same reset on every lane, so the framing
+    should generalise without much code).
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    violations: list[Violation] = []
+    reported_heads: set[str] = set()
+
+    def _async(a: str, b: str) -> bool:
+        if clock_spec is None:
+            return a != b
+        ca = clock_spec.clock_for_port(a) or a
+        cb = clock_spec.clock_for_port(b) or b
+        return clock_spec.are_async(ca, cb)
+
+    for c in crossings:
+        if c.width != 1:
+            continue
+        head = c.dst_flop
+        if head.cell.name in reported_heads:
+            continue
+        if head.cell.name in ctx.user_syncs:
+            continue
+        chain = _sync_chain_flops(
+            module,
+            head,
+            c.dst_clock,
+            ctx.domains,
+            ctx.reader_counts,
+            ctx.d_bit_to_single_bit_flop,
+        )
+        if len(chain) < 2:
+            continue
+
+        offending: set[tuple[str, str]] = set()
+        for chain_flop in chain:
+            arst_bits = chain_flop.cell.connections.get("ARST", ())
+            if not arst_bits:
+                continue
+            fanin = _backward_flop_fanin(module, arst_bits, ctx.bit_drivers)
+            for src_name in fanin:
+                src_clk = ctx.domains.get(src_name)
+                if src_clk is None or src_clk == c.dst_clock:
+                    continue
+                if not _async(src_clk, c.dst_clock):
+                    continue
+                offending.add((src_name, src_clk))
+
+        if not offending:
+            continue
+        reported_heads.add(head.cell.name)
+        srcs_desc = ", ".join(f"{name} ({clk})" for name, clk in sorted(offending))
+        violations.append(
+            Violation(
+                rule_id="CDC-015",
+                severity="error",
+                message=(
+                    f"synchroniser chain in {c.dst_clock} (head "
+                    f"{head.name}) has ARST driven by foreign-domain "
+                    f"source(s): {srcs_desc}. The chain cannot reach "
+                    f"steady state because its resolving flops are "
+                    f"asynchronously released by a reset that is not "
+                    f"in {c.dst_clock}'s reset tree. Use {c.dst_clock}'s "
+                    f"reset (or a reset synchronised into "
+                    f"{c.dst_clock}) for the sync chain."
+                ),
+                crossing=c,
+                cell_name=head.cell.name,
+            )
+        )
+    return violations
+
+
 def _clk_polarity(flop: Flop) -> int:
     """Return 1 for posedge / 0 for negedge.
 
@@ -3213,6 +3315,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-012": check_cdc_012,
     "CDC-013": check_cdc_013,
     "CDC-014": check_cdc_014,
+    "CDC-015": check_cdc_015,
     "CDC-016": check_cdc_016,
 }
 

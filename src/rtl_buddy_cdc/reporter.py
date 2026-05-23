@@ -59,6 +59,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "RDC-004": "Reset driven by combinational logic with no synchroniser",
     "RDC-005": "Multiple reset sources converging on a flop without muxing",
     "CDC-014": "Combinational logic between synchroniser stages",
+    "CDC-015": "Sync chain asynchronously reset from a foreign clock domain",
     "CDC-016": "Opposite-edge synchroniser (halves MTBF)",
 }
 
