@@ -1,0 +1,1267 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_async_fifo_gray_ptrs": {
+      "attributes": {
+        "dynports": "00000000000000000000000000000001",
+        "top": "00000000000000000000000000000001",
+        "src": "good_async_fifo_gray_ptrs.sv:24.1-120.10"
+      },
+      "parameter_default_values": {
+        "PW": "00000000000000000000000000000100"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "push": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "full": {
+          "direction": "output",
+          "bits": [ 6 ]
+        },
+        "pop": {
+          "direction": "input",
+          "bits": [ 7 ]
+        },
+        "empty": {
+          "direction": "output",
+          "bits": [ 8 ]
+        }
+      },
+      "cells": {
+        "$add$good_async_fifo_gray_ptrs.sv:46$1": {
+          "hide_name": 1,
+          "type": "$add",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000100",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000100",
+            "Y_WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:46.28-46.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 9, 10, 11, 12 ],
+            "B": [ "1", "0", "0", "0" ],
+            "Y": [ 13, 14, 15, 16 ]
+          }
+        },
+        "$add$good_async_fifo_gray_ptrs.sv:67$8": {
+          "hide_name": 1,
+          "type": "$add",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000100",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000100",
+            "Y_WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:67.28-67.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 17, 18, 19, 20 ],
+            "B": [ "1", "0", "0", "0" ],
+            "Y": [ 21, 22, 23, 24 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$30": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 25 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$35": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 26 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$40": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 27 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$45": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 28 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$50": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 29 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$55": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 30 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$60": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 31 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$65": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 32 ]
+          }
+        },
+        "$eq$good_async_fifo_gray_ptrs.sv:116$19": {
+          "hide_name": 1,
+          "type": "$eq",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000100",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000100",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:116.21-116.52"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 33, 34, 35, 36 ],
+            "B": [ 37, 38, 39, 40 ],
+            "Y": [ 8 ]
+          }
+        },
+        "$eq$good_async_fifo_gray_ptrs.sv:117$21": {
+          "hide_name": 1,
+          "type": "$eq",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000100",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000100",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:117.21-118.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 41, 42, 43, 44 ],
+            "B": [ 45, 46, 47, 48 ],
+            "Y": [ 6 ]
+          }
+        },
+        "$logic_and$good_async_fifo_gray_ptrs.sv:55$5": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:55.22-55.35"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "B": [ 49 ],
+            "Y": [ 50 ]
+          }
+        },
+        "$logic_and$good_async_fifo_gray_ptrs.sv:73$12": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:73.22-73.35"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "B": [ 51 ],
+            "Y": [ 52 ]
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:52$3": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:52.13-52.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 53 ]
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:55$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:55.30-55.35"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 6 ],
+            "Y": [ 49 ]
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:70$10": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:70.13-70.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 54 ]
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:73$11": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:73.29-73.35"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 8 ],
+            "Y": [ 51 ]
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:85$16": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:85.13-85.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 55 ]
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:98$18": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:98.13-98.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 56 ]
+          }
+        },
+        "$not$good_async_fifo_gray_ptrs.sv:117$20": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000010",
+            "Y_WIDTH": "00000000000000000000000000000010"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:117.37-117.65"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 57, 58 ],
+            "Y": [ 47, 48 ]
+          }
+        },
+        "$procdff$34": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_async_fifo_gray_ptrs.sv:97.5-105.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 37, 38, 39, 40 ],
+            "Q": [ 59, 60, 61, 62 ]
+          }
+        },
+        "$procdff$39": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_async_fifo_gray_ptrs.sv:97.5-105.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 59, 60, 61, 62 ],
+            "Q": [ 45, 46, 57, 58 ]
+          }
+        },
+        "$procdff$44": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_async_fifo_gray_ptrs.sv:84.5-92.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 41, 42, 43, 44 ],
+            "Q": [ 63, 64, 65, 66 ]
+          }
+        },
+        "$procdff$49": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_async_fifo_gray_ptrs.sv:84.5-92.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 63, 64, 65, 66 ],
+            "Q": [ 33, 34, 35, 36 ]
+          }
+        },
+        "$procdff$54": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_async_fifo_gray_ptrs.sv:69.5-77.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 67, 68, 69, 70 ],
+            "Q": [ 17, 18, 19, 20 ]
+          }
+        },
+        "$procdff$59": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_async_fifo_gray_ptrs.sv:69.5-77.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 71, 72, 73, 74 ],
+            "Q": [ 37, 38, 39, 40 ]
+          }
+        },
+        "$procdff$64": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_async_fifo_gray_ptrs.sv:51.5-59.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 75, 76, 77, 78 ],
+            "Q": [ 9, 10, 11, 12 ]
+          }
+        },
+        "$procdff$69": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_async_fifo_gray_ptrs.sv:51.5-59.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 79, 80, 81, 82 ],
+            "Q": [ 41, 42, 43, 44 ]
+          }
+        },
+        "$procmux$22": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:73.22-73.35|good_async_fifo_gray_ptrs.sv:73.18-76.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 37, 38, 39, 40 ],
+            "B": [ 83, 84, 85, 86 ],
+            "S": [ 52 ],
+            "Y": [ 71, 72, 73, 74 ]
+          }
+        },
+        "$procmux$24": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:73.22-73.35|good_async_fifo_gray_ptrs.sv:73.18-76.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 17, 18, 19, 20 ],
+            "B": [ 21, 22, 23, 24 ],
+            "S": [ 52 ],
+            "Y": [ 67, 68, 69, 70 ]
+          }
+        },
+        "$procmux$26": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:55.22-55.35|good_async_fifo_gray_ptrs.sv:55.18-58.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 41, 42, 43, 44 ],
+            "B": [ 87, 88, 89, 90 ],
+            "S": [ 50 ],
+            "Y": [ 79, 80, 81, 82 ]
+          }
+        },
+        "$procmux$28": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:55.22-55.35|good_async_fifo_gray_ptrs.sv:55.18-58.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 9, 10, 11, 12 ],
+            "B": [ 13, 14, 15, 16 ],
+            "S": [ 50 ],
+            "Y": [ 75, 76, 77, 78 ]
+          }
+        },
+        "$xor$good_async_fifo_gray_ptrs.sv:57$7": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000100",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000100",
+            "Y_WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:57.28-57.64"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 13, 14, 15, 16 ],
+            "B": [ 14, 15, 16, "0" ],
+            "Y": [ 87, 88, 89, 90 ]
+          }
+        },
+        "$xor$good_async_fifo_gray_ptrs.sv:75$14": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000100",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000100",
+            "Y_WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:75.28-75.64"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 21, 22, 23, 24 ],
+            "B": [ 22, 23, 24, "0" ],
+            "Y": [ 83, 84, 85, 86 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\rptr_bin_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 67, 68, 69, 70 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:69.5-77.8"
+          }
+        },
+        "$0\\rptr_gray_meta_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 37, 38, 39, 40 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:97.5-105.8"
+          }
+        },
+        "$0\\rptr_gray_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 71, 72, 73, 74 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:69.5-77.8"
+          }
+        },
+        "$0\\rptr_gray_sync_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 59, 60, 61, 62 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:97.5-105.8"
+          }
+        },
+        "$0\\wptr_bin_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 75, 76, 77, 78 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:51.5-59.8"
+          }
+        },
+        "$0\\wptr_gray_meta_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 41, 42, 43, 44 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:84.5-92.8"
+          }
+        },
+        "$0\\wptr_gray_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 79, 80, 81, 82 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:51.5-59.8"
+          }
+        },
+        "$0\\wptr_gray_sync_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 63, 64, 65, 66 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:84.5-92.8"
+          }
+        },
+        "$add$good_async_fifo_gray_ptrs.sv:46$1_Y": {
+          "hide_name": 1,
+          "bits": [ 13, 14, 15, 16 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:46.28-46.63"
+          }
+        },
+        "$add$good_async_fifo_gray_ptrs.sv:67$8_Y": {
+          "hide_name": 1,
+          "bits": [ 21, 22, 23, 24 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:67.28-67.63"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$31": {
+          "hide_name": 1,
+          "bits": [ 25 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$36": {
+          "hide_name": 1,
+          "bits": [ 26 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$41": {
+          "hide_name": 1,
+          "bits": [ 27 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$46": {
+          "hide_name": 1,
+          "bits": [ 28 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$51": {
+          "hide_name": 1,
+          "bits": [ 29 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$56": {
+          "hide_name": 1,
+          "bits": [ 30 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$61": {
+          "hide_name": 1,
+          "bits": [ 31 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$66": {
+          "hide_name": 1,
+          "bits": [ 32 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$33": {
+          "hide_name": 1,
+          "bits": [ 25 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$38": {
+          "hide_name": 1,
+          "bits": [ 26 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$43": {
+          "hide_name": 1,
+          "bits": [ 27 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$48": {
+          "hide_name": 1,
+          "bits": [ 28 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$53": {
+          "hide_name": 1,
+          "bits": [ 29 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$58": {
+          "hide_name": 1,
+          "bits": [ 30 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$63": {
+          "hide_name": 1,
+          "bits": [ 31 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$68": {
+          "hide_name": 1,
+          "bits": [ 32 ],
+          "attributes": {
+          }
+        },
+        "$eq$good_async_fifo_gray_ptrs.sv:116$19_Y": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:116.21-116.52"
+          }
+        },
+        "$eq$good_async_fifo_gray_ptrs.sv:117$21_Y": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:117.21-118.63"
+          }
+        },
+        "$logic_and$good_async_fifo_gray_ptrs.sv:55$5_Y": {
+          "hide_name": 1,
+          "bits": [ 50 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:55.22-55.35"
+          }
+        },
+        "$logic_and$good_async_fifo_gray_ptrs.sv:73$12_Y": {
+          "hide_name": 1,
+          "bits": [ 52 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:73.22-73.35"
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:52$3_Y": {
+          "hide_name": 1,
+          "bits": [ 53 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:52.13-52.19"
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:55$4_Y": {
+          "hide_name": 1,
+          "bits": [ 49 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:55.30-55.35"
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:70$10_Y": {
+          "hide_name": 1,
+          "bits": [ 54 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:70.13-70.19"
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:73$11_Y": {
+          "hide_name": 1,
+          "bits": [ 51 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:73.29-73.35"
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:85$16_Y": {
+          "hide_name": 1,
+          "bits": [ 55 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:85.13-85.19"
+          }
+        },
+        "$logic_not$good_async_fifo_gray_ptrs.sv:98$18_Y": {
+          "hide_name": 1,
+          "bits": [ 56 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:98.13-98.19"
+          }
+        },
+        "$not$good_async_fifo_gray_ptrs.sv:117$20_Y": {
+          "hide_name": 1,
+          "bits": [ 47, 48 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:117.37-117.65"
+          }
+        },
+        "$procmux$22_Y": {
+          "hide_name": 1,
+          "bits": [ 71, 72, 73, 74 ],
+          "attributes": {
+          }
+        },
+        "$procmux$23_CMP": {
+          "hide_name": 1,
+          "bits": [ 52 ],
+          "attributes": {
+          }
+        },
+        "$procmux$24_Y": {
+          "hide_name": 1,
+          "bits": [ 67, 68, 69, 70 ],
+          "attributes": {
+          }
+        },
+        "$procmux$25_CMP": {
+          "hide_name": 1,
+          "bits": [ 52 ],
+          "attributes": {
+          }
+        },
+        "$procmux$26_Y": {
+          "hide_name": 1,
+          "bits": [ 79, 80, 81, 82 ],
+          "attributes": {
+          }
+        },
+        "$procmux$27_CMP": {
+          "hide_name": 1,
+          "bits": [ 50 ],
+          "attributes": {
+          }
+        },
+        "$procmux$28_Y": {
+          "hide_name": 1,
+          "bits": [ 75, 76, 77, 78 ],
+          "attributes": {
+          }
+        },
+        "$procmux$29_CMP": {
+          "hide_name": 1,
+          "bits": [ 50 ],
+          "attributes": {
+          }
+        },
+        "$shr$good_async_fifo_gray_ptrs.sv:57$6_Y": {
+          "hide_name": 1,
+          "bits": [ 14, 15, 16, "0" ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:57.45-57.63"
+          }
+        },
+        "$shr$good_async_fifo_gray_ptrs.sv:75$13_Y": {
+          "hide_name": 1,
+          "bits": [ 22, 23, 24, "0" ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:75.45-75.63"
+          }
+        },
+        "$xor$good_async_fifo_gray_ptrs.sv:57$7_Y": {
+          "hide_name": 1,
+          "bits": [ 87, 88, 89, 90 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:57.28-57.64"
+          }
+        },
+        "$xor$good_async_fifo_gray_ptrs.sv:75$14_Y": {
+          "hide_name": 1,
+          "bits": [ 83, 84, 85, 86 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:75.28-75.64"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:28.26-28.33"
+          }
+        },
+        "empty": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:37.26-37.31"
+          }
+        },
+        "full": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:33.26-33.30"
+          }
+        },
+        "pop": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:36.26-36.29"
+          }
+        },
+        "push": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:32.26-32.30"
+          }
+        },
+        "rptr_bin_next": {
+          "hide_name": 0,
+          "bits": [ 21, 22, 23, 24 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:65.20-65.33"
+          }
+        },
+        "rptr_bin_q": {
+          "hide_name": 0,
+          "bits": [ 17, 18, 19, 20 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:63.20-63.30"
+          }
+        },
+        "rptr_gray_meta_q": {
+          "hide_name": 0,
+          "bits": [ 59, 60, 61, 62 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:95.20-95.36"
+          }
+        },
+        "rptr_gray_q": {
+          "hide_name": 0,
+          "bits": [ 37, 38, 39, 40 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:64.20-64.31"
+          }
+        },
+        "rptr_gray_sync_q": {
+          "hide_name": 0,
+          "bits": [ 45, 46, 57, 58 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:96.20-96.36"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:29.26-29.31"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:27.26-27.33"
+          }
+        },
+        "wptr_bin_next": {
+          "hide_name": 0,
+          "bits": [ 13, 14, 15, 16 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:44.20-44.33"
+          }
+        },
+        "wptr_bin_q": {
+          "hide_name": 0,
+          "bits": [ 9, 10, 11, 12 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:42.20-42.30"
+          }
+        },
+        "wptr_gray_meta_q": {
+          "hide_name": 0,
+          "bits": [ 63, 64, 65, 66 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:82.20-82.36"
+          }
+        },
+        "wptr_gray_q": {
+          "hide_name": 0,
+          "bits": [ 41, 42, 43, 44 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:43.20-43.31"
+          }
+        },
+        "wptr_gray_sync_q": {
+          "hide_name": 0,
+          "bits": [ 33, 34, 35, 36 ],
+          "attributes": {
+            "src": "good_async_fifo_gray_ptrs.sv:83.20-83.36"
+          }
+        }
+      }
+    }
+  }
+}
