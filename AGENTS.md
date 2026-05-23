@@ -155,6 +155,7 @@ pairing is the regression net for false positives.
      dedicated test file only when the assertions go beyond
      "no violations" (see `test_good_gray_counter_crossing.py`).
 4. Confirm: `uv run pytest -q tests/test_<your>.py`.
+5. Regenerate the fixture README: `uv run python scripts/gen_fixture_docs.py --only <name>`. The generator pulls the prose from the leading `//` comment block in your `.sv` file and embeds a mermaid clock-domain diagram — keep the comment block short and accurate, it's now user-facing documentation.
 
 ## Adding an SV attribute
 

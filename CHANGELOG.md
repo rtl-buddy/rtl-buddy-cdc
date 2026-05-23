@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-fixture `README.md` with mermaid clock-domain diagrams**
+  (#164). Every fixture under `tests/fixtures/` now has a generated
+  README that browsers see when navigating the directory on GitHub:
+  prose pulled from the leading `//` block of the primary `.sv`
+  file, a facts line (status / top / clocks / crossings), and the
+  `## Clock-domain map` rendered via `rtl-buddy-cdc render`. The
+  one hand-written README (`ip_cdc_handshake/`) is preserved by
+  detecting the absence of the generator tag. Regenerate with
+  `uv run python scripts/gen_fixture_docs.py`; `--check` mode is in
+  place for a future CI drift sentinel.
+
 - **`rtl-buddy-cdc render` subcommand** (#162). New CLI command that
   consumes a v1.0 domain map (as produced by
   `--emit-domain-map`) and emits a GitHub-renderable
