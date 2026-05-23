@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`rtl-buddy-cdc render` subcommand** (#162). New CLI command that
+  consumes a v1.0 domain map (as produced by
+  `--emit-domain-map`) and emits a GitHub-renderable
+  ```` ```mermaid ```` flowchart: flops grouped into one `subgraph`
+  per clock domain, async-per-SDC crossings drawn as dashed warning
+  edges with width annotation, top-level ports surfaced as stadium
+  nodes anchored to their declared clock. The renderer is a pure
+  function over the existing artifact (no analyzer rerun) and
+  matches the discipline of `reporter.py`: deterministic, sorted,
+  no I/O outside `cli.py`. Designed for per-fixture documentation
+  where `rtl-buddy-view`'s module-level hierarchy collapses flat
+  designs to a single box; this fills the flop-level gap without
+  expanding the view tool's scope. Today's surface is
+  `render --map <path> --format mermaid [-o <out>]`; the
+  `RenderFormat` enum is in place for additional formats (e.g.
+  dot) to plug in without flag-surface churn.
+
 - **Domain-map: `source_instance_path` on flops and crossings**
   (#136). The `--emit-domain-map` artifact's `flop_domains[]`
   entries now carry a `source_instance_path` sibling to
