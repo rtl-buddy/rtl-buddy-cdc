@@ -135,6 +135,62 @@ def test_render_accepts_minor_version_drift() -> None:
     assert "flowchart" in out
 
 
+def test_render_draws_clock_network_crossing_edges() -> None:
+    """rtl-buddy-cdc#168: ``clock_network_crossings[]`` (schema 1.1+)
+    is drawn with a thick arrow + ⚡ clk-ctrl label so the CDC-010
+    flop→flop relationship is visible alongside the data crossings."""
+    out = render_mermaid(
+        {
+            "schema_version": "1.1",
+            "design": {"top": "t"},
+            "clocks": [
+                {"name": "ck0", "period": 10.0},
+                {"name": "ck1", "period": 13.3},
+            ],
+            "generated_clocks": [],
+            "flop_domains": [
+                {"instance_path": "t.fa", "clock": "ck1"},
+                {"instance_path": "t.fb", "clock": "ck0"},
+            ],
+            "port_domains": [],
+            "crossings": [],
+            "clock_network_crossings": [
+                {
+                    "src_clock": "ck1",
+                    "dst_clock": "ck0",
+                    "src_flop": "t.fa",
+                    "dst_flop": "t.fb",
+                    "control_cell": "$mux$12",
+                    "control_cell_type": "$mux",
+                    "control_pin": "S",
+                    "control_kind": "mux-select",
+                    "async_per_sdc": True,
+                }
+            ],
+        }
+    )
+    assert "==>" in out, "expected a thick arrow for the clock-network crossing"
+    assert "⚡ clk-ctrl (mux S)" in out
+
+
+def test_render_omits_clock_network_section_when_field_absent() -> None:
+    """v1.0 maps don't carry the field; the renderer must treat it as
+    an empty list rather than raising."""
+    out = render_mermaid(
+        {
+            "schema_version": "1.0",
+            "design": {"top": "t"},
+            "clocks": [],
+            "generated_clocks": [],
+            "flop_domains": [],
+            "port_domains": [],
+            "crossings": [],
+        }
+    )
+    assert "==>" not in out
+    assert "clk-ctrl" not in out
+
+
 def test_render_surfaces_undeclared_clocks() -> None:
     """If a flop references a clock that's not in ``clocks`` or
     ``generated_clocks`` (e.g. malformed map), we still draw it under

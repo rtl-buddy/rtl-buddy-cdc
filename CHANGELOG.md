@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Domain-map schema 1.1: `clock_network_crossings[]`** (#168). New
+  top-level list capturing flop→flop relationships that travel via
+  the clock network — a foreign-domain flop driving a clock-mux
+  select or ICG enable whose output reaches another flop's CLK pin.
+  Same hazard CDC-010 already detects, exposed as a structural
+  parallel to `crossings[]` so consumers can render the edge that
+  the data-fanout walker can't see. Each entry carries
+  `src_flop` / `dst_flop` (hier paths), `src_clock` / `dst_clock`,
+  the gating cell triple (`control_cell`, `control_cell_type`,
+  `control_pin`), and `control_kind` ∈ {`mux-select`,
+  `gate-enable`}. `async_per_sdc` is always `true` — the walker
+  only emits pairs where the source domain is async to *every*
+  clock-input domain of the controlled cell, mirroring CDC-010's
+  firing condition. Lives in a new module
+  `src/rtl_buddy_cdc/clock_network.py` (function
+  `find_clock_network_crossings`) so it stays separate from the
+  rule pack's `Violation` surface while reusing the same
+  structural helpers via import from `rules.py`. Schema bump is
+  additive — v1.0 consumers ignore the field, and the renderer
+  treats absence as empty. The mermaid renderer in
+  `rtl_buddy_cdc.render` draws each entry with a thick arrow and
+  a `⚡ clk-ctrl (mux S)` / `(gate EN)` label so the CDC-010
+  hazard is visible at a glance.
+
 ### Fixed
 
 - **Domain-map: flop and crossing clock names canonicalise through
