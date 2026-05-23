@@ -1,0 +1,321 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_clock_gating_async_enable": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "bad_clock_gating_async_enable.sv:20.1-47.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_a_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "rst_b_n": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "en_in": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "d": {
+          "direction": "input",
+          "bits": [ 7 ]
+        },
+        "q": {
+          "direction": "output",
+          "bits": [ 8 ]
+        }
+      },
+      "cells": {
+        "$and$bad_clock_gating_async_enable.sv:39$3": {
+          "hide_name": 1,
+          "type": "$and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:39.24-39.38"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 2 ],
+            "B": [ 9 ],
+            "Y": [ 10 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$11": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 11 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$6": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 12 ]
+          }
+        },
+        "$logic_not$bad_clock_gating_async_enable.sv:33$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:33.13-33.21"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$logic_not$bad_clock_gating_async_enable.sv:43$5": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:43.13-43.21"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$procdff$10": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_clock_gating_async_enable.sv:42.5-45.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 10 ],
+            "D": [ 7 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$procdff$15": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_clock_gating_async_enable.sv:32.5-35.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 3 ],
+            "D": [ 6 ],
+            "Q": [ 9 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\en_b_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:32.5-35.8"
+          }
+        },
+        "$0\\q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:42.5-45.8"
+          }
+        },
+        "$and$bad_clock_gating_async_enable.sv:39$3_Y": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:39.24-39.38"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$12": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$7": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$14": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$9": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$logic_not$bad_clock_gating_async_enable.sv:33$2_Y": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:33.13-33.21"
+          }
+        },
+        "$logic_not$bad_clock_gating_async_enable.sv:43$5_Y": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:43.13-43.21"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:21.18-21.23"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:22.18-22.23"
+          }
+        },
+        "d": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:26.18-26.19"
+          }
+        },
+        "en_b_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:31.11-31.17"
+          }
+        },
+        "en_in": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:25.18-25.23"
+          }
+        },
+        "gated_clk": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:38.11-38.20"
+          }
+        },
+        "q": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:27.18-27.19"
+          }
+        },
+        "rst_a_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:23.18-23.25"
+          }
+        },
+        "rst_b_n": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "bad_clock_gating_async_enable.sv:24.18-24.25"
+          }
+        }
+      }
+    }
+  }
+}
