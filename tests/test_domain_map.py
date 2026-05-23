@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from rtl_buddy_cdc import netlist, sdc as sdc_mod
+from rtl_buddy_cdc.clock_network import find_clock_network_crossings
 from rtl_buddy_cdc.domain import assign_domains, find_crossings
 from rtl_buddy_cdc.domain_map import SCHEMA_VERSION, build_domain_map
 
@@ -34,8 +35,16 @@ def _build(sdc_path: Path | None) -> dict:
         sdc_mod.synthesize_unconstrained_inputs(spec, module)
         pin_clocks = spec.pin_clocks
         port_clock = spec.port_clock
-    domains = assign_domains(module, pin_clocks=pin_clocks)
-    crossings = find_crossings(module, port_clock=port_clock, pin_clocks=pin_clocks)
+    clock_for_port = spec.clock_for_port if spec is not None else None
+    domains = assign_domains(
+        module, pin_clocks=pin_clocks, clock_for_port=clock_for_port
+    )
+    crossings = find_crossings(
+        module,
+        port_clock=port_clock,
+        pin_clocks=pin_clocks,
+        clock_for_port=clock_for_port,
+    )
     async_cs = []
     if spec is not None:
         for c in crossings:
@@ -45,7 +54,17 @@ def _build(sdc_path: Path | None) -> dict:
                 continue
             if spec.are_async(a, b):
                 async_cs.append(c)
-    return build_domain_map(module, domains, crossings, spec, async_crossings=async_cs)
+    clock_net_crossings = find_clock_network_crossings(
+        module, spec, clock_for_port=clock_for_port
+    )
+    return build_domain_map(
+        module,
+        domains,
+        crossings,
+        spec,
+        async_crossings=async_cs,
+        clock_network_crossings=clock_net_crossings,
+    )
 
 
 def test_golden_matches() -> None:
@@ -73,7 +92,7 @@ def test_schema_version_is_string_and_pinned() -> None:
 
 
 def test_top_level_keys() -> None:
-    """The v1.0 schema's top-level keys are PUBLIC API."""
+    """The schema's top-level keys are PUBLIC API."""
     payload = _build(SDC)
     expected = {
         "schema_version",
@@ -86,6 +105,7 @@ def test_top_level_keys() -> None:
         "flop_domains",
         "port_domains",
         "crossings",
+        "clock_network_crossings",
     }
     assert set(payload.keys()) == expected
 

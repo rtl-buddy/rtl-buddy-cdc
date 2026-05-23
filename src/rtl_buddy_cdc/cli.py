@@ -19,6 +19,7 @@ from rtl_buddy_cdc import (
     waivers as waivers_mod,
 )
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
+from rtl_buddy_cdc.clock_network import find_clock_network_crossings
 from rtl_buddy_cdc.domain_map import build_domain_map
 from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
@@ -548,9 +549,16 @@ def _analyze_module_and_report(
         if spec.partial_warnings and fmt is OutputFormat.text and not no_findings:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)
-        domains = assign_domains(module, pin_clocks=spec.pin_clocks)
+        domains = assign_domains(
+            module,
+            pin_clocks=spec.pin_clocks,
+            clock_for_port=spec.clock_for_port,
+        )
         crossings = find_crossings(
-            module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+            module,
+            port_clock=spec.port_clock,
+            pin_clocks=spec.pin_clocks,
+            clock_for_port=spec.clock_for_port,
         )
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:
@@ -635,12 +643,19 @@ def _analyze_module_and_report(
     # failure surfaces deterministically as an OSError rather than being
     # masked by the report's own I/O path.
     if emit_domain_map is not None:
+        clock_net_crossings = find_clock_network_crossings(
+            module,
+            spec,
+            clock_for_port=spec.clock_for_port if spec is not None else None,
+            use_heuristic=not cdc_010_no_heuristic,
+        )
         payload = build_domain_map(
             module,
             domains,
             crossings,
             spec,
             async_crossings=async_crossings,
+            clock_network_crossings=clock_net_crossings,
         )
         with emit_domain_map.open("w") as fh:
             json.dump(payload, fh, indent=2)

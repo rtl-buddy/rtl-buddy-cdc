@@ -120,6 +120,32 @@ def render_mermaid(map_data: dict[str, Any]) -> str:
         else:
             buf.write(f"  {src_id} --- {dst_id}\n")
 
+    # Clock-network crossings (schema 1.1+). A foreign-domain flop
+    # driving a clock-mux select or ICG enable whose output reaches
+    # the destination flop's CLK pin — the CDC-010 hazard. Drawn
+    # with a thick arrow so it stands apart from data crossings.
+    clock_net_crossings = sorted(
+        map_data.get("clock_network_crossings", []),
+        key=lambda c: (
+            c.get("src_flop", ""),
+            c.get("dst_flop", ""),
+            c.get("control_cell", ""),
+        ),
+    )
+    for x in clock_net_crossings:
+        src = x.get("src_flop")
+        dst = x.get("dst_flop")
+        if not src or not dst:
+            continue
+        src_id = _flop_node_id(src)
+        dst_id = _flop_node_id(dst)
+        kind = x.get("control_kind", "mux-select")
+        pin = x.get("control_pin", "?")
+        # ``mux S`` / ``gate EN`` reads more naturally than the raw
+        # enum value.
+        kind_word = "mux" if kind == "mux-select" else "gate"
+        buf.write(f'  {src_id} ==> |"⚡ clk-ctrl ({kind_word} {pin})"| {dst_id}\n')
+
     buf.write("  classDef port fill:#f4f4f5,stroke:#71717a\n")
     buf.write("```\n")
     return buf.getvalue()

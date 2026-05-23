@@ -15,7 +15,7 @@ import pytest
 
 from rtl_buddy_cdc import netlist, sdc as sdc_mod
 from rtl_buddy_cdc.cli import _filter_async
-from rtl_buddy_cdc.domain import find_crossings
+from rtl_buddy_cdc.domain import assign_domains, find_crossings
 from rtl_buddy_cdc.rules import run_all as run_all_rules
 
 FIX_DIR = Path(__file__).parent / "fixtures" / "bad_async_clock_mux"
@@ -30,10 +30,13 @@ def context():
     module = netlist.load(JSON)
     spec = sdc_mod.parse_file(SDC)
     crossings = find_crossings(
-        module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+        module,
+        port_clock=spec.port_clock,
+        pin_clocks=spec.pin_clocks,
+        clock_for_port=spec.clock_for_port,
     )
     async_crossings = _filter_async(crossings, spec)
-    return module, async_crossings, spec
+    return module, crossings, async_crossings, spec
 
 
 def _sel_q_cell_name(module) -> str:
@@ -56,7 +59,7 @@ def _mux_cell(module):
 
 
 def test_cdc_010_fires_exactly_once(context) -> None:
-    module, async_crossings, spec = context
+    module, _crossings, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     cdc_010 = [v for v in violations if v.rule_id == "CDC-010"]
     assert len(cdc_010) == 1, [v.message for v in cdc_010]
@@ -64,7 +67,7 @@ def test_cdc_010_fires_exactly_once(context) -> None:
 
 
 def test_violation_names_the_mux_cell(context) -> None:
-    module, async_crossings, spec = context
+    module, _crossings, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     cdc_010 = [v for v in violations if v.rule_id == "CDC-010"]
     mux = _mux_cell(module)
@@ -74,7 +77,7 @@ def test_violation_names_the_mux_cell(context) -> None:
 
 
 def test_violation_names_sel_q_as_source(context) -> None:
-    module, async_crossings, spec = context
+    module, _crossings, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     cdc_010 = [v for v in violations if v.rule_id == "CDC-010"]
     sel_q = _sel_q_cell_name(module)
@@ -86,12 +89,98 @@ def test_violation_names_sel_q_as_source(context) -> None:
     assert "ck0" in cdc_010[0].message
 
 
+def test_q_out_flop_domain_normalises_to_sdc_clock_name(context) -> None:
+    """Regression for rtl-buddy-cdc#166: ``trace_clock_root`` stops at the
+    literal port name picked by the mux trace (``ck0_b``), but the SDC
+    declared both mux legs (``ck0_a`` + ``ck0_b``) as a single named
+    clock ``ck0``. ``assign_domains`` must normalise the trace result
+    through ``ClockSpec.clock_for_port`` so downstream consumers
+    (chiefly the ``--emit-domain-map`` JSON) see the canonical name.
+    """
+    module, _crossings, _async_crossings, spec = context
+    domains = assign_domains(
+        module, pin_clocks=spec.pin_clocks, clock_for_port=spec.clock_for_port
+    )
+    q_out_bits = module.netnames["q_out"].bits
+    target = None
+    for fd in domains:
+        if fd.flop.cell.connections.get("Q", ()) == q_out_bits:
+            target = fd
+            break
+    assert target is not None, "no flop drives q_out"
+    assert target.clock == "ck0", (
+        f"expected the domain to canonicalise through port→clock to 'ck0', "
+        f"got {target.clock!r} (the raw port name picked by the mux trace)"
+    )
+
+
+def test_find_crossings_canonicalises_dst_clock_into_same_domain_pair(
+    context,
+) -> None:
+    """Second half of rtl-buddy-cdc#166: ``find_crossings`` runs
+    ``assign_domains`` internally to populate per-flop clocks. Without
+    the parallel ``clock_for_port`` plumbing the q_out flop's clock
+    leaks as ``"ck0_b"`` (the port name picked by the mux trace) while
+    the SDC has both ck0_a and ck0_b on a single ``create_clock -name
+    ck0``. The d_in port (also typed to ``ck0`` via ``set_input_delay``)
+    walking into that flop would then show up as a spurious
+    ``ck0→ck0_b`` port-sourced crossing even though the two endpoints
+    are the same physical clock. With the fix, the same-domain pair
+    correctly collapses and ``find_crossings`` emits zero port-sourced
+    crossings here.
+    """
+    _module, crossings, _async, _spec = context
+    port_sourced = [
+        (c.src_port, c.src_clock, c.dst_clock)
+        for c in crossings
+        if c.src_port is not None
+    ]
+    assert port_sourced == [], (
+        "expected the d_in→q_out same-domain pair to collapse "
+        "(both endpoints are ck0 per the SDC), but a port-sourced "
+        f"crossing leaked: {port_sourced!r}"
+    )
+
+
+def test_clock_network_crossings_surface_sel_q_to_q_out_pair(context) -> None:
+    """rtl-buddy-cdc#168: ``find_clock_network_crossings`` exposes the
+    sel_q → q_out_flop relationship that travels through the clock
+    mux. CDC-010 fires structurally on the ``(cell, control_pin,
+    src_flop)`` triple but doesn't enumerate the downstream flops —
+    this surface records the flop-pair so a renderer can draw the
+    edge.
+    """
+    from rtl_buddy_cdc.clock_network import find_clock_network_crossings
+
+    module, _crossings, _async_crossings, spec = context
+    cn_crossings = find_clock_network_crossings(
+        module, spec, clock_for_port=spec.clock_for_port
+    )
+    assert len(cn_crossings) == 1, (
+        f"expected one clock-network crossing (sel_q→q_out_flop via "
+        f"the clock mux), got {len(cn_crossings)}: "
+        f"{[(c.src_flop.cell.name, c.dst_flop.cell.name) for c in cn_crossings]}"
+    )
+    cnc = cn_crossings[0]
+    assert cnc.src_clock == "ck1"
+    assert cnc.dst_clock == "ck0"
+    assert cnc.control_pin == "S"
+    assert cnc.control_kind == "mux-select"
+    assert cnc.control_cell_type == "$mux"
+    # Identify src/dst by the netname they own — Yosys auto-names
+    # ($procdff$N) are not stable across regenerations.
+    sel_q_bits = module.netnames["sel_q"].bits
+    q_out_bits = module.netnames["q_out"].bits
+    assert cnc.src_flop.cell.connections.get("Q", ()) == sel_q_bits
+    assert cnc.dst_flop.cell.connections.get("Q", ()) == q_out_bits
+
+
 def test_no_other_rule_fires(context) -> None:
     """CDC-001 / -004 can't see a select-on-$mux shape (it's not a
     flop D); CDC-008 must stay silent here (no clock signal sits on
     a non-CLK data pin). CDC-011 is suppressed by ``set_input_delay``
     in the SDC. CDC-010 should be the only rule that fires."""
-    module, async_crossings, spec = context
+    module, _crossings, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
     rule_ids = sorted({v.rule_id for v in violations})
     assert rule_ids == ["CDC-010"], rule_ids

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rtl_buddy_cdc.clock_network import ClockNetworkCrossing
 from rtl_buddy_cdc.domain import Crossing, FlopDomain
 from rtl_buddy_cdc.netlist import Module
 from rtl_buddy_cdc.reporter import (
@@ -29,7 +30,10 @@ from rtl_buddy_cdc.reporter import (
 )
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
-SCHEMA_VERSION = "1.0"
+# v1.1 adds the additive optional ``clock_network_crossings`` list
+# (#168). v1.0 consumers ignore unknown keys, so the bump is
+# backward-compatible — old maps without the field still validate.
+SCHEMA_VERSION = "1.1"
 # Yosys is the only frontend whose ``Module`` we serialize today (the
 # slang frontend lowers to the same shape, so it lands here unchanged).
 _FRONTEND = "yosys"
@@ -42,8 +46,9 @@ def build_domain_map(
     spec: ClockSpec | None,
     *,
     async_crossings: list[Crossing] | None = None,
+    clock_network_crossings: list[ClockNetworkCrossing] | None = None,
 ) -> dict[str, Any]:
-    """Build the v1.0 domain-map payload.
+    """Build the v1.1 domain-map payload.
 
     ``async_crossings`` is the SDC-aware subset of ``crossings`` that
     the rule pack would receive. Each emitted crossing is tagged with
@@ -51,6 +56,11 @@ def build_domain_map(
     supplied — every entry then carries ``async_per_sdc: false``,
     matching the convention that no-SDC runs have nothing to compare
     against.
+
+    ``clock_network_crossings`` is the parallel surface for flop→flop
+    relationships that travel through the clock network (a foreign-
+    domain flop driving a clock-mux select or ICG enable). Empty list
+    when omitted — consumers always see the key. See issue #168.
     """
     async_keys = _crossing_keys(async_crossings or [])
     return {
@@ -64,6 +74,9 @@ def build_domain_map(
         "flop_domains": _serialize_flop_domains(module, domains),
         "port_domains": _serialize_port_domains(module, spec),
         "crossings": _serialize_crossings(module, crossings, async_keys),
+        "clock_network_crossings": _serialize_clock_network_crossings(
+            module, clock_network_crossings or []
+        ),
     }
 
 
@@ -229,6 +242,54 @@ def _serialize_crossings(
             str(e["dst_clock"]),
             str(e["dst_flop"]),
             str(e.get("src_flop") or e.get("src_port") or ""),
+        )
+    )
+    return out
+
+
+def _serialize_clock_network_crossings(
+    module: Module,
+    crossings: list[ClockNetworkCrossing],
+) -> list[dict[str, Any]]:
+    """Per-cell flop→flop relationships routed via the clock network.
+
+    Each entry carries the source flop (control-pin driver), the
+    destination flop (whose CLK pin the controlled cell feeds), the
+    two clock domains, and metadata describing the gating cell
+    (``control_cell``, ``control_cell_type``, ``control_pin``,
+    ``control_kind`` ∈ {``"mux-select"``, ``"gate-enable"``}). Always
+    ``async_per_sdc: true`` here — the upstream walker only emits
+    pairs where the source domain is async to every clock-input
+    domain of the controlled cell, mirroring CDC-010's firing
+    condition.
+    """
+    out: list[dict[str, Any]] = []
+    for c in crossings:
+        out.append(
+            {
+                "src_clock": c.src_clock,
+                "dst_clock": c.dst_clock,
+                "src_flop": _hier_path(module, c.src_flop.cell.name),
+                "src_source_instance_path": _source_instance_path(
+                    module, c.src_flop.cell.name
+                ),
+                "dst_flop": _hier_path(module, c.dst_flop.cell.name),
+                "dst_source_instance_path": _source_instance_path(
+                    module, c.dst_flop.cell.name
+                ),
+                "control_cell": c.control_cell,
+                "control_cell_type": c.control_cell_type,
+                "control_pin": c.control_pin,
+                "control_kind": c.control_kind,
+                "async_per_sdc": True,
+            }
+        )
+    out.sort(
+        key=lambda e: (
+            str(e["src_flop"]),
+            str(e["dst_flop"]),
+            str(e["control_cell"]),
+            str(e["control_pin"]),
         )
     )
     return out

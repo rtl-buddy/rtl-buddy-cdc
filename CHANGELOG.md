@@ -20,6 +20,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uv run python scripts/gen_fixture_docs.py`; `--check` mode is in
   place for a future CI drift sentinel.
 
+- **Domain-map schema 1.1: `clock_network_crossings[]`** (#168). New
+  top-level list capturing flop→flop relationships that travel via
+  the clock network — a foreign-domain flop driving a clock-mux
+  select or ICG enable whose output reaches another flop's CLK pin.
+  Same hazard CDC-010 already detects, exposed as a structural
+  parallel to `crossings[]` so consumers can render the edge that
+  the data-fanout walker can't see. Each entry carries
+  `src_flop` / `dst_flop` (hier paths), `src_clock` / `dst_clock`,
+  the gating cell triple (`control_cell`, `control_cell_type`,
+  `control_pin`), and `control_kind` ∈ {`mux-select`,
+  `gate-enable`}. `async_per_sdc` is always `true` — the walker
+  only emits pairs where the source domain is async to *every*
+  clock-input domain of the controlled cell, mirroring CDC-010's
+  firing condition. Lives in a new module
+  `src/rtl_buddy_cdc/clock_network.py` (function
+  `find_clock_network_crossings`) so it stays separate from the
+  rule pack's `Violation` surface while reusing the same
+  structural helpers via import from `rules.py`. Schema bump is
+  additive — v1.0 consumers ignore the field, and the renderer
+  treats absence as empty. The mermaid renderer in
+  `rtl_buddy_cdc.render` draws each entry with a thick arrow and
+  a `⚡ clk-ctrl (mux S)` / `(gate EN)` label so the CDC-010
+  hazard is visible at a glance.
+
+### Fixed
+
+- **Domain-map: flop and crossing clock names canonicalise through
+  the SDC port→clock table** (#166). Previously, when
+  `trace_clock_root` walked through a clock mux and stopped at a
+  literal port name (e.g. `ck0_b`), both the `FlopDomain.clock`
+  field and the `Crossing.dst_clock` it flowed into carried the
+  raw port name instead of the SDC-declared clock name (`ck0`
+  from `create_clock -name ck0 [get_ports {ck0_a ck0_b}]`). The
+  `--emit-domain-map` JSON's `flop_domains[].clock` and
+  `crossings[].dst_clock` then disagreed with each other on the
+  same physical domain, and external consumers couldn't join
+  either back to the `clocks[]` table. Both `assign_domains` and
+  `find_crossings` now take an optional `clock_for_port=` keyword
+  (passed `ClockSpec.clock_for_port` at the CLI boundary) and
+  normalise the trace result before constructing each `FlopDomain`
+  / `Crossing` record. Rule-pack behaviour is unchanged (the rules
+  already perform their own port-domain comparison via
+  `set_clock_groups`); the bug only surfaced in the consumer-facing
+  artefact. Regression pinned by
+  `tests/test_bad_async_clock_mux.py::test_q_out_flop_domain_normalises_to_sdc_clock_name`
+  and `test_crossings_dst_clock_normalises_to_sdc_clock_name`.
+
 - **`rtl-buddy-cdc render` subcommand** (#162). New CLI command that
   consumes a v1.0 domain map (as produced by
   `--emit-domain-map`) and emits a GitHub-renderable
