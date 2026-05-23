@@ -81,6 +81,7 @@ class _RuleContext:
     reader_counts: dict[Bit, int]
     user_syncs: frozenset[str]
     user_grays: frozenset[str]
+    user_statics: frozenset[str]
     # Reverse index used by ``_sync_chain_depth``: for every flop whose
     # ``D`` is exactly one bit wide, map that bit to the flop. The
     # chain walker previously did ``for f in find_flops(module):`` per
@@ -160,6 +161,7 @@ def _build_context(
         reader_counts=reader_counts,
         user_syncs=frozenset(user_sync_flop_names(module)),
         user_grays=frozenset(user_gray_flop_names(module)),
+        user_statics=frozenset(user_static_flop_names(module)),
         d_bit_to_single_bit_flop=d_bit_to_single_bit_flop,
         reset_sync_flop_names=frozenset(
             user_reset_sync_flop_names(module, hints=reset_hints)
@@ -270,6 +272,47 @@ def user_gray_flop_names(module: Module) -> set[str]:
     out: set[str] = set()
     for f in find_flops(module):
         if any(isinstance(b, int) and b in gray_bits for b in f.q):
+            out.add(f.cell.name)
+    return out
+
+
+# Quasi-static signals: configuration / mode bits programmed once at
+# boot and held constant during the operating window. Structurally
+# they're cross-domain crossings without a synchroniser, but the
+# metastability failure mode the CDC rules target (transitioning
+# value sampled mid-flight) cannot occur — the value is not
+# transitioning. Attach to the source-side flop's wire/reg
+# declaration::
+#
+#     (* cdc_static *) logic [7:0] cfg_mode_q;
+#
+# Suppresses CDC-001 / CDC-002 / CDC-003 / CDC-004 on crossings that
+# *originate* at the tagged flop. Same Yosys attribute-on-netname
+# placement convention as ``cdc_sync`` / ``cdc_gray``. CDC-005
+# (reconvergence) deliberately stays live — reconvergent fanout of a
+# static signal merged with a non-static signal is still a coherent
+# hazard worth surfacing.
+USER_STATIC_ATTRS: frozenset[str] = frozenset({"cdc_static", "quasi_static"})
+
+
+def user_static_flop_names(module: Module) -> set[str]:
+    """Cell names of source flops whose Q is named via a wire annotated
+    with ``(* cdc_static *)`` (or :data:`USER_STATIC_ATTRS` aliases).
+    CDC-001 / CDC-002 / CDC-003 / CDC-004 skip crossings whose source
+    flop is in this set — the user is asserting the value is
+    runtime-constant during operation, so cross-domain sampling is
+    coherent by construction."""
+    static_bits: set[Bit] = set()
+    for nn in module.netnames.values():
+        if USER_STATIC_ATTRS & set(nn.attributes):
+            for b in nn.bits:
+                if isinstance(b, int):
+                    static_bits.add(b)
+    if not static_bits:
+        return set()
+    out: set[str] = set()
+    for f in find_flops(module):
+        if any(isinstance(b, int) and b in static_bits for b in f.q):
             out.add(f.cell.name)
     return out
 
@@ -686,6 +729,8 @@ def check_cdc_001(
             continue  # CDC-011 owns crossings from unconstrained ports
         if c.dst_flop.cell.name in ctx.user_syncs:
             continue  # user vouches for the synchronizer shape
+        if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
+            continue  # source is (* cdc_static *) — held constant, no metastability
         depth = _sync_chain_depth(
             module,
             c.dst_flop,
@@ -745,6 +790,8 @@ def check_cdc_002(
             continue  # CDC-011 owns crossings from unconstrained ports
         if c.dst_flop.cell.name in ctx.user_syncs:
             continue
+        if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
+            continue  # source is (* cdc_static *) — held constant, no metastability
         depth = _sync_chain_depth(
             module,
             c.dst_flop,
@@ -807,6 +854,8 @@ def check_cdc_003(
             continue
         if c.dst_flop.cell.name in ctx.user_syncs:
             continue
+        if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
+            continue  # source is (* cdc_static *) — held constant, no metastability
         depth = _sync_chain_depth(
             module,
             c.dst_flop,
@@ -1126,6 +1175,11 @@ def check_cdc_004(
             continue
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_grays:
             # Explicit user assertion of gray-coding.
+            continue
+        if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
+            # Explicit user assertion of quasi-static source: the bus
+            # is held constant during the operating window, so dst-side
+            # sampling is coherent regardless of width.
             continue
         if (
             c.src_flop is not None
