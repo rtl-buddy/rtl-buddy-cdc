@@ -47,8 +47,14 @@ def test_render_mermaid_uses_dashed_edge_for_async_crossing() -> None:
     out = render_mermaid(map_data)
 
     # All three handshake crossings are async-per-SDC; each must surface
-    # the warning marker.
-    async_edges = [line for line in out.splitlines() if "⚠ async" in line]
+    # the warning marker. Exclude the legend's demonstrator async edge
+    # — it has the same ``⚠ async`` motif but connects placeholder
+    # ``lg_async_*`` ids, not real crossing endpoints.
+    async_edges = [
+        line
+        for line in out.splitlines()
+        if "⚠ async" in line and "lg_async" not in line
+    ]
     assert len(async_edges) == len(map_data["crossings"])
     # Edge syntax — dashed, with width annotation.
     for line in async_edges:
@@ -84,7 +90,11 @@ def test_render_mermaid_skips_warning_for_synchronous_crossings() -> None:
         ],
     }
     out = render_mermaid(map_data)
-    assert "⚠ async" not in out
+    # The sync crossing must not be tagged with the ⚠ async marker.
+    # Exclude the legend's demonstrator edge (placeholder ``lg_async_*``
+    # ids carry the motif but aren't real crossings) from the search.
+    crossing_lines = [line for line in out.splitlines() if "lg_async" not in line]
+    assert all("⚠ async" not in line for line in crossing_lines)
     assert " --- " in out
 
 

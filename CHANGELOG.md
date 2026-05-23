@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-fixture `README.md` with mermaid clock-domain diagrams**
+  (#164). Every fixture under `tests/fixtures/` now has a generated
+  README that browsers see when navigating the directory on GitHub:
+  prose pulled from the leading `//` block of the primary `.sv`
+  file, a facts line (status / top / clocks / crossings), and the
+  `## Clock-domain map` rendered via `rtl-buddy-cdc render`. The
+  one hand-written README (`ip_cdc_handshake/`) is preserved by
+  detecting the absence of the generator tag. Regenerate with
+  `uv run python scripts/gen_fixture_docs.py`; `--check` mode is in
+  place for a future CI drift sentinel.
+
 - **Domain-map schema 1.1: `clock_network_crossings[]`** (#168). New
   top-level list capturing flop→flop relationships that travel via
   the clock network — a foreign-domain flop driving a clock-mux
@@ -55,8 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   artefact. Regression pinned by
   `tests/test_bad_async_clock_mux.py::test_q_out_flop_domain_normalises_to_sdc_clock_name`
   and `test_crossings_dst_clock_normalises_to_sdc_clock_name`.
-
-### Added
 
 - **`rtl-buddy-cdc render` subcommand** (#162). New CLI command that
   consumes a v1.0 domain map (as produced by
