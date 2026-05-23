@@ -20,15 +20,16 @@ Without the attribute, RDC-002 would fire on the consumer flop (`q_out`) because
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_b09e33f7["$procdff$13<br/><i>sv:34</i>"]
-    f_f2ac6273["$procdff$18<br/><i>sv:26</i>"]
-    f_40b31673["$procdff$8<br/><i>sv:42</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_clk
+    p_in_upstream_rst_n[/"upstream_rst_n⟨in⟩"/]:::ckcls_clk
+    f_b09e33f7["$procdff$13<br/><i>sv:34</i>"]:::ckcls_clk
+    f_f2ac6273["$procdff$18<br/><i>sv:26</i>"]:::ckcls_clk
+    f_40b31673["$procdff$8<br/><i>sv:42</i>"]:::ckcls_clk
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_upstream_rst_n[/"upstream_rst_n⟨in⟩"/]:::port
-  p_in_d_in --> f_b09e33f7
-  p_in_upstream_rst_n --> f_b09e33f7
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

@@ -16,20 +16,44 @@ Positive-case fixture for CDC-009: the textbook pulse-stretcher fix from issue #
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 20.0 ns"]
     direction TB
-    f_eadb02f4["$procdff$23<br/><i>sv:43</i>"]
-    f_836e8ed1["$procdff$28<br/><i>sv:43</i>"]
+    f_eadb02f4["$procdff$23<br/><i>sv:43</i>"]:::ckcls_dst_clk
+    f_836e8ed1["$procdff$28<br/><i>sv:43</i>"]:::ckcls_dst_clk
   end
   subgraph clk_src_clk["src_clk · 2.0 ns"]
     direction TB
-    f_a0a32ccb["$procdff$33<br/><i>sv:37</i>"]
-    f_1e80326e["$procdff$38<br/><i>sv:30</i>"]
-    f_33a91a4f["$procdff$43<br/><i>sv:18</i>"]
-    f_249d48de["$procdff$48<br/><i>sv:18</i>"]
+    p_in_event_in[/"event_in⟨in⟩"/]:::ckcls_src_clk
+    f_a0a32ccb["$procdff$33<br/><i>sv:37</i>"]:::ckcls_src_clk
+    f_1e80326e["$procdff$38<br/><i>sv:30</i>"]:::ckcls_src_clk
+    f_33a91a4f["$procdff$43<br/><i>sv:18</i>"]:::ckcls_src_clk
+    f_249d48de["$procdff$48<br/><i>sv:18</i>"]:::ckcls_src_clk
   end
-  p_in_event_in[/"event_in⟨in⟩"/]:::port
-  p_in_event_in --> f_a0a32ccb
   f_a0a32ccb -. "⚠ async · 1b" .-> f_836e8ed1
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_dst_clk["flop · dst_clk (20.0 ns)"]:::ckcls_dst_clk
+    lg_clk_src_clk["flop · src_clk (2.0 ns)"]:::ckcls_src_clk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  style clk_src_clk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_dst_clk font-size:11px
+  style lg_clk_src_clk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_src_clk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

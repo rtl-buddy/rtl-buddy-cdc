@@ -20,19 +20,18 @@ RDC-004 must fire once on `q_out` (the comb-driven consumer). No other rule shou
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_b0dd9302["$procdff$12<br/><i>sv:38</i>"]
-    f_5ec4b5c9["$procdff$17<br/><i>sv:24</i>"]
-    f_089207c6["$procdff$22<br/><i>sv:24</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_clk
+    p_in_global_rst_n[/"global_rst_n⟨in⟩"/]:::ckcls_clk
+    p_in_kill_a[/"kill_a⟨in⟩"/]:::ckcls_clk
+    p_in_kill_b[/"kill_b⟨in⟩"/]:::ckcls_clk
+    f_b0dd9302["$procdff$12<br/><i>sv:38</i>"]:::ckcls_clk
+    f_5ec4b5c9["$procdff$17<br/><i>sv:24</i>"]:::ckcls_clk
+    f_089207c6["$procdff$22<br/><i>sv:24</i>"]:::ckcls_clk
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_global_rst_n[/"global_rst_n⟨in⟩"/]:::port
-  p_in_kill_a[/"kill_a⟨in⟩"/]:::port
-  p_in_kill_b[/"kill_b⟨in⟩"/]:::port
-  p_in_d_in --> f_b0dd9302
-  p_in_global_rst_n --> f_b0dd9302
-  p_in_kill_a --> f_b0dd9302
-  p_in_kill_b --> f_b0dd9302
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

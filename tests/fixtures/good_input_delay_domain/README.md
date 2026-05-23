@@ -18,14 +18,15 @@ A 2FF synchronizer in dst_clk has its D pin driven by combinational logic of two
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 7.5 ns"]
     direction TB
-    f_c4d40458["$procdff$10<br/><i>sv:26</i>"]
-    f_9befd40e["$procdff$15<br/><i>sv:21</i>"]
+    p_in_a[/"a⟨in⟩"/]:::ckcls_dst_clk
+    p_in_b[/"b⟨in⟩"/]:::ckcls_dst_clk
+    f_c4d40458["$procdff$10<br/><i>sv:26</i>"]:::ckcls_dst_clk
+    f_9befd40e["$procdff$15<br/><i>sv:21</i>"]:::ckcls_dst_clk
   end
-  p_in_a[/"a⟨in⟩"/]:::port
-  p_in_b[/"b⟨in⟩"/]:::port
-  p_in_a --> f_c4d40458
-  p_in_b --> f_c4d40458
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

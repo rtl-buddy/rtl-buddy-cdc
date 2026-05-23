@@ -29,12 +29,14 @@ Without RDC-002 this slips through every other rule in the pack (no clock crossi
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_e73b549a["$procdff$11<br/><i>sv:30</i>"]
-    f_5138422d["$procdff$6<br/><i>sv:35</i>"]
+    p_in_raw_rst_n[/"raw_rst_n⟨in⟩"/]:::ckcls_clk
+    f_e73b549a["$procdff$11<br/><i>sv:30</i>"]:::ckcls_clk
+    f_5138422d["$procdff$6<br/><i>sv:35</i>"]:::ckcls_clk
   end
-  p_in_raw_rst_n[/"raw_rst_n⟨in⟩"/]:::port
-  p_in_raw_rst_n --> f_e73b549a
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

@@ -18,13 +18,15 @@ The reset source is selected by a mux, then passed through a destination-clock r
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_051d7d1e["$procdff$10<br/><i>sv:31</i>"]
-    f_a07274a5["$procdff$15<br/><i>sv:21</i>"]
-    f_eb98a246["$procdff$20<br/><i>sv:21</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_clk
+    f_051d7d1e["$procdff$10<br/><i>sv:31</i>"]:::ckcls_clk
+    f_a07274a5["$procdff$15<br/><i>sv:21</i>"]:::ckcls_clk
+    f_eb98a246["$procdff$20<br/><i>sv:21</i>"]:::ckcls_clk
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_d_in --> f_051d7d1e
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

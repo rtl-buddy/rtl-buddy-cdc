@@ -18,22 +18,45 @@ The load request is synchronized into dst_clk before it controls the destination
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 10.0 ns"]
     direction TB
-    f_345db668["$procdff$13<br/><i>sv:43</i>"]
-    f_ceb42027["$procdff$18<br/><i>sv:33</i>"]
-    f_6c0ad9de["$procdff$23<br/><i>sv:33</i>"]
+    f_345db668["$procdff$13<br/><i>sv:43</i>"]:::ckcls_dst_clk
+    f_ceb42027["$procdff$18<br/><i>sv:33</i>"]:::ckcls_dst_clk
+    f_6c0ad9de["$procdff$23<br/><i>sv:33</i>"]:::ckcls_dst_clk
   end
   subgraph clk_src_clk["src_clk · 4.0 ns"]
     direction TB
-    f_b8d18228["$procdff$28<br/><i>sv:21</i>"]
-    f_fc00a429["$procdff$33<br/><i>sv:21</i>"]
+    p_in_src_data[/"src_data⟨in⟩"/]:::ckcls_src_clk
+    p_in_src_req[/"src_req⟨in⟩"/]:::ckcls_src_clk
+    f_b8d18228["$procdff$28<br/><i>sv:21</i>"]:::ckcls_src_clk
+    f_fc00a429["$procdff$33<br/><i>sv:21</i>"]:::ckcls_src_clk
   end
-  p_in_src_data[/"src_data⟨in⟩"/]:::port
-  p_in_src_req[/"src_req⟨in⟩"/]:::port
-  p_in_src_data --> f_b8d18228
-  p_in_src_req --> f_b8d18228
   f_b8d18228 -. "⚠ async · 8b" .-> f_345db668
   f_fc00a429 -. "⚠ async · 1b" .-> f_ceb42027
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_dst_clk["flop · dst_clk (10.0 ns)"]:::ckcls_dst_clk
+    lg_clk_src_clk["flop · src_clk (4.0 ns)"]:::ckcls_src_clk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  style clk_src_clk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_dst_clk font-size:11px
+  style lg_clk_src_clk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_src_clk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

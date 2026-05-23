@@ -18,15 +18,41 @@ The flops stay as ``$adff`` (we don't lower them: ``find_flops`` only recognises
 flowchart LR
   subgraph clk_ck0["ck0 · 10.0 ns"]
     direction TB
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_ck0
   end
   subgraph clk_ck1["ck1 · 13.3 ns"]
     direction TB
-    f_297e88af["$procdff$15<br/><i>sv:25</i>"]
+    p_in_sel_d[/"sel_d⟨in⟩"/]:::ckcls_ck1
+    f_297e88af["$procdff$15<br/><i>sv:25</i>"]:::ckcls_ck1
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_sel_d[/"sel_d⟨in⟩"/]:::port
-  p_in_sel_d --> f_297e88af
-  classDef port fill:#f4f4f5,stroke:#71717a
+  f_297e88af ==> |"⚡ clk-ctrl (mux S)"| f_b78ac293
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_ck0["flop · ck0 (10.0 ns)"]:::ckcls_ck0
+    lg_clk_ck1["flop · ck1 (13.3 ns)"]:::ckcls_ck1
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_ck0 fill:none,stroke:#cbd5e1
+  style clk_ck1 fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_ck0 font-size:11px
+  style lg_clk_ck1 font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  linkStyle 0 stroke:#b45309,stroke-width:2.5px,color:#b45309
+  classDef ckcls_ck0 fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_ck1 fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

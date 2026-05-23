@@ -20,20 +20,19 @@ RDC-004 must NOT fire (the consumer's ARST is directly driven by `comb_rst_reg`'
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_aaf47133["$procdff$14<br/><i>sv:39</i>"]
-    f_400c5807["$procdff$19<br/><i>sv:34</i>"]
-    f_5ee7dc3e["$procdff$24<br/><i>sv:22</i>"]
-    f_9babf574["$procdff$29<br/><i>sv:22</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_clk
+    p_in_global_rst_n[/"global_rst_n⟨in⟩"/]:::ckcls_clk
+    p_in_kill_a[/"kill_a⟨in⟩"/]:::ckcls_clk
+    p_in_kill_b[/"kill_b⟨in⟩"/]:::ckcls_clk
+    f_aaf47133["$procdff$14<br/><i>sv:39</i>"]:::ckcls_clk
+    f_400c5807["$procdff$19<br/><i>sv:34</i>"]:::ckcls_clk
+    f_5ee7dc3e["$procdff$24<br/><i>sv:22</i>"]:::ckcls_clk
+    f_9babf574["$procdff$29<br/><i>sv:22</i>"]:::ckcls_clk
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_global_rst_n[/"global_rst_n⟨in⟩"/]:::port
-  p_in_kill_a[/"kill_a⟨in⟩"/]:::port
-  p_in_kill_b[/"kill_b⟨in⟩"/]:::port
-  p_in_d_in --> f_aaf47133
-  p_in_global_rst_n --> f_aaf47133
-  p_in_kill_a --> f_aaf47133
-  p_in_kill_b --> f_aaf47133
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

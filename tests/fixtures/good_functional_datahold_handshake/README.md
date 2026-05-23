@@ -29,26 +29,49 @@ CDC-012 must NOT fire — the existence of a src-domain flop (ack_meta / ack_syn
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 10.0 ns"]
     direction TB
-    f_e412e3e3["$auto$ff.cc:337:slice$62<br/><i>sv:64</i>"]
-    f_51789bd6["$procdff$31<br/><i>sv:64</i>"]
-    f_10caa0a0["$procdff$36<br/><i>sv:64</i>"]
-    f_51497212["$procdff$41<br/><i>sv:64</i>"]
+    f_e412e3e3["$auto$ff.cc:337:slice$62<br/><i>sv:64</i>"]:::ckcls_dst_clk
+    f_51789bd6["$procdff$31<br/><i>sv:64</i>"]:::ckcls_dst_clk
+    f_10caa0a0["$procdff$36<br/><i>sv:64</i>"]:::ckcls_dst_clk
+    f_51497212["$procdff$41<br/><i>sv:64</i>"]:::ckcls_dst_clk
   end
   subgraph clk_src_clk["src_clk · 4.0 ns"]
     direction TB
-    f_c590979a["$auto$ff.cc:337:slice$63<br/><i>sv:45</i>"]
-    f_318de754["$auto$ff.cc:337:slice$66<br/><i>sv:55</i>"]
-    f_6ffe2d4b["$procdff$56<br/><i>sv:33</i>"]
-    f_549c7fed["$procdff$61<br/><i>sv:33</i>"]
+    p_in_src_data[/"src_data⟨in⟩"/]:::ckcls_src_clk
+    p_in_src_req[/"src_req⟨in⟩"/]:::ckcls_src_clk
+    f_c590979a["$auto$ff.cc:337:slice$63<br/><i>sv:45</i>"]:::ckcls_src_clk
+    f_318de754["$auto$ff.cc:337:slice$66<br/><i>sv:55</i>"]:::ckcls_src_clk
+    f_6ffe2d4b["$procdff$56<br/><i>sv:33</i>"]:::ckcls_src_clk
+    f_549c7fed["$procdff$61<br/><i>sv:33</i>"]:::ckcls_src_clk
   end
-  p_in_src_data[/"src_data⟨in⟩"/]:::port
-  p_in_src_req[/"src_req⟨in⟩"/]:::port
-  p_in_src_data --> f_c590979a
-  p_in_src_req --> f_c590979a
   f_c590979a -. "⚠ async · 1b" .-> f_10caa0a0
   f_318de754 -. "⚠ async · 8b" .-> f_e412e3e3
   f_51789bd6 -. "⚠ async · 1b" .-> f_6ffe2d4b
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_dst_clk["flop · dst_clk (10.0 ns)"]:::ckcls_dst_clk
+    lg_clk_src_clk["flop · src_clk (4.0 ns)"]:::ckcls_src_clk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  style clk_src_clk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_dst_clk font-size:11px
+  style lg_clk_src_clk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_src_clk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

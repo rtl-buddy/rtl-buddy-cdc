@@ -18,7 +18,7 @@ Input `in` has no `set_input_delay -clock` typing and is captured by a flop whos
 flowchart LR
   subgraph clk_clk_a["clk_a · 10.0 ns"]
     direction TB
-    f_ab50e9c3["$procdff$4<br/><i>sv:20</i>"]
+    f_ab50e9c3["$procdff$4<br/><i>sv:20</i>"]:::ckcls_clk_a
   end
   subgraph clk_clk_b["clk_b · 7.5 ns"]
     direction TB
@@ -26,7 +26,37 @@ flowchart LR
   subgraph clk_clk_c["clk_c · 5.0 ns"]
     direction TB
   end
-  classDef port fill:#f4f4f5,stroke:#71717a
+  p_in_in -. "⚠ async · 1b" .-> f_ab50e9c3
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_clk_a["flop · clk_a (10.0 ns)"]:::ckcls_clk_a
+    lg_clk_clk_b["flop · clk_b (7.5 ns)"]:::ckcls_clk_b
+    lg_clk_clk_c["flop · clk_c (5.0 ns)"]:::ckcls_clk_c
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_clk_a fill:none,stroke:#cbd5e1
+  style clk_clk_b fill:none,stroke:#cbd5e1
+  style clk_clk_c fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_clk_a font-size:11px
+  style lg_clk_clk_b font-size:11px
+  style lg_clk_clk_c font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_clk_a fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_clk_b fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_clk_c fill:#d1fae5,stroke:#047857,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

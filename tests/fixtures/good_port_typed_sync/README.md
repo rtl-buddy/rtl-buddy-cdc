@@ -16,14 +16,40 @@ Positive counterpart to bad_port_no_sync: same scenario but with a proper 2FF sy
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 7.5 ns"]
     direction TB
-    f_84568b03["$procdff$14<br/><i>sv:15</i>"]
-    f_b437896e["$procdff$9<br/><i>sv:21</i>"]
+    f_84568b03["$procdff$14<br/><i>sv:15</i>"]:::ckcls_dst_clk
+    f_b437896e["$procdff$9<br/><i>sv:21</i>"]:::ckcls_dst_clk
   end
   subgraph clk_foreign_clk["foreign_clk · 12.0 ns"]
     direction TB
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_foreign_clk
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  classDef port fill:#f4f4f5,stroke:#71717a
+  p_in_d_in -. "⚠ async · 1b" .-> f_84568b03
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_dst_clk["flop · dst_clk (7.5 ns)"]:::ckcls_dst_clk
+    lg_clk_foreign_clk["flop · foreign_clk (12.0 ns)"]:::ckcls_foreign_clk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  style clk_foreign_clk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_dst_clk font-size:11px
+  style lg_clk_foreign_clk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_foreign_clk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

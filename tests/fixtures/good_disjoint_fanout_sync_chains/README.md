@@ -20,23 +20,47 @@ Phase 2 of CDC-005 (issue #33) introduces a forward-cone reconvergence filter: i
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 7.5 ns"]
     direction TB
-    f_b79dc7b5["$procdff$19<br/><i>sv:68</i>"]
-    f_eaefd2ed["$procdff$24<br/><i>sv:64</i>"]
-    f_07deb853["$procdff$29<br/><i>sv:55</i>"]
-    f_ced1dcde["$procdff$34<br/><i>sv:51</i>"]
-    f_0de7e69b["$procdff$39<br/><i>sv:47</i>"]
-    f_8829bbf0["$procdff$44<br/><i>sv:43</i>"]
+    f_b79dc7b5["$procdff$19<br/><i>sv:68</i>"]:::ckcls_dst_clk
+    f_eaefd2ed["$procdff$24<br/><i>sv:64</i>"]:::ckcls_dst_clk
+    f_07deb853["$procdff$29<br/><i>sv:55</i>"]:::ckcls_dst_clk
+    f_ced1dcde["$procdff$34<br/><i>sv:51</i>"]:::ckcls_dst_clk
+    f_0de7e69b["$procdff$39<br/><i>sv:47</i>"]:::ckcls_dst_clk
+    f_8829bbf0["$procdff$44<br/><i>sv:43</i>"]:::ckcls_dst_clk
   end
   subgraph clk_src_clk["src_clk · 10.0 ns"]
     direction TB
-    f_04439607["$procdff$49<br/><i>sv:27</i>"]
-    f_717c5dcf["$procdff$54<br/><i>sv:27</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_src_clk
+    f_04439607["$procdff$49<br/><i>sv:27</i>"]:::ckcls_src_clk
+    f_717c5dcf["$procdff$54<br/><i>sv:27</i>"]:::ckcls_src_clk
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_d_in --> f_04439607
   f_04439607 -. "⚠ async · 1b" .-> f_8829bbf0
   f_717c5dcf -. "⚠ async · 1b" .-> f_ced1dcde
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_dst_clk["flop · dst_clk (7.5 ns)"]:::ckcls_dst_clk
+    lg_clk_src_clk["flop · src_clk (10.0 ns)"]:::ckcls_src_clk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  style clk_src_clk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_dst_clk font-size:11px
+  style lg_clk_src_clk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_src_clk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

@@ -23,31 +23,67 @@ All four links are direct flop-to-flop captures (correct for source-sync timing 
 flowchart LR
   subgraph clk_ck_a["ck_a · 10.0 ns"]
     direction TB
-    f_238065f3["u_a.$procdff$21<br/><i>sv:25</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_ck_a
+    f_238065f3["u_a.$procdff$21<br/><i>sv:25</i>"]:::ckcls_ck_a
   end
   subgraph clk_ck_b0["ck_b0 · 10.0 ns"]
     direction TB
-    f_bafd2ae7["u_b0.$procdff$16<br/><i>sv:44</i>"]
+    f_bafd2ae7["u_b0.$procdff$16<br/><i>sv:44</i>"]:::ckcls_ck_b0
   end
   subgraph clk_ck_b1["ck_b1 · 10.0 ns"]
     direction TB
-    f_cef32689["u_b1.$procdff$16<br/><i>sv:44</i>"]
+    f_cef32689["u_b1.$procdff$16<br/><i>sv:44</i>"]:::ckcls_ck_b1
   end
   subgraph clk_ck_c0["ck_c0 · 10.0 ns"]
     direction TB
-    f_853e64c7["u_c0.$procdff$11<br/><i>sv:63</i>"]
+    f_853e64c7["u_c0.$procdff$11<br/><i>sv:63</i>"]:::ckcls_ck_c0
   end
   subgraph clk_ck_c1["ck_c1 · 10.0 ns"]
     direction TB
-    f_cba37495["u_c1.$procdff$11<br/><i>sv:63</i>"]
+    f_cba37495["u_c1.$procdff$11<br/><i>sv:63</i>"]:::ckcls_ck_c1
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_d_in --> f_238065f3
   f_238065f3 -. "⚠ async · 1b" .-> f_bafd2ae7
   f_238065f3 -. "⚠ async · 1b" .-> f_cef32689
   f_bafd2ae7 -. "⚠ async · 1b" .-> f_853e64c7
   f_cef32689 -. "⚠ async · 1b" .-> f_cba37495
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_ck_a["flop · ck_a (10.0 ns)"]:::ckcls_ck_a
+    lg_clk_ck_b0["flop · ck_b0 (10.0 ns)"]:::ckcls_ck_b0
+    lg_clk_ck_b1["flop · ck_b1 (10.0 ns)"]:::ckcls_ck_b1
+    lg_clk_ck_c0["flop · ck_c0 (10.0 ns)"]:::ckcls_ck_c0
+    lg_clk_ck_c1["flop · ck_c1 (10.0 ns)"]:::ckcls_ck_c1
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_ck_a fill:none,stroke:#cbd5e1
+  style clk_ck_b0 fill:none,stroke:#cbd5e1
+  style clk_ck_b1 fill:none,stroke:#cbd5e1
+  style clk_ck_c0 fill:none,stroke:#cbd5e1
+  style clk_ck_c1 fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_ck_a font-size:11px
+  style lg_clk_ck_b0 font-size:11px
+  style lg_clk_ck_b1 font-size:11px
+  style lg_clk_ck_c0 font-size:11px
+  style lg_clk_ck_c1 font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_ck_a fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_ck_b0 fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_ck_b1 fill:#d1fae5,stroke:#047857,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_ck_c0 fill:#ffe4e6,stroke:#be123c,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_ck_c1 fill:#ede9fe,stroke:#6d28d9,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

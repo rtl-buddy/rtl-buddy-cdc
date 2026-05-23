@@ -22,22 +22,46 @@ Paired with `bad_reconvergent_sync` (must fire) and with `good_disjoint_fanout_s
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 7.5 ns"]
     direction TB
-    f_445f7e9e["$procdff$19<br/><i>sv:62</i>"]
-    f_8a09f3d1["$procdff$24<br/><i>sv:58</i>"]
-    f_c41cd9ec["$procdff$29<br/><i>sv:49</i>"]
-    f_01d11ae8["$procdff$34<br/><i>sv:45</i>"]
-    f_dcc1b3de["$procdff$39<br/><i>sv:41</i>"]
-    f_d4506010["$procdff$44<br/><i>sv:37</i>"]
+    f_445f7e9e["$procdff$19<br/><i>sv:62</i>"]:::ckcls_dst_clk
+    f_8a09f3d1["$procdff$24<br/><i>sv:58</i>"]:::ckcls_dst_clk
+    f_c41cd9ec["$procdff$29<br/><i>sv:49</i>"]:::ckcls_dst_clk
+    f_01d11ae8["$procdff$34<br/><i>sv:45</i>"]:::ckcls_dst_clk
+    f_dcc1b3de["$procdff$39<br/><i>sv:41</i>"]:::ckcls_dst_clk
+    f_d4506010["$procdff$44<br/><i>sv:37</i>"]:::ckcls_dst_clk
   end
   subgraph clk_src_clk["src_clk · 10.0 ns"]
     direction TB
-    f_bb2540ab["$procdff$49<br/><i>sv:29</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_src_clk
+    f_bb2540ab["$procdff$49<br/><i>sv:29</i>"]:::ckcls_src_clk
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_d_in --> f_bb2540ab
   f_bb2540ab -. "⚠ async · 1b" .-> f_01d11ae8
   f_bb2540ab -. "⚠ async · 1b" .-> f_d4506010
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_dst_clk["flop · dst_clk (7.5 ns)"]:::ckcls_dst_clk
+    lg_clk_src_clk["flop · src_clk (10.0 ns)"]:::ckcls_src_clk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  style clk_src_clk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_dst_clk font-size:11px
+  style lg_clk_src_clk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_src_clk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

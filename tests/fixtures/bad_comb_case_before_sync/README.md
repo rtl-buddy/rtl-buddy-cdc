@@ -16,27 +16,49 @@ Negative-case fixture: the bad_comb_before_sync shape but written with an always
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 7.5 ns"]
     direction TB
-    f_ef470eaa["$procdff$14<br/><i>sv:45</i>"]
-    f_cf7a8a3b["$procdff$19<br/><i>sv:45</i>"]
+    f_ef470eaa["$procdff$14<br/><i>sv:45</i>"]:::ckcls_dst_clk
+    f_cf7a8a3b["$procdff$19<br/><i>sv:45</i>"]:::ckcls_dst_clk
   end
   subgraph clk_src_clk["src_clk · 10.0 ns"]
     direction TB
-    f_19be093e["$procdff$24<br/><i>sv:21</i>"]
-    f_9ee68cdd["$procdff$29<br/><i>sv:21</i>"]
-    f_0ebcf002["$procdff$34<br/><i>sv:21</i>"]
+    p_in_a[/"a⟨in⟩"/]:::ckcls_src_clk
+    p_in_b[/"b⟨in⟩"/]:::ckcls_src_clk
+    p_in_c[/"c⟨in⟩"/]:::ckcls_src_clk
+    p_in_sel[/"sel⟨in⟩"/]:::ckcls_src_clk
+    f_19be093e["$procdff$24<br/><i>sv:21</i>"]:::ckcls_src_clk
+    f_9ee68cdd["$procdff$29<br/><i>sv:21</i>"]:::ckcls_src_clk
+    f_0ebcf002["$procdff$34<br/><i>sv:21</i>"]:::ckcls_src_clk
   end
-  p_in_a[/"a⟨in⟩"/]:::port
-  p_in_b[/"b⟨in⟩"/]:::port
-  p_in_c[/"c⟨in⟩"/]:::port
-  p_in_sel[/"sel⟨in⟩"/]:::port
-  p_in_a --> f_19be093e
-  p_in_b --> f_19be093e
-  p_in_c --> f_19be093e
-  p_in_sel --> f_19be093e
+  p_in_sel -. "⚠ async · 1b" .-> f_ef470eaa
   f_19be093e -. "⚠ async · 1b" .-> f_ef470eaa
   f_9ee68cdd -. "⚠ async · 1b" .-> f_ef470eaa
   f_0ebcf002 -. "⚠ async · 1b" .-> f_ef470eaa
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_dst_clk["flop · dst_clk (7.5 ns)"]:::ckcls_dst_clk
+    lg_clk_src_clk["flop · src_clk (10.0 ns)"]:::ckcls_src_clk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  style clk_src_clk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_dst_clk font-size:11px
+  style lg_clk_src_clk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_src_clk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

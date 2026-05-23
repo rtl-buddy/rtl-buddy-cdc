@@ -18,18 +18,42 @@ Two unrelated clock domains, ck_a and ck_b, with a flop→flop wire between them
 flowchart LR
   subgraph clk_ck_a["ck_a · 10.0 ns"]
     direction TB
-    f_0a300c66["$procdff$23<br/><i>sv:25</i>"]
-    f_d868999c["$procdff$28<br/><i>sv:19</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_ck_a
+    f_0a300c66["$procdff$23<br/><i>sv:25</i>"]:::ckcls_ck_a
+    f_d868999c["$procdff$28<br/><i>sv:19</i>"]:::ckcls_ck_a
   end
   subgraph clk_ck_b["ck_b · 7.5 ns"]
     direction TB
-    f_26b875e8["$procdff$13<br/><i>sv:38</i>"]
-    f_a24c8b6f["$procdff$18<br/><i>sv:32</i>"]
+    f_26b875e8["$procdff$13<br/><i>sv:38</i>"]:::ckcls_ck_b
+    f_a24c8b6f["$procdff$18<br/><i>sv:32</i>"]:::ckcls_ck_b
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_d_in --> f_0a300c66
   f_0a300c66 -. "⚠ async · 1b" .-> f_a24c8b6f
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_ck_a["flop · ck_a (10.0 ns)"]:::ckcls_ck_a
+    lg_clk_ck_b["flop · ck_b (7.5 ns)"]:::ckcls_ck_b
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_ck_a fill:none,stroke:#cbd5e1
+  style clk_ck_b fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_ck_a font-size:11px
+  style lg_clk_ck_b font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_ck_a fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_ck_b fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

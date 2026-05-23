@@ -18,20 +18,44 @@ A single source-domain flop fans out to two independent 2FF synchronizer chains 
 flowchart LR
   subgraph clk_dst_clk["dst_clk · 7.5 ns"]
     direction TB
-    f_5114db9c["$procdff$17<br/><i>sv:43</i>"]
-    f_d8981de5["$procdff$22<br/><i>sv:39</i>"]
-    f_aa46d193["$procdff$27<br/><i>sv:35</i>"]
-    f_4539521f["$procdff$32<br/><i>sv:31</i>"]
+    f_5114db9c["$procdff$17<br/><i>sv:43</i>"]:::ckcls_dst_clk
+    f_d8981de5["$procdff$22<br/><i>sv:39</i>"]:::ckcls_dst_clk
+    f_aa46d193["$procdff$27<br/><i>sv:35</i>"]:::ckcls_dst_clk
+    f_4539521f["$procdff$32<br/><i>sv:31</i>"]:::ckcls_dst_clk
   end
   subgraph clk_src_clk["src_clk · 10.0 ns"]
     direction TB
-    f_a544d3be["$procdff$37<br/><i>sv:20</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_src_clk
+    f_a544d3be["$procdff$37<br/><i>sv:20</i>"]:::ckcls_src_clk
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_d_in --> f_a544d3be
   f_a544d3be -. "⚠ async · 1b" .-> f_d8981de5
   f_a544d3be -. "⚠ async · 1b" .-> f_4539521f
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_dst_clk["flop · dst_clk (7.5 ns)"]:::ckcls_dst_clk
+    lg_clk_src_clk["flop · src_clk (10.0 ns)"]:::ckcls_src_clk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_dst_clk fill:none,stroke:#cbd5e1
+  style clk_src_clk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_dst_clk font-size:11px
+  style lg_clk_src_clk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_dst_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_src_clk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

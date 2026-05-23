@@ -16,11 +16,13 @@ Positive-case fixture: an integrated-clock-gate (ICG) drives a flop's CLK pin. T
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_c9004314["$procdff$24<br/><i>sv:27</i>"]
+    p_in_d[/"d⟨in⟩"/]:::ckcls_clk
+    f_c9004314["$procdff$24<br/><i>sv:27</i>"]:::ckcls_clk
   end
-  p_in_d[/"d⟨in⟩"/]:::port
-  p_in_d --> f_c9004314
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

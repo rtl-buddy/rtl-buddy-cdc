@@ -25,7 +25,7 @@ Expected (under both frontends):
 - **Status:** positive — textbook fix; analyzer must stay silent
 - **Top module:** `good_gen_clock_internal_pin`
 - **Clocks:** `ck_div` (20.0 ns), `ck_in` (10.0 ns)
-- **Crossings:** 2 structural (0 async-per-SDC, 2 sync)
+- **Crossings:** 1 structural (0 async-per-SDC, 1 sync)
 
 ## Clock-domain map
 
@@ -34,19 +34,41 @@ Expected (under both frontends):
 flowchart LR
   subgraph clk_ck_div["ck_div · 20.0 ns"]
     direction TB
-    f_0cddb43b["$procdff$12<br/><i>sv:54</i>"]
+    f_0cddb43b["$procdff$12<br/><i>sv:54</i>"]:::ckcls_ck_div
   end
   subgraph clk_ck_in["ck_in · 10.0 ns"]
     direction TB
+    p_in_d[/"d⟨in⟩"/]:::ckcls_ck_in
+    f_1ffd384f["u_c.$procdff$17<br/><i>sv:40</i>"]:::ckcls_ck_in
+    f_fdc80904["u_c.$procdff$22<br/><i>sv:34</i>"]:::ckcls_ck_in
   end
-  subgraph clk_clk["clk (undeclared)"]
-    direction TB
-    f_1ffd384f["u_c.$procdff$17<br/><i>sv:40</i>"]
-    f_fdc80904["u_c.$procdff$22<br/><i>sv:34</i>"]
-  end
-  p_in_d[/"d⟨in⟩"/]:::port
   f_1ffd384f --- f_0cddb43b
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_ck_div["flop · ck_div (20.0 ns)"]:::ckcls_ck_div
+    lg_clk_ck_in["flop · ck_in (10.0 ns)"]:::ckcls_ck_in
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_ck_div fill:none,stroke:#cbd5e1
+  style clk_ck_in fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_ck_div font-size:11px
+  style lg_clk_ck_in font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_ck_div fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_ck_in fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

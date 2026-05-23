@@ -16,18 +16,42 @@ Positive fixture: a /2 clock divider declared via create_generated_clock. The do
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_ac60f560["$procdff$19<br/><i>sv:32</i>"]
-    f_5886f746["$procdff$24<br/><i>sv:25</i>"]
-    f_3a8d22d6["$procdff$29<br/><i>sv:16</i>"]
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_clk
+    f_ac60f560["$procdff$19<br/><i>sv:32</i>"]:::ckcls_clk
+    f_5886f746["$procdff$24<br/><i>sv:25</i>"]:::ckcls_clk
+    f_3a8d22d6["$procdff$29<br/><i>sv:16</i>"]:::ckcls_clk
   end
   subgraph clk_clk_div2["clk_div2 · 20.0 ns"]
     direction TB
-    f_cb10750f["$procdff$14<br/><i>sv:39</i>"]
+    f_cb10750f["$procdff$14<br/><i>sv:39</i>"]:::ckcls_clk_div2
   end
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_d_in --> f_ac60f560
   f_ac60f560 --- f_cb10750f
-  classDef port fill:#f4f4f5,stroke:#71717a
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_clk["flop · clk (10.0 ns)"]:::ckcls_clk
+    lg_clk_clk_div2["flop · clk_div2 (20.0 ns)"]:::ckcls_clk_div2
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_clk fill:none,stroke:#cbd5e1
+  style clk_clk_div2 fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_clk font-size:11px
+  style lg_clk_clk_div2 font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_clk_div2 fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

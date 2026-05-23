@@ -18,12 +18,38 @@ Negative-case fixture for CDC-011 (#97), muxed-clock destination.
 flowchart LR
   subgraph clk_sclk["sclk · 7.5 ns"]
     direction TB
-    f_0fe1f3df["$procdff$3<br/><i>sv:20</i>"]
+    f_0fe1f3df["$procdff$3<br/><i>sv:20</i>"]:::ckcls_sclk
   end
   subgraph clk_tclk["tclk · 10.0 ns"]
     direction TB
   end
-  classDef port fill:#f4f4f5,stroke:#71717a
+  p_in_d -. "⚠ async · 4b" .-> f_0fe1f3df
+  subgraph rb_legend["Legend"]
+    direction LR
+    lg_clk_sclk["flop · sclk (7.5 ns)"]:::ckcls_sclk
+    lg_clk_tclk["flop · tclk (10.0 ns)"]:::ckcls_tclk
+    lg_port[/"port (no clock)"/]:::port_unassigned
+    lg_sync_a[" "]:::ckcls_legend_neutral
+    lg_sync_b[" "]:::ckcls_legend_neutral
+    lg_async_a[" "]:::ckcls_legend_neutral
+    lg_async_b[" "]:::ckcls_legend_neutral
+    lg_sync_a --- |"sync crossing"| lg_sync_b
+    lg_async_a -. "⚠ async crossing" .-> lg_async_b
+  end
+  style clk_sclk fill:none,stroke:#cbd5e1
+  style clk_tclk fill:none,stroke:#cbd5e1
+  style rb_legend fill:none,stroke:#cbd5e1
+  style lg_clk_sclk font-size:11px
+  style lg_clk_tclk font-size:11px
+  style lg_port font-size:11px
+  style lg_sync_a font-size:11px
+  style lg_sync_b font-size:11px
+  style lg_async_a font-size:11px
+  style lg_async_b font-size:11px
+  classDef ckcls_sclk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef ckcls_tclk fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

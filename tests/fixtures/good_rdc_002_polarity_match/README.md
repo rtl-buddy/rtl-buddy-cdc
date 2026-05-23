@@ -25,12 +25,14 @@ RDC-002 must stay silent.
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_771b46b7["$procdff$14<br/><i>sv:19</i>"]
-    f_653bb8c1["$procdff$9<br/><i>sv:24</i>"]
+    p_in_raw_rst_n[/"raw_rst_n⟨in⟩"/]:::ckcls_clk
+    f_771b46b7["$procdff$14<br/><i>sv:19</i>"]:::ckcls_clk
+    f_653bb8c1["$procdff$9<br/><i>sv:24</i>"]:::ckcls_clk
   end
-  p_in_raw_rst_n[/"raw_rst_n⟨in⟩"/]:::port
-  p_in_raw_rst_n --> f_771b46b7
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files

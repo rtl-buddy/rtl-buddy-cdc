@@ -32,19 +32,18 @@ The fixture's purpose is preserved: it still demonstrates the muxed-reset exempt
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
-    f_8c7293c0["$procdff$10<br/><i>sv:48</i>"]
-    f_31ca846e["$procdff$15<br/><i>sv:38</i>"]
-    f_0e234dff["$procdff$20<br/><i>sv:38</i>"]
+    p_in_block_rst_n[/"block_rst_n⟨in⟩"/]:::ckcls_clk
+    p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_clk
+    p_in_global_rst_n[/"global_rst_n⟨in⟩"/]:::ckcls_clk
+    p_in_use_block_rst[/"use_block_rst⟨in⟩"/]:::ckcls_clk
+    f_8c7293c0["$procdff$10<br/><i>sv:48</i>"]:::ckcls_clk
+    f_31ca846e["$procdff$15<br/><i>sv:38</i>"]:::ckcls_clk
+    f_0e234dff["$procdff$20<br/><i>sv:38</i>"]:::ckcls_clk
   end
-  p_in_block_rst_n[/"block_rst_n⟨in⟩"/]:::port
-  p_in_d_in[/"d_in⟨in⟩"/]:::port
-  p_in_global_rst_n[/"global_rst_n⟨in⟩"/]:::port
-  p_in_use_block_rst[/"use_block_rst⟨in⟩"/]:::port
-  p_in_block_rst_n --> f_8c7293c0
-  p_in_d_in --> f_8c7293c0
-  p_in_global_rst_n --> f_8c7293c0
-  p_in_use_block_rst --> f_8c7293c0
-  classDef port fill:#f4f4f5,stroke:#71717a
+  style clk_clk fill:none,stroke:#cbd5e1
+  classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
+  classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a
+  classDef ckcls_legend_neutral fill:#ffffff,stroke:#cbd5e1,stroke-width:1px,color:#0f172a
 ```
 
 ## Files
