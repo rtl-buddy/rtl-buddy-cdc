@@ -697,6 +697,54 @@ def _sync_chain_flops(
     return tuple(out)
 
 
+def _chain_has_inter_stage_comb(head: Flop, ctx: _RuleContext) -> Flop | None:
+    """Detect a comb cell *between* sync stages — i.e. ``head.Q`` feeds
+    a combinational cell whose output drives a flop in ``head``'s own
+    clock domain.
+
+    This is the structural shape CDC-014 fires on and the trigger
+    condition for CDC-001's deferral: when ``_sync_chain_depth`` says
+    "depth = 1" but a follow-on flop *does* exist behind a gate, the
+    "no second-stage synchronizer" message would mislead the user.
+
+    Bounded to a single comb hop. Walking deeper would entangle with
+    CDC-005's reconvergent-fanout filter; this is the load-bearing
+    case (gate immediately following the first stage) and the only
+    one whose framing is unambiguously sync-chain-related.
+
+    Returns the downstream flop if the pattern matches, else ``None``.
+    """
+    if len(head.q) != 1:
+        return None
+    head_q = head.q[0]
+    if not isinstance(head_q, int):
+        return None
+    head_clock = ctx.domains.get(head.cell.name)
+    if head_clock is None:
+        return None
+    for cell_name, _port_name, _idx in ctx.bit_consumers.get(head_q, ()):
+        cell = ctx.module.cells.get(cell_name)
+        if cell is None:
+            continue
+        # Skip flop cells — that's a direct chain extension, handled
+        # by _sync_chain_depth, not the inter-stage-comb pattern.
+        if cell.type in FF_CELL_TYPES:
+            continue
+        # Walk the comb cell's Y output forward one hop.
+        for yb in cell.connections.get("Y", ()):
+            if not isinstance(yb, int):
+                continue
+            nxt = ctx.d_bit_to_single_bit_flop.get(yb)
+            if nxt is None:
+                continue
+            if nxt.cell.name == head.cell.name:
+                continue
+            if ctx.domains.get(nxt.cell.name) != head_clock:
+                continue
+            return nxt
+    return None
+
+
 # --- rules ------------------------------------------------------------------
 
 
@@ -740,6 +788,11 @@ def check_cdc_001(
             d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
         )
         if depth < 2:
+            # Defer to CDC-014 when a follow-on flop *is* present but
+            # behind a comb cell — the message "no second-stage" would
+            # mislead the user into adding a stage they already have.
+            if _chain_has_inter_stage_comb(c.dst_flop, ctx) is not None:
+                continue
             src_desc = (
                 f"flop {c.src_flop.name}" if c.src_flop is not None else c.src_name
             )
@@ -2967,6 +3020,74 @@ def check_cdc_012(
     return out
 
 
+def check_cdc_014(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-014 — Combinational logic *between* synchroniser stages.
+
+    Distinct hazard from CDC-003 (comb feeding the chain's first
+    stage). Here the offending shape is::
+
+        async_signal → stage_1 → gate → stage_2.D
+
+    The gate is the bug: stage_1's Q may still be metastable when the
+    gate output is sampled by stage_2 on the next clock edge, so
+    the gate output can be a transient mix. The full clock period
+    of resolution time the user thinks they're buying is destroyed
+    by the gate's propagation delay budget.
+
+    Detection reuses :func:`_chain_has_inter_stage_comb` — the same
+    helper CDC-001 consults for its deferral when ``_sync_chain_depth``
+    says "depth = 1" but a follow-on flop *is* present behind a gate.
+    Severity ``error`` — same physics class as CDC-001 (silently
+    broken synchroniser).
+
+    Suppression follows the existing user-vetted hatch:
+    ``(* cdc_sync *)`` on the chain head asserts user intent, and the
+    rule skips the chain.
+
+    Single-bit only — multi-bit syncs collapse into per-bit chains in
+    the netlist and the inter-stage helper keys off a 1-bit head;
+    multi-bit support is a follow-up if/when the case shows up.
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    violations: list[Violation] = []
+
+    for c in crossings:
+        if c.width != 1:
+            continue
+        head = c.dst_flop
+        if head.cell.name in ctx.user_syncs:
+            continue
+        nxt = _chain_has_inter_stage_comb(head, ctx)
+        if nxt is None:
+            continue
+        violations.append(
+            Violation(
+                rule_id="CDC-014",
+                severity="error",
+                message=(
+                    f"combinational logic between synchroniser stages on "
+                    f"{c.src_clock} → {c.dst_clock}: head {head.name} "
+                    f"feeds a comb cell whose output reaches {nxt.name} "
+                    f"(same clock domain). The gate's propagation delay "
+                    f"can sample a metastable head output, destroying the "
+                    f"full-cycle resolution time the chain was meant to "
+                    f"provide. Remove the gate and place it after the "
+                    f"chain's final stage."
+                ),
+                crossing=c,
+                cell_name=head.cell.name,
+            )
+        )
+    return violations
+
+
 def _clk_polarity(flop: Flop) -> int:
     """Return 1 for posedge / 0 for negedge.
 
@@ -3032,10 +3153,6 @@ def check_cdc_016(
 
     for c in crossings:
         if c.width != 1:
-            # Multi-bit syncs collapse to per-bit chains in the
-            # netlist; the polarity check makes sense per bit, but
-            # the chain walker keys off a 1-bit head. Defer multi-bit
-            # opposite-edge to a follow-up.
             continue
         head = c.dst_flop
         if head.cell.name in reported_heads:
@@ -3095,6 +3212,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-011": check_cdc_011,
     "CDC-012": check_cdc_012,
     "CDC-013": check_cdc_013,
+    "CDC-014": check_cdc_014,
     "CDC-016": check_cdc_016,
 }
 
