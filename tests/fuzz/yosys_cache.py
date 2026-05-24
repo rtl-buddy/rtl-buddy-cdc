@@ -63,6 +63,14 @@ def build(case: RenderedCase) -> CacheResult:
     # hand-authored fixtures: read_verilog -sv, hierarchy -top,
     # proc, flatten, write_json. No ``opt`` — we want the structural
     # shape the analyzer cares about, not optimised gates.
+    #
+    # ``case.extra_yosys_passes`` is appended between flatten and
+    # write_json; templates that need gate-level / tech-mapped
+    # behaviour (e.g. the G-12 sentinel) set this to
+    # ``"simplemap; abc -g cmos;"``.
+    extra = case.extra_yosys_passes.strip()
+    if extra and not extra.endswith(";"):
+        extra = extra + ";"
     cmd = [
         "yosys",
         "-q",
@@ -71,7 +79,8 @@ def build(case: RenderedCase) -> CacheResult:
             f"read_verilog -sv {sv_path}; "
             f"hierarchy -top {case.top}; "
             "proc; flatten; "
-            f"write_json {json_path}"
+            + (f"{extra} " if extra else "")
+            + f"write_json {json_path}"
         ),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)

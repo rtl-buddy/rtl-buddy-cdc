@@ -69,7 +69,14 @@ def compile_dut(dut_sv: Path, macros: dict[str, str | int]) -> Path:
     cmd = ["iverilog", "-g2012", "-o", str(vvp_path), "-I", str(SIM_DIR)]
     for k, v in macros.items():
         cmd.extend(["-D", f"{k}={v}"])
-    cmd.extend([str(dut_sv), str(SIM_DIR / "tb_crossing.sv")])
+    # Route DUTs to their matching testbench. The reset-aware DUTs
+    # have a different port list (global_rst_n + local_rst_req) so
+    # they pair with tb_reset_crossing.sv; everything else uses the
+    # plain tb_crossing.sv.
+    tb_name = (
+        "tb_reset_crossing.sv" if "rdc" in dut_sv.stem.lower() else "tb_crossing.sv"
+    )
+    cmd.extend([str(dut_sv), str(SIM_DIR / tb_name)])
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(

@@ -56,6 +56,10 @@ def run_case(case: RenderedCase) -> CaseResult:
     if not sdc_path.exists():
         sdc_path.write_text(case.sdc)
     spec = sdc_mod.parse_file(sdc_path)
+    # Mirrors what cli.py does between SDC parse and find_crossings:
+    # mark unconstrained top-level inputs with UNCONSTRAINED_SENTINEL
+    # so CDC-011 can see them.
+    sdc_mod.synthesize_unconstrained_inputs(spec, module)
     crossings = find_crossings(module, port_clock=spec.port_clock)
 
     required_depth = int(case.params.get("required_depth", 2))

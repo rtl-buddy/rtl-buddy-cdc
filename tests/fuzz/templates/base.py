@@ -59,6 +59,18 @@ class RenderedCase:
     ``case_id`` is a stable, deterministic name derived from the
     template and its parameters; used as the cache key suffix and
     the pytest parameter id.
+
+    ``extra_yosys_passes`` is a string of Yosys commands inserted
+    between ``flatten`` and ``write_json``. Default empty for the
+    canonical recipe. Templates that need to probe gate-level /
+    tech-mapped behaviour override it (e.g. ``"simplemap; abc -g
+    cmos;"``).
+
+    ``gap_note`` documents a *known* analyzer gap that a template's
+    expected/forbidden encodes. Set when a template's expectation
+    intentionally captures the analyzer's current (broken) behaviour
+    as a sentinel — when the gap is fixed and the test fails, the
+    note tells the next reader why.
     """
 
     template_name: str
@@ -69,17 +81,22 @@ class RenderedCase:
     params: dict
     expected: tuple[ExpectedFinding, ...]
     forbidden: tuple[ExpectedFinding, ...] = field(default_factory=tuple)
+    extra_yosys_passes: str = ""
+    gap_note: str | None = None
 
     @property
     def content_hash(self) -> str:
-        """SHA-256 over the rendered SV + SDC + top name. Used by
-        :mod:`tests.fuzz.yosys_cache` to dedupe Yosys invocations."""
+        """SHA-256 over the rendered SV + SDC + top name + extra
+        Yosys passes. Used by :mod:`tests.fuzz.yosys_cache` to
+        dedupe Yosys invocations."""
         h = hashlib.sha256()
         h.update(self.top.encode())
         h.update(b"\0")
         h.update(self.sv.encode())
         h.update(b"\0")
         h.update(self.sdc.encode())
+        h.update(b"\0")
+        h.update(self.extra_yosys_passes.encode())
         return h.hexdigest()
 
 

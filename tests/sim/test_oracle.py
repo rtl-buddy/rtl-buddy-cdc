@@ -68,3 +68,30 @@ def test_differential_signal_is_clear() -> None:
         f"bad/good differential too small: bad={bad.error_rate:.4f} "
         f"good={good.error_rate:.4f} (need bad > good + 0.001)"
     )
+
+
+@pytest.mark.skipif(not iverilog_available(), reason="iverilog/vvp not on PATH")
+def test_gap_g1_latch_sync_fails_like_unsynced() -> None:
+    """Gap-mining payoff: a "synchroniser" built from a transparent
+    latch + flop must fail simulation at roughly the same rate as a
+    plain unsynced crossing. The analyzer cannot see this design
+    (find_crossings returns 0); this sim case is the evidence that
+    its silence is a false negative, not a correct exemption.
+
+    Pair with ``tests/fuzz/templates/gap_g1.py``: the fuzz template
+    pins the analyzer's silence; this sim test pins the functional
+    failure. Together they meet the gap-mining proof bar: sim
+    fails, analyzer silent."""
+    latch = run(
+        SIM_DIR / "dut_latch_sync.sv",
+        {"DUT_MODULE": "dut_latch_sync", "LATENCY_CYCLES": 1},
+    )
+    good = run(
+        SIM_DIR / "dut_2ff.sv",
+        {"DUT_MODULE": "dut_2ff", "LATENCY_CYCLES": 3},
+    )
+    assert latch.error_rate > good.error_rate + 0.001, (
+        f"G-1 latch-sync DUT must fail materially worse than the 2FF "
+        f"reference: latch={latch.error_rate:.4f} "
+        f"good={good.error_rate:.4f}"
+    )
