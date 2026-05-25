@@ -44,10 +44,27 @@ def iverilog_available() -> bool:
     return shutil.which("iverilog") is not None and shutil.which("vvp") is not None
 
 
+def _tb_for(dut_sv: Path) -> str:
+    """Pick the testbench file matching the DUT's port shape.
+
+    - ``*_rdc*`` / ``*_reset*`` DUTs: ``tb_reset_crossing.sv``
+      (ports include global_rst_n + local_rst_req).
+    - ``*clock_mux*`` DUTs: ``tb_clock_glitch.sv`` (ports include
+      ck0_a / ck0_b / ck1 / sel_d / edge_count, no d_in/q_out pair).
+    - Everything else: ``tb_crossing.sv``.
+    """
+    stem = dut_sv.stem.lower()
+    if "rdc" in stem:
+        return "tb_reset_crossing.sv"
+    if "clock_mux" in stem:
+        return "tb_clock_glitch.sv"
+    return "tb_crossing.sv"
+
+
 def _digest(dut_sv: Path, macros: dict[str, str | int]) -> str:
     h = hashlib.sha256()
     for src in sorted(
-        [dut_sv, SIM_DIR / "tb_crossing.sv", SIM_DIR / "meta_flop_lib.sv"]
+        [dut_sv, SIM_DIR / _tb_for(dut_sv), SIM_DIR / "meta_flop_lib.sv"]
     ):
         h.update(src.read_bytes())
         h.update(b"\0")
@@ -69,14 +86,7 @@ def compile_dut(dut_sv: Path, macros: dict[str, str | int]) -> Path:
     cmd = ["iverilog", "-g2012", "-o", str(vvp_path), "-I", str(SIM_DIR)]
     for k, v in macros.items():
         cmd.extend(["-D", f"{k}={v}"])
-    # Route DUTs to their matching testbench. The reset-aware DUTs
-    # have a different port list (global_rst_n + local_rst_req) so
-    # they pair with tb_reset_crossing.sv; everything else uses the
-    # plain tb_crossing.sv.
-    tb_name = (
-        "tb_reset_crossing.sv" if "rdc" in dut_sv.stem.lower() else "tb_crossing.sv"
-    )
-    cmd.extend([str(dut_sv), str(SIM_DIR / tb_name)])
+    cmd.extend([str(dut_sv), str(SIM_DIR / _tb_for(dut_sv))])
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(
