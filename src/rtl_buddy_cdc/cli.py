@@ -165,6 +165,16 @@ _CDC_010_NO_HEURISTIC_OPT = typer.Option(
     "(e.g. a vendor that uses `EN` for something other than enable) "
     "and you'd rather take the false negative than a false positive.",
 )
+_CDC_018_DEPTH_THRESHOLD_OPT = typer.Option(
+    4,
+    "--cdc-018-depth-threshold",
+    help="Minimum sync-chain depth at which CDC-018 (cascaded "
+    "synchroniser) fires. Defaults to 4 — chains of depth 2 or 3 "
+    "stay silent (the textbook 2FF sync, plus a 3-stage chain "
+    "common in high-MTBF designs). Raise to 5 if 4-stage chains "
+    "are intentional in your design.",
+    min=2,
+)
 
 
 @app.command()
@@ -207,6 +217,7 @@ def analyze(
     reset_hints_path: Path | None = _RESET_HINTS_OPT,
     no_findings: bool = _NO_FINDINGS_OPT,
     cdc_010_no_heuristic: bool = _CDC_010_NO_HEURISTIC_OPT,
+    cdc_018_depth_threshold: int = _CDC_018_DEPTH_THRESHOLD_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
     code = _analyze_and_report(
@@ -225,6 +236,7 @@ def analyze(
         reset_hints_path=reset_hints_path,
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
+        cdc_018_depth_threshold=cdc_018_depth_threshold,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -298,6 +310,7 @@ def lint(
     reset_hints_path: Path | None = _RESET_HINTS_OPT,
     no_findings: bool = _NO_FINDINGS_OPT,
     cdc_010_no_heuristic: bool = _CDC_010_NO_HEURISTIC_OPT,
+    cdc_018_depth_threshold: int = _CDC_018_DEPTH_THRESHOLD_OPT,
 ) -> None:
     """Convenience wrapper: elaborate the sources using the chosen
     frontend, then analyze. With ``--frontend yosys`` (the default)
@@ -364,6 +377,7 @@ def lint(
         reset_hints_path=reset_hints_path,
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
+        cdc_018_depth_threshold=cdc_018_depth_threshold,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -471,6 +485,7 @@ def _analyze_and_report(
     reset_hints_path: Path | None = None,
     no_findings: bool = False,
     cdc_010_no_heuristic: bool = False,
+    cdc_018_depth_threshold: int = 4,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module = netlist.load(netlist_path)
@@ -490,6 +505,7 @@ def _analyze_and_report(
         reset_hints_path=reset_hints_path,
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
+        cdc_018_depth_threshold=cdc_018_depth_threshold,
     )
 
 
@@ -510,6 +526,7 @@ def _analyze_module_and_report(
     reset_hints_path: Path | None = None,
     no_findings: bool = False,
     cdc_010_no_heuristic: bool = False,
+    cdc_018_depth_threshold: int = 4,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
@@ -569,6 +586,7 @@ def _analyze_module_and_report(
                 required_depth=sync_depth,
                 reset_hints=reset_hints,
                 cdc_010_heuristic=not cdc_010_no_heuristic,
+                cdc_018_depth_threshold=cdc_018_depth_threshold,
             )
     else:
         domains = assign_domains(module)

@@ -3985,6 +3985,106 @@ def check_cdc_021(
     return violations
 
 
+# CDC-018 default chain-depth threshold. A 2FF sync is the textbook
+# minimum (so chains of depth 2 or 3 are accepted); chains of depth
+# 4+ are flagged as quality-of-life smells. Configurable via
+# ``run_all(cdc_018_depth_threshold=N)``.
+CDC_018_DEFAULT_THRESHOLD = 4
+
+
+def check_cdc_018(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+    depth_threshold: int = CDC_018_DEFAULT_THRESHOLD,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-018 — Cascaded synchroniser warning.
+
+    Fires when a CDC crossing's destination-domain sync chain depth
+    reaches ``depth_threshold`` (default 4) — the classic "two
+    engineers each added their own 2FF sync" or "left the original
+    chain in place during a refactor" smell. The chain still works
+    (extra latency, slightly worse MTBF tail), so this is a quality-
+    of-life check, not a functional bug.
+
+    Severity ``warning`` — surfaces the smell without forcing a fix.
+    Designs that legitimately want deeper chains (high-MTBF
+    requirements) can raise the threshold or mark the chain head
+    ``(* cdc_sync *)`` to suppress.
+
+    Detection walks each crossing's dst flop through
+    :func:`_sync_chain_depth`; the walker only follows pure flop→flop
+    same-domain hops with a single reader (so a chain whose tail is
+    used by anything else terminates correctly and doesn't trip the
+    rule on legitimate fanout). Groups by ``(src_flop, dst_clock)``
+    so a sliced-bus shape doesn't multi-fire.
+
+    Suppression:
+
+    * Chain head marked ``(* cdc_sync *)``: user has explicitly vetted
+      the chain (including its depth).
+    * Depth threshold defaults to 4 — set ``depth_threshold`` higher
+      for designs that intentionally run deeper chains.
+    """
+    if depth_threshold < 2:
+        raise ValueError("CDC-018 depth_threshold must be >= 2")
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+
+    # Per-(src_flop_name, dst_clock) bookkeeping: pick the deepest chain
+    # in the group so we report a single, maximal finding per group.
+    best: dict[tuple[str, str], tuple[int, Flop]] = {}
+    for c in crossings:
+        if c.src_flop is None or c.dst_flop is None:
+            continue
+        head = c.dst_flop
+        if head.cell.name in ctx.user_syncs:
+            continue
+        if len(head.q) != 1 or len(head.d) != 1:
+            continue
+        if not isinstance(head.q[0], int) or not isinstance(head.d[0], int):
+            continue
+        depth = _sync_chain_depth(
+            module,
+            head,
+            c.dst_clock,
+            ctx.domains,
+            ctx.reader_counts,
+            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        )
+        if depth < depth_threshold:
+            continue
+        key = (c.src_flop.cell.name, c.dst_clock)
+        prev = best.get(key)
+        if prev is None or depth > prev[0]:
+            best[key] = (depth, head)
+
+    violations: list[Violation] = []
+    for (src_name, dst_clock), (depth, head) in sorted(best.items()):
+        violations.append(
+            Violation(
+                rule_id="CDC-018",
+                severity="warning",
+                message=(
+                    f"cascaded synchroniser chain: {depth}-flop chain "
+                    f"in {dst_clock} starting at {head.cell.name} (source: "
+                    f"{src_name}). The textbook 2FF sync is sufficient; "
+                    f"every flop beyond the first 2 adds latency without "
+                    f"improving metastability resolution. Common causes: "
+                    f"two engineers each adding their own sync, or a "
+                    f"refactor leaving the original chain in place. "
+                    f"Trim the chain to 2 flops, or mark the chain head "
+                    f"`(* cdc_sync *)` if the depth is intentional "
+                    f"(high-MTBF designs)."
+                ),
+                cell_name=head.cell.name,
+            )
+        )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -4009,6 +4109,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-015": check_cdc_015,
     "CDC-016": check_cdc_016,
     "CDC-017": check_cdc_017,
+    "CDC-018": check_cdc_018,
     "CDC-019": check_cdc_019,
     "CDC-020": check_cdc_020,
     "CDC-021": check_cdc_021,
@@ -4023,6 +4124,7 @@ def run_all(
     *,
     reset_hints: ResetHints | None = None,
     cdc_010_heuristic: bool = True,
+    cdc_018_depth_threshold: int = CDC_018_DEFAULT_THRESHOLD,
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -4045,6 +4147,16 @@ def run_all(
                     clock_spec,
                     ctx=ctx,
                     use_heuristic=cdc_010_heuristic,
+                )
+            )
+        elif rule_id == "CDC-018":
+            out.extend(
+                check_cdc_018(
+                    module,
+                    crossings,
+                    clock_spec,
+                    cdc_018_depth_threshold,
+                    ctx=ctx,
                 )
             )
         else:

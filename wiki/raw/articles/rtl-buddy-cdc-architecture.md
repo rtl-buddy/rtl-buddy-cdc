@@ -966,7 +966,41 @@ Severity `warning` — sometimes intentional (the destination only
 reads one bit at a time, or a separate handshake gates the
 sample).
 
-### 8.11 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.11 CDC-018 — cascaded synchroniser smell
+
+CDC-018 is a *quality-of-life* check: surface CDC crossings whose
+destination sync chain depth exceeds the textbook 2FF minimum by a
+clear margin. Classic patterns:
+
+* two engineers each add their own sync chain on the same wire,
+* a refactor leaves the original chain in place when a new wrapper
+  is added,
+* a designer "adds a stage for safety" without realising the
+  underlying physics doesn't reward depth beyond 2 (a third stage
+  helps MTBF only at the noise floor; a fourth is irrelevant).
+
+The chain still works — extra latency, slightly worse MTBF tail —
+so the severity is `warning`, not `error`. The rule's job is to
+make the depth visible during review, not to force a fix.
+
+Detection: walk each CDC crossing's dst flop through the existing
+`_sync_chain_depth` helper. That helper's same-domain single-reader
+walker terminates correctly when the chain's value is consumed by
+anything other than a follow-on flop D, so a chain whose tail
+feeds two registers (legitimate fanout) doesn't trip the rule.
+Group findings by `(src_flop, dst_clock)` and emit one finding per
+group (the deepest chain in the group wins) to avoid multi-firing
+on sliced buses.
+
+Threshold defaults to 4 — chains of depth 2 or 3 stay silent (the
+textbook 2FF sync plus an MTBF-friendly 3-stage variant). The
+threshold is configurable via `--cdc-018-depth-threshold` (CLI)
+and `run_all(..., cdc_018_depth_threshold=N)` (programmatic).
+Designs that intentionally run deeper chains can raise it; the
+chain head can also be marked `(* cdc_sync *)` to suppress
+unconditionally.
+
+### 8.12 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
@@ -1000,7 +1034,7 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
-### 8.12 CDC-012 — functional data-hold on a gated multi-bit crossing
+### 8.13 CDC-012 — functional data-hold on a gated multi-bit crossing
 
 CDC-012 layers a functional check on top of CDC-004's structural
 gated-bus exemption. CDC-004 accepts a multi-bit crossing whose
