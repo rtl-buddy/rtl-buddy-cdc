@@ -3791,6 +3791,107 @@ def check_cdc_019(
     return violations
 
 
+def check_cdc_020(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-020 — Sliced-bus reconvergence across CDC.
+
+    Fires when a genuinely-multi-bit source flop (``WIDTH≥2``) has
+    its bits sliced into N≥2 width=1 crossings that each independently
+    cross to flops in the same destination clock domain. CDC-004
+    misses this shape because each crossing's width is 1 — the
+    multi-bit-bus detector's ``width <= 1`` skip drops every per-lane
+    crossing even though the source bus is genuinely multi-bit.
+
+    Sibling of CDC-019: same per-lane-independent-sync hazard, but the
+    source is a true multi-bit register rather than a shared
+    combinational decoder. The destination resolves each lane on its
+    own schedule, so transitions where ≥2 source bits change
+    simultaneously can be sampled at the destination as intermediate
+    combinations the source never emits.
+
+    Severity ``warning`` — sometimes intentional (the destination
+    only reads one bit at a time, or a separate handshake gates the
+    sample). Textbook fixes: gray-code the source (mark with
+    ``(* cdc_gray *)``), use a handshake, or replace the per-lane
+    sync chains with a single multi-bit sync chain.
+
+    Detection groups by ``(src_flop, dst_clock)``: one finding per
+    affected source register per destination domain, listing every
+    sliced lane.
+
+    Suppressed when:
+
+    * source flop is marked ``(* cdc_gray *)`` (gray-coded bus
+      handles per-bit coherence) or ``(* cdc_static *)`` (quasi-
+      static), or
+    * source flop is structurally gray-encoded
+      (:func:`_is_gray_encoded_source`) and at least one per-lane
+      destination is a multi-bit sync first stage
+      (:func:`_is_multibit_sync_first_stage`).
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+
+    groups: dict[tuple[str, str], dict[str, Flop]] = defaultdict(dict)
+    src_flop_lookup: dict[str, Flop] = {}
+    for c in crossings:
+        if c.src_flop is None:
+            continue
+        src_flop = c.src_flop
+        if len(src_flop.q) < 2:
+            continue  # truly width-1 source — CDC-001/004's domain
+        src_name = src_flop.cell.name
+        src_flop_lookup[src_name] = src_flop
+        key = (src_name, c.dst_clock)
+        groups[key][c.dst_flop.cell.name] = c.dst_flop
+
+    violations: list[Violation] = []
+    for (src_name, dst_clock), dst_map in sorted(groups.items()):
+        if len(dst_map) < 2:
+            continue  # not sliced — single dst recombines it natively
+        src_flop = src_flop_lookup[src_name]
+        if src_name in ctx.user_grays:
+            continue
+        if src_name in ctx.user_statics:
+            continue
+        # Structural gray + multi-bit-sync suppression — mirrors CDC-004.
+        if _is_gray_encoded_source(module, src_flop, ctx.bit_drivers) and any(
+            _is_multibit_sync_first_stage(module, dst, dst_clock, ctx.domains)
+            for dst in dst_map.values()
+        ):
+            continue
+        lanes = sorted(dst_map.keys())
+        lane_desc = ", ".join(lanes[:4]) + (
+            f", ... ({len(lanes)} lanes total)" if len(lanes) > 4 else ""
+        )
+        violations.append(
+            Violation(
+                rule_id="CDC-020",
+                severity="warning",
+                message=(
+                    f"sliced-bus reconvergence across CDC: source flop "
+                    f"{src_name} (WIDTH={len(src_flop.q)}) is sliced into "
+                    f"{len(lanes)} per-lane crossings to clock domain "
+                    f"{dst_clock} ({lane_desc}). Each lane resolves "
+                    f"metastability on its own schedule — transitions "
+                    f"where ≥2 source bits change simultaneously can be "
+                    f"sampled at the destination as intermediate "
+                    f"combinations the source never emits. Fix: gray-code "
+                    f"the source (mark `(* cdc_gray *)`), use a req/ack "
+                    f"handshake, or replace the per-lane sync chains with "
+                    f"a single multi-bit sync chain."
+                ),
+                cell_name=src_name,
+            )
+        )
+    return violations
+
+
 def check_cdc_021(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -3909,6 +4010,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-016": check_cdc_016,
     "CDC-017": check_cdc_017,
     "CDC-019": check_cdc_019,
+    "CDC-020": check_cdc_020,
     "CDC-021": check_cdc_021,
 }
 

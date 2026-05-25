@@ -192,6 +192,11 @@ GOOD_FIXTURES = [
     # Zero async data crossings — the only inter-domain signal is the
     # select reaching the mux S, not a flop D.
     ("good_glitchless_mux_marked", 0),
+    # CDC-020 suppression: same sliced-bus per-lane-sync shape as
+    # bad_sliced_bus_reconvergence but with `(* cdc_gray *)` on the
+    # source register. Four async per-lane crossings; CDC-020 stays
+    # silent on the gray-coded source.
+    ("good_sliced_bus_gray_marked", 4),
 ]
 
 
