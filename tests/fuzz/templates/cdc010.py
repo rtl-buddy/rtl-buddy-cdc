@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ._sweep import TWO_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -43,9 +44,9 @@ endmodule
 """
 
 _SDC = """\
-create_clock -name ck0 -period 10.0  [get_ports {ck0_a ck0_b}]
-create_clock -name ck1 -period 13.3  [get_ports ck1]
-set_clock_groups -asynchronous -group {ck0} -group {ck1}
+create_clock -name ck0 -period {src_period}  [get_ports {{ck0_a ck0_b}}]
+create_clock -name ck1 -period {dst_period}  [get_ports ck1]
+set_clock_groups -asynchronous -group {{ck0}} -group {{ck1}}
 set_input_delay -clock ck1 0.0 [get_ports sel_d]
 set_input_delay -clock ck0 0.0 [get_ports d_in]
 """
@@ -58,13 +59,14 @@ class AsyncClockMux:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        top = f"fuzz_{cls.name}"
-        yield RenderedCase(
-            template_name=cls.name,
-            case_id=top,
-            sv=_TEMPLATE.format(top=top),
-            sdc=_SDC,
-            top=top,
-            params={},
-            expected=(ExpectedFinding("CDC-010", Op.GE, 1),),
-        )
+        for ck0_period, ck1_period in TWO_CLOCK_PERIODS:
+            top = f"fuzz_{cls.name}_{case_suffix(ck0_period, ck1_period)}"
+            yield RenderedCase(
+                template_name=cls.name,
+                case_id=top,
+                sv=_TEMPLATE.format(top=top),
+                sdc=_SDC.format(src_period=ck0_period, dst_period=ck1_period),
+                top=top,
+                params={"ck0_period": ck0_period, "ck1_period": ck1_period},
+                expected=(ExpectedFinding("CDC-010", Op.GE, 1),),
+            )

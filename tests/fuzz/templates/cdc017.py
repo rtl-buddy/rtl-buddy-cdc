@@ -1,9 +1,14 @@
-"""CDC-014 — combinational logic between sync stages.
+"""CDC-017 — transparent latch in CDC path.
 
-A 2FF chain on dst_clk with an inverter sitting between the stages.
-CDC-001 would say "no second-stage synchronizer" (chain walker
-stops at the gate); CDC-014 fires with the correct framing via the
-``_chain_has_inter_stage_comb`` deferral.
+A designer who builds a "synchroniser" out of a transparent latch
+followed by a flop. The latch is gated by ``dst_clk``'s level so
+it's transparent half the time — a metastable src_q passes straight
+through to the dst-domain flop during the transparent window.
+
+This is the coverage-steering counterpart to the ``gap_g1`` sentinel
+(rtl-buddy-cdc#195). Sweeping the period pair gives the rule corpus
+exposure across timing regimes; the sentinel pins exact-once firing
+for its one canonical case.
 """
 
 from __future__ import annotations
@@ -17,20 +22,19 @@ _TEMPLATE = """\
 module {top} (
     input  logic src_clk,
     input  logic dst_clk,
+    input  logic latch_en,
     input  logic d_in,
     output logic q_out
 );
     logic src_q;
     always_ff @(posedge src_clk) src_q <= d_in;
 
-    logic sync_meta;
-    always_ff @(posedge dst_clk) sync_meta <= src_q;
-
-    // Comb gate (inverter) between stages 1 and 2.
-    wire sync_meta_n = ~sync_meta;
+    logic latch_q;
+    always_latch
+        if (latch_en) latch_q = src_q;
 
     logic sync_q;
-    always_ff @(posedge dst_clk) sync_q <= sync_meta_n;
+    always_ff @(posedge dst_clk) sync_q <= latch_q;
 
     assign q_out = sync_q;
 endmodule
@@ -41,11 +45,14 @@ create_clock -name src_clk -period {src_period} [get_ports src_clk]
 create_clock -name dst_clk -period {dst_period} [get_ports dst_clk]
 set_clock_groups -asynchronous -group {{src_clk}} -group {{dst_clk}}
 set_input_delay -clock src_clk 1.0 [get_ports d_in]
+set_input_delay -clock dst_clk 1.0 [get_ports latch_en]
 """
 
 
-class CombBetweenStages:
-    name = "cdc014_comb_between_stages"
+class LatchInCdcPath:
+    """Transparent latch standing in for a synchroniser's first stage."""
+
+    name = "cdc017_latch_in_cdc_path"
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
@@ -58,6 +65,6 @@ class CombBetweenStages:
                 sdc=_SDC.format(src_period=src_period, dst_period=dst_period),
                 top=top,
                 params={"src_period": src_period, "dst_period": dst_period},
-                expected=(ExpectedFinding("CDC-014", Op.GE, 1),),
+                expected=(ExpectedFinding("CDC-017", Op.GE, 1),),
                 forbidden=(ExpectedFinding("CDC-001", Op.ZERO),),
             )

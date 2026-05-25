@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ._sweep import TWO_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -38,9 +39,9 @@ endmodule
 """
 
 _SDC = """\
-create_clock -name src_clk -period 10.0 [get_ports src_clk]
-create_clock -name dst_clk -period 7.5  [get_ports dst_clk]
-set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
+create_clock -name src_clk -period {src_period} [get_ports src_clk]
+create_clock -name dst_clk -period {dst_period} [get_ports dst_clk]
+set_clock_groups -asynchronous -group {{src_clk}} -group {{dst_clk}}
 set_input_delay -clock src_clk 1.0 [get_ports a]
 set_input_delay -clock src_clk 1.0 [get_ports b]
 """
@@ -51,13 +52,14 @@ class CombSource:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        top = f"fuzz_{cls.name}"
-        yield RenderedCase(
-            template_name=cls.name,
-            case_id=top,
-            sv=_TEMPLATE.format(top=top),
-            sdc=_SDC,
-            top=top,
-            params={},
-            expected=(ExpectedFinding("CDC-006", Op.GE, 1),),
-        )
+        for src_period, dst_period in TWO_CLOCK_PERIODS:
+            top = f"fuzz_{cls.name}_{case_suffix(src_period, dst_period)}"
+            yield RenderedCase(
+                template_name=cls.name,
+                case_id=top,
+                sv=_TEMPLATE.format(top=top),
+                sdc=_SDC.format(src_period=src_period, dst_period=dst_period),
+                top=top,
+                params={"src_period": src_period, "dst_period": dst_period},
+                expected=(ExpectedFinding("CDC-006", Op.GE, 1),),
+            )

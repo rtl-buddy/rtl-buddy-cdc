@@ -10,6 +10,8 @@ fires; CDC-001 stays silent (the chain itself is structurally a
 from __future__ import annotations
 
 from collections.abc import Iterator
+
+from ._sweep import TWO_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -68,10 +70,9 @@ class CombBeforeSync:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        period_pairs = [(10.0, 7.5), (5.0, 11.3)]
-        for src_period, dst_period in period_pairs:
+        for src_period, dst_period in TWO_CLOCK_PERIODS:
             params = {"src_period": src_period, "dst_period": dst_period}
-            top = f"fuzz_{cls.name}_{int(src_period * 10)}_{int(dst_period * 10)}"
+            top = f"fuzz_{cls.name}_{case_suffix(src_period, dst_period)}"
             sv = _TEMPLATE.format(top=top)
             sdc = _SDC_TEMPLATE.format(src_period=src_period, dst_period=dst_period)
             yield RenderedCase(

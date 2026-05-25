@@ -16,6 +16,7 @@ from .cdc013 import ToggleNoXorTail
 from .cdc014 import CombBetweenStages
 from .cdc015 import SyncChainForeignReset
 from .cdc016 import OppositeEdgeChain
+from .cdc017 import LatchInCdcPath
 from .gap_g1 import GapG1LatchInSyncChain
 from .gap_g3 import GapG3PulseSyncFalsePositive
 from .gap_g12 import GapG12GateLevelSilent
@@ -43,6 +44,7 @@ ALL_TEMPLATES: list[type[Template]] = [
     CombBetweenStages,
     SyncChainForeignReset,
     OppositeEdgeChain,
+    LatchInCdcPath,
     AsyncResetCrossing,
     ResetPolarityMismatch,
     SyncResetCrossing,
@@ -71,6 +73,7 @@ __all__ = [
     "GapG12GateLevelSilent",
     "GapG3PulseSyncFalsePositive",
     "GoodTwoFF",
+    "LatchInCdcPath",
     "MultiSourceReset",
     "Op",
     "OppositeEdgeChain",

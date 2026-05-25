@@ -11,7 +11,9 @@ above width 1.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from itertools import product
 
+from ._sweep import TWO_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -37,9 +39,9 @@ endmodule
 """
 
 _SDC_TEMPLATE = """\
-create_clock -name src_clk -period 10.0 [get_ports src_clk]
-create_clock -name dst_clk -period 7.5  [get_ports dst_clk]
-set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
+create_clock -name src_clk -period {src_period} [get_ports src_clk]
+create_clock -name dst_clk -period {dst_period} [get_ports dst_clk]
+set_clock_groups -asynchronous -group {{src_clk}} -group {{dst_clk}}
 set_input_delay -clock src_clk 1.0 [get_ports d_in]
 """
 
@@ -51,16 +53,21 @@ class UncodedBus:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        widths = [2, 4, 8]
-        for width in widths:
-            params = {"width": width}
-            top = f"fuzz_{cls.name}_w{width}"
+        widths = [2, 4, 8, 16]
+        for width, (src_period, dst_period) in product(widths, TWO_CLOCK_PERIODS[:3]):
+            params = {
+                "width": width,
+                "src_period": src_period,
+                "dst_period": dst_period,
+            }
+            top = f"fuzz_{cls.name}_w{width}_{case_suffix(src_period, dst_period)}"
             sv = _TEMPLATE.format(top=top, width_m1=width - 1)
+            sdc = _SDC_TEMPLATE.format(src_period=src_period, dst_period=dst_period)
             yield RenderedCase(
                 template_name=cls.name,
                 case_id=top,
                 sv=sv,
-                sdc=_SDC_TEMPLATE,
+                sdc=sdc,
                 top=top,
                 params=params,
                 expected=(ExpectedFinding("CDC-004", Op.GE, 1),),
