@@ -610,3 +610,88 @@ def test_set_input_delay_bracket_clock_argument() -> None:
         """
     )
     assert spec.clock_for_port("d_in") == "clk"
+
+
+# --- G-11 clock-graph validation (rtl-buddy-cdc#218) -----------------------
+
+from rtl_buddy_cdc.sdc import validate_clock_graph
+
+
+def test_g11_duplicate_clock_name_warns_at_parse_time() -> None:
+    """Two ``create_clock -name X`` statements: second silently
+    overrides; the parser surfaces a partial warning."""
+    spec = parse(
+        """
+        create_clock -name clk -period 10.0 [get_ports a]
+        create_clock -name clk -period  7.5 [get_ports b]
+        """
+    )
+    msgs = [w for w in spec.partial_warnings if "duplicate clock name 'clk'" in w]
+    assert msgs, spec.partial_warnings
+    # The second declaration wins.
+    assert spec.clocks["clk"].period == 7.5
+
+
+def test_g11_same_port_in_multiple_clocks() -> None:
+    """Two distinct clock names listing the same port. ``clock_for_port``
+    is deterministic but the user's intent is ambiguous."""
+    spec = parse(
+        """
+        create_clock -name ck0 -period 10.0 [get_ports p]
+        create_clock -name ck1 -period  7.5 [get_ports p]
+        """
+    )
+    warnings = validate_clock_graph(spec)
+    assert any("port 'p' is claimed by multiple clocks" in w for w in warnings), (
+        warnings
+    )
+
+
+def test_g11_unresolved_master_clock() -> None:
+    """A generated clock whose ``-master_clock`` isn't declared
+    elsewhere — the master chain dead-ends and async classification
+    misbehaves silently."""
+    spec = parse(
+        """
+        create_clock -name root -period 10.0 [get_ports root]
+        create_generated_clock -name div2 -master_clock ck_unknown \\
+            -divide_by 2 [get_pins u_div/clk_out]
+        """
+    )
+    warnings = validate_clock_graph(spec)
+    assert any(
+        "create_generated_clock 'div2'" in w and "master 'ck_unknown'" in w
+        for w in warnings
+    ), warnings
+
+
+def test_g11_generated_clock_master_cycle() -> None:
+    """A→B→A master cycle. ``ClockSpec.resolve`` has a guard against
+    infinite-loop, but the SDC is methodology-broken."""
+    spec = parse(
+        """
+        create_generated_clock -name A -master_clock B \\
+            -divide_by 1 [get_pins u_a/clk_out]
+        create_generated_clock -name B -master_clock A \\
+            -divide_by 1 [get_pins u_b/clk_out]
+        """
+    )
+    warnings = validate_clock_graph(spec)
+    assert any(
+        "create_generated_clock cycle detected" in w and "A" in w and "B" in w
+        for w in warnings
+    ), warnings
+
+
+def test_g11_clean_sdc_produces_no_warnings() -> None:
+    """A well-formed SDC produces zero G-11 warnings."""
+    spec = parse(
+        """
+        create_clock -name src_clk -period 10.0 [get_ports src_clk]
+        create_clock -name dst_clk -period  7.5 [get_ports dst_clk]
+        create_generated_clock -name div2 -master_clock src_clk \\
+            -divide_by 2 [get_pins u_div/clk_out]
+        set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
+        """
+    )
+    assert validate_clock_graph(spec) == []

@@ -104,6 +104,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   methodology bug while staying silent on designs that use the raw
   port directly everywhere (a common simplification in small RTL).
 
+- **SDC clock-graph conflict linter** (#218). Closes G-11 from the
+  #188 coverage survey. New `validate_clock_graph(spec)` in
+  `rtl_buddy_cdc.sdc` runs after `parse_file` and emits cross-
+  statement diagnostics that the per-command parsers don't see:
+  same top-level port claimed by multiple clocks; generated clock
+  with an unresolved `-master_clock`; generated-clock master
+  cycles (A→B→A). Duplicate clock names (two
+  `create_clock -name X`) are caught inline by the per-command
+  handlers. All diagnostics flow through the existing
+  `spec.partial_warnings` surface so they reach the user via the
+  text-format warning channel; JSON/SARIF promotion to proper
+  `Violation` records is a deferred followup.
+
 - **Per-fixture `README.md` with mermaid clock-domain diagrams**
   (#164). Every fixture under `tests/fixtures/` now has a generated
   README that browsers see when navigating the directory on GitHub:
