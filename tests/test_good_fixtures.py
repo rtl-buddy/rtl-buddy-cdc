@@ -186,6 +186,12 @@ GOOD_FIXTURES = [
     # (one per lane), and CDC-019 must stay silent on the suppression
     # path.
     ("good_onehot_decode_gray_marked", 4),
+    # CDC-010 suppression via (* glitchless_clock_mux *) on the select.
+    # Same simple-$mux shape as bad_async_clock_mux but with the
+    # attribute vouching that an external glitchless envelope exists.
+    # Zero async data crossings — the only inter-domain signal is the
+    # select reaching the mux S, not a flop D.
+    ("good_glitchless_mux_marked", 0),
 ]
 
 

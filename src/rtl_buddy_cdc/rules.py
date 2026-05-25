@@ -82,6 +82,10 @@ class _RuleContext:
     user_syncs: frozenset[str]
     user_grays: frozenset[str]
     user_statics: frozenset[str]
+    # Bits belonging to nets tagged with
+    # :data:`USER_GLITCHLESS_CLOCK_MUX_ATTRS`. Consulted by CDC-010
+    # to suppress on a hand-built glitchless-clock-mux select wire.
+    user_glitchless_mux_bits: frozenset[Bit]
     # Reverse index used by ``_sync_chain_depth``: for every flop whose
     # ``D`` is exactly one bit wide, map that bit to the flop. The
     # chain walker previously did ``for f in find_flops(module):`` per
@@ -162,6 +166,7 @@ def _build_context(
         user_syncs=frozenset(user_sync_flop_names(module)),
         user_grays=frozenset(user_gray_flop_names(module)),
         user_statics=frozenset(user_static_flop_names(module)),
+        user_glitchless_mux_bits=frozenset(user_glitchless_clock_mux_bits(module)),
         d_bit_to_single_bit_flop=d_bit_to_single_bit_flop,
         reset_sync_flop_names=frozenset(
             user_reset_sync_flop_names(module, hints=reset_hints)
@@ -314,6 +319,44 @@ def user_static_flop_names(module: Module) -> set[str]:
     for f in find_flops(module):
         if any(isinstance(b, int) and b in static_bits for b in f.q):
             out.add(f.cell.name)
+    return out
+
+
+# Glitchless clock-mux promise (issue #208 / G-9). Attach to the
+# *select* wire of a hand-built glitchless 2-input clock mux (the
+# textbook cross-coupled-latch shape: two ``$dlatch``es per leg
+# gated by the inverted clocks, ANDed with their respective clocks,
+# ORed for the output). The cross-coupled latching makes an
+# asynchronous select safe — synchronising the select onto one of
+# the gated clocks would actually break the glitchless property,
+# so CDC-010's standard fix advice does not apply.
+#
+# Suppression is by *net* (not by source flop): the attribute is on
+# the select wire itself; CDC-010 skips when any control-pin bit it
+# walks belongs to a tagged netname.
+USER_GLITCHLESS_CLOCK_MUX_ATTRS: frozenset[str] = frozenset(
+    {"glitchless_clock_mux", "glitchless_mux", "glitchfree_clock_mux"}
+)
+
+
+def user_glitchless_clock_mux_bits(module: Module) -> set[Bit]:
+    """Return the set of net bits annotated with
+    :data:`USER_GLITCHLESS_CLOCK_MUX_ATTRS`.
+
+    CDC-010 consults this set when walking each clock-network cell's
+    control pin: if any control bit is a member, the rule treats the
+    cell as a user-vetted glitchless mux and stays silent on that
+    pin. The attribute is the user's explicit "I built a glitchless
+    mux around this select, trust me" promise, parallel to
+    ``(* cdc_sync *)`` for synchronisers and ``(* cdc_gray *)`` for
+    gray-coded buses.
+    """
+    out: set[Bit] = set()
+    for nn in module.netnames.values():
+        if USER_GLITCHLESS_CLOCK_MUX_ATTRS & set(nn.attributes):
+            for b in nn.bits:
+                if isinstance(b, int):
+                    out.add(b)
     return out
 
 
@@ -1861,6 +1904,15 @@ def check_cdc_010(
         for ctrl_port in sorted(control_ports):
             ctrl_bits = cell.connections.get(ctrl_port, ())
             if not ctrl_bits:
+                continue
+            if ctx.user_glitchless_mux_bits and any(
+                isinstance(b, int) and b in ctx.user_glitchless_mux_bits
+                for b in ctrl_bits
+            ):
+                # User-vouched glitchless mux: the cross-coupled-latch
+                # shape around this select makes an async select safe;
+                # the rule's standard "synchronise the select" fix
+                # advice would actually break the glitchless property.
                 continue
             ctrl_fanin = _backward_flop_fanin(module, ctrl_bits, ctx.bit_drivers)
             if not ctrl_fanin:
