@@ -62,6 +62,31 @@ def test_only_cdc_016_fires(context) -> None:
     )
 
 
+def test_cdc_001_and_002_explicitly_silent(context) -> None:
+    """Explicit assertion that CDC-001/-002 stay silent on the
+    opposite-edge chain (rtl-buddy-cdc#193).
+
+    The chain walker (``_sync_chain_depth``) and the deferral
+    predicate (``_chain_has_inter_stage_comb``) are shared
+    plumbing between CDC-001 / -014 / -015 / -016. A future
+    refactor that touches any of those could silently regress
+    the partitioning and cause CDC-001 to start firing on a
+    polarity-flip chain — which would mislead the user into
+    "adding a 2FF chain you already have". This explicit
+    assertion is the canary: the rule_ids equality in
+    test_only_cdc_016_fires already covers this, but spelling
+    it out by name makes the partitioning invariant readable
+    in the test name and unambiguous in the failure message."""
+    module, crossings, spec = context
+    violations = run_all_rules(module, crossings, spec)
+    spurious = [v for v in violations if v.rule_id in {"CDC-001", "CDC-002"}]
+    assert spurious == [], (
+        f"CDC-001/-002 leaked onto opposite-edge chain — sync chain "
+        f"polarity partitioning has regressed: "
+        f"{[(v.rule_id, v.message) for v in spurious]}"
+    )
+
+
 def test_good_2ff_sync_does_not_regress() -> None:
     """The existing same-edge 2FF fixture must not fire CDC-016 —
     sanity check that the polarity walk doesn't false-positive on a

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable, Literal
 
 from rtl_buddy_cdc.domain import Crossing, assign_domains
-from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
+from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell, is_latch_cell
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.reset_hints import ResetHints
@@ -470,7 +470,7 @@ def _forward_reachable_flops(
             seen.add(bit)
             for cell_name, port_name, _idx in consumers.get(bit, ()):
                 cell = module.cells[cell_name]
-                if cell.type in FF_CELL_TYPES:
+                if is_ff_cell(cell.type):
                     # Reached a flop — recorded if it's the D input, but
                     # never crossed regardless of which pin we hit.
                     if port_name == "D":
@@ -516,7 +516,7 @@ def _forward_reachable_cells(
             for cell_name, _port_name, _idx in consumers.get(bit, ()):
                 cell = module.cells[cell_name]
                 reached.add(cell_name)
-                if cell.type in FF_CELL_TYPES:
+                if is_ff_cell(cell.type):
                     # Flop boundary — recorded above, but don't cross.
                     continue
                 if depth >= max_depth:
@@ -728,7 +728,7 @@ def _chain_has_inter_stage_comb(head: Flop, ctx: _RuleContext) -> Flop | None:
             continue
         # Skip flop cells — that's a direct chain extension, handled
         # by _sync_chain_depth, not the inter-stage-comb pattern.
-        if cell.type in FF_CELL_TYPES:
+        if is_ff_cell(cell.type):
             continue
         # Walk the comb cell's Y output forward one hop.
         for yb in cell.connections.get("Y", ()):
@@ -1033,7 +1033,7 @@ def _is_gated_bus_crossing(
     # Shape 1: $dffe-style EN gating. Cheap to test (one cell-type
     # lookup plus one pin walk); try first so EN-gated designs skip
     # the more expensive driver-cell aggregation below.
-    if dst_cell.type in FF_CELL_TYPES:
+    if is_ff_cell(dst_cell.type):
         en_bits = dst_cell.connections.get("EN", ())
         en_int_bits = tuple(b for b in en_bits if isinstance(b, int))
         if en_int_bits:
@@ -1585,8 +1585,16 @@ def check_cdc_008(
     for cell in module.cells.values():
         if cell.name in clock_net_cells:
             continue
+        # Gate-level FF cells ($_DFF_*, $_DFFE_*, etc.) carry the
+        # clock on pin ``C`` instead of ``CLK``; exempt that pin
+        # too when the cell is a flop. Without this exemption,
+        # CDC-008 false-fires on every gate-level flop in the
+        # netlist (see rtl-buddy-cdc#194).
+        ff_cell = is_ff_cell(cell.type)
         for port_name, bits in cell.connections.items():
             if port_name == "CLK" or port_name in _OUTPUT_PINS:
+                continue
+            if ff_cell and port_name == "C":
                 continue
             for idx, b in enumerate(bits):
                 if not isinstance(b, int) or b not in clock_bits:
@@ -2781,6 +2789,116 @@ def check_cdc_009(
     return out
 
 
+def _has_xor_tail_pulse_recovery(
+    head: Flop,
+    head_clock: str,
+    ctx: _RuleContext,
+    module: Module,
+) -> bool:
+    """True iff the dst-side chain starting at ``head`` ends in the
+    canonical pulse-sync XOR-tail shape.
+
+    The canonical pulse-synchroniser idiom that closes the
+    fast-to-slow toggle event-loss class:
+
+        toggle_q (src_clk) → sync_meta (dst_clk) → sync_q (dst_clk)
+                                                       │
+                                            ┌──────────┴──────────┐
+                                            ▼                     ▼
+                                        sync_q_d              ┌───XOR───┐ → pulse_out
+                                        (dst_clk)             │  inputs:│
+                                            │                 │  sync_q,│
+                                            └─────────────────► sync_q_d
+                                                              └─────────┘
+
+    Walks the dst-domain chain from ``head``. Confirms the chain
+    tail's Q is consumed by:
+
+    1. A follow-on flop in the same dst_clock domain whose ``D``
+       is exactly tail.Q (the ``sync_q_d`` of the diagram).
+    2. An XOR cell (``$xor`` / ``$_XOR_``) whose two inputs are
+       tail.Q and that follow-on flop's Q.
+
+    Returns ``True`` if both are present. The follow-on flop's Q
+    fanout beyond the XOR is irrelevant — it can drive any number
+    of consumers.
+
+    Used by CDC-013 as a positive-recognition suppression: a chain
+    whose toggle source is matched by an XOR-tail destination is
+    the correct fast-to-slow idiom, not the bug CDC-013 was
+    designed to flag.
+    """
+    chain = _sync_chain_flops(
+        module,
+        head,
+        head_clock,
+        ctx.domains,
+        ctx.reader_counts,
+        d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+    )
+    if len(chain) < 2:
+        # The XOR-tail breaks _sync_chain_depth's exactly-one-reader
+        # invariant on the chain tail, so the chain returned here is
+        # the prefix up to (but not including) the tail. Pick the
+        # last flop in this prefix as the chain head's downstream
+        # 1-stage neighbour and look for the tail flop manually
+        # downstream.
+        return False
+    tail = chain[-1]
+    if len(tail.q) != 1:
+        return False
+    tail_q = tail.q[0]
+    if not isinstance(tail_q, int):
+        return False
+
+    follow_flop_q: int | None = None
+    xor_cells: list[Cell] = []
+    for cell in module.cells.values():
+        ctype = cell.type
+        is_xor = ctype in {"$xor", "$_XOR_"}
+        is_flop = is_ff_cell(ctype)
+        if not is_xor and not is_flop:
+            continue
+        for port_name, bits in cell.connections.items():
+            if port_name in _OUTPUT_PINS or port_name in {"CLK", "C"}:
+                continue
+            if any(b == tail_q for b in bits if isinstance(b, int)):
+                if is_xor:
+                    xor_cells.append(cell)
+                elif is_flop and port_name == "D":
+                    # Candidate sync_q_d. Must be a 1-bit follow-on
+                    # in the same dst_clock domain.
+                    if ctx.domains.get(cell.name) != head_clock:
+                        continue
+                    q_bits = cell.connections.get("Q", ())
+                    d_bits = cell.connections.get("D", ())
+                    if len(q_bits) != 1 or len(d_bits) != 1:
+                        continue
+                    if not isinstance(q_bits[0], int):
+                        continue
+                    # Reject if D is wider than 1 bit or if the
+                    # follow-on flop is multi-driver.
+                    follow_flop_q = q_bits[0]
+                break
+
+    if follow_flop_q is None or not xor_cells:
+        return False
+
+    # Confirm at least one XOR cell has both tail_q and follow_q as inputs.
+    for xor in xor_cells:
+        inputs: set[int] = set()
+        for port_name, bits in xor.connections.items():
+            if port_name in _OUTPUT_PINS:
+                continue
+            for b in bits:
+                if isinstance(b, int):
+                    inputs.add(b)
+        if tail_q in inputs and follow_flop_q in inputs:
+            return True
+
+    return False
+
+
 def check_cdc_013(
     module: Module,
     crossings: list[Crossing],
@@ -2850,6 +2968,12 @@ def check_cdc_013(
             continue
         shape = classify_toggle_d_pin(d_bits[0], q_bits[0], module, ctx.bit_drivers)
         if shape != "toggle":
+            continue
+        # Suppress on the canonical pulse-synchroniser shape
+        # (toggle + 2FF + XOR tail in dst domain) — that's the
+        # *correct* idiom, not the bug CDC-013 targets. See
+        # _has_xor_tail_pulse_recovery for the structural match.
+        if _has_xor_tail_pulse_recovery(c.dst_flop, c.dst_clock, ctx, module):
             continue
         out.append(
             Violation(
@@ -3295,6 +3419,125 @@ def check_cdc_016(
     return violations
 
 
+def check_cdc_017(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-017 — transparent latch in a CDC path.
+
+    A ``$dlatch`` (or gate-level ``$_DLATCH_*``) sitting between a
+    source flop in clock domain A and a destination flop in clock
+    domain B != A defeats CDC synchronisation:
+
+    - During the latch's enable-active phase, a metastable source
+      signal propagates *transparently* through to the destination
+      flop's D pin. The latch provides no resolution time at all.
+    - During the enable-inactive phase, the destination samples the
+      held value — fine, but only the cycles you happen to land
+      there.
+
+    ``find_crossings`` keys off flop-to-flop fanin and stops at the
+    latch (the latch's Q is not a flop output the chain walker
+    follows). Without this rule the entire CDC bug is silent —
+    zero crossings, zero findings — even though the destination
+    flop is sampling a foreign-domain signal every cycle.
+
+    Detection: walk every ``$dlatch`` / ``$_DLATCH_*`` cell. For
+    each, identify the dst flop reading its Q (direct D-pin fanin
+    on a single-bit follow-on flop) and the src flop driving its
+    D (via :func:`_backward_flop_fanin`). If src_clock !=
+    dst_clock — fire.
+
+    Severity ``error`` — same physics class as CDC-001 (silently
+    broken synchroniser). Suppressed when the destination flop is
+    marked ``(* cdc_sync *)`` (user vouches for the shape — e.g. a
+    latch-based glitchless mux that's safe by other arguments).
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+
+    violations: list[Violation] = []
+    # Dedup at (latch_cell, src_clock, dst_clock) so a multi-bit
+    # latch reaches the user as one finding, not N.
+    seen: set[tuple[str, str, str]] = set()
+
+    for cell in module.cells.values():
+        if not is_latch_cell(cell.type):
+            continue
+        q_bits = cell.connections.get("Q", ())
+        d_bits = cell.connections.get("D", ())
+        if not q_bits or not d_bits:
+            continue
+
+        # Identify the dst flop(s) reading this latch's Q.
+        dst_clocks: dict[str, Flop] = {}
+        for q_bit in q_bits:
+            if not isinstance(q_bit, int):
+                continue
+            dst = ctx.d_bit_to_single_bit_flop.get(q_bit)
+            if dst is None:
+                continue
+            if dst.cell.name in ctx.user_syncs:
+                continue  # user-vouched destination
+            dst_clk = ctx.domains.get(dst.cell.name)
+            if dst_clk is None:
+                continue
+            dst_clocks.setdefault(dst_clk, dst)
+        if not dst_clocks:
+            continue
+
+        # Identify the src flop(s) driving this latch's D, walking
+        # back through any intermediate comb.
+        d_int_bits = tuple(b for b in d_bits if isinstance(b, int))
+        if not d_int_bits:
+            continue
+        src_flop_names = _backward_flop_fanin(module, d_int_bits, ctx.bit_drivers)
+        if not src_flop_names:
+            continue
+        src_clocks: dict[str, str] = {}
+        for src_name in src_flop_names:
+            src_clk = ctx.domains.get(src_name)
+            if src_clk is None:
+                continue
+            src_clocks.setdefault(src_clk, src_name)
+        if not src_clocks:
+            continue
+
+        for dst_clk, dst_flop in dst_clocks.items():
+            for src_clk, src_name in src_clocks.items():
+                if src_clk == dst_clk:
+                    continue
+                key = (cell.name, src_clk, dst_clk)
+                if key in seen:
+                    continue
+                seen.add(key)
+                violations.append(
+                    Violation(
+                        rule_id="CDC-017",
+                        severity="error",
+                        message=(
+                            f"transparent latch in CDC path "
+                            f"{src_clk} → {dst_clk}: latch "
+                            f"{cell.name} feeds destination flop "
+                            f"{dst_flop.name} (in {dst_clk}) from "
+                            f"source flop {src_name} (in {src_clk}). "
+                            f"During the latch's enable-active phase "
+                            f"the foreign-domain signal propagates "
+                            f"transparently to the destination — no "
+                            f"metastability resolution. Replace the "
+                            f"latch with a 2FF synchroniser flop chain "
+                            f"on {dst_clk}."
+                        ),
+                        cell_name=cell.name,
+                    )
+                )
+
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -3317,6 +3560,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-014": check_cdc_014,
     "CDC-015": check_cdc_015,
     "CDC-016": check_cdc_016,
+    "CDC-017": check_cdc_017,
 }
 
 

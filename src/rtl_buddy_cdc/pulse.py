@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from rtl_buddy_cdc.flops import FF_CELL_TYPES
+from rtl_buddy_cdc.flops import is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, Module
 
 PulseShape = Literal["pulse", "other"]
@@ -202,7 +202,7 @@ def _src_flop_d_pin(
     if port != "Q":
         return None
     cell = module.cells.get(cell_name)
-    if cell is None or cell.type not in FF_CELL_TYPES:
+    if cell is None or not is_ff_cell(cell.type):
         return None
     if flop_domains.get(cell_name) != src_clock:
         return None

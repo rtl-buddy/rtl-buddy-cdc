@@ -1,12 +1,21 @@
-// Negative fixture for fast-to-slow control-event loss.
+// Positive fixture: canonical pulse synchroniser for fast-to-slow
+// event passing.
 //
-// A fast source-domain event toggles a level that is sampled by a
-// conventional 2FF synchronizer in a slower destination domain. If two
-// events occur between destination samples, the toggle returns to its
-// prior value and the destination loses both events. This is not a
-// metastability failure; it is an event-accounting/protocol failure.
+// Source-side toggle flop converts edges to level changes; the
+// destination's 2FF chain synchronises the toggle; an XOR of the
+// chain tail with its 1-cycle-delayed copy (toggle_sync ^
+// toggle_sync_d) recovers one pulse per event in the destination
+// clock domain. This is the textbook correct idiom (Cummings SNUG
+// 2008 §6) — no event loss for events spaced more than ~2 dst
+// cycles apart.
+//
+// CDC-013 must stay silent here: the source-side toggle pattern
+// matches the rule's classifier, but the dst-side XOR-tail proves
+// the chain reconstructs the pulse correctly. The XOR-tail
+// recognition was added in rtl-buddy-cdc#196 — before that, this
+// fixture false-fired CDC-013.
 
-module bad_fast_to_slow_control_loss (
+module good_pulse_synchronizer (
     input  logic src_clk,
     input  logic dst_clk,
     input  logic rst_n,

@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypedDict
 
-from rtl_buddy_cdc.flops import FF_CELL_TYPES, Flop, find_flops
+from rtl_buddy_cdc.flops import Flop, find_flops, flop_clk_pin, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, Module
 
 
@@ -231,9 +231,10 @@ def _trace(
         return None
 
     # Clock divider — flop Q output. Trace the source flop's CLK back
-    # to its root.
-    if ctype in FF_CELL_TYPES and out_port == "Q":
-        clk_bits = cell.connections.get("CLK", ())
+    # to its root. Handles both higher-level ($dff*) and gate-level
+    # ($_DFF*) families via flop_clk_pin.
+    if is_ff_cell(ctype) and out_port == "Q":
+        clk_bits = flop_clk_pin(cell)
         if clk_bits:
             return _trace(module, clk_bits[0], drivers, seen, depth - 1, bit_to_clock)
 
@@ -415,9 +416,7 @@ def find_crossings(
                         continue
                     # Skip flops as transit nodes — we already check above
                     # whether we landed on a flop's D pin.
-                    from rtl_buddy_cdc.flops import FF_CELL_TYPES
-
-                    if cell.type in FF_CELL_TYPES:
+                    if is_ff_cell(cell.type):
                         continue
                     out_bits = _cell_outputs(cell)
                     for ob in out_bits:
@@ -445,8 +444,6 @@ def find_crossings(
     # Port-sourced crossings: walk forward from each typed input port
     # and record any flop's D pin reached in a different clock domain.
     if port_clock:
-        from rtl_buddy_cdc.flops import FF_CELL_TYPES
-
         port_grouped: dict[tuple[str, str], _PortCrossingGroup] = {}
         for port_name, port_clk_name in port_clock.items():
             port = module.ports.get(port_name)
@@ -488,7 +485,7 @@ def find_crossings(
                         cell = module.cells[cell_name]
                         if cell.type in {"$scopeinfo"}:
                             continue
-                        if cell.type in FF_CELL_TYPES:
+                        if is_ff_cell(cell.type):
                             continue
                         for ob in _cell_outputs(cell):
                             if not isinstance(ob, int):

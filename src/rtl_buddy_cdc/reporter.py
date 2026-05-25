@@ -61,6 +61,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "CDC-014": "Combinational logic between synchroniser stages",
     "CDC-015": "Sync chain asynchronously reset from a foreign clock domain",
     "CDC-016": "Opposite-edge synchroniser (halves MTBF)",
+    "CDC-017": "Transparent latch in CDC path",
 }
 
 
