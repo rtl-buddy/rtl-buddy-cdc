@@ -1000,7 +1000,31 @@ Designs that intentionally run deeper chains can raise it; the
 chain head can also be marked `(* cdc_sync *)` to suppress
 unconditionally.
 
-### 8.12 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.12 G-5 handshake reporter refinement
+
+CDC-012 (gated bus crossing without synced-back ack) and CDC-001 /
+CDC-002 (missing 2FF sync on a single-bit crossing) can both fire
+on the same async domain pair — they are two views of the same
+incomplete-handshake protocol. Today the user sees them as
+unrelated findings; the G-5 refinement links them with a one-line
+``[handshake-related]`` tag appended to the CDC-001 / CDC-002
+message.
+
+Implementation: a final post-processing pass in ``run_all``
+(`_tag_handshake_related`). For every CDC-012 finding, record its
+``(src_clock, dst_clock)`` pair; for every CDC-001 / CDC-002
+finding whose ``crossing.{src,dst}_clock`` matches that pair in
+either direction, replace the violation with a copy whose
+``message`` carries the tag. The detection logic for CDC-001 /
+CDC-002 / CDC-012 themselves is unchanged — no firing-set delta,
+no new violations, just enriched message text on the linked
+findings.
+
+This stays close to the spec's "rule pack is a chain of pure
+functions" rule: the refinement is *another* pure function over
+the violations list, layered on at the end of ``run_all``.
+
+### 8.13 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
@@ -1034,7 +1058,7 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
-### 8.13 CDC-012 — functional data-hold on a gated multi-bit crossing
+### 8.14 CDC-012 — functional data-hold on a gated multi-bit crossing
 
 CDC-012 layers a functional check on top of CDC-004's structural
 gated-bus exemption. CDC-004 accepts a multi-bit crossing whose

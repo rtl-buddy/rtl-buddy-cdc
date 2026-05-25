@@ -21,6 +21,7 @@ from .gap_g1 import GapG1LatchInSyncChain
 from .gap_g2 import GapG2CascadedSynchroniser
 from .gap_g3 import GapG3PulseSyncFalsePositive
 from .gap_g4 import GapG4OneHotDecodeIndependentSync
+from .gap_g5 import GapG5HandshakeAckMissing
 from .gap_g6 import GapG6SlicedBusReconvergence
 from .gap_g7 import GapG7DeassertionPolarityBackwards
 from .gap_g9 import GapG9GlitchlessMuxMarked, GapG9GlitchlessMuxUnmarked
@@ -61,6 +62,7 @@ ALL_TEMPLATES: list[type[Template]] = [
     GapG2CascadedSynchroniser,
     GapG3PulseSyncFalsePositive,
     GapG4OneHotDecodeIndependentSync,
+    GapG5HandshakeAckMissing,
     GapG6SlicedBusReconvergence,
     GapG7DeassertionPolarityBackwards,
     GapG9GlitchlessMuxUnmarked,
@@ -88,6 +90,7 @@ __all__ = [
     "GapG2CascadedSynchroniser",
     "GapG3PulseSyncFalsePositive",
     "GapG4OneHotDecodeIndependentSync",
+    "GapG5HandshakeAckMissing",
     "GapG6SlicedBusReconvergence",
     "GapG7DeassertionPolarityBackwards",
     "GapG9GlitchlessMuxMarked",
