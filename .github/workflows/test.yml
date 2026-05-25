@@ -10,6 +10,7 @@ on:
       - '.python-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+      - 'tests/**/*.sv'
   pull_request:
     branches: [main]
     paths:
@@ -19,6 +20,7 @@ on:
       - '.python-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+      - 'tests/**/*.sv'
 
 jobs:
   # Primary job: install with the [slang] extra so the pyslang-backed
@@ -70,3 +72,44 @@ jobs:
 
       - name: Run pytest
         run: uv run pytest -q
+
+  # Fuzz + sim suites. Gated behind ``@pytest.mark.fuzz`` /
+  # ``@pytest.mark.sim`` and skipped by every other job because they
+  # require yosys / iverilog on PATH. This job installs both, then
+  # runs the two marker selections separately so the CI summary
+  # shows their case counts independently.
+  #
+  # Marginal cost: ~30 s for the apt-install + a few seconds per
+  # suite (cached by Yosys content hash + iverilog SHA inside the
+  # runner). Worth it to catch regressions in the differential
+  # harness or sim oracle that would otherwise skip silently in the
+  # other jobs.
+  fuzz-and-sim:
+    name: fuzz + sim oracle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install yosys + iverilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends yosys iverilog
+          yosys -V | head -1
+          iverilog -V | head -1
+
+      - name: Install test dependencies
+        run: uv sync --group test --python 3.13
+
+      - name: Run fuzz suite
+        run: uv run pytest -m fuzz -q
+
+      - name: Run sim suite
+        run: uv run pytest -m sim -q
+
+      - name: Coverage report (fuzz rule firings)
+        run: uv run python -m tests.fuzz.coverage
