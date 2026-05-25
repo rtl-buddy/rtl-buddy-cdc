@@ -246,6 +246,111 @@ def parse_file(path: str | Path) -> ClockSpec:
     return parse(Path(path).read_text())
 
 
+def validate_clock_graph(spec: ClockSpec) -> list[str]:
+    """G-11 (rtl-buddy-cdc#218): cross-statement clock-graph diagnostics.
+
+    The per-command parsers (:func:`_handle_create_clock` etc.) catch
+    line-local issues like missing ``-name`` or bare ``-filter``
+    clauses; this validator looks at the *collective* clock graph
+    after every statement has been parsed and surfaces shapes that
+    individually-valid statements compose into an inconsistent or
+    undefined whole.
+
+    Returns a list of human-readable diagnostic sentences (same shape
+    as :attr:`ClockSpec.partial_warnings`); the caller is expected to
+    merge them into ``spec.partial_warnings`` so they flow through
+    the existing CLI warning surface.
+
+    Checks:
+
+    1. **Same port in multiple clocks** — two ``create_clock``s
+       declaring different clock names but listing the same top-level
+       port. ``clock_for_port`` is deterministic (it returns the first
+       match found while scanning ``spec.clocks.values()``) but the
+       user's intent is ambiguous; the value-derived rules (CDC-001,
+       CDC-011, CDC-021, RDC-008) silently see one clock and not the
+       other.
+
+    2. **Unresolved master clock** — a ``create_generated_clock`` whose
+       ``-master_clock`` names a clock not present in ``spec.clocks``.
+       :meth:`ClockSpec.resolve` returns the unknown name unchanged,
+       so :meth:`are_async` falls back to "different roots, not
+       declared async" and the generated clock effectively floats.
+
+    3. **Generated-clock master cycle** — a chain of
+       ``create_generated_clock``s whose master chain never terminates
+       at a primary clock (A → B → A is the smallest cycle).
+       :meth:`ClockSpec.resolve` has a cycle guard that prevents
+       infinite-loop, but the SDC is methodology-broken; surface it.
+
+    Duplicate clock names (two ``create_clock -name X``, or
+    ``create_clock -name X`` followed by ``create_generated_clock -name
+    X``) are caught inline by the per-command handlers — there the
+    "this is overriding the previous" detection has both sides
+    visible, which is cheaper than re-deriving from the final spec.
+    """
+    out: list[str] = []
+
+    # Check 1: same port in multiple clocks.
+    port_owners: dict[str, list[str]] = {}
+    for clk in spec.clocks.values():
+        for port in clk.ports:
+            port_owners.setdefault(port, []).append(clk.name)
+    for port, owners in sorted(port_owners.items()):
+        if len(owners) < 2:
+            continue
+        out.append(
+            f"port '{port}' is claimed by multiple clocks: "
+            f"{', '.join(sorted(owners))} (clock_for_port returns "
+            f"'{owners[0]}')"
+        )
+
+    # Check 2: unresolved master.
+    declared = set(spec.clocks.keys())
+    for clk in spec.clocks.values():
+        if clk.master is None:
+            continue
+        if clk.master not in declared:
+            out.append(
+                f"create_generated_clock '{clk.name}': master "
+                f"'{clk.master}' is not declared elsewhere — async "
+                f"classification will misbehave"
+            )
+
+    # Check 3: master cycle. Walk every generated clock's master chain
+    # with a per-walk visited set; if we revisit a node we hit a cycle.
+    seen_cycle: set[frozenset[str]] = set()
+    for start_name, start_clk in spec.clocks.items():
+        if not start_clk.is_generated or start_clk.master is None:
+            continue
+        visited: list[str] = [start_name]
+        cur: str | None = start_clk.master
+        cycle_found: list[str] | None = None
+        while cur is not None:
+            if cur in visited:
+                # Found a cycle. Slice from the first occurrence to the
+                # end to get the cycle members.
+                cycle_found = visited[visited.index(cur) :]
+                break
+            visited.append(cur)
+            nxt_clk = spec.clocks.get(cur)
+            if nxt_clk is None or not nxt_clk.is_generated:
+                break
+            cur = nxt_clk.master
+        if cycle_found:
+            cycle_key = frozenset(cycle_found)
+            if cycle_key in seen_cycle:
+                continue
+            seen_cycle.add(cycle_key)
+            out.append(
+                f"create_generated_clock cycle detected involving "
+                f"{', '.join(sorted(cycle_found))} (master chain "
+                f"doesn't terminate at a primary clock)"
+            )
+
+    return out
+
+
 def synthesize_unconstrained_inputs(spec: ClockSpec, module: "Module") -> list[str]:
     """Assign :data:`UNCONSTRAINED_SENTINEL` to input ports not already
     typed by the SDC.
@@ -630,6 +735,14 @@ def _handle_create_clock(spec: ClockSpec, p: Parsed) -> None:
         spec.partial_warnings.append(
             f"create_clock {name}: ignored unsupported [get_ports -filter ...]"
         )
+    if name in spec.clocks:
+        # G-11 (rtl-buddy-cdc#218): duplicate clock name silently
+        # overrides; surface as a partial warning so the user sees the
+        # second declaration won.
+        spec.partial_warnings.append(
+            f"duplicate clock name '{name}': second create_clock silently "
+            f"overrides the first"
+        )
     spec.clocks[name] = Clock(name=name, period=period, ports=tuple(ports))
 
 
@@ -693,6 +806,12 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
     else:
         clock_ports = tuple(targets)
 
+    if name in spec.clocks:
+        # G-11 duplicate-name check, mirroring create_clock's surface.
+        spec.partial_warnings.append(
+            f"duplicate clock name '{name}': second create_generated_clock "
+            f"silently overrides the first"
+        )
     spec.clocks[name] = Clock(
         name=name,
         period=period,

@@ -563,6 +563,11 @@ def _analyze_module_and_report(
         # existing port-walk emit port-sourced crossings for them so
         # CDC-011 can fire — see ``sdc.synthesize_unconstrained_inputs``.
         sdc_mod.synthesize_unconstrained_inputs(spec, module)
+        # G-11 (rtl-buddy-cdc#218): cross-statement clock-graph
+        # diagnostics — same-port-in-multiple-clocks, unresolved
+        # master, master cycles. Merged into partial_warnings so
+        # they flow through the existing CLI warning surface.
+        spec.partial_warnings.extend(sdc_mod.validate_clock_graph(spec))
         if spec.partial_warnings and fmt is OutputFormat.text and not no_findings:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)

@@ -91,7 +91,7 @@ Primary mode (`analyze`):
 | Input | Required | Purpose |
 |---|---|---|
 | Yosys netlist JSON | yes | Flattened design (output of `write_json`) |
-| **SDC** (`.sdc`) | recommended | Clock declarations + async groups; without it, rule checks are skipped and the run is just a structural summary |
+| **SDC** (`.sdc`) | recommended | Clock declarations + async groups; without it, rule checks are skipped and the run is just a structural summary. Cross-statement clock-graph diagnostics — same-port-in-multiple-clocks, unresolved master, master cycles, duplicate clock name — are surfaced as warnings (G-11 / rtl-buddy-cdc#218). |
 | Waiver file | optional | Per-violation suppression with reason (see [Waivers](#waivers)) |
 | `--baseline FILE.json` | optional | Filter out findings already present in a prior JSON report; the carried-over set is surfaced as a separate tally and never drives the exit code. Useful for "fail PR only on new findings". Matches on `(rule_id, cell_name, message)`. |
 | `--strict` | optional | Promote every `warning`-severity violation to `error` before reporting (see [Rules](#rules)). Exit code is unchanged — the flag is reframing, not gating. |

@@ -1059,7 +1059,45 @@ corpus. Future revisions can widen via an opt-in flag.
 Severity `error` — methodology bug; the chain's absence is the
 root cause of a class of intermittent silicon issues.
 
-### 8.14 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.14 SDC clock-graph validation (G-11)
+
+`validate_clock_graph(spec)` is the cross-statement counterpart to
+the per-command `_handle_*` parsers in `sdc.py`. Where the latter
+catch line-local issues (missing `-name`, bare `-filter` clauses),
+the validator looks at the *collective* clock graph after every
+statement has been parsed and surfaces shapes that individually-
+valid statements compose into an inconsistent or undefined whole.
+
+Three checks:
+
+1. **Same port in multiple clocks**: scan `Clock.ports` across every
+   declared clock; flag any port that appears in ≥2 clocks.
+   `clock_for_port` is deterministic (first match wins) but the
+   user's intent is ambiguous.
+
+2. **Unresolved master**: for each generated clock with
+   `Clock.master` set, check the master name exists in
+   `spec.clocks`. An unresolved master makes `ClockSpec.resolve`
+   return the unknown name unchanged, breaking `are_async`'s
+   root-comparison.
+
+3. **Master cycle**: walk each generated clock's master chain with
+   a per-walk visited list; if a name is revisited, the chain is
+   cyclic. `ClockSpec.resolve` has a cycle guard, but the SDC is
+   methodology-broken.
+
+Duplicate clock names are caught inline by the per-command
+handlers (`_handle_create_clock` / `_handle_create_generated_clock`):
+they check `name in spec.clocks` before assignment and append a
+warning if so. Inline detection has both sides visible — cheaper
+than re-deriving from the final spec.
+
+All diagnostics flow through `spec.partial_warnings` so they reach
+the user via the existing text-format warning channel.
+JSON/SARIF promotion to proper `Violation` records is a deferred
+followup; this PR keeps the linter scoped to its low-risk surface.
+
+### 8.15 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
@@ -1093,7 +1131,7 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
-### 8.15 CDC-012 — functional data-hold on a gated multi-bit crossing
+### 8.16 CDC-012 — functional data-hold on a gated multi-bit crossing
 
 CDC-012 layers a functional check on top of CDC-004's structural
 gated-bus exemption. CDC-004 accepts a multi-bit crossing whose
