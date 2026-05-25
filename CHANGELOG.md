@@ -80,6 +80,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the chain head; threshold configurable for high-MTBF designs
   via the new CLI flag.
 
+- **G-5 handshake reporter refinement** (#214). Closes G-5 from
+  the #188 coverage survey. CDC-001 / CDC-002 findings whose
+  async domain pair matches a CDC-012 finding now carry a one-line
+  `[handshake-related]` tag pointing at the CDC-012 partner. The
+  two rule families catch different views of the same incomplete-
+  handshake protocol — CDC-012 sees "gated bus with no synced-back
+  ack", CDC-001 / CDC-002 sees "src→dst single-bit crossing lacks a
+  2FF sync chain" — and a user looking at one shouldn't have to
+  mentally correlate the other. Pure reporter refinement (no new
+  rule, no firing-set changes); implemented as a final
+  post-processing pass in `run_all`.
+
 - **Per-fixture `README.md` with mermaid clock-domain diagrams**
   (#164). Every fixture under `tests/fixtures/` now has a generated
   README that browsers see when navigating the directory on GitHub:

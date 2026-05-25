@@ -1,0 +1,376 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_handshake_ack_missing": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:20.1-53.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ]
+        },
+        "req_in": {
+          "direction": "input",
+          "bits": [ 12 ]
+        },
+        "status_in": {
+          "direction": "input",
+          "bits": [ 13 ]
+        },
+        "data_dst": {
+          "direction": "output",
+          "bits": [ 14, 15, 16, 17, 18, 19, 20, 21 ]
+        },
+        "status_q": {
+          "direction": "output",
+          "bits": [ 22 ]
+        }
+      },
+      "cells": {
+        "$auto$ff.cc:337:slice$14": {
+          "hide_name": 1,
+          "type": "$dffe",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:46.5-47.46"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "EN": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 23, 24, 25, 26, 27, 28, 29, 30 ],
+            "EN": [ 31 ],
+            "Q": [ 14, 15, 16, 17, 18, 19, 20, 21 ]
+          }
+        },
+        "$procdff$10": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:40.5-43.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 32 ],
+            "Q": [ 31 ]
+          }
+        },
+        "$procdff$11": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:33.5-37.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+            "Q": [ 23, 24, 25, 26, 27, 28, 29, 30 ]
+          }
+        },
+        "$procdff$12": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:33.5-37.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 12 ],
+            "Q": [ 33 ]
+          }
+        },
+        "$procdff$13": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:33.5-37.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 13 ],
+            "Q": [ 34 ]
+          }
+        },
+        "$procdff$7": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:51.5-51.59"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 34 ],
+            "Q": [ 22 ]
+          }
+        },
+        "$procdff$9": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:40.5-43.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 33 ],
+            "Q": [ 32 ]
+          }
+        },
+        "$procmux$5": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:47.13-47.23|tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:47.9-47.46"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 14, 15, 16, 17, 18, 19, 20, 21 ],
+            "B": [ 23, 24, 25, 26, 27, 28, 29, 30 ],
+            "S": [ 31 ],
+            "Y": [ 35, 36, 37, 38, 39, 40, 41, 42 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\data_dst_q[7:0]": {
+          "hide_name": 1,
+          "bits": [ 35, 36, 37, 38, 39, 40, 41, 42 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:46.5-47.46"
+          }
+        },
+        "$0\\data_q[7:0]": {
+          "hide_name": 1,
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:33.5-37.8"
+          }
+        },
+        "$0\\req_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:33.5-37.8"
+          }
+        },
+        "$0\\req_sync_m[0:0]": {
+          "hide_name": 1,
+          "bits": [ 33 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:40.5-43.8"
+          }
+        },
+        "$0\\req_sync_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 32 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:40.5-43.8"
+          }
+        },
+        "$0\\status_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 34 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:51.5-51.59"
+          }
+        },
+        "$0\\status_src_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:33.5-37.8"
+          }
+        },
+        "$procmux$5_Y": {
+          "hide_name": 1,
+          "bits": [ 35, 36, 37, 38, 39, 40, 41, 42 ],
+          "attributes": {
+          }
+        },
+        "$procmux$6_CMP": {
+          "hide_name": 1,
+          "bits": [ 31 ],
+          "attributes": {
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:23.24-23.28"
+          }
+        },
+        "data_dst": {
+          "hide_name": 0,
+          "bits": [ 14, 15, 16, 17, 18, 19, 20, 21 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:26.24-26.32"
+          }
+        },
+        "data_dst_q": {
+          "hide_name": 0,
+          "bits": [ 14, 15, 16, 17, 18, 19, 20, 21 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:45.17-45.27"
+          }
+        },
+        "data_q": {
+          "hide_name": 0,
+          "bits": [ 23, 24, 25, 26, 27, 28, 29, 30 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:30.17-30.23"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:22.24-22.31"
+          }
+        },
+        "req_in": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:24.24-24.30"
+          }
+        },
+        "req_q": {
+          "hide_name": 0,
+          "bits": [ 33 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:31.17-31.22"
+          }
+        },
+        "req_sync_m": {
+          "hide_name": 0,
+          "bits": [ 32 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:39.11-39.21"
+          }
+        },
+        "req_sync_q": {
+          "hide_name": 0,
+          "bits": [ 31 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:39.23-39.33"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:21.24-21.31"
+          }
+        },
+        "status_in": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:25.24-25.33"
+          }
+        },
+        "status_q": {
+          "hide_name": 0,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:27.24-27.32"
+          }
+        },
+        "status_src_q": {
+          "hide_name": 0,
+          "bits": [ 34 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_handshake_ack_missing/bad_handshake_ack_missing.sv:32.17-32.29"
+          }
+        }
+      }
+    }
+  }
+}

@@ -4116,6 +4116,73 @@ RULES: dict[str, RuleFn] = {
 }
 
 
+def _tag_handshake_related(violations: list[Violation]) -> list[Violation]:
+    """Reporter refinement (G-5): link CDC-001 / CDC-002 findings to a
+    paired CDC-012 finding on the same async domain pair.
+
+    The two rule families catch *different views* of the same
+    incomplete-handshake protocol — CDC-012 sees "gated bus with no
+    synced-back ack", CDC-001 / CDC-002 sees "src→dst single-bit
+    crossing lacks a 2FF sync chain" — and a user looking at one
+    finding shouldn't have to mentally correlate the other.
+
+    Detection is by *async domain pair*: for every CDC-012 finding,
+    record its ``(src_clock, dst_clock)`` (the gated bus's src→dst
+    direction); for every CDC-001 / CDC-002 finding whose
+    ``crossing.src_clock`` / ``dst_clock`` matches that pair in either
+    direction, append a one-line ``[handshake-related]`` tag naming
+    the gated bus's source flop. The tag is a *pure suffix* on
+    ``Violation.message`` — no field changes, no new violations.
+
+    No-op when the violations list has no CDC-012 finding (the common
+    case).
+    """
+    cdc_012_by_pair: dict[frozenset[str], Violation] = {}
+    for v in violations:
+        if v.rule_id != "CDC-012" or v.crossing is None:
+            continue
+        cdc_012_by_pair.setdefault(
+            frozenset({v.crossing.src_clock, v.crossing.dst_clock}), v
+        )
+    if not cdc_012_by_pair:
+        return violations
+
+    out: list[Violation] = []
+    for v in violations:
+        if v.rule_id not in {"CDC-001", "CDC-002"} or v.crossing is None:
+            out.append(v)
+            continue
+        pair_key = frozenset({v.crossing.src_clock, v.crossing.dst_clock})
+        partner = cdc_012_by_pair.get(pair_key)
+        if partner is None or partner.crossing is None:
+            out.append(v)
+            continue
+        gated_src = partner.crossing.src_flop
+        gated_dst = partner.crossing.dst_flop
+        src_name = (
+            gated_src.name if gated_src is not None else partner.crossing.src_name
+        )
+        dst_name = gated_dst.name
+        tagged = Violation(
+            rule_id=v.rule_id,
+            severity=v.severity,
+            message=(
+                f"{v.message}\n"
+                f"  [handshake-related] same async domain pair "
+                f"({v.crossing.src_clock} ↔ {v.crossing.dst_clock}) carries "
+                f"a CDC-012-firing gated bus crossing "
+                f"({src_name} → {dst_name}). The complete fix is a req/ack "
+                f"handshake — synchronise the ack back to "
+                f"{partner.crossing.src_clock} and use it to retire the "
+                f"gated bus."
+            ),
+            crossing=v.crossing,
+            cell_name=v.cell_name,
+        )
+        out.append(tagged)
+    return out
+
+
 def run_all(
     module: Module,
     crossings: list[Crossing],
@@ -4161,4 +4228,8 @@ def run_all(
             )
         else:
             out.extend(rule(module, crossings, clock_spec, ctx=ctx))
-    return out
+    # Reporter refinement (G-5, rtl-buddy-cdc#214): annotate CDC-001 /
+    # CDC-002 findings that share an async domain pair with a CDC-012
+    # finding so the user sees the missing-ack relationship without
+    # having to correlate the two findings manually.
+    return _tag_handshake_related(out)
