@@ -18,6 +18,7 @@ from .cdc015 import SyncChainForeignReset
 from .cdc016 import OppositeEdgeChain
 from .cdc017 import LatchInCdcPath
 from .gap_g1 import GapG1LatchInSyncChain
+from .gap_g2 import GapG2CascadedSynchroniser
 from .gap_g3 import GapG3PulseSyncFalsePositive
 from .gap_g4 import GapG4OneHotDecodeIndependentSync
 from .gap_g6 import GapG6SlicedBusReconvergence
@@ -57,6 +58,7 @@ ALL_TEMPLATES: list[type[Template]] = [
     MultiSourceReset,
     DerivedAsyncResetUnsync,
     GapG1LatchInSyncChain,
+    GapG2CascadedSynchroniser,
     GapG3PulseSyncFalsePositive,
     GapG4OneHotDecodeIndependentSync,
     GapG6SlicedBusReconvergence,
@@ -83,6 +85,7 @@ __all__ = [
     "GapG1LatchInSyncChain",
     "GapG10FlopClkUndeclaredPort",
     "GapG12GateLevelSilent",
+    "GapG2CascadedSynchroniser",
     "GapG3PulseSyncFalsePositive",
     "GapG4OneHotDecodeIndependentSync",
     "GapG6SlicedBusReconvergence",

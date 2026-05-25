@@ -69,6 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the source, plus the structural gray-encode-into-multi-bit-
   sync exemption.
 
+- **CDC-018: cascaded synchroniser warning** (#212). Closes G-2
+  from the #188 coverage survey. Quality-of-life check that fires
+  when a CDC crossing's destination sync chain depth reaches
+  `--cdc-018-depth-threshold` (default 4). Classic pattern: two
+  engineers each added their own 2FF sync on the same wire, or a
+  refactor left the original chain in place when a new wrapper was
+  added — depth-4+ chains that still work but add latency without
+  improving MTBF. Severity `warning`. Suppressed by `(* cdc_sync *)`
+  on the chain head; threshold configurable for high-MTBF designs
+  via the new CLI flag.
+
 - **Per-fixture `README.md` with mermaid clock-domain diagrams**
   (#164). Every fixture under `tests/fixtures/` now has a generated
   README that browsers see when navigating the directory on GitHub:
