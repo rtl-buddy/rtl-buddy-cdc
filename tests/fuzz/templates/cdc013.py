@@ -18,7 +18,26 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ._sweep import case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
+
+# CDC-013's failure mode is rate-mismatch driven, same as CDC-009:
+# fast src toggles faster than dst can sample, so events get lost.
+# Reuse a fast-src / slow-dst period spread.
+_FAST_TO_SLOW_PERIODS: list[tuple[float, float]] = [
+    (2.0, 20.0),
+    (1.5, 18.0),
+    (3.0, 24.0),
+    (2.5, 30.0),
+    (1.0, 17.0),
+    (2.0, 15.0),
+    (4.0, 28.0),
+    (1.2, 22.0),
+    (3.5, 19.0),
+    (2.0, 25.0),
+    (1.8, 13.0),
+    (2.5, 21.0),
+]
 
 _TEMPLATE = """\
 module {top} (
@@ -50,9 +69,9 @@ endmodule
 """
 
 _SDC = """\
-create_clock -name src_clk -period 2.0  [get_ports src_clk]
-create_clock -name dst_clk -period 20.0 [get_ports dst_clk]
-set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
+create_clock -name src_clk -period {src_period} [get_ports src_clk]
+create_clock -name dst_clk -period {dst_period} [get_ports dst_clk]
+set_clock_groups -asynchronous -group {{src_clk}} -group {{dst_clk}}
 set_input_delay -clock src_clk 0.5 [get_ports event_in]
 """
 
@@ -64,13 +83,14 @@ class ToggleNoXorTail:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        top = f"fuzz_{cls.name}"
-        yield RenderedCase(
-            template_name=cls.name,
-            case_id=top,
-            sv=_TEMPLATE.format(top=top),
-            sdc=_SDC,
-            top=top,
-            params={},
-            expected=(ExpectedFinding("CDC-013", Op.GE, 1),),
-        )
+        for src_period, dst_period in _FAST_TO_SLOW_PERIODS:
+            top = f"fuzz_{cls.name}_{case_suffix(src_period, dst_period)}"
+            yield RenderedCase(
+                template_name=cls.name,
+                case_id=top,
+                sv=_TEMPLATE.format(top=top),
+                sdc=_SDC.format(src_period=src_period, dst_period=dst_period),
+                top=top,
+                params={"src_period": src_period, "dst_period": dst_period},
+                expected=(ExpectedFinding("CDC-013", Op.GE, 1),),
+            )

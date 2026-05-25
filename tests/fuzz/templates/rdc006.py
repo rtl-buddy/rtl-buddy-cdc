@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ._sweep import ONE_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -35,7 +36,7 @@ endmodule
 """
 
 _SDC = """\
-create_clock -name clk -period 10.0 [get_ports clk]
+create_clock -name clk -period {clk_period} [get_ports clk]
 set_input_delay -clock clk 0.5 [get_ports d_in]
 """
 
@@ -47,13 +48,14 @@ class DerivedAsyncResetUnsync:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        top = f"fuzz_{cls.name}"
-        yield RenderedCase(
-            template_name=cls.name,
-            case_id=top,
-            sv=_TEMPLATE.format(top=top),
-            sdc=_SDC,
-            top=top,
-            params={},
-            expected=(ExpectedFinding("RDC-006", Op.GE, 1),),
-        )
+        for clk_period in ONE_CLOCK_PERIODS:
+            top = f"fuzz_{cls.name}_{case_suffix(clk_period)}"
+            yield RenderedCase(
+                template_name=cls.name,
+                case_id=top,
+                sv=_TEMPLATE.format(top=top),
+                sdc=_SDC.format(clk_period=clk_period),
+                top=top,
+                params={"clk_period": clk_period},
+                expected=(ExpectedFinding("RDC-006", Op.GE, 1),),
+            )

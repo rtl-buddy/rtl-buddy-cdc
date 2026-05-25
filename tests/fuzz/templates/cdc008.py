@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ._sweep import TWO_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -32,9 +33,9 @@ endmodule
 """
 
 _SDC = """\
-create_clock -name main_clk  -period 10.0 [get_ports main_clk]
-create_clock -name snoop_clk -period 7.5  [get_ports snoop_clk]
-set_clock_groups -asynchronous -group {main_clk} -group {snoop_clk}
+create_clock -name main_clk  -period {src_period} [get_ports main_clk]
+create_clock -name snoop_clk -period {dst_period} [get_ports snoop_clk]
+set_clock_groups -asynchronous -group {{main_clk}} -group {{snoop_clk}}
 """
 
 
@@ -43,13 +44,14 @@ class ClockAsData:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        top = f"fuzz_{cls.name}"
-        yield RenderedCase(
-            template_name=cls.name,
-            case_id=top,
-            sv=_TEMPLATE.format(top=top),
-            sdc=_SDC,
-            top=top,
-            params={},
-            expected=(ExpectedFinding("CDC-008", Op.GE, 1),),
-        )
+        for main_period, snoop_period in TWO_CLOCK_PERIODS:
+            top = f"fuzz_{cls.name}_{case_suffix(main_period, snoop_period)}"
+            yield RenderedCase(
+                template_name=cls.name,
+                case_id=top,
+                sv=_TEMPLATE.format(top=top),
+                sdc=_SDC.format(src_period=main_period, dst_period=snoop_period),
+                top=top,
+                params={"main_period": main_period, "snoop_period": snoop_period},
+                expected=(ExpectedFinding("CDC-008", Op.GE, 1),),
+            )

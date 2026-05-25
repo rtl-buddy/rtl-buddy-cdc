@@ -90,7 +90,7 @@ class UnsyncedSingleBit:
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
         polarities = ["async_low", "async_high", "none"]
-        period_pairs = [(10.0, 7.5), (10.0, 13.0)]
+        period_pairs = [(10.0, 7.5), (10.0, 13.0), (5.0, 18.0), (20.0, 9.0)]
         for polarity, (src_period, dst_period) in product(polarities, period_pairs):
             params = {
                 "rst_polarity": polarity,

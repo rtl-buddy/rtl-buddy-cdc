@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from itertools import product
 
+from ._sweep import TWO_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -58,15 +59,19 @@ class ShortChain:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        depths = [3, 4]
-        period_pairs = [(10.0, 7.5)]
-        for required_depth, (src_period, dst_period) in product(depths, period_pairs):
+        depths = [3, 4, 5]
+        for required_depth, (src_period, dst_period) in product(
+            depths, TWO_CLOCK_PERIODS[:4]
+        ):
             params = {
                 "required_depth": required_depth,
                 "src_period": src_period,
                 "dst_period": dst_period,
             }
-            top = f"fuzz_{cls.name}_depth{required_depth}"
+            top = (
+                f"fuzz_{cls.name}_depth{required_depth}_"
+                f"{case_suffix(src_period, dst_period)}"
+            )
             sv = _TEMPLATE.format(top=top)
             sdc = _SDC_TEMPLATE.format(src_period=src_period, dst_period=dst_period)
             yield RenderedCase(
