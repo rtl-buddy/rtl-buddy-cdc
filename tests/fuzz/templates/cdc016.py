@@ -7,17 +7,22 @@ chain and stay silent; CDC-016 fires on the adjacent-stage
 polarity mismatch.
 
 **Regression sentinel** (rtl-buddy-cdc#193): this template doubles
-as a partitioning regression check for the CDC-001/-002 deferral
-plumbing. The chain walker (``_sync_chain_depth``), the
+as a partitioning regression check for the chain-walker plumbing
+shared across CDC-001 / -002 / -014 / -015 / -016. The chain
+walker (``_sync_chain_depth``, ``_sync_chain_flops``), the
 inter-stage-comb deferral (``_chain_has_inter_stage_comb``), and
-the polarity helper (``_clk_polarity``) are shared between CDC-001
-/ -014 / -015 / -016. A refactor that breaks the partitioning
-would cause CDC-001 to start firing on this chain and mislead the
-user into "adding a 2FF chain you already have". The
-``forbidden=(CDC-001, ZERO)`` clause below is the canary —
-independently derived from the hand-authored fixture's assertion
-in ``tests/test_bad_opposite_edge_sync.py``. Do not remove or
-weaken either when pruning the fuzz corpus.
+the polarity helper (``_clk_polarity``) all key off the same
+chain-traversal primitives. A refactor that unifies any of those
+predicates could silently regress the partitioning and cause the
+wrong rule to fire on a clean polarity-flip chain — misleading
+the user into e.g. "add a 2FF chain you already have"
+(CDC-001/-002) or "remove the comb you don't have" (CDC-014).
+
+The ``forbidden`` clause below is the canary: every chain-walker
+rule but CDC-016 is asserted to stay silent. Independently
+derived from the hand-authored fixture's assertion in
+``tests/test_bad_opposite_edge_sync.py::test_chain_walker_partitioning_silent``.
+Do not remove or weaken either when pruning the fuzz corpus.
 """
 
 from __future__ import annotations
@@ -84,5 +89,7 @@ class OppositeEdgeChain:
                 forbidden=(
                     ExpectedFinding("CDC-001", Op.ZERO),
                     ExpectedFinding("CDC-002", Op.ZERO),
+                    ExpectedFinding("CDC-014", Op.ZERO),
+                    ExpectedFinding("CDC-015", Op.ZERO),
                 ),
             )
