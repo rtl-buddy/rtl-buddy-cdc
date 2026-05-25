@@ -1024,7 +1024,42 @@ This stays close to the spec's "rule pack is a chain of pure
 functions" rule: the refinement is *another* pure function over
 the violations list, layered on at the end of ``run_all``.
 
-### 8.13 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.13 RDC-008 — unsynced primary-reset-port deassertion
+
+RDC-008 fills the port-sourced gap in the RDC family. RDC-001
+catches reset crossings whose source is a *flop's* Q in a foreign
+clock domain; it deliberately doesn't fire when the source is a
+top-level reset port directly wired to consumer flops' `ARST`
+pins. Both shapes have the same recovery/removal hazard
+(deassertion unsynchronised to the consumer clock); only the
+source classification differs.
+
+**Asymmetric-intent detection.** RDC-008 only fires when:
+
+1. The port has consumers in some clock domain that *already* has
+   a recognised reset-synchroniser chain — proof the user knows
+   the port needs synchronisation, and
+2. The same port drives ≥2 consumer flops in a *different* clock
+   domain *without* a sync chain there.
+
+The second clock domain is where the methodology bug lives. The
+first criterion (chain exists elsewhere for the same port) gates
+out "I just used the raw port everywhere" simplifications common
+in small hand-authored RTL — those are a different concern than
+RDC-008 is calibrated for. The second criterion (≥2 unsynced
+consumers) gates out single-flop shortcut uses, which often reflect
+designer judgement on a specific timing path rather than a
+distribution-pattern bug.
+
+This makes RDC-008 narrower than the strictest reading of the rule
+("every port-sourced ARST needs a chain") but the noise/signal
+ratio under the strict reading was untenable on the existing test
+corpus. Future revisions can widen via an opt-in flag.
+
+Severity `error` — methodology bug; the chain's absence is the
+root cause of a class of intermittent silicon issues.
+
+### 8.14 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
@@ -1058,7 +1093,7 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
-### 8.14 CDC-012 — functional data-hold on a gated multi-bit crossing
+### 8.15 CDC-012 — functional data-hold on a gated multi-bit crossing
 
 CDC-012 layers a functional check on top of CDC-004's structural
 gated-bus exemption. CDC-004 accepts a multi-bit crossing whose

@@ -2755,6 +2755,153 @@ def check_rdc_007(
     return violations
 
 
+def check_rdc_008(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """RDC-008 — Unsynced primary-reset-port deassertion.
+
+    Fires when a flop's async reset is driven *directly* by a top-level
+    input port (``ResetDomain.reset.source == "port"``) and the flop
+    is not part of a recognised reset-synchroniser chain in its own
+    clock domain. RDC-001 is the symmetric rule for foreign-domain
+    flop-sourced resets (``source == "inferred"``); RDC-008 fills the
+    port-source gap.
+
+    Reset assertion is fine (combinational propagation from the port),
+    but the deassertion edge is unsynchronised to the consumer clock —
+    recovery/removal timing violations can leave random subsets of
+    flops in different reset states. Textbook fix: a 2FF reset-
+    synchroniser chain in the consumer clock domain whose ``ARST`` is
+    the raw port; downstream consumers then use the chain's tail Q.
+
+    Severity ``error`` — methodology bug; the chain's absence is the
+    root cause of a class of intermittent silicon issues.
+
+    Detection groups by ``(port_name, consumer_clock)``: one finding
+    per port per clock domain listing every affected consumer flop.
+
+    **Asymmetric detection.** RDC-008 only fires when the user has
+    clearly *built* reset-sync infrastructure for the port in one
+    clock domain but *missed* it in another. That asymmetry signals
+    intent (the user knows the port needs synchronisation) and the
+    miss is a methodology bug rather than a simplification. Designs
+    that use the raw reset port directly in every consumer domain
+    (the common pattern in small unit-test RTL) stay silent — they're
+    a different concern, not what RDC-008 is calibrated for.
+
+    Suppression:
+
+    * Consumer flop is in :func:`find_reset_synchronizers` set — the
+      chain's *own* flops have their ARST as the port by design (that's
+      the chain's input). They're recognised members, so they don't
+      fire.
+    * Consumer flop is marked ``(* reset_sync *)`` (user-vouched).
+    * Reset source is ``"inferred"`` (RDC-001), ``"comb"`` (RDC-004),
+      or ``"constant"`` (no failure mode). RDC-008 stays narrowly on
+      ``"port"``.
+    * Sync-reset (``SRST``) consumers are skipped — RDC-008 is scoped
+      to async-reset distribution only.
+    * Port has no sync chain anywhere in the design (the
+      "every-consumer-uses-the-raw-port" simplification).
+    """
+    from rtl_buddy_cdc.reset_domain import (
+        assign_reset_domains,
+        find_reset_synchronizers,
+    )
+
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    reset_domains = assign_reset_domains(module)
+    recognised_syncs = find_reset_synchronizers(
+        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
+    )
+
+    # First pass: collect every unsynced port-sourced ARST consumer,
+    # grouped by (port, consumer_clock).
+    unsynced_groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for f in ctx.flops:
+        if f.cell.name in recognised_syncs:
+            continue
+        rd = reset_domains.get(f.cell.name)
+        if rd is None or rd.reset is None:
+            continue
+        if rd.reset.type != "async" or rd.reset.source != "port":
+            continue
+        consumer_clk = ctx.domains.get(f.cell.name)
+        if consumer_clk is None:
+            continue
+        unsynced_groups[(rd.reset.name, consumer_clk)].append(f.cell.name)
+
+    # Per-port: which clock domains DO have a recognised reset-sync
+    # chain consuming this port? Determined by walking recognised sync
+    # flops and consulting their reset source. A chain's own flops have
+    # rd.reset.source == "port" with rd.reset.name == the port driving
+    # them; their domain is the sync chain's clock domain.
+    synced_clocks_by_port: dict[str, set[str]] = defaultdict(set)
+    for sync_name in recognised_syncs:
+        rd = reset_domains.get(sync_name)
+        if rd is None or rd.reset is None:
+            continue
+        if rd.reset.source != "port":
+            continue
+        sync_clk = ctx.domains.get(sync_name)
+        if sync_clk is None:
+            continue
+        synced_clocks_by_port[rd.reset.name].add(sync_clk)
+
+    violations: list[Violation] = []
+    for (port_name, consumer_clk), consumers in sorted(unsynced_groups.items()):
+        # The asymmetric-intent gate: only fire when the user has built
+        # a chain for this port in *some* domain. Without that signal
+        # the design likely just uses the raw port as-is in every
+        # domain (a simplification we don't flag here).
+        if not synced_clocks_by_port[port_name]:
+            continue
+        consumer_names = sorted(set(consumers))
+        # Single-flop shortcut: one unsynced consumer in a domain that
+        # otherwise has no need for a sync chain often reflects a
+        # designer judgement call (the lone flop's startup timing
+        # happens to align). RDC-008 stays narrowly on the clearer
+        # methodology bug: ≥2 unsynced consumers in the same (port,
+        # clk) group, indicating the user has built a distribution
+        # pattern that's missing the sync stage.
+        if len(consumer_names) < 2:
+            continue
+        consumer_desc = (
+            f"{len(consumer_names)} flops ({', '.join(consumer_names[:3])}"
+            + ("..." if len(consumer_names) > 3 else "")
+            + ")"
+        )
+        clk_phrase = (
+            f"in {consumer_clk}" if consumer_clk else "in an untraceable clock domain"
+        )
+        violations.append(
+            Violation(
+                rule_id="RDC-008",
+                severity="error",
+                message=(
+                    f"unsynced primary-reset port: top-level reset "
+                    f"port '{port_name}' drives {consumer_desc} {clk_phrase} "
+                    f"directly, with no reset-synchroniser chain in that "
+                    f"clock domain. Reset assertion is fine, but the "
+                    f"deassertion edge is unsynchronised to the consumer "
+                    f"clock — recovery/removal timing violations can "
+                    f"leave random subsets of flops in different reset "
+                    f"states. Add a 2FF reset-synchroniser chain in "
+                    f"{consumer_clk or 'the consumer clock domain'} whose "
+                    f"ARST is '{port_name}', and route consumers through "
+                    f"the chain's tail."
+                ),
+                cell_name=consumer_names[0],
+            )
+        )
+    return violations
+
+
 def check_cdc_011(
     module: Module,  # noqa: ARG001
     crossings: list[Crossing],
@@ -4099,6 +4246,7 @@ RULES: dict[str, RuleFn] = {
     "RDC-005": check_rdc_005,
     "RDC-006": check_rdc_006,
     "RDC-007": check_rdc_007,
+    "RDC-008": check_rdc_008,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
     "CDC-010": check_cdc_010,
