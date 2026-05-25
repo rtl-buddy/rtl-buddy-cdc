@@ -935,7 +935,38 @@ path is the right shipping unit because it gives the user an
 explicit escape hatch even when the mux is in a library cell
 (no SV source to annotate inside).
 
-### 8.10 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.10 CDC-020 — sliced-bus reconvergence across CDC
+
+CDC-020 closes the *multi-bit-source-sliced-into-1-bit-lanes*
+blind spot in CDC-004. `find_crossings` emits one `Crossing` per
+`(src_flop, dst_flop)` pair with `width = number_of_bits_landing
+_at_that_specific_dst`. When a 4-bit source flop is sliced via
+wire assignments and each bit lands at a separate dst flop, every
+per-lane crossing has `width = 1` and CDC-004's `width <= 1` skip
+drops them all. The source is genuinely multi-bit; the lanes
+change together at the source register; the dst-side per-lane
+sync chains resolve metastability on their own schedule, so
+transient incoherent combinations can appear at the destination.
+
+Sibling of CDC-019 (rtl-buddy-cdc#204): same per-lane-independent-
+sync hazard, but the source is a true multi-bit register rather
+than a shared combinational decoder.
+
+Detection walks `crossings` looking for src flops with `len(q) >=
+2`, groups by `(src_flop, dst_clock)`, and fires when the group
+contains ≥2 distinct `dst_flop`s. Suppression mirrors CDC-004:
+
+* `(* cdc_gray *)` on the source flop,
+* `(* cdc_static *)` on the source flop, or
+* structural gray encoding (`_is_gray_encoded_source`) combined
+  with *any* per-lane destination being a multi-bit-sync first
+  stage (`_is_multibit_sync_first_stage`).
+
+Severity `warning` — sometimes intentional (the destination only
+reads one bit at a time, or a separate handshake gates the
+sample).
+
+### 8.11 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
@@ -969,7 +1000,7 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
-### 8.11 CDC-012 — functional data-hold on a gated multi-bit crossing
+### 8.12 CDC-012 — functional data-hold on a gated multi-bit crossing
 
 CDC-012 layers a functional check on top of CDC-004's structural
 gated-bus exemption. CDC-004 accepts a multi-bit crossing whose

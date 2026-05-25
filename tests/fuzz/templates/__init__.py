@@ -20,6 +20,7 @@ from .cdc017 import LatchInCdcPath
 from .gap_g1 import GapG1LatchInSyncChain
 from .gap_g3 import GapG3PulseSyncFalsePositive
 from .gap_g4 import GapG4OneHotDecodeIndependentSync
+from .gap_g6 import GapG6SlicedBusReconvergence
 from .gap_g7 import GapG7DeassertionPolarityBackwards
 from .gap_g9 import GapG9GlitchlessMuxMarked, GapG9GlitchlessMuxUnmarked
 from .gap_g10 import GapG10FlopClkUndeclaredPort
@@ -58,6 +59,7 @@ ALL_TEMPLATES: list[type[Template]] = [
     GapG1LatchInSyncChain,
     GapG3PulseSyncFalsePositive,
     GapG4OneHotDecodeIndependentSync,
+    GapG6SlicedBusReconvergence,
     GapG7DeassertionPolarityBackwards,
     GapG9GlitchlessMuxUnmarked,
     GapG9GlitchlessMuxMarked,
@@ -83,6 +85,7 @@ __all__ = [
     "GapG12GateLevelSilent",
     "GapG3PulseSyncFalsePositive",
     "GapG4OneHotDecodeIndependentSync",
+    "GapG6SlicedBusReconvergence",
     "GapG7DeassertionPolarityBackwards",
     "GapG9GlitchlessMuxMarked",
     "GapG9GlitchlessMuxUnmarked",

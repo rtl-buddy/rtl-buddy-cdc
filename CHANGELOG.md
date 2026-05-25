@@ -57,6 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(* cdc_sync *)` and `(* cdc_gray *)`. CDC-010 stays silent on
   any control-pin bit it walks that belongs to a tagged netname.
 
+- **CDC-020: sliced-bus reconvergence across CDC** (#210). Closes
+  G-6 from the #188 coverage survey. Fires when a genuinely-multi-
+  bit source flop (WIDTH≥2) has its bits sliced into N≥2 width=1
+  crossings that each independently cross to flops in the same
+  destination clock domain. CDC-004 misses this shape because each
+  per-lane crossing's width is 1; the multi-bit-bus detector's
+  `width <= 1` skip drops every lane even though the source bus is
+  genuinely multi-bit. Sibling of CDC-019 (shared comb decoder).
+  Same suppression as CDC-004: `(* cdc_gray *)` / `(* cdc_static *)`
+  on the source, plus the structural gray-encode-into-multi-bit-
+  sync exemption.
+
 - **Per-fixture `README.md` with mermaid clock-domain diagrams**
   (#164). Every fixture under `tests/fixtures/` now has a generated
   README that browsers see when navigating the directory on GitHub:
