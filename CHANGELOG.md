@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chain once with its head D constant attached;
   `find_reset_synchronizers`'s public contract is unchanged.
 
+- **`(* glitchless_clock_mux *)` SV attribute for CDC-010
+  suppression** (#208). Closes G-9 from the #188 coverage survey.
+  Attach to a clock-mux select wire to vouch that the surrounding
+  mux topology is glitch-free (a cross-coupled-latch envelope or
+  a foundry library cell that handles the safe handoff). CDC-010's
+  standard "synchronise the select" fix advice would actually
+  break a correctly-built glitchless mux by introducing a single-
+  clock dependency that defeats the other-clock-aware gating; the
+  attribute is the user's explicit promise, parallel to
+  `(* cdc_sync *)` and `(* cdc_gray *)`. CDC-010 stays silent on
+  any control-pin bit it walks that belongs to a tagged netname.
+
 - **Per-fixture `README.md` with mermaid clock-domain diagrams**
   (#164). Every fixture under `tests/fixtures/` now has a generated
   README that browsers see when navigating the directory on GitHub:

@@ -906,7 +906,36 @@ supplied (no rules fire in that case anyway).
 Severity `error` — undeclared clocks aren't a styling concern;
 they disable every other CDC check that touches the domain.
 
-### 8.9 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.9 CDC-010 glitchless-clock-mux suppression via SV attribute
+
+The `(* glitchless_clock_mux *)` attribute (aliases
+`glitchless_mux`, `glitchfree_clock_mux`) on a clock-mux select
+wire instructs CDC-010 to skip the select. Rationale: a
+correctly-built glitchless 2-input clock mux (the textbook cross-
+coupled-latch envelope, or a foundry library cell) makes an
+asynchronous select safe. CDC-010's standard fix advice —
+"synchronise the select onto one of the gated clocks" — would
+actually break the glitchless property by introducing a single-
+clock dependency that defeats the other-clock-aware gating.
+
+Suppression is by *net*, not by source flop: the rule consults a
+precomputed `user_glitchless_mux_bits` set (the union of bits in
+every netname tagged with one of the attribute aliases) and skips
+any control pin whose bits intersect that set. This differs from
+the `cdc_sync` / `cdc_gray` / `cdc_static` attributes (which are
+flop-name sets) because the safe-handoff promise is about the
+*wire* (the select net), not about the producing flop — a select
+sourced from a top-level port and a select sourced from a foreign-
+domain flop both need the same suppression.
+
+Out of scope for this attribute: structural detection of the
+cross-coupled-latch shape itself (so the user doesn't have to
+attach the attribute). That's a separate followup; the attribute
+path is the right shipping unit because it gives the user an
+explicit escape hatch even when the mux is in a library cell
+(no SV source to annotate inside).
+
+### 8.10 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
@@ -940,7 +969,7 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
-### 8.10 CDC-012 — functional data-hold on a gated multi-bit crossing
+### 8.11 CDC-012 — functional data-hold on a gated multi-bit crossing
 
 CDC-012 layers a functional check on top of CDC-004's structural
 gated-bus exemption. CDC-004 accepts a multi-bit crossing whose
