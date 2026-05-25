@@ -1,0 +1,102 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_flop_clk_undeclared_port": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:15.1-25.10"
+      },
+      "ports": {
+        "clk_aux": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 3 ]
+        }
+      },
+      "cells": {
+        "$not$tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:21$2": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:21.43-21.49"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 4 ]
+          }
+        },
+        "$procdff$3": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:21.5-21.50"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 3 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\q_aux[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:21.5-21.50"
+          }
+        },
+        "$not$tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:21$2_Y": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:21.43-21.49"
+          }
+        },
+        "clk_aux": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:16.18-16.25"
+          }
+        },
+        "q_aux": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:20.11-20.16"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_flop_clk_undeclared_port/bad_flop_clk_undeclared_port.sv:17.18-17.23"
+          }
+        }
+      }
+    }
+  }
+}

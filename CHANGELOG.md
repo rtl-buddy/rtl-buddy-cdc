@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CDC-021: flop CLK driven by undeclared port** (#206). Closes
+  G-10 from the #188 coverage survey. Companion to CDC-011 on the
+  clock-pin side: fires when a flop's `CLK` traces back to a
+  top-level input port that has no `create_clock` declaration. The
+  failure is silent — undeclared port-clocks don't appear in any
+  async group, so `_filter_async` drops every crossing involving
+  the undeclared domain and every other rule that touches it stays
+  silent. CDC-021 surfaces the methodology bug so the user can
+  declare the clock and let the other rules do their work.
+
 - **CDC-019: independently-synced one-hot decode across CDC**
   (#204). Closes G-4 from the #188 coverage survey. Fires when
   N≥2 single-bit source-domain flops sharing a common
