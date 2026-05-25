@@ -3739,6 +3739,99 @@ def check_cdc_019(
     return violations
 
 
+def check_cdc_021(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-021 — Flop CLK driven by undeclared top-level port.
+
+    Fires when a flop's ``CLK`` pin traces back to a top-level input
+    port that has no ``create_clock`` declaration in the SDC. CDC-011
+    is the data-pin equivalent (port reaches ``D`` without a
+    ``set_input_delay -clock``); CDC-021 closes the clock-pin side.
+
+    The failure mode is silent. An undeclared port-as-clock doesn't
+    appear in any ``set_clock_groups -asynchronous`` declaration, so
+    ``are_async`` returns False against every declared clock and
+    ``_filter_async`` drops every crossing involving the undeclared
+    domain — the rest of the rule pack stays completely silent on
+    flops in that domain. CDC-021 surfaces the methodology bug
+    (missing ``create_clock``) so the user can declare the clock and
+    let the other rules do their job.
+
+    Severity ``error`` — an undeclared clock disables every other
+    CDC check that touches the domain; this is methodology-broken,
+    not stylistic.
+
+    Detection groups by ``(undeclared_port, list_of_consumer_flops)``:
+    one finding per affected port, regardless of how many flops live
+    in that domain.
+
+    Skipped when no SDC was supplied (the existing convention: no
+    SDC → no rules fire). Generated clocks declared via
+    ``[get_pins ...]`` are handled implicitly — the domain name they
+    yield is a clock name, not a port name, so the port-membership
+    check filters them out.
+    """
+    if clock_spec is None:
+        return []
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+
+    # All top-level input port names that appear as the source of a
+    # `create_clock` (any one of its `ports` tuple).
+    declared_clock_ports: set[str] = set()
+    for clk in clock_spec.clocks.values():
+        declared_clock_ports.update(clk.ports)
+
+    undeclared: dict[str, list[str]] = defaultdict(list)
+    for f in ctx.flops:
+        domain = ctx.domains.get(f.cell.name)
+        if domain is None:
+            continue
+        port = module.ports.get(domain)
+        if port is None or port.direction != "input":
+            continue  # not a port — e.g. an internal generated clock
+        if domain in declared_clock_ports:
+            continue  # has a create_clock — the rule's only condition fails
+        undeclared[domain].append(f.cell.name)
+
+    violations: list[Violation] = []
+    for port_name, consumers in sorted(undeclared.items()):
+        flop_names = sorted(set(consumers))
+        if len(flop_names) == 1:
+            consumer_desc = f"flop {flop_names[0]}"
+        else:
+            consumer_desc = (
+                f"{len(flop_names)} flops ({', '.join(flop_names[:3])}"
+                + (", ..." if len(flop_names) > 3 else "")
+                + ")"
+            )
+        violations.append(
+            Violation(
+                rule_id="CDC-021",
+                severity="error",
+                message=(
+                    f"flop CLK driven by undeclared port: "
+                    f"top-level input port '{port_name}' drives "
+                    f"{consumer_desc} but has no create_clock "
+                    f"declaration in the SDC. All other CDC checks "
+                    f"that touch this domain are silently skipped "
+                    f"(undeclared clocks don't appear in any async "
+                    f"group, so cross-domain crossings are dropped "
+                    f"before any rule sees them). Add "
+                    f"`create_clock -name {port_name} -period <T> "
+                    f"[get_ports {port_name}]` to the SDC."
+                ),
+                cell_name=flop_names[0],
+            )
+        )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -3764,6 +3857,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-016": check_cdc_016,
     "CDC-017": check_cdc_017,
     "CDC-019": check_cdc_019,
+    "CDC-021": check_cdc_021,
 }
 
 

@@ -876,7 +876,37 @@ whole decoder. Suppression when the immediate driver is itself a
 flop is structural: chained registers are CDC-001 / CDC-002's
 territory.
 
-### 8.8 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.8 CDC-021 — flop CLK driven by undeclared port
+
+CDC-021 closes the silent-when-broken methodology gap on the clock-
+pin side: a top-level input port that drives a flop's `CLK` but
+has no `create_clock` declaration in the SDC. Pairs with CDC-011
+(the data-pin equivalent — port reaches `D` without
+`set_input_delay -clock`).
+
+The failure mode is silent across the rule pack. An undeclared
+port-clock doesn't appear in any `set_clock_groups -asynchronous`
+declaration, so `are_async` returns False against every declared
+clock, and `_filter_async` drops every crossing involving the
+undeclared domain. The downstream rules — CDC-001/002/003 etc. —
+never see the affected flops. CDC-021 surfaces the methodology
+bug so the user can declare the clock and let the other rules do
+their job; it doesn't try to *infer* what the missing clock should
+look like.
+
+Detection walks `ctx.flops` directly and consults the precomputed
+`declared_clock_ports` set (the union of `clk.ports` across every
+declared `Clock`). A flop whose `ctx.domains[name]` is the name of
+a top-level input port that *isn't* in that set is flagged.
+Generated clocks declared via `[get_pins ...]` have domain names
+that are clock names (not port names), so they're filtered out by
+the port-membership check. The rule is skipped when no SDC is
+supplied (no rules fire in that case anyway).
+
+Severity `error` — undeclared clocks aren't a styling concern;
+they disable every other CDC check that touches the domain.
+
+### 8.9 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
@@ -910,7 +940,7 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
-### 8.9 CDC-012 — functional data-hold on a gated multi-bit crossing
+### 8.10 CDC-012 — functional data-hold on a gated multi-bit crossing
 
 CDC-012 layers a functional check on top of CDC-004's structural
 gated-bus exemption. CDC-004 accepts a multi-bit crossing whose

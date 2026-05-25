@@ -21,6 +21,7 @@ from .gap_g1 import GapG1LatchInSyncChain
 from .gap_g3 import GapG3PulseSyncFalsePositive
 from .gap_g4 import GapG4OneHotDecodeIndependentSync
 from .gap_g7 import GapG7DeassertionPolarityBackwards
+from .gap_g10 import GapG10FlopClkUndeclaredPort
 from .gap_g12 import GapG12GateLevelSilent
 from .good import GoodTwoFF
 from .rdc001 import AsyncResetCrossing
@@ -57,6 +58,7 @@ ALL_TEMPLATES: list[type[Template]] = [
     GapG3PulseSyncFalsePositive,
     GapG4OneHotDecodeIndependentSync,
     GapG7DeassertionPolarityBackwards,
+    GapG10FlopClkUndeclaredPort,
     GapG12GateLevelSilent,
     GoodTwoFF,
 ]
@@ -74,6 +76,7 @@ __all__ = [
     "ExpectedFinding",
     "FunctionalDataHoldEnable",
     "GapG1LatchInSyncChain",
+    "GapG10FlopClkUndeclaredPort",
     "GapG12GateLevelSilent",
     "GapG3PulseSyncFalsePositive",
     "GapG4OneHotDecodeIndependentSync",
