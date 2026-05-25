@@ -62,28 +62,36 @@ def test_only_cdc_016_fires(context) -> None:
     )
 
 
-def test_cdc_001_and_002_explicitly_silent(context) -> None:
-    """Explicit assertion that CDC-001/-002 stay silent on the
-    opposite-edge chain (rtl-buddy-cdc#193).
+def test_chain_walker_partitioning_silent(context) -> None:
+    """Explicit per-rule silence assertion for the chain-walker partition.
 
-    The chain walker (``_sync_chain_depth``) and the deferral
-    predicate (``_chain_has_inter_stage_comb``) are shared
-    plumbing between CDC-001 / -014 / -015 / -016. A future
-    refactor that touches any of those could silently regress
-    the partitioning and cause CDC-001 to start firing on a
-    polarity-flip chain — which would mislead the user into
-    "adding a 2FF chain you already have". This explicit
-    assertion is the canary: the rule_ids equality in
-    test_only_cdc_016_fires already covers this, but spelling
-    it out by name makes the partitioning invariant readable
-    in the test name and unambiguous in the failure message."""
+    The chain walker (``_sync_chain_depth``, ``_sync_chain_flops``)
+    and the deferral predicate (``_chain_has_inter_stage_comb``)
+    are shared plumbing between CDC-001 / -002 / -014 / -015 / -016
+    (rtl-buddy-cdc#193). On the opposite-edge fixture every one
+    of those rules but CDC-016 must stay silent:
+
+    * **CDC-001/-002** — chain depth is 2, no deferral hazard.
+    * **CDC-014** — no combinational logic between stages.
+    * **CDC-015** — both stages share ``rst_n`` (single reset
+      domain).
+
+    A future refactor that unifies the deferral predicates, the
+    chain walker, or the same-clock guard could silently regress
+    any one of those partition lines and start firing the wrong
+    rule on a clean polarity-flip chain. The rule_ids equality in
+    :func:`test_only_cdc_016_fires` already catches this, but the
+    per-rule assertion below pins each partition line by name so
+    the failure message identifies *which* rule leaked rather than
+    "the set is different"."""
     module, crossings, spec = context
     violations = run_all_rules(module, crossings, spec)
-    spurious = [v for v in violations if v.rule_id in {"CDC-001", "CDC-002"}]
-    assert spurious == [], (
-        f"CDC-001/-002 leaked onto opposite-edge chain — sync chain "
-        f"polarity partitioning has regressed: "
-        f"{[(v.rule_id, v.message) for v in spurious]}"
+    partition_rules = {"CDC-001", "CDC-002", "CDC-014", "CDC-015"}
+    leaks = sorted({v.rule_id for v in violations if v.rule_id in partition_rules})
+    assert leaks == [], (
+        f"chain-walker partition regressed — {leaks} leaked onto the "
+        f"opposite-edge chain that only CDC-016 should fire on: "
+        f"{[(v.rule_id, v.message) for v in violations if v.rule_id in partition_rules]}"
     )
 
 
