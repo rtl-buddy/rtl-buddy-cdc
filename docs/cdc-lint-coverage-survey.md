@@ -6,9 +6,8 @@ identify which classes of bugs are not yet detected (or are only
 partially detected) so they can be prioritised as future rules,
 fixtures, or explicit "out-of-scope" sentinels.
 
-The survey is structured around the standard taxonomy used in commercial
-CDC tools (Synopsys SpyGlass, Cadence Conformal CDC, Siemens/Mentor
-Questa CDC) and academic / industry papers, principally:
+The survey is built from open-literature sources and from first-principles
+analysis of the analyzer's own structural detection. Principal references:
 
 - **Cummings, C. "Clock Domain Crossing (CDC) Design & Verification
   Techniques Using SystemVerilog"** — SNUG 2008. The canonical
@@ -16,17 +15,15 @@ Questa CDC) and academic / industry papers, principally:
   pulse synchronisers.
 - **Cummings, C. "Asynchronous & Synchronous Reset Design Techniques"**
   — SNUG 2002, plus the 2003 "Reset Architectures" follow-on. Source
-  of the "async-assert, sync-deassert" reset pattern that RDC tools
-  encode.
+  of the "async-assert, sync-deassert" reset pattern.
 - **Litterick, M. "Pragmatic Simulation-Based Verification of Clock
   Domain Crossing"** — DVCon Europe 2006. Frames the limits of
   structural CDC analysis vs. functional protocol checking.
-- **Sarwary, S. et al. "Static & Functional CDC Verification"** — Real
-  Intent / Atrenta white papers, 2012–2018. Source of the
-  reconvergence and pulse-width taxonomy.
-- **SpyGlass CDC Methodology Manual** rule catalogue (Ac_sync, Ac_glitch,
-  Ac_conv, Ac_unsync, Clock_sync, Reset_sync rule families). Used as
-  the comparison surface for tool-equivalent coverage.
+- The CDC/RDC failure-mode taxonomy as established in the open
+  literature: metastability and 2FF chain depth, gating and gray
+  encoding for multi-bit crossings, reconvergence, pulse-width
+  preservation across slow-clock sampling, clock-network glitch
+  hazards, and reset assertion/deassertion timing.
 
 ## 1. Current coverage
 
