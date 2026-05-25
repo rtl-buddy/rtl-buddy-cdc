@@ -92,6 +92,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule, no firing-set changes); implemented as a final
   post-processing pass in `run_all`.
 
+- **RDC-008: unsynced primary-reset-port deassertion** (#216).
+  Closes G-8 from the #188 coverage survey. Fires when a flop's
+  async reset is driven directly by a top-level input port and the
+  flop is not part of a recognised reset-synchroniser chain. RDC-001
+  is the symmetric rule for foreign-domain flop-sourced resets;
+  RDC-008 fills the port-source gap. **Asymmetric-intent detection**:
+  only fires when the user has built a sync chain for the port in
+  *some* clock domain but missed it in another (and the missing-chain
+  domain has ≥2 unsynced consumers) — narrows the rule to the
+  methodology bug while staying silent on designs that use the raw
+  port directly everywhere (a common simplification in small RTL).
+
 - **Per-fixture `README.md` with mermaid clock-domain diagrams**
   (#164). Every fixture under `tests/fixtures/` now has a generated
   README that browsers see when navigating the directory on GitHub:
