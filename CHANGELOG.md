@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RDC-007: reset-sync chain accepted with deassertion-polarity
+  wired backwards** (#202). Closes G-7 from the #188 coverage
+  survey. The structural recogniser
+  (`find_reset_synchronizers`) accepts any constant-fed head
+  regardless of which constant; RDC-007 cross-checks the head's
+  D constant against the chain's reset polarity (active-low → D
+  must be `1'b1`; active-high → `1'b0`). A chain loading the
+  asserted value instead is a one-shot that never deasserts —
+  worse, the structural recogniser silently exempts every
+  downstream consumer from RDC-001..-006. New
+  `iter_reset_sync_chains` helper enumerates each recognised
+  chain once with its head D constant attached;
+  `find_reset_synchronizers`'s public contract is unchanged.
+
 - **Per-fixture `README.md` with mermaid clock-domain diagrams**
   (#164). Every fixture under `tests/fixtures/` now has a generated
   README that browsers see when navigating the directory on GitHub:

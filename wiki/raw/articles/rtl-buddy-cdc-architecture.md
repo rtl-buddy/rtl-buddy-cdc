@@ -810,7 +810,39 @@ synchroniser's own flops — and the fixture demonstrates the
 real-world correct pattern rather than just "doesn't trigger
 RDC-005."
 
-### 8.6 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.6 RDC-007 — reset-sync deassertion-polarity check
+
+RDC-007 closes the head-D-constant blind spot in
+`find_reset_synchronizers`. The structural recogniser accepts any
+chain whose head has a constant `D`, regardless of *which*
+constant — but only one of the two valid constants matches the
+chain's reset polarity. An active-low reset chain must load
+`1'b1` on the deassertion edge (so the chain's Q rises out of
+reset); an active-high chain must load `1'b0`. A chain that
+loads the *asserted* value instead reloads "in reset" on every
+deassertion edge and the synchronised reset never propagates —
+worse, the structural recogniser still marks the chain as a
+valid synchroniser, silently exempting every downstream consumer
+from RDC-001..-006.
+
+Plumbing: `_trace_reset_sync_chain` already finds the head
+constant (that's how it knows the chain terminates cleanly); it
+now returns both the chain and the constant. A new helper
+`iter_reset_sync_chains` enumerates each recognised chain
+exactly once (deduplicated by head identity, longest tail wins)
+with the head's D constant attached, and RDC-007 walks that list.
+`find_reset_synchronizers`'s contract is unchanged.
+
+Severity is `error` — the failure is functional, not stylistic.
+A chain that never deasserts is a hard bug; downstream consumers
+stay held in reset permanently. Limitation:
+`(* reset_sync *)`-marked chains whose head isn't a literal
+constant are *not* covered (the structural recogniser has no
+constant to compare against). Documented as a known scope
+limit; users who need the check on user-marked chains can write
+a paired structural assertion.
+
+### 8.7 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse

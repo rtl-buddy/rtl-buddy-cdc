@@ -2630,6 +2630,79 @@ def _trailing_bit(raw: str) -> str:
     return raw[-1] if raw[-1] in "01" else "0"
 
 
+def check_rdc_007(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """RDC-007 — Reset-synchroniser chain with deassertion-polarity backwards.
+
+    For every structurally-recognised reset-synchroniser chain (the
+    canonical async-assert / sync-deassert 2FF idiom), checks that
+    the chain head's ``D`` constant matches the *deassertion* value
+    of the chain's reset polarity:
+
+    * active-low reset (``ARST_POLARITY=0``) → head D must be ``1``
+      so the chain's Q rises after the reset deasserts.
+    * active-high reset (``ARST_POLARITY=1``) → head D must be ``0``.
+
+    If the chain head loads the *asserted* value instead, the
+    synchroniser is a one-shot: on the deassertion edge it reloads
+    the asserted value and the chain's tail keeps driving the reset
+    "asserted" forever. Worse, every downstream consumer using that
+    chain's output as their ``ARST`` is silently exempted from
+    RDC-001..-006 because the analyzer treats the chain as a valid
+    synchroniser.
+
+    Severity ``error`` — a chain that never deasserts is a hard
+    functional bug; downstream consumers stay held in reset
+    permanently.
+
+    Limitations (documented; do not extend RDC-007 to cover):
+
+    * User-marked ``(* reset_sync *)`` flops whose chain head isn't
+      constant-fed are not checkable structurally — the structural
+      recogniser has no head D-constant to compare against.
+    * Sync-reset (``SRST``) chains are out of scope; RDC-007 stays
+      scoped to the async-assert / sync-deassert async-reset idiom.
+    """
+    from rtl_buddy_cdc.reset_domain import iter_reset_sync_chains
+
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    violations: list[Violation] = []
+    for chain in iter_reset_sync_chains(module, ctx.domains):
+        head_d = _trailing_bit(chain.head_d_constant)
+        # Deassertion bit is the inverse of the assertion polarity.
+        deassert_bit = "0" if chain.polarity == "high" else "1"
+        if head_d == deassert_bit:
+            continue
+        tail = chain.flops[0]
+        head = chain.flops[-1]
+        polarity_word = "active-high" if chain.polarity == "high" else "active-low"
+        violations.append(
+            Violation(
+                rule_id="RDC-007",
+                severity="error",
+                message=(
+                    f"reset-synchroniser chain {tail} ← ... ← {head} has its "
+                    f"head D tied to '{head_d}', but the chain's reset is "
+                    f"{polarity_word} (deasserts on '{deassert_bit}'). The "
+                    f"chain reloads the *asserted* value on the deassertion "
+                    f"edge — its output is a one-shot stuck driving the "
+                    f"asserted value forever, and every downstream consumer "
+                    f"using {tail}.Q as their ARST will never leave reset. "
+                    f"Tie the head's D to 1'b{deassert_bit} — the deasserted "
+                    f"value for an {polarity_word} reset."
+                ),
+                cell_name=tail,
+            )
+        )
+    return violations
+
+
 def check_cdc_011(
     module: Module,  # noqa: ARG001
     crossings: list[Crossing],
@@ -3551,6 +3624,7 @@ RULES: dict[str, RuleFn] = {
     "RDC-004": check_rdc_004,
     "RDC-005": check_rdc_005,
     "RDC-006": check_rdc_006,
+    "RDC-007": check_rdc_007,
     "CDC-008": check_cdc_008,
     "CDC-009": check_cdc_009,
     "CDC-010": check_cdc_010,
