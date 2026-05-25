@@ -36,7 +36,7 @@ Two complementary techniques address this:
   findings: a circuit that *fails simulation* but is *accepted by
   the analyzer* is a candidate false-negative — a gap to close.
   Established methodology (Litterick, DVCon Europe 2006; Cummings,
-  SNUG 2008 §11; Synopsys VCS `+vcs_ms_inject`).
+  SNUG 2008 §11).
 
 Industry consensus is that simulation **complements** structural
 lint rather than replacing it — metastability is fundamentally an
@@ -229,8 +229,10 @@ the rest.
 - **Full random RTL generation** (Verismith / Csmith style).
   Templates suffice for CDC validation; full random RTL is a
   separate research project.
-- **Cross-tool differential against commercial CDC tools.**
-  Licensing and reproducibility issues. Future stage if needed.
+- **Cross-tool differential against other CDC analyzers.** Out of
+  scope for this open-source project — the template oracle plus
+  sim oracle is sufficient on its own, and external tool
+  dependencies would compromise reproducibility.
 - **Floor-plan or timing-aware simulation.** The metastability
   injection is a behavioural model, not a back-annotated one.
 - **MTBF estimation.** The simulation oracle answers "did the
