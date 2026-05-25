@@ -1,37 +1,23 @@
-"""Gap-mining sentinel: G-12 — gate-level $_DFF_* flops invisible.
+"""Regression sentinel: gate-level $_DFF_* flop coverage (rtl-buddy-cdc#194).
 
-Reproduces the silent-failure mode from the rtl-buddy-cdc#188
-coverage survey, gap G-12. Same RTL as the CDC-001 unsynced-bit
-template; the case overrides ``extra_yosys_passes`` to push the
-netlist through ``simplemap; abc -g cmos;`` so the inferred ``$dff``
-cells are mapped to gate-level ``$_DFF_P_``.
+Same RTL as the CDC-001 unsynced-bit template; ``extra_yosys_passes``
+overrides push the netlist through ``simplemap; abc -g cmos;`` so the
+inferred ``$dff`` cells are mapped to gate-level ``$_DFF_P_``.
 
-Empirically observed today:
+Asserts that the analyzer sees through the gate-level cells:
 
-- Higher-level netlist: analyzer fires CDC-001 (one finding, correct).
-- Gate-level netlist (this template): analyzer fires **zero
-  CDC-001** because ``rtl_buddy_cdc.flops.FF_CELL_TYPES`` only lists
-  ``$dff*`` cells. Additionally fires **bogus CDC-008** ("clock used
-  as data") because the gate-level flops' CLK pins look like
-  ordinary nets to the clock-tree walk.
+- ``find_crossings`` finds the src→dst crossing across ``$_DFF_*``
+  cells.
+- ``CDC-001`` fires once on the unsynced crossing — same finding as
+  on the equivalent higher-level netlist.
+- ``CDC-008`` stays silent — the rule exempts the ``C`` pin on
+  gate-level FF cells so no spurious "clock used as data" findings
+  surface.
 
-This template pins that current behaviour. When the gap is fixed:
-
-- CDC-001 will start firing → ``forbidden`` ZERO for CDC-001 will
-  trip → this test will fail.
-- The bogus CDC-008 should also disappear, but we don't pin its
-  *absence* here — the rule itself is correct, only the gate-level
-  flop visibility is the fix-target.
-
-To convert this template from sentinel to passing case, move
-``CDC-001`` from ``forbidden`` to ``expected`` and drop the
-``gap_note``.
-
-README at line 305 today claims "full coverage — Yosys primitives,
-gate-level simplemap / abc output" for CDC-001 through CDC-010. That
-claim is true for CDC-010 (which has its own gate-level cell map)
-but false for CDC-001/-002/-003/-004/-005/-006 (which all key off
-``find_flops``).
+Before rtl-buddy-cdc#194 landed, this fixture produced zero crossings,
+zero CDC-001, and spurious CDC-008 on every gate-level flop. The gap
+was silent-when-broken: zero findings on a real CDC bug. If any of
+the assertions above regress, this sentinel is the first signal.
 """
 
 from __future__ import annotations
@@ -64,16 +50,9 @@ set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
 set_input_delay -clock src_clk 1.0 [get_ports d_in]
 """
 
-_GAP_NOTE = (
-    "G-12 (rtl-buddy-cdc#188): gate-level $_DFF_* flops invisible to "
-    "find_flops; analyzer silently produces zero CDC-001 findings on "
-    "tech-mapped netlists. README at line 305 claims gate-level coverage "
-    "for CDC-001..-006; that claim is false today."
-)
-
 
 class GapG12GateLevelSilent:
-    """Pinned sentinel: gate-level netlist produces zero CDC-001."""
+    """Regression sentinel: gate-level netlist fires CDC-001 cleanly."""
 
     name = "gap_g12_gate_level_silent"
 
@@ -87,12 +66,7 @@ class GapG12GateLevelSilent:
             sdc=_SDC,
             top=top,
             params={},
-            # No ``expected`` claims — the bug is the *absence* of a
-            # finding that should fire. Capture that with forbidden
-            # CDC-001 (analyzer must not fire today; flips to expected
-            # when fixed).
-            expected=(),
-            forbidden=(ExpectedFinding("CDC-001", Op.ZERO),),
+            expected=(ExpectedFinding("CDC-001", Op.EQ, 1),),
+            forbidden=(ExpectedFinding("CDC-008", Op.ZERO),),
             extra_yosys_passes="simplemap; abc -g cmos;",
-            gap_note=_GAP_NOTE,
         )

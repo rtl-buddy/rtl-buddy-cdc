@@ -5,6 +5,19 @@ on clock-pin polarity (stage 1 ``posedge dst_clk``, stage 2
 ``negedge dst_clk``). CDC-001/-002 see a structurally valid 2FF
 chain and stay silent; CDC-016 fires on the adjacent-stage
 polarity mismatch.
+
+**Regression sentinel** (rtl-buddy-cdc#193): this template doubles
+as a partitioning regression check for the CDC-001/-002 deferral
+plumbing. The chain walker (``_sync_chain_depth``), the
+inter-stage-comb deferral (``_chain_has_inter_stage_comb``), and
+the polarity helper (``_clk_polarity``) are shared between CDC-001
+/ -014 / -015 / -016. A refactor that breaks the partitioning
+would cause CDC-001 to start firing on this chain and mislead the
+user into "adding a 2FF chain you already have". The
+``forbidden=(CDC-001, ZERO)`` clause below is the canary —
+independently derived from the hand-authored fixture's assertion
+in ``tests/test_bad_opposite_edge_sync.py``. Do not remove or
+weaken either when pruning the fuzz corpus.
 """
 
 from __future__ import annotations
