@@ -181,6 +181,11 @@ GOOD_FIXTURES = [
     # Single-clock — zero async crossings. Pins that CDC-017 only
     # fires on cross-domain latch placement.
     ("good_latch_in_same_domain", 0),
+    # CDC-019 suppression: shared comb decoder with the source-side
+    # registering flops marked `(* cdc_gray *)`. Four async crossings
+    # (one per lane), and CDC-019 must stay silent on the suppression
+    # path.
+    ("good_onehot_decode_gray_marked", 4),
 ]
 
 

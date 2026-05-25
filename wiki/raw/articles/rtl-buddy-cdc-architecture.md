@@ -842,7 +842,41 @@ constant to compare against). Documented as a known scope
 limit; users who need the check on user-marked chains can write
 a paired structural assertion.
 
-### 8.7 CDC-013 — fast-to-slow control-event loss on a toggle sync
+### 8.7 CDC-019 — independently-synced one-hot decode across CDC
+
+CDC-019 closes the related-lanes blind spot in CDC-004. CDC-004
+fires on a multi-bit source flop (WIDTH≥2) crossing without gray
+coding or handshake; it can't see the same hazard when the source
+is implemented as N parallel WIDTH=1 flops driven by a common
+comb decoder. Each source flop is structurally 1-bit, so the
+multi-bit-bus detector treats every lane as an independent
+single-bit crossing — but the lanes change together at the source
+(the comb logic enforces the relationship), and the destination
+resolves each via its own sync chain, so transient incoherent
+combinations the encoder never emits can appear briefly at the
+destination.
+
+Detection walks each `Crossing` whose source is a WIDTH=1 flop,
+looks at the cell driving that flop's `D` pin, and groups
+crossings by `(driver_cell, dst_clock)`. A group with ≥2
+distinct source flops where the driver is a comb cell with ≥2
+output bits is flagged. The "≥2 output bits" check is what
+distinguishes a shared *decoder* (multi-output, lanes change
+together) from a shared *gate* with single-bit fanout to multiple
+flops (just normal fan-out, not the failure shape).
+
+Severity `warning` — the pattern is sometimes intentional (the
+destination only ever reads one bit at a time, or a separate
+handshake gates the dst sample). Suppression composes with the
+existing user-vouches attribute set: `(* cdc_gray *)`,
+`(* cdc_static *)`, or `(* cdc_sync *)` on *any* of the source
+flops in the group suppresses the entire group — one attribute
+captures "the user has handled the multi-bit coherence" for the
+whole decoder. Suppression when the immediate driver is itself a
+flop is structural: chained registers are CDC-001 / CDC-002's
+territory.
+
+### 8.8 CDC-013 — fast-to-slow control-event loss on a toggle sync
 
 CDC-013 is the structural complement of CDC-009. CDC-009 owns the
 raw-pulse case (`D = A & ~A_d` edge detector — narrow src pulse
@@ -876,7 +910,7 @@ holds value until ack returns, synced back through a 2FF) or an
 event counter with backpressure, both of which produce a non-toggle
 `D` and silence the rule structurally.
 
-### 8.7 CDC-012 — functional data-hold on a gated multi-bit crossing
+### 8.9 CDC-012 — functional data-hold on a gated multi-bit crossing
 
 CDC-012 layers a functional check on top of CDC-004's structural
 gated-bus exemption. CDC-004 accepts a multi-bit crossing whose
