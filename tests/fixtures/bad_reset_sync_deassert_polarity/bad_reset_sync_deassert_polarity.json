@@ -1,0 +1,239 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_reset_sync_deassert_polarity": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:16.1-35.10"
+      },
+      "ports": {
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "raw_rst_n": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n_sync": {
+          "direction": "output",
+          "bits": [ 4 ]
+        }
+      },
+      "cells": {
+        "$auto$proc_dff.cc:220:proc_dff$10": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 5 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$5": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 6 ]
+          }
+        },
+        "$logic_not$/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:27$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:27.13-27.23"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 7 ]
+          }
+        },
+        "$logic_not$/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:31$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:31.13-31.23"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "Y": [ 8 ]
+          }
+        },
+        "$procdff$14": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:26.5-29.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 2 ],
+            "D": [ "0" ],
+            "Q": [ 9 ]
+          }
+        },
+        "$procdff$9": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:30.5-33.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 3 ],
+            "CLK": [ 2 ],
+            "D": [ 9 ],
+            "Q": [ 4 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\meta[0:0]": {
+          "hide_name": 1,
+          "bits": [ "0" ],
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:26.5-29.8"
+          }
+        },
+        "$0\\rst_n_sync[0:0]": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:30.5-33.8"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$11": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$6": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$13": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$8": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+          }
+        },
+        "$logic_not$/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:27$2_Y": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:27.13-27.23"
+          }
+        },
+        "$logic_not$/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:31$4_Y": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:31.13-31.23"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:17.18-17.25"
+          }
+        },
+        "meta": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:25.11-25.15"
+          }
+        },
+        "raw_rst_n": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:18.18-18.27"
+          }
+        },
+        "rst_n_sync": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "/Users/zloh/Work/hern_claude_1/rtl-buddy-cdc/tests/fixtures/bad_reset_sync_deassert_polarity/bad_reset_sync_deassert_polarity.sv:19.18-19.28"
+          }
+        }
+      }
+    }
+  }
+}

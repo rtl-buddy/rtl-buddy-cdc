@@ -206,6 +206,29 @@ def _classify_reset_source(
     return ("", "comb")
 
 
+@dataclass(frozen=True)
+class ResetSyncChain:
+    """A recognised reset-synchroniser chain.
+
+    Returned by :func:`iter_reset_sync_chains`. ``flops`` is the
+    ordered list of cell names from tail (downstream-consumer-facing)
+    to head (constant-fed). ``head_d_constant`` is the literal D-pin
+    constant on the head flop — Yosys-encoded (``"0"`` / ``"1"`` /
+    ``"x"`` / ``"z"`` or a multi-bit binary string). ``polarity`` is
+    the chain's shared async-reset polarity.
+
+    Consumers compare ``head_d_constant`` against the *deassertion*
+    value implied by ``polarity`` (active-low → head D should be 1,
+    active-high → head D should be 0). A mismatch is RDC-007's failure
+    shape: the chain reloads the *asserted* value on the deassertion
+    edge and never propagates "out of reset" to downstream consumers.
+    """
+
+    flops: tuple[str, ...]
+    head_d_constant: str
+    polarity: ResetPolarity
+
+
 def find_reset_synchronizers(
     module: Module,
     clock_domains: dict[str, str | None],
@@ -263,7 +286,7 @@ def find_reset_synchronizers(
     for name, rd in domains.items():
         if rd.reset is None or rd.reset.type != "async":
             continue
-        chain = _trace_reset_sync_chain(
+        chain, _head_d = _trace_reset_sync_chain(
             name,
             flop_by_name,
             domains,
@@ -276,6 +299,59 @@ def find_reset_synchronizers(
     return out
 
 
+def iter_reset_sync_chains(
+    module: Module,
+    clock_domains: dict[str, str | None],
+    *,
+    min_depth: int = 2,
+) -> list[ResetSyncChain]:
+    """Enumerate structurally-recognised reset-synchroniser chains.
+
+    Companion to :func:`find_reset_synchronizers`: instead of
+    flattening every chain into a set of cell names, returns one
+    :class:`ResetSyncChain` per *distinct* chain head — so a rule that
+    needs the head's D constant (e.g. RDC-007) can read it without
+    walking the netlist twice.
+
+    Two chains are considered the same when their head flop is the
+    same cell; the canonical chain is the one whose tail (downstream-
+    consumer-facing end) is the longest walk from the head.
+
+    User-marked ``(* reset_sync *)`` flops are deliberately *not*
+    included here: the recogniser would have no head D-constant to
+    return for them (their head may be fed by an upstream signal
+    rather than a literal). RDC-007 already documents that as the
+    known limitation.
+    """
+    flop_by_name = {f.cell.name: f for f in find_flops(module)}
+    bit_drivers = _bit_drivers(module)
+    domains = assign_reset_domains(module)
+
+    best_by_head: dict[str, ResetSyncChain] = {}
+    for name, rd in domains.items():
+        if rd.reset is None or rd.reset.type != "async":
+            continue
+        chain, head_d = _trace_reset_sync_chain(
+            name,
+            flop_by_name,
+            domains,
+            clock_domains,
+            bit_drivers,
+            max_depth=min_depth + 4,
+        )
+        if len(chain) < min_depth or head_d is None:
+            continue
+        head_name = chain[-1]
+        prev = best_by_head.get(head_name)
+        if prev is None or len(chain) > len(prev.flops):
+            best_by_head[head_name] = ResetSyncChain(
+                flops=tuple(chain),
+                head_d_constant=head_d,
+                polarity=rd.reset.polarity,
+            )
+    return sorted(best_by_head.values(), key=lambda c: c.flops[0])
+
+
 def _trace_reset_sync_chain(
     start: str,
     flop_by_name: dict[str, Flop],
@@ -284,53 +360,62 @@ def _trace_reset_sync_chain(
     bit_drivers: dict[Bit, tuple[str, str]],
     *,
     max_depth: int,
-) -> list[str]:
+) -> tuple[list[str], str | None]:
     """Walk Q→D back from ``start``; return the chain iff its head is constant-fed.
 
-    The returned chain includes ``start`` (as the tail) and every
-    intermediate flop up to the constant-fed head. If the walk
-    terminates on anything other than a constant — a foreign-domain
-    flop, a port, a multi-bit ``D``, a combinational signal, depth
-    exhaustion — the chain is **not** a reset synchroniser and an
-    empty list is returned. This is the load-bearing distinction:
-    without it, any 2-flop ARST-sharing chain in the same clock domain
-    (including data-path register chains that happen to share a
-    reset) would be mis-identified as a synchroniser."""
+    Returns ``(chain, head_d_constant)``. The chain includes ``start``
+    (as the tail) and every intermediate flop up to the constant-fed
+    head. ``head_d_constant`` is the Yosys-encoded D-pin constant on
+    the head flop (``"0"`` / ``"1"`` / ``"x"`` / ``"z"`` or a
+    multi-bit binary string).
+
+    If the walk terminates on anything other than a constant — a
+    foreign-domain flop, a port, a multi-bit ``D``, a combinational
+    signal, depth exhaustion — the chain is **not** a reset
+    synchroniser and ``([], None)`` is returned. This is the
+    load-bearing distinction: without it, any 2-flop ARST-sharing
+    chain in the same clock domain (including data-path register
+    chains that happen to share a reset) would be mis-identified as a
+    synchroniser."""
     chain = [start]
     cur_name = start
     cur_rd = reset_domains[cur_name]
     cur_clk = clock_domains.get(cur_name)
     if cur_clk is None or cur_rd.reset is None:
-        return []
+        return ([], None)
     reset_signature = (cur_rd.reset.name, cur_rd.reset.source)
 
     for _ in range(max_depth):
         cur_flop = flop_by_name[cur_name]
         d_bits = cur_flop.d
         if len(d_bits) != 1:
-            return []  # Multi-bit chains aren't the reset-sync shape.
+            return ([], None)  # Multi-bit chains aren't the reset-sync shape.
         d_bit = d_bits[0]
         if not isinstance(d_bit, int):
             # D is a constant — chain head found. Return the chain as
-            # collected so far; the constant itself isn't a flop.
-            return chain
+            # collected so far plus the literal constant; the constant
+            # itself isn't a flop.
+            return (chain, str(d_bit))
         drv = bit_drivers.get(d_bit)
         if drv is None:
-            return []  # Port- or constant-net-fed D isn't the recogniser's shape.
+            return (
+                [],
+                None,
+            )  # Port- or constant-net-fed D isn't the recogniser's shape.
         drv_name, drv_port = drv
         if drv_port != "Q" or drv_name not in flop_by_name:
-            return []
+            return ([], None)
         drv_rd = reset_domains.get(drv_name)
         drv_clk = clock_domains.get(drv_name)
         if drv_rd is None or drv_rd.reset is None or drv_clk is None:
-            return []
+            return ([], None)
         if drv_clk != cur_clk:
-            return []
+            return ([], None)
         if (drv_rd.reset.name, drv_rd.reset.source) != reset_signature:
-            return []
+            return ([], None)
         chain.append(drv_name)
         cur_name = drv_name
-    return []
+    return ([], None)
 
 
 def _polarity_from_param(raw: str) -> ResetPolarity:
