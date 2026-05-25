@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CDC-019: independently-synced one-hot decode across CDC**
+  (#204). Closes G-4 from the #188 coverage survey. Fires when
+  N≥2 single-bit source-domain flops sharing a common
+  combinational driver (one-hot decoder, priority arbiter, case-
+  statement output, etc.) each have an async crossing to flops in
+  the same destination clock domain. CDC-004 misses this shape
+  because each registering flop is structurally 1-bit; CDC-019
+  groups by `(driver_comb_cell, dst_clock)` so the related lanes
+  are reported as one finding listing every affected lane.
+  Suppressed via `(* cdc_gray *)` / `(* cdc_static *)` /
+  `(* cdc_sync *)` on any source flop.
+
 - **RDC-007: reset-sync chain accepted with deassertion-polarity
   wired backwards** (#202). Closes G-7 from the #188 coverage
   survey. The structural recogniser

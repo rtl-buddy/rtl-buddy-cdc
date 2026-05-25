@@ -3611,6 +3611,134 @@ def check_cdc_017(
     return violations
 
 
+def check_cdc_019(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-019 — Independently-synced one-hot decode across CDC.
+
+    Fires when N≥2 single-bit source-domain flops sharing a common
+    combinational driver (a one-hot decoder, priority arbiter, case-
+    statement output, etc.) each have an async crossing to flops in
+    the same destination clock domain. CDC-004 misses this shape
+    because each source flop is structurally 1-bit — the lanes are
+    *related* in the comb logic upstream, but the multi-bit-bus
+    detector only sees N independent 1-bit crossings.
+
+    The destination side sees a vector of independently-resolved
+    bits. Every transition where ≥2 source bits change simultaneously
+    can be sampled as an *intermediate* value at the destination
+    (e.g. a 4-bit one-hot transitioning ``0001 → 0100`` can be
+    sampled as ``0101`` or ``0000`` when the per-lane sync chains
+    resolve out of phase).
+
+    Severity ``warning`` — the pattern is sometimes intentional
+    (e.g. one-hot encodings where the destination only reads one bit
+    at a time, or where a separate handshake gates the dst sample).
+    The textbook fixes are (a) gray-code the source (`(* cdc_gray *)`
+    on the registering flops, or refactor to encode the value rather
+    than the decoded one-hot) or (b) add a req/ack handshake so the
+    destination only samples after the source guarantees the lanes
+    are stable together.
+
+    Detection groups by ``(driver_comb_cell, dst_clock)``: one
+    finding per shared decoder per destination domain, listing every
+    affected lane.
+
+    Suppressed when:
+
+    * any source flop is marked ``(* cdc_gray *)`` (user vouches the
+      multi-bit coherence is handled),
+    * any source flop is marked ``(* cdc_static *)`` (quasi-static
+      doesn't transition),
+    * any source flop is marked ``(* cdc_sync *)`` (the flop is itself
+      a vetted sync stage and the rule's framing doesn't apply), or
+    * the immediate driver is itself a flop (chained registers are
+      CDC-001 / CDC-002's territory, not a shared decoder).
+    """
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+
+    # Group: (driver_cell_name, dst_clock) → ordered list of (src_flop_name, dst_flop_name)
+    # Use dict-of-lists keyed by src_name to dedupe lanes coming through
+    # multiple crossings to the same dst clock.
+    groups: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
+    suppressed_groups: set[tuple[str, str]] = set()
+
+    for crossing in crossings:
+        if crossing.src_flop is None:
+            continue
+        src_flop = crossing.src_flop
+        src_name = src_flop.cell.name
+        src_d = src_flop.d
+        if len(src_d) != 1 or not isinstance(src_d[0], int):
+            continue  # multi-bit source is CDC-004's domain
+        drv = ctx.bit_drivers.get(src_d[0])
+        if drv is None:
+            continue
+        drv_cell_name, drv_port, _drv_idx = drv
+        if drv_port != "Y":
+            continue  # only true comb-cell outputs count
+        drv_cell = module.cells.get(drv_cell_name)
+        if drv_cell is None:
+            continue
+        if is_ff_cell(drv_cell.type):
+            continue
+        # Decoder shape requires the driver cell to have ≥2 output bits
+        # — a WIDTH=1 gate fanning out to multiple flops is just normal
+        # fan-out, not a one-hot decode.
+        y_bits = drv_cell.connections.get("Y", ())
+        int_y_bits = [b for b in y_bits if isinstance(b, int)]
+        if len(int_y_bits) < 2:
+            continue
+        key = (drv_cell_name, crossing.dst_clock)
+        # Suppression: any participating src flop tagged by the user.
+        if (
+            src_name in ctx.user_grays
+            or src_name in ctx.user_statics
+            or src_name in ctx.user_syncs
+        ):
+            suppressed_groups.add(key)
+            continue
+        groups[key][src_name] = crossing.dst_flop.cell.name
+
+    violations: list[Violation] = []
+    for (driver, dst_clock), lanes in sorted(groups.items()):
+        if (driver, dst_clock) in suppressed_groups:
+            continue
+        if len(lanes) < 2:
+            continue
+        src_names = sorted(lanes.keys())
+        lane_desc = ", ".join(src_names[:4]) + (
+            f", ... ({len(src_names)} lanes total)" if len(src_names) > 4 else ""
+        )
+        violations.append(
+            Violation(
+                rule_id="CDC-019",
+                severity="warning",
+                message=(
+                    f"independently-synced one-hot decode across CDC: comb "
+                    f"cell {driver} drives {len(src_names)} separate WIDTH=1 "
+                    f"source flops ({lane_desc}) that each cross independently "
+                    f"to clock domain {dst_clock}. The shared decoder makes "
+                    f"the lanes change together at the source, but each "
+                    f"destination sync chain resolves on its own schedule — "
+                    f"intermediate combinations the encoder never emits can "
+                    f"appear transiently at the destination. Fix: gray-code "
+                    f"the source (mark the registering flops `(* cdc_gray *)` "
+                    f"or refactor to encode the value rather than the decoded "
+                    f"one-hot), or gate the destination sample behind a "
+                    f"req/ack handshake."
+                ),
+                cell_name=src_names[0],
+            )
+        )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -3635,6 +3763,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-015": check_cdc_015,
     "CDC-016": check_cdc_016,
     "CDC-017": check_cdc_017,
+    "CDC-019": check_cdc_019,
 }
 
 

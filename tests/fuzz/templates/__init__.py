@@ -19,6 +19,7 @@ from .cdc016 import OppositeEdgeChain
 from .cdc017 import LatchInCdcPath
 from .gap_g1 import GapG1LatchInSyncChain
 from .gap_g3 import GapG3PulseSyncFalsePositive
+from .gap_g4 import GapG4OneHotDecodeIndependentSync
 from .gap_g7 import GapG7DeassertionPolarityBackwards
 from .gap_g12 import GapG12GateLevelSilent
 from .good import GoodTwoFF
@@ -54,6 +55,7 @@ ALL_TEMPLATES: list[type[Template]] = [
     DerivedAsyncResetUnsync,
     GapG1LatchInSyncChain,
     GapG3PulseSyncFalsePositive,
+    GapG4OneHotDecodeIndependentSync,
     GapG7DeassertionPolarityBackwards,
     GapG12GateLevelSilent,
     GoodTwoFF,
@@ -74,6 +76,7 @@ __all__ = [
     "GapG1LatchInSyncChain",
     "GapG12GateLevelSilent",
     "GapG3PulseSyncFalsePositive",
+    "GapG4OneHotDecodeIndependentSync",
     "GapG7DeassertionPolarityBackwards",
     "GoodTwoFF",
     "LatchInCdcPath",
