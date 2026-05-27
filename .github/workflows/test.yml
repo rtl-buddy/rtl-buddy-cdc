@@ -102,8 +102,11 @@ jobs:
           yosys -V | head -1
           iverilog -V | head -1
 
-      - name: Install test dependencies
-        run: uv sync --group test --python 3.13
+      - name: Install test + fuzz dependencies
+        # The fuzz group pulls in rtl-buddy-xeno (Stage-3 Layer B,
+        # rtl-buddy-cdc#221); it's py3.13-only by its own
+        # ``requires-python``, matched to this job's --python 3.13.
+        run: uv sync --group test --group fuzz --python 3.13
 
       - name: Run fuzz suite
         run: uv run pytest -m fuzz -q

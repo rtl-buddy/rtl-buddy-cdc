@@ -58,6 +58,16 @@ dev = [
     { include-group = "lint" },
     { include-group = "test" },
 ]
+# Fuzz-corpus mutator dep (Stage-3 Layer B of rtl-buddy-cdc#221).
+# Only consumed under @pytest.mark.fuzz inside tests/fuzz/test_mutants.py;
+# the analyzer's runtime closure stays unchanged. xeno's
+# `requires-python = ">=3.13"` is mirrored here via the marker so the
+# py3.11 / py3.12 pytest-with-slang matrix entries don't try to resolve
+# it. Source pinned via [tool.uv.sources] to a content-addressed commit
+# until xeno reaches PyPI.
+fuzz = [
+    "rtl-buddy-xeno ; python_full_version >= '3.13'",
+]
 
 [tool.ruff]
 line-length = 88
@@ -105,3 +115,6 @@ exclude_also = [
     "raise NotImplementedError",
     "\\.\\.\\.$",
 ]
+
+[tool.uv.sources]
+rtl-buddy-xeno = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git", rev = "7393cb4abbeec25ae5039d8ec3d1b83d934e33ba" }
