@@ -73,17 +73,23 @@ jobs:
       - name: Run pytest
         run: uv run pytest -q
 
-  # Fuzz + sim suites. Gated behind ``@pytest.mark.fuzz`` /
-  # ``@pytest.mark.sim`` and skipped by every other job because they
-  # require yosys / iverilog on PATH. This job installs both, then
-  # runs the two marker selections separately so the CI summary
-  # shows their case counts independently.
+  # Fuzz + sim + fuzz_diff suites. Gated behind ``@pytest.mark.fuzz`` /
+  # ``@pytest.mark.sim`` / ``@pytest.mark.fuzz_diff`` and skipped by
+  # every other job because they require yosys / iverilog on PATH.
+  # The ``fuzz_diff`` selection additionally needs the ``[slang]``
+  # extra for the cross-frontend differential oracle (Stage-3 Layer C
+  # of rtl-buddy-cdc#221), so this job installs the slang extra
+  # alongside the test group.
+  #
+  # The three selections run separately so the CI summary shows
+  # their case counts independently — ``fuzz_diff`` is allowed to
+  # run 5–10× slower than ``fuzz`` per rtl-buddy-cdc#221 done-when.
   #
   # Marginal cost: ~30 s for the apt-install + a few seconds per
-  # suite (cached by Yosys content hash + iverilog SHA inside the
-  # runner). Worth it to catch regressions in the differential
-  # harness or sim oracle that would otherwise skip silently in the
-  # other jobs.
+  # suite (cached by Yosys content hash + iverilog SHA + pyslang
+  # version inside the runner). Worth it to catch regressions in
+  # the differential harness or sim oracle that would otherwise
+  # skip silently in the other jobs.
   fuzz-and-sim:
     name: fuzz + sim oracle
     runs-on: ubuntu-latest
@@ -102,14 +108,19 @@ jobs:
           yosys -V | head -1
           iverilog -V | head -1
 
-      - name: Install test + fuzz dependencies
+      - name: Install test + fuzz + slang dependencies
         # The fuzz group pulls in rtl-buddy-xeno (Stage-3 Layer B,
         # rtl-buddy-cdc#221); it's py3.13-only by its own
         # ``requires-python``, matched to this job's --python 3.13.
-        run: uv sync --group test --group fuzz --python 3.13
+        # The [slang] extra is needed for the cross-frontend
+        # differential oracle (Stage-3 Layer C).
+        run: uv sync --extra slang --group test --group fuzz --python 3.13
 
       - name: Run fuzz suite
         run: uv run pytest -m fuzz -q
+
+      - name: Run fuzz_diff suite (cross-frontend oracle)
+        run: uv run pytest -m fuzz_diff -q
 
       - name: Run sim suite
         run: uv run pytest -m sim -q
