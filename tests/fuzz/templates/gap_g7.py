@@ -10,17 +10,23 @@ the chain as a valid synchroniser — its check only requires
 constant-fed head + same-domain + same-reset, not that the constant
 matches the deassertion polarity.
 
-Asserts RDC-007 fires once on the head-D mismatch shape. Before the
-rule existed, ``run_all`` produced zero findings for this design (and
-worse, every downstream consumer using the broken chain's output was
-silently suppressed from RDC-001..-006 because the chain looked
-structurally valid).
+Stage-3 Layer A (rtl-buddy-cdc#221): the SDC ``dst_clk`` period
+sweeps across :data:`ONE_CLOCK_PERIODS` so RDC-007 crosses the
+≥10× bar without changing the structural shape — purely an
+SDC-only multiplier per the issue's Layer-A guidance.
+
+Asserts RDC-007 fires once per case on the head-D mismatch shape.
+Before the rule existed, ``run_all`` produced zero findings for this
+design (and worse, every downstream consumer using the broken
+chain's output was silently suppressed from RDC-001..-006 because
+the chain looked structurally valid).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ._sweep import ONE_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -42,8 +48,8 @@ module {top} (
 endmodule
 """
 
-_SDC = """\
-create_clock -name dst_clk -period 10.0 [get_ports dst_clk]
+_SDC_TEMPLATE = """\
+create_clock -name dst_clk -period {dst_period} [get_ports dst_clk]
 """
 
 
@@ -54,21 +60,24 @@ class GapG7DeassertionPolarityBackwards:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        top = f"fuzz_{cls.name}"
-        yield RenderedCase(
-            template_name=cls.name,
-            case_id=top,
-            sv=_TEMPLATE.format(top=top),
-            sdc=_SDC,
-            top=top,
-            params={},
-            expected=(ExpectedFinding("RDC-007", Op.EQ, 1),),
-            # The chain is otherwise structurally well-formed
-            # (constant-fed head, same-domain, async-reset shared);
-            # pin that no RDC-001/002 fires on the head's port-sourced
-            # reset (the chain consumes a top-level port, no crossing).
-            forbidden=(
-                ExpectedFinding("RDC-001", Op.ZERO),
-                ExpectedFinding("RDC-002", Op.ZERO),
-            ),
-        )
+        for dst_period in ONE_CLOCK_PERIODS:
+            top = f"fuzz_{cls.name}_{case_suffix(dst_period)}"
+            sv = _TEMPLATE.format(top=top)
+            sdc = _SDC_TEMPLATE.format(dst_period=dst_period)
+            yield RenderedCase(
+                template_name=cls.name,
+                case_id=top,
+                sv=sv,
+                sdc=sdc,
+                top=top,
+                params={"dst_period": dst_period},
+                expected=(ExpectedFinding("RDC-007", Op.EQ, 1),),
+                # The chain is otherwise structurally well-formed
+                # (constant-fed head, same-domain, async-reset shared);
+                # pin that no RDC-001/002 fires on the head's port-sourced
+                # reset (the chain consumes a top-level port, no crossing).
+                forbidden=(
+                    ExpectedFinding("RDC-001", Op.ZERO),
+                    ExpectedFinding("RDC-002", Op.ZERO),
+                ),
+            )
