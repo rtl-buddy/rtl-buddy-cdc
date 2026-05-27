@@ -612,11 +612,48 @@ class _ModuleBuilder:
             self._emit_continuous_assign(member)
         elif kind == "InstanceSymbol":
             self._emit_child_instance(member, hier_prefix)
+        elif kind == "NetSymbol":
+            # ``wire foo = <expr>;`` lowers as a NetSymbol whose
+            # ``initializer`` carries the RHS. pyslang doesn't emit a
+            # separate ContinuousAssignSymbol for this shape, so without
+            # this branch the inline initializer is silently dropped
+            # — the rule pack then sees the net's bits driven by
+            # nothing, which masks inter-stage comb hazards (CDC-014).
+            self._emit_net_initializer(member)
         # GenerateBlock(Array)Symbol are pre-expanded by ``_iter_scope``
         # before reaching this dispatch; any other unmodelled kind
         # falls through silently — the missing flops surface in
         # ``analyze`` output, which is a better failure mode than
         # crashing on an unrecognised member kind.
+
+    def _emit_net_initializer(self, member: Any) -> None:
+        """Lower a ``wire foo = <expr>;`` inline assignment.
+
+        Slang's :class:`NetSymbol` exposes the RHS via ``.initializer``.
+        We lower it via :meth:`_bits_of_expression` and alias the net's
+        own bits to the RHS bits — exact same shape
+        :meth:`_emit_continuous_assign` produces for the explicit
+        ``assign foo = <expr>;`` form. The two paths converge in
+        the underlying ``$not`` / ``$and`` / `$mux`` / … cell emission,
+        so the rule pack treats both spellings identically.
+
+        Closes the CDC-014 inter-stage-comb-preservation leg of the
+        cross-frontend parity gap tracked in rtl-buddy-cdc#221 /
+        rtl-buddy-cdc#224.
+        """
+        init_expr = getattr(member, "initializer", None)
+        if init_expr is None:
+            return
+        rhs_bits = self._bits_of_expression(init_expr)
+        if rhs_bits is None:
+            return
+        canonical = self._canonical_var(member)
+        # Allocate the net's bits if it's the first time we've seen it;
+        # then merge them into the RHS bits via the same alias-rewrite
+        # primitive ``_emit_continuous_assign`` uses, so any reader of
+        # the net follows through to the driving cell's output.
+        net_bits = self._alloc_bits(member)
+        self._merge_canonical_var(canonical, net_bits, rhs_bits)
 
     def _emit_child_instance(self, child: Any, parent_prefix: str) -> None:
         """Inline a child instance's body into the flat ``Module``.
