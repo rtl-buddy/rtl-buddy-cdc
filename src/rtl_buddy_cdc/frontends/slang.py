@@ -114,12 +114,16 @@ What is NOT yet implemented (next slices)
   :meth:`_walk_case_statement` lowering treats every label as a
   full ``$eq`` match, so wildcard bits in the label aren't honored.
   Uncommon in CDC-sensitive code and not yet wired up.
-- **``CLK_POLARITY = "0"`` for negedge-clocked flops** — the
-  procedural-block lowering assumes posedge today, so
-  ``CLK_POLARITY`` is hard-coded to ``"1"`` in :meth:`_emit_flop_cell`.
-  ``WIDTH`` / ``ARST_VALUE`` / ``ARST_POLARITY`` are populated in
-  Yosys-binary form per issue #40, and width comes straight from the
-  Q bit-tuple, so multi-bit flops have correct parameter shape.
+- (was: ``CLK_POLARITY = "0"`` for negedge-clocked flops — landed
+  in rtl-buddy-cdc#221 to close the CDC-016 cross-frontend parity
+  gap. ``_analyse_event_list`` now reports the clock edge alongside
+  the reset edge, ``_emit_procedural_block`` stashes it as
+  ``self._clk_negedge``, and ``_emit_flop_cell`` reads it when
+  populating the ``CLK_POLARITY`` parameter. ``WIDTH`` /
+  ``ARST_VALUE`` / ``ARST_POLARITY`` are still populated in
+  Yosys-binary form per issue #40, and width comes straight from
+  the Q bit-tuple, so multi-bit flops have correct parameter
+  shape.)
 - **Yosys-only constructs** (``$_BUF_`` / ``$_NOT_`` primitives in SV
   source) are correctly rejected by slang — they're post-synthesis
   cells, not legal SV. Fixtures that rely on them
@@ -711,9 +715,18 @@ class _ModuleBuilder:
         # Expected shape: TimedStatement(timing=EventListControl, stmt=...)
         if self._kind_name(body) != "TimedStatement":
             return
-        clk_sym, reset_sym, reset_active_low = self._analyse_event_list(body.timing)
+        clk_sym, reset_sym, reset_active_low, clk_negedge = self._analyse_event_list(
+            body.timing
+        )
         if clk_sym is None:
             return  # can't identify clock — skip rather than crash
+        # Stash the clock edge as instance state so ``_emit_flop_cell``
+        # can read it without threading a polarity parameter through
+        # every ``_emit_assignments_*`` helper. The save/restore in the
+        # surrounding try/finally keeps nested always_ff blocks correct
+        # (an unusual but legal SV shape).
+        prev_clk_negedge = getattr(self, "_clk_negedge", False)
+        self._clk_negedge = clk_negedge
         # Drill through the optional BlockStatement wrapper.
         inner = body.stmt
         if self._kind_name(inner) == "BlockStatement":
@@ -802,6 +815,7 @@ class _ModuleBuilder:
         finally:
             self._proc_writes = {}
             self._proc_resets = {}
+            self._clk_negedge = prev_clk_negedge
 
     def _collect_reset_assignments(self, stmt: Any) -> None:
         """Walk an ``always_ff`` reset arm (``if (!rst_n) <stmt>``) and
@@ -840,15 +854,22 @@ class _ModuleBuilder:
             return
         self._proc_resets[q_bits] = val
 
-    def _analyse_event_list(self, timing: Any) -> tuple[Any | None, Any | None, bool]:
+    def _analyse_event_list(
+        self, timing: Any
+    ) -> tuple[Any | None, Any | None, bool, bool]:
         """Pick clock + (optional) async-reset symbols out of the
         timing control.
 
-        Returns ``(clock_sym, reset_sym, reset_active_low)``. The reset
-        identification is provisional — the canonical conditional body
-        shape gives the authoritative answer and we override here when
-        we see it. The polarity comes from the event edge: ``negedge``
-        on the reset event means the reset asserts low.
+        Returns ``(clock_sym, reset_sym, reset_active_low,
+        clock_negedge)``. The reset identification is provisional —
+        the canonical conditional body shape gives the authoritative
+        answer and we override here when we see it. The polarity
+        comes from the event edge: ``negedge`` on the reset event
+        means the reset asserts low. ``clock_negedge`` reports the
+        clock-event edge directly; it threads through to
+        :meth:`_emit_flop_cell` as the ``CLK_POLARITY`` parameter
+        (rtl-buddy-cdc#221 — closes the CDC-016 parity gap tracked
+        in #224).
 
         pyslang exposes two timing-control shapes:
 
@@ -861,22 +882,35 @@ class _ModuleBuilder:
         """
         # SignalEventControl: single event, no ``.events`` list.
         if getattr(timing, "events", None) is None and hasattr(timing, "expr"):
-            return getattr(timing.expr, "symbol", None), None, False
+            clk_edge = str(getattr(timing, "edge", "")).rsplit(".", 1)[-1]
+            return (
+                getattr(timing.expr, "symbol", None),
+                None,
+                False,
+                clk_edge == "NegEdge",
+            )
         events = list(getattr(timing, "events", []) or [])
         if not events:
-            return None, None, False
+            return None, None, False, False
         # Single-event case: that's the clock, no reset.
         if len(events) == 1:
             ev = events[0]
-            return getattr(ev.expr, "symbol", None), None, False
+            clk_edge = str(getattr(ev, "edge", "")).rsplit(".", 1)[-1]
+            return (
+                getattr(ev.expr, "symbol", None),
+                None,
+                False,
+                clk_edge == "NegEdge",
+            )
         # Two-event case (the common async-reset shape): the event
         # whose edge matches the conventional clock side is the clock;
         # the other is provisionally the reset.
         clk_ev, rst_ev = events[0], events[1]
         clk_sym = getattr(clk_ev.expr, "symbol", None)
         rst_sym = getattr(rst_ev.expr, "symbol", None)
+        clk_edge = str(getattr(clk_ev, "edge", "")).rsplit(".", 1)[-1]
         rst_edge = str(getattr(rst_ev, "edge", "")).rsplit(".", 1)[-1]
-        return clk_sym, rst_sym, rst_edge == "NegEdge"
+        return clk_sym, rst_sym, rst_edge == "NegEdge", clk_edge == "NegEdge"
 
     @staticmethod
     def _extract_condition_symbol(expr: Any) -> Any | None:
@@ -1643,15 +1677,18 @@ class _ModuleBuilder:
                 # ``"async"`` (or unspecified — pre-#86 default).
                 connections["ARST"] = self._alloc_bits(reset_sym)
                 cell_type = "$adff"
-        # CLK_POLARITY: slang lowering only emits posedge-clocked flops
-        # today, so this is hard-coded to "1". Negedge support (issue
-        # out-of-scope for #40) will need a polarity arg threaded down.
-        # WIDTH / *RST_POLARITY match Yosys' 32-bit binary-string param
-        # encoding; *RST_VALUE matches the flop's bit width so the
-        # string length lines up with the D / Q nets.
+        # CLK_POLARITY: read off the procedural-block lowering's
+        # active clock edge (rtl-buddy-cdc#221 — closes the CDC-016
+        # parity gap tracked in #224). ``_emit_procedural_block``
+        # stashes ``self._clk_negedge`` from ``_analyse_event_list``
+        # around its drain call. WIDTH / *RST_POLARITY match Yosys'
+        # 32-bit binary-string param encoding; *RST_VALUE matches the
+        # flop's bit width so the string length lines up with the
+        # D / Q nets.
         width = len(q_bits)
+        clk_polarity = "0" if getattr(self, "_clk_negedge", False) else "1"
         parameters: dict[str, str] = {
-            "CLK_POLARITY": "1",
+            "CLK_POLARITY": clk_polarity,
             "WIDTH": _param_int32(width),
         }
         if reset_sym is not None:

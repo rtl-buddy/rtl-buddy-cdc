@@ -377,6 +377,105 @@ endmodule
     }, dff.parameters
 
 
+def test_negedge_dff_has_clk_polarity_zero(tmp_path: Path) -> None:
+    """A negedge-clocked ``always_ff`` emits ``CLK_POLARITY = "0"``
+    on the resulting ``$dff`` — closes the CDC-016 cross-frontend
+    parity gap from rtl-buddy-cdc#221 / #224.
+
+    Before the fix, the slang lowering hard-coded ``CLK_POLARITY``
+    to ``"1"`` regardless of the event-list edge, so the rule
+    pack's CDC-016 detector (which keys off
+    ``cell.parameters["CLK_POLARITY"]`` on adjacent chain stages)
+    saw a polarity-uniform chain and stayed silent. The Yosys
+    frontend gets this right via ``write_json`` reading the
+    parameter directly from the elaborator, so this gap was a
+    slang-lowering-only bug.
+    """
+    src = """module m (
+    input  logic clk, d,
+    output logic q
+);
+    always_ff @(negedge clk) q <= d;
+endmodule
+"""
+    sv = tmp_path / "m.sv"
+    sv.write_text(src)
+    module = elaborate([sv], "m", frontend=Frontend.slang)
+    dff = next(c for c in module.cells.values() if c.type == "$dff")
+    assert dff.parameters["CLK_POLARITY"] == "0", dff.parameters
+
+
+def test_cdc_016_fires_on_opposite_edge_chain(tmp_path: Path) -> None:
+    """Slang-elaborated opposite-edge sync chain fires CDC-016 —
+    the corpus-discovered parity gap (rtl-buddy-cdc#224) for this
+    template family now closes via the ``CLK_POLARITY`` plumbing
+    landed in this PR.
+
+    Two stages on ``dst_clk`` whose edges disagree: stage 1 is
+    ``posedge`` (``$adff`` CLK_POLARITY=1), stage 2 is ``negedge``
+    (``$adff`` CLK_POLARITY=0). CDC-016 keys off the adjacent-stage
+    polarity mismatch — before the fix slang's $adff emission
+    forced CLK_POLARITY="1" on both stages, so the rule's detector
+    stayed silent on a structurally valid mismatch.
+    """
+    src = """module m (
+    input  logic src_clk,
+    input  logic dst_clk,
+    input  logic rst_n,
+    input  logic d_in,
+    output logic q_out
+);
+    logic src_q;
+    always_ff @(posedge src_clk or negedge rst_n)
+        if (!rst_n) src_q <= 1'b0;
+        else        src_q <= d_in;
+
+    logic sync_meta;
+    always_ff @(posedge dst_clk or negedge rst_n)
+        if (!rst_n) sync_meta <= 1'b0;
+        else        sync_meta <= src_q;
+
+    logic sync_q;
+    always_ff @(negedge dst_clk or negedge rst_n)
+        if (!rst_n) sync_q <= 1'b0;
+        else        sync_q <= sync_meta;
+
+    assign q_out = sync_q;
+endmodule
+"""
+    sdc = """\
+create_clock -name src_clk -period 10.0 [get_ports src_clk]
+create_clock -name dst_clk -period 7.5 [get_ports dst_clk]
+set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
+"""
+    from rtl_buddy_cdc import sdc as sdc_mod
+    from rtl_buddy_cdc.domain import find_crossings
+    from rtl_buddy_cdc.rules import run_all
+
+    sv = tmp_path / "m.sv"
+    sdc_path = tmp_path / "m.sdc"
+    sv.write_text(src)
+    sdc_path.write_text(sdc)
+
+    module = elaborate([sv], "m", frontend=Frontend.slang)
+    spec = sdc_mod.parse_file(sdc_path)
+    sdc_mod.synthesize_unconstrained_inputs(spec, module)
+    crossings = find_crossings(module, port_clock=spec.port_clock)
+    violations = run_all(module, crossings, spec)
+
+    fired_rules = {v.rule_id for v in violations}
+    assert "CDC-016" in fired_rules, sorted(fired_rules)
+
+    # Polarity-direct check: dst-side chain has one stage at each
+    # polarity; the dst flops carry the polarity-mismatch evidence
+    # the rule pack inspects.
+    dst_adffs = [c for c in module.cells.values() if c.type == "$adff"]
+    polarities = sorted(c.parameters.get("CLK_POLARITY") for c in dst_adffs)
+    # One src flop (CLK_POLARITY=1) + posedge dst stage (=1) +
+    # negedge dst stage (=0) → ["0", "1", "1"].
+    assert polarities == ["0", "1", "1"], polarities
+
+
 # --- Issue #15 regression: child-port netnames preserved as aliases --------
 
 
