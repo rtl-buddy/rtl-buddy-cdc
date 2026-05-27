@@ -2712,12 +2712,93 @@ class _ModuleBuilder:
             return
         if getattr(expr, "isNonBlocking", False):
             return  # nonblocking in always_comb is a SV style violation
-        if type(expr.left).__name__ != "NamedValueExpression":
+        lhs_kind = type(expr.left).__name__
+        if lhs_kind == "ElementSelectExpression":
+            self._alias_indexed_assign(expr.left, expr.right)
+            return
+        if lhs_kind != "NamedValueExpression":
             return
         rhs_bits = self._bits_of_expression(expr.right)
         if rhs_bits is None:
             return
         self._rewrite_aliased(expr.left, rhs_bits)
+
+    def _alias_indexed_assign(self, lhs: Any, rhs: Any) -> None:
+        """Lower ``base[idx] = rhs;`` in an ``always_comb`` body.
+
+        Models the SV semantics ``base = base | (rhs << idx)`` (1-bit
+        rhs) — set bit ``idx`` of ``base`` to ``rhs`` while preserving
+        every other bit. When the prior alias of ``base`` is the
+        all-zero constant (the canonical ``base = '0; base[idx] = 1;``
+        decoder pattern from CDC-019), the ``base | …`` term collapses
+        to just ``rhs << idx`` and we emit a single ``$shl`` cell;
+        otherwise we OR the shift result onto the previous bits.
+
+        Closes the CDC-019 leg of the cross-frontend parity gap from
+        rtl-buddy-cdc#221 / #224. Yosys lowers the same pattern to a
+        ``$shift`` cell whose Y-bus drives every downstream flop; the
+        rule pack's one-hot-decode detector keys off "comb cell with
+        ≥2 Y-bits driving N≥2 src flops in the same dst clock," so
+        any multi-output comb cell with the right fan-out matches —
+        ``$shl`` and ``$shift`` are equivalent here.
+
+        Indexed-write shapes we *don't* model (silently ignored):
+
+        - LHS chain (``base[a].field[b] = …``); only the simple
+          ``NamedValue[idx]`` form is recognised.
+        - Range selects (``base[3:1] = …``); the rule pack's CDC-019
+          detector keys off per-bit fan-out, so a range write would
+          need a different lowering shape.
+        - RHS wider than 1 bit; the shift-based encoding assumes a
+          single-bit indexed write (the only shape the corpus
+          templates exercise).
+        """
+        base = getattr(lhs, "value", None)
+        if base is None or type(base).__name__ != "NamedValueExpression":
+            return
+        base_sym = base.symbol
+        canonical = self._canonical_var(base_sym)
+        prev_bits = self._var_bits.get(canonical)
+        if prev_bits is None:
+            prev_bits = self._alloc_bits(base_sym)
+        width = len(prev_bits)
+        if width <= 1:
+            return  # nothing to spread across; not a CDC-019 shape
+
+        selector = getattr(lhs, "selector", None)
+        if selector is None:
+            return
+        idx_bits = self._bits_of_expression(selector)
+        if idx_bits is None:
+            return
+
+        rhs_bits = self._bits_of_expression(rhs)
+        if rhs_bits is None or len(rhs_bits) == 0:
+            return
+        # Zero-extend rhs to base width so the shift operand and the
+        # ``base | shl(rhs, idx)`` widths line up.
+        a_bits: tuple[Bit, ...] = rhs_bits + ("0",) * (width - len(rhs_bits))
+        a_bits = a_bits[:width]
+        shl_y = self._emit_comb_cell(
+            cell_type="$shl",
+            inputs={"A": a_bits, "B": idx_bits},
+            output_width=width,
+            src_node=lhs,
+        )
+
+        # If the previous alias is the all-zero constant (canonical
+        # ``base = '0; base[idx] = 1;`` pattern), the shift result is
+        # the new value directly. Otherwise OR with the old bits.
+        if all(b == "0" for b in prev_bits):
+            new_bits = shl_y
+        else:
+            new_bits = self._emit_comb_cell(
+                cell_type="$or",
+                inputs={"A": prev_bits, "B": shl_y},
+                output_width=width,
+                src_node=lhs,
+            )
+        self._merge_canonical_var(canonical, prev_bits, new_bits)
 
     # -- continuous assigns ---------------------------------------------
 
