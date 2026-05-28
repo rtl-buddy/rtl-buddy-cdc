@@ -356,6 +356,71 @@ endmodule
     }, adff.parameters
 
 
+def test_cdc_014_fires_on_inline_wire_initializer(tmp_path: Path) -> None:
+    """A ``wire foo = ~bar;`` inline initializer between two sync
+    chain stages must preserve the comb cell so the rule pack's
+    inter-stage-comb detector (CDC-014) fires.
+
+    Closes the CDC-014 leg of the cross-frontend parity gap tracked
+    in rtl-buddy-cdc#221 / #224. pyslang lowers
+    ``wire foo = <expr>;`` to a ``NetSymbol`` whose ``initializer``
+    carries the RHS — *not* a separate ``ContinuousAssignSymbol``.
+    Before the fix, the slang frontend only handled the
+    ``ContinuousAssignSymbol`` shape; the inline form was silently
+    dropped and the rule pack saw the second sync flop's D driven
+    by a stale net, masking the inter-stage hazard.
+    """
+    src = """module m (
+    input  logic src_clk,
+    input  logic dst_clk,
+    input  logic d_in,
+    output logic q_out
+);
+    logic src_q;
+    always_ff @(posedge src_clk) src_q <= d_in;
+
+    logic sync_meta;
+    always_ff @(posedge dst_clk) sync_meta <= src_q;
+
+    wire sync_meta_n = ~sync_meta;
+
+    logic sync_q;
+    always_ff @(posedge dst_clk) sync_q <= sync_meta_n;
+
+    assign q_out = sync_q;
+endmodule
+"""
+    sdc = """\
+create_clock -name src_clk -period 10.0 [get_ports src_clk]
+create_clock -name dst_clk -period 7.5 [get_ports dst_clk]
+set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
+set_input_delay -clock src_clk 1.0 [get_ports d_in]
+"""
+    from rtl_buddy_cdc import sdc as sdc_mod
+    from rtl_buddy_cdc.domain import find_crossings
+    from rtl_buddy_cdc.rules import run_all
+
+    sv = tmp_path / "m.sv"
+    sdc_path = tmp_path / "m.sdc"
+    sv.write_text(src)
+    sdc_path.write_text(sdc)
+
+    module = elaborate([sv], "m", frontend=Frontend.slang)
+    spec = sdc_mod.parse_file(sdc_path)
+    sdc_mod.synthesize_unconstrained_inputs(spec, module)
+    crossings = find_crossings(module, port_clock=spec.port_clock)
+    violations = run_all(module, crossings, spec)
+    fired = {v.rule_id for v in violations}
+    assert "CDC-014" in fired, sorted(fired)
+
+    # Direct structural check: a ``$not`` cell is preserved between
+    # the two dst-clock flops. Without the fix the comb cell is gone
+    # and the rule pack only sees a one-stage chain (CDC-001 fires
+    # instead of CDC-014).
+    not_cells = [c for c in module.cells.values() if c.type == "$not"]
+    assert len(not_cells) == 1, [c.type for c in module.cells.values()]
+
+
 def test_dff_parameters_have_width_but_no_arst(tmp_path: Path) -> None:
     """The plain ``$dff`` case (no async reset) should still get
     ``WIDTH`` + ``CLK_POLARITY``, but no ``ARST_*`` keys — Yosys omits
