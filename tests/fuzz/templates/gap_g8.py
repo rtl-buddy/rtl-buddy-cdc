@@ -6,14 +6,20 @@ because the reset source is a port (not a foreign-domain flop's Q),
 but the recovery/removal hazard is the same: deassertion edge is
 unsynchronised to the consumer clock.
 
-Asserts RDC-008 fires once. Before the rule existed, ``run_all``
-produced zero findings on this shape.
+Stage-3 Layer A (rtl-buddy-cdc#221): the SDC clock periods sweep
+across :data:`TWO_CLOCK_PERIODS` so RDC-008 crosses the ≥10× bar
+without changing the structural shape — purely an SDC-only
+multiplier per the issue's Layer-A guidance.
+
+Asserts RDC-008 fires once per case. Before the rule existed,
+``run_all`` produced zero findings on this shape.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ._sweep import TWO_CLOCK_PERIODS, case_suffix
 from .base import ExpectedFinding, Op, RenderedCase
 
 _TEMPLATE = """\
@@ -62,10 +68,10 @@ module {top} (
 endmodule
 """
 
-_SDC = """\
-create_clock -name clk_a -period 10.0 [get_ports clk_a]
-create_clock -name clk_b -period 7.5  [get_ports clk_b]
-set_clock_groups -asynchronous -group {clk_a} -group {clk_b}
+_SDC_TEMPLATE = """\
+create_clock -name clk_a -period {clk_a_period} [get_ports clk_a]
+create_clock -name clk_b -period {clk_b_period} [get_ports clk_b]
+set_clock_groups -asynchronous -group {{clk_a}} -group {{clk_b}}
 set_input_delay -clock clk_a 1.0 [get_ports d_in_a]
 set_input_delay -clock clk_b 1.0 [get_ports d_in_b]
 """
@@ -78,20 +84,29 @@ class GapG8PrimaryResetUnsynced:
 
     @classmethod
     def cases(cls) -> Iterator[RenderedCase]:
-        top = f"fuzz_{cls.name}"
-        yield RenderedCase(
-            template_name=cls.name,
-            case_id=top,
-            sv=_TEMPLATE.format(top=top),
-            sdc=_SDC,
-            top=top,
-            params={},
-            # Port has a chain in clk_a, missing it in clk_b — one
-            # (port, clk_b) finding under the asymmetric-intent gate.
-            expected=(ExpectedFinding("RDC-008", Op.EQ, 1),),
-            # RDC-001 deliberately stays silent on port-sourced
-            # resets (the source isn't a foreign-domain flop). Pin
-            # that explicitly so a future broadening of RDC-001
-            # doesn't silently double-report.
-            forbidden=(ExpectedFinding("RDC-001", Op.ZERO),),
-        )
+        for clk_a_period, clk_b_period in TWO_CLOCK_PERIODS:
+            top = f"fuzz_{cls.name}_{case_suffix(clk_a_period, clk_b_period)}"
+            sv = _TEMPLATE.format(top=top)
+            sdc = _SDC_TEMPLATE.format(
+                clk_a_period=clk_a_period,
+                clk_b_period=clk_b_period,
+            )
+            yield RenderedCase(
+                template_name=cls.name,
+                case_id=top,
+                sv=sv,
+                sdc=sdc,
+                top=top,
+                params={
+                    "clk_a_period": clk_a_period,
+                    "clk_b_period": clk_b_period,
+                },
+                # Port has a chain in clk_a, missing it in clk_b — one
+                # (port, clk_b) finding under the asymmetric-intent gate.
+                expected=(ExpectedFinding("RDC-008", Op.EQ, 1),),
+                # RDC-001 deliberately stays silent on port-sourced
+                # resets (the source isn't a foreign-domain flop). Pin
+                # that explicitly so a future broadening of RDC-001
+                # doesn't silently double-report.
+                forbidden=(ExpectedFinding("RDC-001", Op.ZERO),),
+            )
