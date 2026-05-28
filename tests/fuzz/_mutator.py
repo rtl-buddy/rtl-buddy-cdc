@@ -145,7 +145,7 @@ def iter_mutants(
         # Drive each operator with its own ``generate(count=count, ...)``
         # call so a single stubbed or extras-gated kind doesn't poison
         # the whole iteration (xeno raises lazily on the operator's
-        # first yield). Two error classes we expect:
+        # first yield). Three error classes we expect:
         #
         # - :class:`NotImplementedError` — true xeno stub (xeno#2);
         #   the operator declaration exists but no body. Becomes a
@@ -155,6 +155,10 @@ def iter_mutants(
         #   installed in this env. Same skip semantics — the
         #   ``CLOCK_POLARITY_SWAP`` / ``ATTRIBUTE_TOGGLE`` operators
         #   that don't need extras still produce mutants.
+        # - :class:`rtl_buddy_view.frontend.verible.VeribleUnavailable`
+        #   — verible binary not on PATH. Same skip semantics; on CI
+        #   the binary isn't installed and the structural operators
+        #   silently drop out.
         try:
             for mutant in mutator.generate(kinds=[kind], count=count, seed=seed):
                 case = _wrap_mutant(parent, mutant, index)
@@ -162,6 +166,17 @@ def iter_mutants(
                 index += 1
         except (NotImplementedError, ImportError):
             continue
+        except Exception as exc:  # noqa: BLE001 - extras-gated raises various
+            # ``rtl_buddy_view.frontend.verible.VeribleUnavailable`` and
+            # any future extras-gated "tool missing" exception bubble
+            # up here. Match by exception class name so we don't pull
+            # in the optional import just to spell the type.
+            if type(exc).__name__ in {
+                "VeribleUnavailable",
+                "SlangUnavailable",
+            }:
+                continue
+            raise
 
 
 def _wrap_mutant(parent: RenderedCase, mutant: "Mutant", index: int) -> RenderedCase:
