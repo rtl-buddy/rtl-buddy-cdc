@@ -356,6 +356,94 @@ endmodule
     }, adff.parameters
 
 
+def test_cdc_019_fires_on_indexed_one_hot_decoder(tmp_path: Path) -> None:
+    """An ``always_comb`` indexed-write one-hot decoder
+    (``one_hot = '0; one_hot[sel] = 1'b1;``) driving N≥2 src-domain
+    flops must elaborate to a multi-output comb cell so the rule
+    pack's one-hot-decoder detector (CDC-019) fires.
+
+    Closes the CDC-019 leg of the cross-frontend parity gap tracked
+    by rtl-buddy-cdc#221 / #224. Before the fix the indexed-write
+    LHS (``one_hot[sel]``) was silently dropped by
+    :meth:`_alias_assign` (only ``NamedValueExpression`` LHS was
+    handled), so the resulting ``one_hot`` net had no driving cell
+    and every src-domain flop saw a stale/undriven D — the rule
+    pack's detector keys off ``(driver_comb_cell, dst_clock)``
+    grouping, which can't form without a multi-output comb driver.
+
+    The lowering models ``base[idx] = rhs;`` as
+    ``base = base | (rhs << idx)`` (cleared-base case collapses to
+    just ``$shl``) — Yosys lowers the same pattern to a ``$shift``
+    cell with equivalent fan-out, and the rule pack's
+    ≥2-Y-bit check is shape-agnostic between ``$shl`` and ``$shift``.
+    """
+    src = """module m (
+    input  logic       src_clk,
+    input  logic       dst_clk,
+    input  logic [1:0] sel,
+    output logic [3:0] sync_out
+);
+    logic [3:0] one_hot;
+    always_comb begin
+        one_hot = '0;
+        one_hot[sel] = 1'b1;
+    end
+
+    logic d0, d1, d2, d3;
+    always_ff @(posedge src_clk) begin
+        d0 <= one_hot[0];
+        d1 <= one_hot[1];
+        d2 <= one_hot[2];
+        d3 <= one_hot[3];
+    end
+
+    logic d0_m, d0_s, d1_m, d1_s, d2_m, d2_s, d3_m, d3_s;
+    always_ff @(posedge dst_clk) begin
+        d0_m <= d0; d0_s <= d0_m;
+        d1_m <= d1; d1_s <= d1_m;
+        d2_m <= d2; d2_s <= d2_m;
+        d3_m <= d3; d3_s <= d3_m;
+    end
+
+    assign sync_out = {d3_s, d2_s, d1_s, d0_s};
+endmodule
+"""
+    sdc = """\
+create_clock -name src_clk -period 10.0 [get_ports src_clk]
+create_clock -name dst_clk -period 7.5 [get_ports dst_clk]
+set_clock_groups -asynchronous -group {src_clk} -group {dst_clk}
+set_input_delay -clock src_clk 1.0 [get_ports sel]
+"""
+    from rtl_buddy_cdc import sdc as sdc_mod
+    from rtl_buddy_cdc.domain import find_crossings
+    from rtl_buddy_cdc.rules import run_all
+
+    sv = tmp_path / "m.sv"
+    sdc_path = tmp_path / "m.sdc"
+    sv.write_text(src)
+    sdc_path.write_text(sdc)
+
+    module = elaborate([sv], "m", frontend=Frontend.slang)
+    spec = sdc_mod.parse_file(sdc_path)
+    sdc_mod.synthesize_unconstrained_inputs(spec, module)
+    crossings = find_crossings(module, port_clock=spec.port_clock)
+    violations = run_all(module, crossings, spec)
+    fired = {v.rule_id for v in violations}
+    assert "CDC-019" in fired, sorted(fired)
+
+    # Structural pin: a multi-bit comb cell (``$shl`` or ``$or``)
+    # must drive the four src-domain flops. Without it the rule
+    # pack's per-lane fan-out walker wouldn't form the
+    # ``(driver, dst_clock)`` group.
+    comb_cells = [
+        c
+        for c in module.cells.values()
+        if c.type in {"$shl", "$or"}
+        and any(isinstance(b, int) for b in c.connections.get("Y", ()))
+    ]
+    assert len(comb_cells) >= 1, [c.type for c in module.cells.values()]
+
+
 def test_cdc_014_fires_on_inline_wire_initializer(tmp_path: Path) -> None:
     """A ``wire foo = ~bar;`` inline initializer between two sync
     chain stages must preserve the comb cell so the rule pack's
