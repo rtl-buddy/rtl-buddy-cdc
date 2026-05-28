@@ -682,7 +682,7 @@ dev = [
     { name = "ruff" },
 ]
 fuzz = [
-    { name = "rtl-buddy-xeno", marker = "python_full_version >= '3.13'" },
+    { name = "rtl-buddy-xeno", extra = ["slang", "verible"], marker = "python_full_version >= '3.13'" },
 ]
 lint = [
     { name = "mypy" },
@@ -710,7 +710,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.11.0" },
 ]
-fuzz = [{ name = "rtl-buddy-xeno", marker = "python_full_version >= '3.13'", git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=7393cb4abbeec25ae5039d8ec3d1b83d934e33ba" }]
+fuzz = [{ name = "rtl-buddy-xeno", extras = ["verible", "slang"], marker = "python_full_version >= '3.13'", git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=ecc1bdbb7a11abf33b0e6bea2bb7d844a241d0bb" }]
 lint = [
     { name = "mypy", specifier = ">=2.1.0" },
     { name = "ruff", specifier = ">=0.11.0" },
@@ -722,9 +722,26 @@ test = [
 ]
 
 [[package]]
+name = "rtl-buddy-view"
+version = "0.2.0"
+source = { git = "https://github.com/rtl-buddy/rtl-buddy-view.git?tag=v0.2.0#1bef422ae73d49ab48201fa0cd80420c6c27016e" }
+dependencies = [
+    { name = "jsonschema", marker = "python_full_version >= '3.13'" },
+    { name = "typer", marker = "python_full_version >= '3.13'" },
+]
+
+[[package]]
 name = "rtl-buddy-xeno"
-version = "0.0.1"
-source = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=7393cb4abbeec25ae5039d8ec3d1b83d934e33ba#7393cb4abbeec25ae5039d8ec3d1b83d934e33ba" }
+version = "0.0.2"
+source = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=ecc1bdbb7a11abf33b0e6bea2bb7d844a241d0bb#ecc1bdbb7a11abf33b0e6bea2bb7d844a241d0bb" }
+
+[package.optional-dependencies]
+slang = [
+    { name = "pyslang", marker = "python_full_version >= '3.13'" },
+]
+verible = [
+    { name = "rtl-buddy-view", marker = "python_full_version >= '3.13'" },
+]
 
 [[package]]
 name = "ruff"

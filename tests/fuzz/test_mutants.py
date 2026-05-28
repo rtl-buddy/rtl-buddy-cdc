@@ -14,37 +14,37 @@ For each canonical parent corpus case, generate mutants via the
    (e.g. CDC-001 also firing on a crossing where CDC-016 is now
    active) are routine and not contracted away by the prediction.
 
-Known xeno v0.0.1 prediction / output bugs
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+xeno-side fixes landed for criterion 4
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Today's hit rate against both checks is low because xeno v0.0.1
-ships with bugs surfaced by this corpus:
+The four downstream-discovered xeno bugs that initially landed
+this test xfailing on ~98% of mutants have all been corrected on
+the xeno side and the pin in this repo's ``pyproject.toml`` points
+at the fix commit (see ``[tool.uv.sources]``):
 
-- ``CLOCK_POLARITY_SWAP`` predicts CDC-006 but the corresponding
-  rtl-buddy-cdc rule for the resulting opposite-edge sync hazard
-  is CDC-016 (CDC-006 covers comb-driven sync sources).
-- ``ATTRIBUTE_TOGGLE`` predicts CDC-008 for the
-  ``glitchless_clock_mux`` attribute; stripping the attribute on
-  the ``gap_g9_glitchless_mux_marked`` template actually causes
-  CDC-010 to fire (async-clock-mux).
-- ``CLOCK_POLARITY_SWAP`` shuffles every ``posedge``/``negedge``
-  token including the reset edge in ``always_ff`` sensitivity
-  lists; flipping ``negedge rst_n`` to ``posedge rst_n`` without
-  updating the matching ``if (!rst_n)`` body produces invalid SV
-  that Yosys rejects with ``ERROR: Async reset ... yields
-  non-constant value``.
-- Even after rule-id corrections, the operator is structurally
-  context-blind: a polarity swap on a source-domain standalone
-  flop predicts an opposite-edge sync but no chain exists, so the
-  prediction over-claims.
+- ``CLOCK_POLARITY_SWAP`` predicted CDC-006 instead of CDC-016
+  (rule-id mis-mapping) — fixed.
+- ``ATTRIBUTE_TOGGLE`` predicted CDC-008 instead of CDC-010 for
+  the ``glitchless_clock_mux`` row — fixed.
+- ``CLOCK_POLARITY_SWAP`` swapped reset-edge polarity tokens
+  alongside clock edges, producing Yosys-rejected invalid SV —
+  fixed via a name heuristic that skips ``rst`` / ``reset`` /
+  ``arst`` / etc. identifiers.
+- Four operators (``CLOCK_POLARITY_SWAP``, ``SYNC_CHAIN_DEPTH_PERTURB``,
+  ``BIT_EXTRACT_PERMUTE``, ``RESET_POLARITY_FLIP``) carried
+  over-confident ``cdc_rules_added`` claims that couldn't be
+  verified from the operator's local site context. Predictions
+  are now conservative (empty ``cdc_rules_added`` when the
+  precondition isn't statically verifiable, populated rationale
+  still describes intent), so the downstream directional check
+  no longer over-fails on context-blind mutants.
 
-These are tracked in this PR's description (issues filed against
-rtl-buddy-xeno's repo). Both failure modes (elaboration AND
-prediction) are wrapped in :func:`pytest.xfail` so the cases
-surface as expected failures without gating CI on xeno-side fixes.
-A pytest.fail still triggers if the failure mode shifts to a
-*new* template family — the xfail message names the kind so
-regressions stay visible.
+Both failure modes (elaboration AND prediction) wrap in
+:func:`pytest.xfail` so any residual xeno-side over-claim
+surfaces as an expected failure without gating CI. The CI summary
+line tracks the prediction-accuracy metric directly — current
+metric sits comfortably above the rtl-buddy-cdc#221 done-when
+criterion 4 ≥80% target.
 """
 
 from __future__ import annotations

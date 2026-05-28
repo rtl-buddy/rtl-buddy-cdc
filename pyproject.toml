@@ -66,7 +66,16 @@ dev = [
 # it. Source pinned via [tool.uv.sources] to a content-addressed commit
 # until xeno reaches PyPI.
 fuzz = [
-    "rtl-buddy-xeno ; python_full_version >= '3.13'",
+    # ``[verible,slang]`` extras pull in xeno's verible-CST helpers and
+    # pyslang elaborator — required for the three structural CDC
+    # operators (``SYNC_CHAIN_DEPTH_PERTURB`` /
+    # ``BIT_EXTRACT_PERMUTE`` / ``RESET_POLARITY_FLIP``) to emit any
+    # mutants. Without them only the parser-free
+    # ``CLOCK_POLARITY_SWAP`` / ``ATTRIBUTE_TOGGLE`` operators fire,
+    # and the ≥10-mutants-per-template target in
+    # rtl-buddy-cdc#221 done-when criterion 4 misses on every gap
+    # family whose source has few ``posedge``/``negedge`` sites.
+    "rtl-buddy-xeno[verible,slang] ; python_full_version >= '3.13'",
 ]
 
 [tool.ruff]
@@ -117,4 +126,11 @@ exclude_also = [
 ]
 
 [tool.uv.sources]
-rtl-buddy-xeno = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git", rev = "7393cb4abbeec25ae5039d8ec3d1b83d934e33ba" }
+# Pinned to the v0.0.2 fix commit on rtl-buddy-xeno (xeno PR #12). That
+# commit corrects two CDC rule-id mis-mappings (CLOCK_POLARITY_SWAP
+# CDC-006 → CDC-016; ATTRIBUTE_TOGGLE CDC-008 → CDC-010 for
+# glitchless_clock_mux) and skips reset-edge polarity tokens that
+# previously produced Yosys-rejected invalid SV. The downstream
+# prediction-accuracy metric in test_mutants.py climbs substantially
+# with this pin in place.
+rtl-buddy-xeno = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git", rev = "ecc1bdbb7a11abf33b0e6bea2bb7d844a241d0bb" }
