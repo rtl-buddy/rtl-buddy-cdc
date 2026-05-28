@@ -15,5 +15,10 @@ def pytest_configure(config) -> None:
     )
     config.addinivalue_line(
         "markers",
+        "fuzz_grammar: Stage-4 grammar-generated topologies "
+        "(gated; run via `pytest -m fuzz_grammar`; needs yosys on PATH)",
+    )
+    config.addinivalue_line(
+        "markers",
         "sim: behavioural simulation oracle (opt-in; needs iverilog)",
     )
