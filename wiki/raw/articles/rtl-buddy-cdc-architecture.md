@@ -1468,3 +1468,142 @@ In addition:
 The pre-built JSON fixtures are committed so the test suite doesn't
 require Yosys to be installed (the wrapper integration tests do, but
 the unit suite does not).
+
+## 15. Grammar fuzzer (Stage 4)
+
+Stage 4 (rtl-buddy-cdc#222) sits above the hand-authored corpus
+and the Stage-3 xeno mutator (Layer B of rtl-buddy-cdc#221): a
+**grammar** that emits novel topologies the corpus hasn't seen, on
+the same `RenderedCase` → Yosys / slang → analyzer pipeline the
+template-driven fuzz uses. A grammar-derived `.sv` is just another
+input to `tests.fuzz.runner.run_case` — the Yosys cache, the slang
+cache, the rule pack, and the analyzer-differential oracle all
+treat it identically to a template case.
+
+The grammar lives under `tests/fuzz/grammar/`:
+
+- `core.py` — terminal / non-terminal types, composition, top-level
+  driver.
+- `productions.py` — concrete productions (the registered
+  non-terminals).
+- `steering.py` — coverage-steering picker.
+
+### 15.1 Terminals
+
+The grammar's leaf alphabet — the things production bodies stitch
+into rendered SV:
+
+| Terminal       | Module                          | Notes                                                                          |
+| -------------- | ------------------------------- | ------------------------------------------------------------------------------ |
+| `ClockDomain`  | `grammar.core.ClockDomain`      | Name + period (ns). One `create_clock` per declared domain.                    |
+| `Port`         | `grammar.core.Port`             | Top-level module port. Inputs with a `sampling_clock` get a `set_input_delay`. |
+| Flop kind      | (open-coded inside productions) | Sync / async-reset / gated forms picked per-production.                        |
+| Comb cells     | (open-coded inside productions) | E.g. `wire comb = a & b` in `_emit_comb_source`.                               |
+| SV attributes  | (open-coded inside productions) | E.g. `(* cdc_gray *)` on the gray-counter production's net decls.              |
+| SDC clauses    | `grammar.core._render_sdc`      | `create_clock`, `set_clock_groups -asynchronous`, `set_input_delay`.           |
+
+Flop kinds, comb cells, and SV attributes are open-coded inside
+each production today rather than promoted to typed terminals.
+Promotion is a follow-up if a future production needs to *parametrise*
+over them (e.g. a flop-kind sweep) — until then the per-production
+literal SV stays the cheapest representation.
+
+### 15.2 Non-terminals (productions)
+
+A `Production` is `(name, emit, declared)`. `emit(ctx) -> Fragment`
+generates the SV bits; `declared: Prediction` is the production's
+static verdict — the rule ids it claims to lift, mirroring xeno's
+`Prediction.cdc_rules_added` / `cdc_rules_removed` shape so the
+coverage-steering picker can reason about productions and mutant
+operators uniformly.
+
+| Production              | Declared `cdc_rules_added` | Non-terminal class issue #222 calls out |
+| ----------------------- | -------------------------- | --------------------------------------- |
+| `clean_sync_chain`      | (empty)                    | sync chain (clean reference)            |
+| `unsynced_single_bit`   | `{CDC-001}`                | sync chain (negative — depth=0)         |
+| `comb_source`           | `{CDC-006}`                | comb source                             |
+| `gray_counter_crossing` | (empty)                    | gray counter                            |
+| `missing_reset_sync`    | `{RDC-001}`                | reset-sync chain                        |
+
+`handshake req/ack pair` and `FIFO read/write skeleton` are
+deferred (issue #222 closes them as the grammar matures).
+
+### 15.3 Composition
+
+`compose(productions, ctx)` is the driver. Each production is
+emitted independently — there is no signal-threading between
+productions, so a case with two productions becomes one module
+with two parallel crossing sites. The composed `Fragment` carries
+the union of all production SV (decls + always_blocks + assigns +
+ports + clocks), and the verdict is `Prediction.merge`-folded
+across the chosen productions.
+
+`Prediction.merge` is *removed-wins*: a production introducing a
+finding (e.g. an unsynced crossing → CDC-001) combined with one
+silencing it (e.g. a hypothetical `cdc_sync_attribute_blanket`
+that strips the rule globally) leaves the rule out of the combined
+`cdc_rules_added`. Today's productions don't use `cdc_rules_removed`
+— union math is trivially additive — but the merge contract is
+fixed so future silencing productions don't have to re-design the
+composition rule.
+
+### 15.4 Generation
+
+`generate(seed)` is the public entry point. Deterministic given
+the seed (and the production registry) — same seed always
+produces byte-identical SV / SDC / params. This is the
+reproducibility property issue #222 Sketch point 4 calls out;
+`tests/fuzz/test_grammar.py::test_generate_is_deterministic_for_seed`
+pins it.
+
+Defaults: `n_productions = rng.randint(2, 4)`. Productions are
+sampled uniformly from the registry. Coverage steering (next
+section) passes a filtered subset to bias generation.
+
+### 15.5 Coverage steering
+
+`grammar.steering` is the loop that closes corpus growth ↔ coverage
+gain. Two functions:
+
+- `under_covered_rules(fires, threshold, rule_universe=None)` —
+  given a per-rule fires counter and a threshold, return the
+  rules whose fire count is below it. Pass `rule_universe =
+  set(rules.RULES)` to surface zero-fire rules too.
+- `productions_lifting(rule_ids)` — given a set of rules, return
+  the productions whose `declared.cdc_rules_added` intersects
+  them. Pass the result back to `generate(productions=...)` to
+  bias the picker.
+
+The `tests/fuzz/coverage.py` report surfaces *steerable rules*:
+rules with zero fires in the uniform-pass grammar column but at
+least one production declaring them. That's the actionable
+signal — re-run a steered batch to lift them.
+
+### 15.6 Adding a non-terminal
+
+A future engineer wanting to add (e.g.) a credit-based
+flow-control wrapper:
+
+1. Add a private `_emit_credit_handshake(ctx) -> Fragment`
+   function in `productions.py`. The function builds SV strings
+   via `ctx.uniq("credit")` for unique signal names, declares
+   any new ports / clocks it needs, and packs them into a
+   `Fragment` alongside its `Prediction` delta.
+2. Append a `Production("credit_handshake", _emit_credit_handshake,
+   declared=Prediction(cdc_rules_added=frozenset({...})))` row
+   to the `PRODUCTIONS` tuple.
+3. The coverage report's steering hints will surface the new
+   production's declared rules automatically; no change to the
+   report or the steering picker is required. The directional
+   check in `tests/fuzz/test_grammar.py::test_predictions_directional`
+   parametrises over `PRODUCTIONS`, so the new production gets
+   its own per-rule assertion for free.
+
+### 15.7 Cross-frontend differential
+
+Grammar cases run through the same Yosys / slang oracle the
+hand-authored corpus uses (Stage-3 Layer C of rtl-buddy-cdc#221).
+The grammar-side test lives in `tests/fuzz/test_grammar_diff.py`
+under the `fuzz_grammar` marker (not `fuzz_diff`) so the grammar
+selection can be sized independently as the production registry
+grows.
