@@ -107,6 +107,11 @@ class Fragment:
     are merged into the module header and SDC respectively.
     Production authors don't see the module-level shape — they
     only declare what they introduce.
+
+    ``extra_yosys_passes`` carries Yosys pass strings the production
+    needs between ``flatten`` and ``write_json`` (e.g. ``"opt_dff;"``
+    for gated-bus shapes that CDC-012's $dffe detector keys off).
+    :func:`compose` unions these across the chosen productions.
     """
 
     decls: list[str] = field(default_factory=list)
@@ -115,6 +120,7 @@ class Fragment:
     ports: list[Port] = field(default_factory=list)
     clocks: list[ClockDomain] = field(default_factory=list)
     prediction: Prediction = field(default_factory=Prediction)
+    extra_yosys_passes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -181,6 +187,7 @@ def compose(productions: list[Production], ctx: GenContext) -> Fragment:
     production's verdict locally interpretable.
     """
     out = Fragment()
+    extra_passes: list[str] = []
     for prod in productions:
         frag = prod.emit(ctx)
         out.decls.extend(frag.decls)
@@ -189,6 +196,10 @@ def compose(productions: list[Production], ctx: GenContext) -> Fragment:
         out.ports.extend(frag.ports)
         out.clocks.extend(frag.clocks)
         out.prediction = out.prediction.merge(frag.prediction)
+        for p in frag.extra_yosys_passes:
+            if p not in extra_passes:
+                extra_passes.append(p)
+    out.extra_yosys_passes = tuple(extra_passes)
     return out
 
 
@@ -313,4 +324,5 @@ def generate(
         },
         expected=expected,
         forbidden=forbidden,
+        extra_yosys_passes=" ".join(body.extra_yosys_passes),
     )
