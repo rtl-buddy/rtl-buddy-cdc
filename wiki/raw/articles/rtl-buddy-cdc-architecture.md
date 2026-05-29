@@ -1524,9 +1524,15 @@ operators uniformly.
 | `comb_source`           | `{CDC-006}`                | comb source                             |
 | `gray_counter_crossing` | (empty)                    | gray counter                            |
 | `missing_reset_sync`    | `{RDC-001}`                | reset-sync chain                        |
+| `handshake_req_ack`     | (empty)                    | handshake req/ack pair (clean)          |
+| `handshake_no_ack`      | `{CDC-012}`                | handshake req/ack pair (negative)       |
+| `fifo_skeleton`         | (empty)                    | FIFO read/write skeleton                |
 
-`handshake req/ack pair` and `FIFO read/write skeleton` are
-deferred (issue #222 closes them as the grammar matures).
+`mux tree` is the one remaining non-terminal class from the
+issue's Sketch — deferred because CDC-010's SDC shape (two
+physical clock ports sharing one logical clock name via
+`create_clock [get_ports {a b}]`) needs the SDC emitter to grow
+multi-port-per-clock support, which is a follow-up.
 
 ### 15.3 Composition
 

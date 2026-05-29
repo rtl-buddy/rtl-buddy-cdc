@@ -304,6 +304,277 @@ def _emit_missing_reset_sync(ctx: GenContext) -> Fragment:
     )
 
 
+def _emit_handshake_req_ack(ctx: GenContext) -> Fragment:
+    """Full req/ack handshake on a wide data bus.
+
+    Source registers payload + asserts req; req is 2FF-sync'd into
+    dst; dst latches payload when it sees req_sync, asserts ack.
+    Ack is 2FF-sync'd back to src — the structural marker
+    CDC-012's detector looks for (src-clock flop with D-fanin from
+    a dst-clock flop's Q). With that feedback present CDC-012 stays
+    silent on the data bus, and the two single-bit crossings (req
+    and ack) clear CDC-001 / CDC-002 by their 2FF chains.
+
+    The grammar's "no false positives on a textbook handshake"
+    sentinel, parallel to :func:`_emit_clean_sync_chain` but
+    covering the multi-crossing pattern.
+    """
+    src, dst = _pick_clocks(ctx)
+    suffix = ctx.uniq("hs")
+    d_in = f"d_in_{suffix}"
+    start = f"start_{suffix}"
+    q_out = f"q_out_{suffix}"
+    data_q = f"data_q_{suffix}"
+    req_q = f"req_q_{suffix}"
+    req_sync_m = f"req_sync_m_{suffix}"
+    req_sync_q = f"req_sync_q_{suffix}"
+    data_dst_q = f"data_dst_q_{suffix}"
+    ack_q = f"ack_q_{suffix}"
+    ack_sync_m = f"ack_sync_m_{suffix}"
+    ack_sync_q = f"ack_sync_q_{suffix}"
+
+    decls = [
+        f"    logic [7:0] {data_q};",
+        f"    logic {req_q};",
+        f"    logic {req_sync_m}, {req_sync_q};",
+        f"    logic [7:0] {data_dst_q};",
+        f"    logic {ack_q};",
+        f"    logic {ack_sync_m}, {ack_sync_q};",
+    ]
+    always = [
+        # Source: hold data + req until ack returns.
+        (
+            f"    always_ff @(posedge {src.name}) begin\n"
+            f"        if ({start} && !{req_q}) begin\n"
+            f"            {data_q} <= {d_in};\n"
+            f"            {req_q}  <= 1'b1;\n"
+            f"        end else if ({ack_sync_q}) begin\n"
+            f"            {req_q}  <= 1'b0;\n"
+            f"        end\n"
+            f"    end"
+        ),
+        # Destination: 2FF sync the req.
+        (
+            f"    always_ff @(posedge {dst.name}) begin\n"
+            f"        {req_sync_m} <= {req_q};\n"
+            f"        {req_sync_q} <= {req_sync_m};\n"
+            f"    end"
+        ),
+        # Destination: latch payload on req_sync, raise ack while
+        # req_sync holds; drop ack when req_sync deasserts.
+        (
+            f"    always_ff @(posedge {dst.name}) begin\n"
+            f"        if ({req_sync_q}) begin\n"
+            f"            {data_dst_q} <= {data_q};\n"
+            f"            {ack_q}      <= 1'b1;\n"
+            f"        end else begin\n"
+            f"            {ack_q}      <= 1'b0;\n"
+            f"        end\n"
+            f"    end"
+        ),
+        # Source: 2FF sync the ack back. This is the feedback flop
+        # CDC-012's detector keys off — a src-clock flop with
+        # D-fanin from a dst-clock flop's Q.
+        (
+            f"    always_ff @(posedge {src.name}) begin\n"
+            f"        {ack_sync_m} <= {ack_q};\n"
+            f"        {ack_sync_q} <= {ack_sync_m};\n"
+            f"    end"
+        ),
+    ]
+    assigns = [f"    assign {q_out} = {data_dst_q};"]
+    return Fragment(
+        decls=decls,
+        always_blocks=always,
+        assigns=assigns,
+        ports=[
+            Port(name=d_in, direction="input", width=8, sampling_clock=src.name),
+            Port(name=start, direction="input", sampling_clock=src.name),
+            Port(name=q_out, direction="output", width=8),
+        ],
+        clocks=[src, dst],
+        prediction=Prediction(
+            rationale="full req/ack handshake; CDC-012 silenced by ack feedback",
+        ),
+    )
+
+
+def _emit_handshake_no_ack(ctx: GenContext) -> Fragment:
+    """Wide data bus gated by a sync'd req with no ack feedback.
+
+    Same shape as :func:`_emit_handshake_req_ack` minus the ack
+    return path. CDC-012's detector finds no src-clock flop with
+    D-fanin from any dst-clock flop's Q in the module, so the rule
+    fires on the multi-bit gated bus. Same failure mode as
+    ``GapG5HandshakeAckMissing`` in the hand-authored corpus.
+    """
+    src, dst = _pick_clocks(ctx)
+    suffix = ctx.uniq("hsna")
+    d_in = f"d_in_{suffix}"
+    req_in = f"req_in_{suffix}"
+    q_out = f"q_out_{suffix}"
+    data_q = f"data_q_{suffix}"
+    req_q = f"req_q_{suffix}"
+    req_sync_m = f"req_sync_m_{suffix}"
+    req_sync_q = f"req_sync_q_{suffix}"
+    data_dst_q = f"data_dst_q_{suffix}"
+
+    decls = [
+        f"    logic [7:0] {data_q};",
+        f"    logic {req_q};",
+        f"    logic {req_sync_m}, {req_sync_q};",
+        f"    logic [7:0] {data_dst_q};",
+    ]
+    always = [
+        (
+            f"    always_ff @(posedge {src.name}) begin\n"
+            f"        {data_q} <= {d_in};\n"
+            f"        {req_q}  <= {req_in};\n"
+            f"    end"
+        ),
+        (
+            f"    always_ff @(posedge {dst.name}) begin\n"
+            f"        {req_sync_m} <= {req_q};\n"
+            f"        {req_sync_q} <= {req_sync_m};\n"
+            f"    end"
+        ),
+        # opt_dff folds this if-gated assignment into $dffe — the
+        # shape CDC-012's gated-bus detector recognises. Without
+        # the extra pass Yosys leaves it as a mux-feedback loop
+        # the structural detector doesn't classify as gated.
+        (
+            f"    always_ff @(posedge {dst.name})\n"
+            f"        if ({req_sync_q}) {data_dst_q} <= {data_q};"
+        ),
+    ]
+    assigns = [f"    assign {q_out} = {data_dst_q};"]
+    return Fragment(
+        decls=decls,
+        always_blocks=always,
+        assigns=assigns,
+        ports=[
+            Port(name=d_in, direction="input", width=8, sampling_clock=src.name),
+            Port(name=req_in, direction="input", sampling_clock=src.name),
+            Port(name=q_out, direction="output", width=8),
+        ],
+        clocks=[src, dst],
+        prediction=Prediction(
+            cdc_rules_added=frozenset({"CDC-012"}),
+            rationale="gated multi-bit crossing with no synced-back ack",
+        ),
+        # opt_dff folds the if-gated assignment into $dffe so CDC-012's
+        # gated-bus precondition triggers (same trick GapG5HandshakeAckMissing
+        # uses in the hand-authored corpus).
+        extra_yosys_passes=("opt_dff;",),
+    )
+
+
+def _emit_fifo_skeleton(ctx: GenContext) -> Fragment:
+    """Dual-clock async FIFO read/write skeleton.
+
+    Pointer crossings are gray-encoded (``(* cdc_gray *)`` marks),
+    so CDC-004 stays silent on the wide pointer-sync paths.
+    Two-flop sync chains on each pointer crossing satisfy CDC-001 /
+    CDC-002. The mem array is single-port-per-domain — read and
+    write don't structurally cross, only the pointer comparisons do.
+
+    "No false positives on a textbook dual-clock FIFO" — the
+    grammar's most structurally elaborate clean sentinel.
+    """
+    src, dst = _pick_clocks(ctx)
+    suffix = ctx.uniq("fifo")
+    wr_en = f"wr_en_{suffix}"
+    rd_en = f"rd_en_{suffix}"
+    wdata = f"wdata_{suffix}"
+    rdata = f"rdata_{suffix}"
+    full_o = f"full_{suffix}"
+    empty_o = f"empty_{suffix}"
+    wptr = f"wptr_{suffix}"
+    wptr_gray = f"wptr_gray_{suffix}"
+    wptr_gray_sm = f"wptr_gray_sm_{suffix}"
+    wptr_gray_sq = f"wptr_gray_sq_{suffix}"
+    rptr = f"rptr_{suffix}"
+    rptr_gray = f"rptr_gray_{suffix}"
+    rptr_gray_sm = f"rptr_gray_sm_{suffix}"
+    rptr_gray_sq = f"rptr_gray_sq_{suffix}"
+    mem = f"mem_{suffix}"
+
+    decls = [
+        f"    logic [3:0] {wptr};",
+        f"    (* cdc_gray *) logic [3:0] {wptr_gray};",
+        f"    (* cdc_gray *) logic [3:0] {wptr_gray_sm}, {wptr_gray_sq};",
+        f"    logic [3:0] {rptr};",
+        f"    (* cdc_gray *) logic [3:0] {rptr_gray};",
+        f"    (* cdc_gray *) logic [3:0] {rptr_gray_sm}, {rptr_gray_sq};",
+        f"    logic [7:0] {mem} [0:15];",
+    ]
+    always = [
+        # Write side: bump wptr on wr_en && !full; recompute gray.
+        (
+            f"    always_ff @(posedge {src.name}) begin\n"
+            f"        if ({wr_en} && !{full_o}) begin\n"
+            f"            {mem}[{wptr}[2:0]] <= {wdata};\n"
+            f"            {wptr} <= {wptr} + 4'd1;\n"
+            f"        end\n"
+            f"        {wptr_gray} <= {wptr} ^ ({wptr} >> 1);\n"
+            f"    end"
+        ),
+        # Read side: bump rptr on rd_en && !empty; recompute gray.
+        (
+            f"    always_ff @(posedge {dst.name}) begin\n"
+            f"        if ({rd_en} && !{empty_o}) begin\n"
+            f"            {rdata} <= {mem}[{rptr}[2:0]];\n"
+            f"            {rptr}  <= {rptr} + 4'd1;\n"
+            f"        end\n"
+            f"        {rptr_gray} <= {rptr} ^ ({rptr} >> 1);\n"
+            f"    end"
+        ),
+        # Pointer crossings: 2FF sync each gray pointer into the
+        # other domain. The (* cdc_gray *) marks on the sm/sq nets
+        # plus the wptr_gray / rptr_gray nets cover the analyzer's
+        # both-endpoints lookup.
+        (
+            f"    always_ff @(posedge {dst.name}) begin\n"
+            f"        {wptr_gray_sm} <= {wptr_gray};\n"
+            f"        {wptr_gray_sq} <= {wptr_gray_sm};\n"
+            f"    end"
+        ),
+        (
+            f"    always_ff @(posedge {src.name}) begin\n"
+            f"        {rptr_gray_sm} <= {rptr_gray};\n"
+            f"        {rptr_gray_sq} <= {rptr_gray_sm};\n"
+            f"    end"
+        ),
+    ]
+    assigns = [
+        # Empty: read pointer equals synced write pointer.
+        f"    assign {empty_o} = ({rptr_gray} == {wptr_gray_sq});",
+        # Full: write pointer top two bits inverted from synced read
+        # pointer (canonical gray-pointer full detection).
+        (
+            f"    assign {full_o} = ({wptr_gray}[3:2] == ~{rptr_gray_sq}[3:2]) "
+            f"&& ({wptr_gray}[1:0] == {rptr_gray_sq}[1:0]);"
+        ),
+    ]
+    return Fragment(
+        decls=decls,
+        always_blocks=always,
+        assigns=assigns,
+        ports=[
+            Port(name=wr_en, direction="input", sampling_clock=src.name),
+            Port(name=rd_en, direction="input", sampling_clock=dst.name),
+            Port(name=wdata, direction="input", width=8, sampling_clock=src.name),
+            Port(name=rdata, direction="output", width=8),
+            Port(name=full_o, direction="output"),
+            Port(name=empty_o, direction="output"),
+        ],
+        clocks=[src, dst],
+        prediction=Prediction(
+            rationale="gray-pointer dual-clock FIFO; no findings expected",
+        ),
+    )
+
+
 PRODUCTIONS: tuple[Production, ...] = (
     Production(
         name="clean_sync_chain",
@@ -338,5 +609,23 @@ PRODUCTIONS: tuple[Production, ...] = (
             cdc_rules_added=frozenset({"RDC-001"}),
             rationale="async reset crossing on dst-domain ARST",
         ),
+    ),
+    Production(
+        name="handshake_req_ack",
+        emit=_emit_handshake_req_ack,
+        declared=Prediction(rationale="full req/ack handshake; clean"),
+    ),
+    Production(
+        name="handshake_no_ack",
+        emit=_emit_handshake_no_ack,
+        declared=Prediction(
+            cdc_rules_added=frozenset({"CDC-012"}),
+            rationale="gated multi-bit crossing with no synced-back ack",
+        ),
+    ),
+    Production(
+        name="fifo_skeleton",
+        emit=_emit_fifo_skeleton,
+        declared=Prediction(rationale="gray-pointer dual-clock FIFO; clean"),
     ),
 )
