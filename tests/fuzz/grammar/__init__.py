@@ -45,6 +45,7 @@ from .core import (
     generate,
 )
 from .productions import PRODUCTIONS
+from .steering import productions_lifting, under_covered_rules
 
 __all__ = [
     "PRODUCTIONS",
@@ -56,4 +57,6 @@ __all__ = [
     "Production",
     "compose",
     "generate",
+    "productions_lifting",
+    "under_covered_rules",
 ]
