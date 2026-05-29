@@ -10,6 +10,7 @@ on:
       - '.python-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+      - 'scripts/**/*.py'
   pull_request:
     branches: [main]
     paths:
@@ -19,6 +20,7 @@ on:
       - '.python-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+      - 'scripts/**/*.py'
 
 jobs:
   ruff-check:
