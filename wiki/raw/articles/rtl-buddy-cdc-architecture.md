@@ -1637,3 +1637,43 @@ a bounded mining run of 10k seeds completes in ~95 s on one core.
 Re-run on different hardware (or after a Yosys / pyslang version
 bump) by invoking the bench script; the table here gets updated
 when the rate moves materially (≥10%).
+
+### 15.9 Gap mining
+
+Operationalises done-when criterion 2 of rtl-buddy-cdc#222
+("Generated corpus surfaces ≥1 new gap candidate"). Script:
+`scripts/gap_mining.py`. Invoke with
+`uv run python -m scripts.gap_mining --seeds N`.
+
+Two signals are reported per seed:
+
+- **Surprise** — a rule fired that no chosen production declared.
+  Known co-fires (documented in `_KNOWN_COFIRES` inside the
+  script) are suppressed so the report focuses on novel patterns.
+- **Missing** — a rule was declared by some chosen production but
+  didn't fire. The false-negative axis: either a production lies
+  about its verdict, or the analyzer has a gap.
+
+A persistent, high-frequency surprise *or* missing pattern is the
+actionable signal — file a gap candidate against rtl-buddy-cdc.
+The PR that runs the bounded mining session is the place where
+the findings get triaged; the issue body holds the analysis (see
+AGENTS.md "Design proposals live on GitHub").
+
+Baseline 1000-seed bounded run (Apple M2 Pro, 2026-05-29, on the
+eight-production registry):
+
+| Signal   | Cases | Pattern        | Frequency |
+| -------- | ----- | -------------- | --------- |
+| Surprise | 0     | (none)         | 0%        |
+| Missing  | 170   | `{CDC-012}`    | 17%       |
+
+The CDC-012-missing pattern is the gap candidate from this round.
+Root cause: `check_cdc_012`'s feedback-presence check caches per
+`(src_clock, dst_clock)` *domain pair*, not per *crossing*. Any
+production that introduces a dst→src structural feedback in the
+same domain pair (e.g. `handshake_req_ack`'s ack-sync chain,
+`fifo_skeleton`'s rptr_gray sync) silences CDC-012 on every other
+gated multi-bit crossing in the same domain pair, including
+unrelated ones. Fix shape: scope the feedback search to the
+crossing's structural endpoints. Tracked as a follow-up issue.
