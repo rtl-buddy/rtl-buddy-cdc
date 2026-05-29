@@ -41,16 +41,27 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Install test dependencies (with [slang] extra)
-        run: uv sync --extra slang --group test --python ${{ matrix.python-version }}
+      - name: Install test dependencies (with [slang] + [hints] extras)
+        # [hints] pulls in PyYAML so the reset-hints YAML loader
+        # (reset_hints.py) is exercised under coverage instead of
+        # skipping — the coverage gate below counts those paths.
+        run: uv sync --extra slang --extra hints --group test --python ${{ matrix.python-version }}
 
       # Pass `--python` to `uv run` too — without it, uv re-resolves the
       # venv against `.python-version` (3.13), wipes the matrix-specific
       # env from the previous step, and ends up running every matrix
       # entry on 3.13 with pyslang silently absent. Surfaced by the
       # coverage gate in #120 / #121.
+      #
+      # ``--cov-fail-under=90``: the coverage ratchet. Raised from 78
+      # once the per-module test sweep (tests/test_cov_*.py) brought
+      # the analyzer + frontends + reporter + CLI to ≥90% line+branch.
+      # The number is measured WITHOUT yosys/iverilog (the fuzz / sim
+      # selections skip in this job), so it reflects exactly what this
+      # job exercises — pyslang elaboration, committed-JSON fixtures,
+      # and CliRunner-driven flows.
       - name: Run pytest (with coverage)
-        run: uv run --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=78
+        run: uv run --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=90
 
   # Companion job: install WITHOUT the [slang] extra to verify the
   # AGENTS.md "default install stays typer-only" promise. Specifically
