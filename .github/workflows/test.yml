@@ -122,6 +122,9 @@ jobs:
       - name: Run fuzz_diff suite (cross-frontend oracle)
         run: uv run pytest -m fuzz_diff -q
 
+      - name: Run fuzz_grammar suite (Stage-4 grammar topologies)
+        run: uv run pytest -m fuzz_grammar -q
+
       - name: Run sim suite
         run: uv run pytest -m sim -q
 
