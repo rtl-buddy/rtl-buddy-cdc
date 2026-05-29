@@ -1607,3 +1607,27 @@ The grammar-side test lives in `tests/fuzz/test_grammar_diff.py`
 under the `fuzz_grammar` marker (not `fuzz_diff`) so the grammar
 selection can be sized independently as the production registry
 grows.
+
+### 15.8 Rate calibration
+
+Closes done-when criterion 1 of rtl-buddy-cdc#222 ("Grammar emits
+≥N novel topologies / minute on a single core"). The bench script
+lives at `scripts/bench_grammar_rate.py`; invoke with
+`uv run python -m scripts.bench_grammar_rate`.
+
+Baseline (single core, Apple M2 Pro, Python 3.13, 20 s per phase,
+2026-05-29):
+
+| Phase                              | Cases/min   | Notes                                    |
+| ---------------------------------- | ----------- | ---------------------------------------- |
+| `emit-only` (`generate()` alone)   | ~1,800,000  | Pure-Python; dominated by RNG draws.     |
+| `elaborated` (+ yosys + analyzer)  | ~6,500      | Cache-bypassed; the operational cost.    |
+
+Both figures comfortably clear any plausible ≥N threshold —
+`elaborated` is the rate that bounds a mining run; 6.5k/min/core
+means the 32-seed coverage report's grammar pass adds ~0.3 s and
+a bounded mining run of 10k seeds completes in ~95 s on one core.
+
+Re-run on different hardware (or after a Yosys / pyslang version
+bump) by invoking the bench script; the table here gets updated
+when the rate moves materially (≥10%).
