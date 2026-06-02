@@ -121,10 +121,12 @@ jobs:
 
       - name: Install test + fuzz + slang dependencies
         # The fuzz group pulls in rtl-buddy-xeno (Stage-3 Layer B,
-        # rtl-buddy-cdc#221); it's py3.13-only by its own
-        # ``requires-python``, matched to this job's --python 3.13.
-        # The [slang] extra is needed for the cross-frontend
-        # differential oracle (Stage-3 Layer C).
+        # rtl-buddy-cdc#221). xeno is >=3.11 since rtl-buddy-xeno PR #17,
+        # so it resolves on any Python this project supports; this job
+        # runs the fuzz/sim suites on a single interpreter (3.13) by
+        # choice — the mutation operators are pure Python, not
+        # version-sensitive. The [slang] extra is needed for the
+        # cross-frontend differential oracle (Stage-3 Layer C).
         run: uv sync --extra slang --group test --group fuzz --python 3.13
 
       - name: Run fuzz suite

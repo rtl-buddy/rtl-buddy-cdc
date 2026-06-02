@@ -91,7 +91,7 @@ pytestmark = [
     pytest.mark.skipif(not yosys_available(), reason="yosys not on PATH"),
     pytest.mark.skipif(
         not xeno_available(),
-        reason="rtl-buddy-xeno not importable (needs python>=3.13 + the fuzz dep group)",
+        reason="rtl-buddy-xeno not importable (install the fuzz dep group)",
     ),
 ]
 

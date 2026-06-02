@@ -69,10 +69,10 @@ _CDC_KINDS: tuple[str, ...] = (
 def xeno_available() -> bool:
     """``True`` when :mod:`rtl_buddy_xeno` is importable.
 
-    The fuzz dependency group pins xeno via a GitHub git source under
-    a ``python_version >= '3.13'`` marker; on the py3.11 / py3.12 CI
-    matrix entries xeno simply isn't installed and the mutant tests
-    skip — same pattern :mod:`tests.fuzz.slang_cache` uses.
+    The fuzz dependency group pins xeno via a GitHub git source. Jobs
+    that don't install that group (the matrix ``pytest (with slang)``
+    entries) leave xeno absent and the mutant tests skip — same pattern
+    :mod:`tests.fuzz.slang_cache` uses.
     """
     try:
         importlib.import_module("rtl_buddy_xeno")
