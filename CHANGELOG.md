@@ -154,6 +154,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CDC-012: feedback-presence check scoped per crossing, not per
+  domain pair** (#239). The "is a synced-back handshake present?"
+  predicate was cached on the `(src_clock, dst_clock)` domain pair,
+  so the first crossing with dst→src feedback short-circuited
+  *every* gated multi-bit crossing between the same clocks. A module
+  wiring two independent crossings — one proper req/ack handshake,
+  one broken req-only — would see the handshake's ack feedback and
+  silence the broken crossing. `_has_dst_to_src_feedback` now takes
+  the `Crossing` and walks only its source flop's register-
+  neighbourhood (the payload register's `D`/`EN` fanin, hopping flop
+  → input fanin → flop within the src domain) for a path back to a
+  dst-domain flop; the cache is keyed on `c.src_flop.cell.name`.
+  Surfaced by the #238 grammar gap-mining run (170/1000 seeds
+  predicted CDC-012 but it didn't fire; now 0). Paired fixtures
+  `bad_mixed_handshake_datahold` / `good_mixed_handshake_datahold`
+  pin both directions.
+
 - **Domain-map: flop and crossing clock names canonicalise through
   the SDC port→clock table** (#166). Previously, when
   `trace_clock_root` walked through a clock mux and stopped at a

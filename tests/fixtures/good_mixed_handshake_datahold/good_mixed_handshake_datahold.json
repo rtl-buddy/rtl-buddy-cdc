@@ -1,0 +1,1960 @@
+{
+  "creator": "Yosys 0.64+190 (git sha1 e5a44652d-dirty, clang++ 15.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_mixed_handshake_datahold": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:15.1-113.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "a_req": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "a_data": {
+          "direction": "input",
+          "bits": [ 6, 7, 8, 9, 10, 11, 12, 13 ]
+        },
+        "a_dst_data": {
+          "direction": "output",
+          "bits": [ 14, 15, 16, 17, 18, 19, 20, 21 ]
+        },
+        "b_req": {
+          "direction": "input",
+          "bits": [ 22 ]
+        },
+        "b_data": {
+          "direction": "input",
+          "bits": [ 23, 24, 25, 26, 27, 28, 29, 30 ]
+        },
+        "b_dst_data": {
+          "direction": "output",
+          "bits": [ 31, 32, 33, 34, 35, 36, 37, 38 ]
+        }
+      },
+      "cells": {
+        "$auto$proc_dff.cc:220:proc_dff$103": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 39 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$108": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 40 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$113": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 41 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$118": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 42 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$43": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 43 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$48": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 44 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$53": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 45 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$58": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 46 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$63": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 47 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$68": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 48 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$73": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 49 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$78": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 50 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$83": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 51 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$88": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 52 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$93": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 53 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$98": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 54 ]
+          }
+        },
+        "$logic_and$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51$10": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.18-51.51"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 55 ],
+            "B": [ 56 ],
+            "Y": [ 57 ]
+          }
+        },
+        "$logic_and$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51$8": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.18-51.36"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "B": [ 58 ],
+            "Y": [ 55 ]
+          }
+        },
+        "$logic_and$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94$20": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.18-94.36"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 22 ],
+            "B": [ 59 ],
+            "Y": [ 60 ]
+          }
+        },
+        "$logic_and$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94$22": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.18-94.51"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 60 ],
+            "B": [ 61 ],
+            "Y": [ 62 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:100$24": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:100.13-100.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 63 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:31$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:31.13-31.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 64 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:42$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:42.13-42.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 65 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:49$6": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:49.13-49.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 66 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51$7": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.27-51.36"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 67 ],
+            "Y": [ 58 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51$9": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.40-51.51"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 68 ],
+            "Y": [ 56 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:57$12": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:57.13-57.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 69 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:74$14": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:74.13-74.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 70 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:85$16": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:85.13-85.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 71 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:92$18": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:92.13-92.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 72 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94$19": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.27-94.36"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 73 ],
+            "Y": [ 59 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94$21": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.40-94.51"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 74 ],
+            "Y": [ 61 ]
+          }
+        },
+        "$procdff$102": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:56.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 75 ],
+            "Q": [ 76 ]
+          }
+        },
+        "$procdff$107": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "00000000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:48.5-53.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 77, 78, 79, 80, 81, 82, 83, 84 ],
+            "Q": [ 85, 86, 87, 88, 89, 90, 91, 92 ]
+          }
+        },
+        "$procdff$112": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:41.5-45.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 93 ],
+            "Q": [ 67 ]
+          }
+        },
+        "$procdff$117": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:30.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 94 ],
+            "Q": [ 95 ]
+          }
+        },
+        "$procdff$122": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:30.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 95 ],
+            "Q": [ 68 ]
+          }
+        },
+        "$procdff$47": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "00000000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:99.5-111.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 96, 97, 98, 99, 100, 101, 102, 103 ],
+            "Q": [ 31, 32, 33, 34, 35, 36, 37, 38 ]
+          }
+        },
+        "$procdff$52": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:99.5-111.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 104 ],
+            "Q": [ 105 ]
+          }
+        },
+        "$procdff$57": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:99.5-111.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 73 ],
+            "Q": [ 106 ]
+          }
+        },
+        "$procdff$62": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:99.5-111.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 106 ],
+            "Q": [ 104 ]
+          }
+        },
+        "$procdff$67": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "00000000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:91.5-96.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 107, 108, 109, 110, 111, 112, 113, 114 ],
+            "Q": [ 115, 116, 117, 118, 119, 120, 121, 122 ]
+          }
+        },
+        "$procdff$72": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:84.5-88.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 123 ],
+            "Q": [ 73 ]
+          }
+        },
+        "$procdff$77": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:73.5-81.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 105 ],
+            "Q": [ 124 ]
+          }
+        },
+        "$procdff$82": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:73.5-81.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 124 ],
+            "Q": [ 74 ]
+          }
+        },
+        "$procdff$87": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "00000000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:56.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 125, 126, 127, 128, 129, 130, 131, 132 ],
+            "Q": [ 14, 15, 16, 17, 18, 19, 20, 21 ]
+          }
+        },
+        "$procdff$92": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:56.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 76 ],
+            "Q": [ 94 ]
+          }
+        },
+        "$procdff$97": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:56.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 67 ],
+            "Q": [ 75 ]
+          }
+        },
+        "$procmux$25": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:109.17-109.29|tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:109.13-109.55"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 31, 32, 33, 34, 35, 36, 37, 38 ],
+            "B": [ 115, 116, 117, 118, 119, 120, 121, 122 ],
+            "S": [ 104 ],
+            "Y": [ 96, 97, 98, 99, 100, 101, 102, 103 ]
+          }
+        },
+        "$procmux$27": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.18-94.51|tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.14-95.33"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 115, 116, 117, 118, 119, 120, 121, 122 ],
+            "B": [ 23, 24, 25, 26, 27, 28, 29, 30 ],
+            "S": [ 62 ],
+            "Y": [ 107, 108, 109, 110, 111, 112, 113, 114 ]
+          }
+        },
+        "$procmux$29": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:87.18-87.28|tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:87.14-87.47"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 73 ],
+            "B": [ "0" ],
+            "S": [ 74 ],
+            "Y": [ 133 ]
+          }
+        },
+        "$procmux$32": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:86.18-86.23|tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:86.14-87.47"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 133 ],
+            "B": [ "1" ],
+            "S": [ 22 ],
+            "Y": [ 123 ]
+          }
+        },
+        "$procmux$34": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:66.17-66.29|tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:66.13-66.55"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 14, 15, 16, 17, 18, 19, 20, 21 ],
+            "B": [ 85, 86, 87, 88, 89, 90, 91, 92 ],
+            "S": [ 76 ],
+            "Y": [ 125, 126, 127, 128, 129, 130, 131, 132 ]
+          }
+        },
+        "$procmux$36": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.18-51.51|tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.14-52.33"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 85, 86, 87, 88, 89, 90, 91, 92 ],
+            "B": [ 6, 7, 8, 9, 10, 11, 12, 13 ],
+            "S": [ 57 ],
+            "Y": [ 77, 78, 79, 80, 81, 82, 83, 84 ]
+          }
+        },
+        "$procmux$38": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:44.18-44.28|tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:44.14-44.47"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 67 ],
+            "B": [ "0" ],
+            "S": [ 68 ],
+            "Y": [ 134 ]
+          }
+        },
+        "$procmux$41": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:43.18-43.23|tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:43.14-44.47"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 134 ],
+            "B": [ "1" ],
+            "S": [ 5 ],
+            "Y": [ 93 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\a_ack[0:0]": {
+          "hide_name": 1,
+          "bits": [ 76 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:56.5-68.8"
+          }
+        },
+        "$0\\a_ack_meta[0:0]": {
+          "hide_name": 1,
+          "bits": [ 94 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:30.5-38.8"
+          }
+        },
+        "$0\\a_ack_sync[0:0]": {
+          "hide_name": 1,
+          "bits": [ 95 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:30.5-38.8"
+          }
+        },
+        "$0\\a_dst_data[7:0]": {
+          "hide_name": 1,
+          "bits": [ 125, 126, 127, 128, 129, 130, 131, 132 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:56.5-68.8"
+          }
+        },
+        "$0\\a_load_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 93 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:41.5-45.8"
+          }
+        },
+        "$0\\a_load_sync0[0:0]": {
+          "hide_name": 1,
+          "bits": [ 67 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:56.5-68.8"
+          }
+        },
+        "$0\\a_load_sync1[0:0]": {
+          "hide_name": 1,
+          "bits": [ 75 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:56.5-68.8"
+          }
+        },
+        "$0\\a_payload[7:0]": {
+          "hide_name": 1,
+          "bits": [ 77, 78, 79, 80, 81, 82, 83, 84 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:48.5-53.8"
+          }
+        },
+        "$0\\b_ack[0:0]": {
+          "hide_name": 1,
+          "bits": [ 104 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:99.5-111.8"
+          }
+        },
+        "$0\\b_ack_meta[0:0]": {
+          "hide_name": 1,
+          "bits": [ 105 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:73.5-81.8"
+          }
+        },
+        "$0\\b_ack_sync[0:0]": {
+          "hide_name": 1,
+          "bits": [ 124 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:73.5-81.8"
+          }
+        },
+        "$0\\b_dst_data[7:0]": {
+          "hide_name": 1,
+          "bits": [ 96, 97, 98, 99, 100, 101, 102, 103 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:99.5-111.8"
+          }
+        },
+        "$0\\b_load_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 123 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:84.5-88.8"
+          }
+        },
+        "$0\\b_load_sync0[0:0]": {
+          "hide_name": 1,
+          "bits": [ 73 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:99.5-111.8"
+          }
+        },
+        "$0\\b_load_sync1[0:0]": {
+          "hide_name": 1,
+          "bits": [ 106 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:99.5-111.8"
+          }
+        },
+        "$0\\b_payload[7:0]": {
+          "hide_name": 1,
+          "bits": [ 107, 108, 109, 110, 111, 112, 113, 114 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:91.5-96.8"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$104": {
+          "hide_name": 1,
+          "bits": [ 39 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$109": {
+          "hide_name": 1,
+          "bits": [ 40 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$114": {
+          "hide_name": 1,
+          "bits": [ 41 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$119": {
+          "hide_name": 1,
+          "bits": [ 42 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$44": {
+          "hide_name": 1,
+          "bits": [ 43 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$49": {
+          "hide_name": 1,
+          "bits": [ 44 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$54": {
+          "hide_name": 1,
+          "bits": [ 45 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$59": {
+          "hide_name": 1,
+          "bits": [ 46 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$64": {
+          "hide_name": 1,
+          "bits": [ 47 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$69": {
+          "hide_name": 1,
+          "bits": [ 48 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$74": {
+          "hide_name": 1,
+          "bits": [ 49 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$79": {
+          "hide_name": 1,
+          "bits": [ 50 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$84": {
+          "hide_name": 1,
+          "bits": [ 51 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$89": {
+          "hide_name": 1,
+          "bits": [ 52 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$94": {
+          "hide_name": 1,
+          "bits": [ 53 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$99": {
+          "hide_name": 1,
+          "bits": [ 54 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$101": {
+          "hide_name": 1,
+          "bits": [ 54 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$106": {
+          "hide_name": 1,
+          "bits": [ 39 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$111": {
+          "hide_name": 1,
+          "bits": [ 40 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$116": {
+          "hide_name": 1,
+          "bits": [ 41 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$121": {
+          "hide_name": 1,
+          "bits": [ 42 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$46": {
+          "hide_name": 1,
+          "bits": [ 43 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$51": {
+          "hide_name": 1,
+          "bits": [ 44 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$56": {
+          "hide_name": 1,
+          "bits": [ 45 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$61": {
+          "hide_name": 1,
+          "bits": [ 46 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$66": {
+          "hide_name": 1,
+          "bits": [ 47 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$71": {
+          "hide_name": 1,
+          "bits": [ 48 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$76": {
+          "hide_name": 1,
+          "bits": [ 49 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$81": {
+          "hide_name": 1,
+          "bits": [ 50 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$86": {
+          "hide_name": 1,
+          "bits": [ 51 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$91": {
+          "hide_name": 1,
+          "bits": [ 52 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$96": {
+          "hide_name": 1,
+          "bits": [ 53 ],
+          "attributes": {
+          }
+        },
+        "$logic_and$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51$10_Y": {
+          "hide_name": 1,
+          "bits": [ 57 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.18-51.51"
+          }
+        },
+        "$logic_and$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51$8_Y": {
+          "hide_name": 1,
+          "bits": [ 55 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.18-51.36"
+          }
+        },
+        "$logic_and$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94$20_Y": {
+          "hide_name": 1,
+          "bits": [ 60 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.18-94.36"
+          }
+        },
+        "$logic_and$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94$22_Y": {
+          "hide_name": 1,
+          "bits": [ 62 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.18-94.51"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:100$24_Y": {
+          "hide_name": 1,
+          "bits": [ 63 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:100.13-100.19"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:31$2_Y": {
+          "hide_name": 1,
+          "bits": [ 64 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:31.13-31.19"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:42$4_Y": {
+          "hide_name": 1,
+          "bits": [ 65 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:42.13-42.19"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:49$6_Y": {
+          "hide_name": 1,
+          "bits": [ 66 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:49.13-49.19"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51$7_Y": {
+          "hide_name": 1,
+          "bits": [ 58 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.27-51.36"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51$9_Y": {
+          "hide_name": 1,
+          "bits": [ 56 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:51.40-51.51"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:57$12_Y": {
+          "hide_name": 1,
+          "bits": [ 69 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:57.13-57.19"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:74$14_Y": {
+          "hide_name": 1,
+          "bits": [ 70 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:74.13-74.19"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:85$16_Y": {
+          "hide_name": 1,
+          "bits": [ 71 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:85.13-85.19"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:92$18_Y": {
+          "hide_name": 1,
+          "bits": [ 72 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:92.13-92.19"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94$19_Y": {
+          "hide_name": 1,
+          "bits": [ 59 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.27-94.36"
+          }
+        },
+        "$logic_not$tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94$21_Y": {
+          "hide_name": 1,
+          "bits": [ 61 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:94.40-94.51"
+          }
+        },
+        "$procmux$25_Y": {
+          "hide_name": 1,
+          "bits": [ 96, 97, 98, 99, 100, 101, 102, 103 ],
+          "attributes": {
+          }
+        },
+        "$procmux$26_CMP": {
+          "hide_name": 1,
+          "bits": [ 104 ],
+          "attributes": {
+          }
+        },
+        "$procmux$27_Y": {
+          "hide_name": 1,
+          "bits": [ 107, 108, 109, 110, 111, 112, 113, 114 ],
+          "attributes": {
+          }
+        },
+        "$procmux$28_CMP": {
+          "hide_name": 1,
+          "bits": [ 62 ],
+          "attributes": {
+          }
+        },
+        "$procmux$29_Y": {
+          "hide_name": 1,
+          "bits": [ 133 ],
+          "attributes": {
+          }
+        },
+        "$procmux$30_CMP": {
+          "hide_name": 1,
+          "bits": [ 74 ],
+          "attributes": {
+          }
+        },
+        "$procmux$32_Y": {
+          "hide_name": 1,
+          "bits": [ 123 ],
+          "attributes": {
+          }
+        },
+        "$procmux$33_CMP": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+          }
+        },
+        "$procmux$34_Y": {
+          "hide_name": 1,
+          "bits": [ 125, 126, 127, 128, 129, 130, 131, 132 ],
+          "attributes": {
+          }
+        },
+        "$procmux$35_CMP": {
+          "hide_name": 1,
+          "bits": [ 76 ],
+          "attributes": {
+          }
+        },
+        "$procmux$36_Y": {
+          "hide_name": 1,
+          "bits": [ 77, 78, 79, 80, 81, 82, 83, 84 ],
+          "attributes": {
+          }
+        },
+        "$procmux$37_CMP": {
+          "hide_name": 1,
+          "bits": [ 57 ],
+          "attributes": {
+          }
+        },
+        "$procmux$38_Y": {
+          "hide_name": 1,
+          "bits": [ 134 ],
+          "attributes": {
+          }
+        },
+        "$procmux$39_CMP": {
+          "hide_name": 1,
+          "bits": [ 68 ],
+          "attributes": {
+          }
+        },
+        "$procmux$41_Y": {
+          "hide_name": 1,
+          "bits": [ 93 ],
+          "attributes": {
+          }
+        },
+        "$procmux$42_CMP": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+          }
+        },
+        "a_ack": {
+          "hide_name": 0,
+          "bits": [ 94 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:28.11-28.16"
+          }
+        },
+        "a_ack_meta": {
+          "hide_name": 0,
+          "bits": [ 95 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:29.11-29.21"
+          }
+        },
+        "a_ack_sync": {
+          "hide_name": 0,
+          "bits": [ 68 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:29.23-29.33"
+          }
+        },
+        "a_data": {
+          "hide_name": 0,
+          "bits": [ 6, 7, 8, 9, 10, 11, 12, 13 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:20.25-20.31"
+          }
+        },
+        "a_dst_data": {
+          "hide_name": 0,
+          "bits": [ 14, 15, 16, 17, 18, 19, 20, 21 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:21.25-21.35"
+          }
+        },
+        "a_load_q": {
+          "hide_name": 0,
+          "bits": [ 67 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:40.11-40.19"
+          }
+        },
+        "a_load_sync0": {
+          "hide_name": 0,
+          "bits": [ 75 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:55.11-55.23"
+          }
+        },
+        "a_load_sync1": {
+          "hide_name": 0,
+          "bits": [ 76 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:55.25-55.37"
+          }
+        },
+        "a_payload": {
+          "hide_name": 0,
+          "bits": [ 85, 86, 87, 88, 89, 90, 91, 92 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:47.17-47.26"
+          }
+        },
+        "a_req": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:19.25-19.30"
+          }
+        },
+        "b_ack": {
+          "hide_name": 0,
+          "bits": [ 105 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:71.11-71.16"
+          }
+        },
+        "b_ack_meta": {
+          "hide_name": 0,
+          "bits": [ 124 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:72.11-72.21"
+          }
+        },
+        "b_ack_sync": {
+          "hide_name": 0,
+          "bits": [ 74 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:72.23-72.33"
+          }
+        },
+        "b_data": {
+          "hide_name": 0,
+          "bits": [ 23, 24, 25, 26, 27, 28, 29, 30 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:23.25-23.31"
+          }
+        },
+        "b_dst_data": {
+          "hide_name": 0,
+          "bits": [ 31, 32, 33, 34, 35, 36, 37, 38 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:24.25-24.35"
+          }
+        },
+        "b_load_q": {
+          "hide_name": 0,
+          "bits": [ 73 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:83.11-83.19"
+          }
+        },
+        "b_load_sync0": {
+          "hide_name": 0,
+          "bits": [ 106 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:98.11-98.23"
+          }
+        },
+        "b_load_sync1": {
+          "hide_name": 0,
+          "bits": [ 104 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:98.25-98.37"
+          }
+        },
+        "b_payload": {
+          "hide_name": 0,
+          "bits": [ 115, 116, 117, 118, 119, 120, 121, 122 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:90.17-90.26"
+          }
+        },
+        "b_req": {
+          "hide_name": 0,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:22.25-22.30"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:17.25-17.32"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:18.25-18.30"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_mixed_handshake_datahold/good_mixed_handshake_datahold.sv:16.25-16.32"
+          }
+        }
+      }
+    }
+  }
+}

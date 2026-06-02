@@ -1154,11 +1154,10 @@ The textbook fix is a req/ack handshake: source holds the payload
 has sampled. The handshake's structural marker — and the rule's
 detection signal — is a src-clock flop with `D`-pin fanin from a
 dst-clock flop's `Q`: the `ack_sync` register. CDC-012 stays
-silent whenever that pattern exists anywhere between the same
-clock pair.
+silent whenever that feedback path is reachable from *this
+crossing's* source flop.
 
-The detection is intentionally module-global on the clock pair,
-not per-crossing:
+The detection is per-crossing:
 
 1. Multi-bit (`width > 1`) async crossing with a non-trivial src
    flop.
@@ -1170,30 +1169,37 @@ not per-crossing:
    via `ctx.user_grays`). Gray-coded sources guarantee at most one
    bit changes per src cycle, so any dst-side sample is coherent
    regardless of the enable's sync-chain latency.
-4. No flop in `src_clock` has `D`-fanin from any flop in
-   `dst_clock`.
+4. The crossing's source flop has no register-neighbourhood path
+   back to a `dst_clock` flop (`_has_dst_to_src_feedback`).
 
-The clock-pair feedback check is cached per `(src_clock,
-dst_clock)` so it runs once per pair regardless of how many gated
-bus crossings exist between them.
+`_has_dst_to_src_feedback` walks the register-neighbourhood of
+`crossing.src_flop`: from the payload register it hops flop → its
+full input fanin (`D` plus enable / set / reset, via
+`_flop_input_fanin_bits`) → flop, staying inside the src domain,
+and reports feedback the moment the walk reaches a dst-domain flop
+(bounded to a handful of flop hops — enough to clear a 2–3FF ack
+synchroniser plus the enable flop(s) gating the payload load). The
+feedback result is cached per `c.src_flop.cell.name`, one entry
+per source flop.
 
-The module-global heuristic is deliberately coarse: a handshake
-anywhere between the same clock pair suffices to silence the rule,
-even if it belongs to an unrelated transfer. In practice an
-IP-block-sized design that carries one handshake between two
-domains almost always uses that handshake to gate other crossings
-between the same pair — the false-negative rate is acceptable in
-exchange for the simpler implementation. Future tightening to a
-per-crossing check (walk back from the dst enable through the 2FF
-sync chain, find the src "request" flop, and check whether *that*
-flop's D has dst→src feedback) is straightforward but deferred.
+Feedback presence is a **crossing-level** property, not a
+domain-level one. Scoping the walk to the crossing's own source
+flop is what stops an unrelated handshake (or a FIFO's pointer
+sync) between the same domain pair from silencing a genuinely
+broken crossing. The earlier implementation cached the predicate
+on the `(src_clock, dst_clock)` pair and short-circuited *every*
+gated crossing between the clocks on the first feedback hit — a
+module with one proper handshake alongside one broken req-only
+crossing silenced the broken one (rtl-buddy-cdc#239, surfaced by
+the #238 grammar gap-mining run). The paired fixtures
+`bad_mixed_handshake_datahold` / `good_mixed_handshake_datahold`
+pin both directions.
 
-Severity is `warning` — the rule's heuristic for "handshake
-present" is module-scoped, so designs that legitimately rely on
-application-level guarantees (e.g. a slow-write config-register
-bus where the host writes once and waits many src cycles)
-correctly trip the rule. `warning` invites review rather than
-declaring an unambiguous bug.
+Severity is `warning` — the rule's structural heuristic for
+"handshake present" can't see application-level guarantees (e.g. a
+slow-write config-register bus where the host writes once and
+waits many src cycles), which correctly trip the rule. `warning`
+invites review rather than declaring an unambiguous bug.
 
 CDC-012's landing also tightened three CDC-004 positive fixtures
 (`good_dffe_gated_bus_crossing`, `good_buffered_gated_bus_crossing`,
@@ -1668,12 +1674,13 @@ eight-production registry):
 | Surprise | 0     | (none)         | 0%        |
 | Missing  | 170   | `{CDC-012}`    | 17%       |
 
-The CDC-012-missing pattern is the gap candidate from this round.
-Root cause: `check_cdc_012`'s feedback-presence check caches per
+The CDC-012-missing pattern was the gap candidate from this round.
+Root cause: `check_cdc_012`'s feedback-presence check cached per
 `(src_clock, dst_clock)` *domain pair*, not per *crossing*. Any
-production that introduces a dst→src structural feedback in the
+production that introduced a dst→src structural feedback in the
 same domain pair (e.g. `handshake_req_ack`'s ack-sync chain,
-`fifo_skeleton`'s rptr_gray sync) silences CDC-012 on every other
+`fifo_skeleton`'s rptr_gray sync) silenced CDC-012 on every other
 gated multi-bit crossing in the same domain pair, including
-unrelated ones. Fix shape: scope the feedback search to the
-crossing's structural endpoints. Tracked as a follow-up issue.
+unrelated ones. Fixed in rtl-buddy-cdc#239 by scoping the feedback
+search to the crossing's own source flop (see §8.16); a
+re-run of the 1000-seed bounded mining session reports `Missing: 0`.
