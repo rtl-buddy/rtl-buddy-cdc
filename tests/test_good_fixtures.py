@@ -153,6 +153,14 @@ GOOD_FIXTURES = [
     # sample. Three async crossings: held request, synced-back ack,
     # and the gated 8-bit payload.
     ("good_functional_datahold_handshake", 3),
+    # Two proper req/ack handshakes sharing one src_clk -> dst_clk async
+    # pair (rtl-buddy-cdc#239). Paired with bad_mixed_handshake_datahold:
+    # the bad fixture proves a broken channel still fires next to a good
+    # one; this proves two good channels don't false-fire on each other
+    # now that the CDC-012 feedback check is scoped per crossing. Six
+    # async crossings: per channel a held request, a synced-back ack,
+    # and the gated 8-bit payload.
+    ("good_mixed_handshake_datahold", 6),
     # CDC-009 (#47/#101/#102) positive shapes: textbook fixes for the
     # fast-to-slow pulse-loss case.
     #

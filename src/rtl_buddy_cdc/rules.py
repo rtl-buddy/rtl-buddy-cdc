@@ -3271,42 +3271,84 @@ def check_cdc_013(
     return out
 
 
+def _flop_input_fanin_bits(flop: Flop) -> tuple[Bit, ...]:
+    """Every data/control input bit of a flop cell — D, EN/E, set/reset,
+    everything except the clock and the Q/Y outputs.
+
+    The handshake feedback can gate the payload register through either
+    its ``D`` (mux-on-D hold) or its enable (``$dffe`` ``EN`` / gate-level
+    ``E``), so a feedback walk that looked at ``D`` alone would miss the
+    enable-gated form. Walking the full input surface catches both.
+    """
+    out: list[Bit] = []
+    is_ff = is_ff_cell(flop.cell.type)
+    for port_name, bits in flop.cell.connections.items():
+        if port_name == "CLK" or port_name in _OUTPUT_PINS:
+            continue
+        if is_ff and port_name == "C":
+            continue
+        out.extend(b for b in bits if isinstance(b, int))
+    return tuple(out)
+
+
 def _has_dst_to_src_feedback(
     module: Module,
-    src_clock: str,
-    dst_clock: str,
+    crossing: Crossing,
     domains: dict[str, str | None],
     bit_drivers: dict[Bit, tuple[str, str, int]],
+    flops_by_name: dict[str, Flop],
+    *,
+    max_flop_hops: int = 6,
 ) -> bool:
-    """Heuristic: does any ``src_clock`` flop's ``D`` fanin reach a
-    ``dst_clock`` flop's ``Q``?
+    """Heuristic: does *this crossing's* source flop carry the
+    structural marker of a synced-back req/ack handshake?
 
-    The req/ack handshake is the structural marker we look for. In a
-    handshake design the source has an ``ack_sync`` flop in
-    ``src_clock`` whose ``D`` is the destination's ack (a
-    ``dst_clock`` flop's ``Q``); the source then conditions its
-    request / payload updates on ``ack_sync``. Absence of any such
-    feedback flop means the source has no signalling channel from
-    the destination — the payload can change independently of the
+    In a handshake design the source conditions its payload / request
+    updates on an ``ack_sync`` flop in ``src_clock`` whose ``D`` fanin
+    reaches the destination's ack (a ``dst_clock`` flop's ``Q``). We
+    walk the register-neighbourhood of ``crossing.src_flop`` — hopping
+    flop → its full input fanin (:func:`_flop_input_fanin_bits`) →
+    flop, staying inside ``src_clock`` — and report feedback the moment
+    that walk reaches a ``dst_clock`` flop. Absence of any such path
+    means the source has no signalling channel from the destination
+    for *this* crossing — the payload can change independently of the
     enable's in-flight progress, which is the failure mode CDC-012
     flags.
 
-    The check is intentionally coarse: ANY dst→src flop edge in the
-    module suffices, even if it belongs to an unrelated handshake.
-    The signal-to-noise is acceptable because if a design carries
-    one handshake between a pair of domains it almost always uses
-    that handshake to gate other crossings between the same pair.
+    Feedback presence is a **crossing-level** property, not a
+    domain-level one: scoping the walk to ``crossing.src_flop`` is what
+    stops an unrelated handshake (or a FIFO's pointer sync) between the
+    same domain pair from silencing a genuinely broken crossing — the
+    domain-wide bleed fixed in rtl-buddy-cdc#239. The walk is bounded to
+    ``max_flop_hops`` flop hops, enough to clear a 2–3FF ack
+    synchroniser plus the enable flop(s) gating the payload load.
     """
-    for f in find_flops(module):
-        if domains.get(f.cell.name) != src_clock:
-            continue
-        d_bits = tuple(b for b in f.d if isinstance(b, int))
-        if not d_bits:
-            continue
-        fanin_flops = _backward_flop_fanin(module, d_bits, bit_drivers)
-        for ff_name in fanin_flops:
-            if domains.get(ff_name) == dst_clock:
-                return True
+    src_flop = crossing.src_flop
+    if src_flop is None:
+        return False
+    src_clock = crossing.src_clock
+    dst_clock = crossing.dst_clock
+
+    seen: set[str] = {src_flop.cell.name}
+    frontier: list[Flop] = [src_flop]
+    for _hop in range(max_flop_hops):
+        nxt: list[Flop] = []
+        for f in frontier:
+            in_bits = _flop_input_fanin_bits(f)
+            if not in_bits:
+                continue
+            for ff_name in _backward_flop_fanin(module, in_bits, bit_drivers):
+                if ff_name in seen:
+                    continue
+                seen.add(ff_name)
+                ff_domain = domains.get(ff_name)
+                if ff_domain == dst_clock:
+                    return True
+                if ff_domain == src_clock and ff_name in flops_by_name:
+                    nxt.append(flops_by_name[ff_name])
+        if not nxt:
+            break
+        frontier = nxt
     return False
 
 
@@ -3338,9 +3380,10 @@ def check_cdc_012(
     The textbook fix is a req/ack handshake: the source holds the
     payload (and the request) until a synced-back ack proves the
     destination has sampled. The handshake's structural marker is a
-    src-clock flop with ``D``-pin fanin from a dst-clock flop's
-    ``Q`` — the ``ack_sync`` register. CDC-012 stays silent whenever
-    that pattern is present anywhere between the same clock pair.
+    src-clock flop in the source payload register's fanin whose own
+    input fanin reaches a dst-clock flop's ``Q`` — the ``ack_sync``
+    register. CDC-012 stays silent whenever that feedback path is
+    reachable from *this crossing's* source flop.
 
     Detection (v1):
 
@@ -3349,21 +3392,26 @@ def check_cdc_012(
     * Crossing passes :func:`_is_gated_bus_crossing` (so CDC-004 is
       silent — without that the crossing is already flagged
       elsewhere; CDC-012 does not duplicate CDC-004's territory).
-    * No flop in ``src_clock`` has ``D``-fanin from any flop in
-      ``dst_clock`` (no handshake feedback).
+    * The source flop's register-neighbourhood has no path back to a
+      ``dst_clock`` flop (no handshake feedback) — see
+      :func:`_has_dst_to_src_feedback`.
 
-    Severity ``warning`` — the rule's heuristic for "handshake
-    present" is module-global; designs that legitimately rely on
-    application-level guarantees (e.g. a slow-write config-register
-    bus where the host writes once and waits many src cycles)
-    correctly trip the rule. ``warning`` invites review rather than
-    declaring an unambiguous bug.
+    Severity ``warning`` — the rule's structural heuristic for
+    "handshake present" can't see application-level guarantees (e.g. a
+    slow-write config-register bus where the host writes once and waits
+    many src cycles), which correctly trip the rule. ``warning`` invites
+    review rather than declaring an unambiguous bug.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
 
     out: list[Violation] = []
-    feedback_cache: dict[tuple[str, str], bool] = {}
+    flops_by_name = {f.cell.name: f for f in ctx.flops}
+    # Feedback presence is a crossing-level property: cache per source
+    # flop, not per domain pair. A per-domain-pair cache would let one
+    # crossing's handshake silence an unrelated broken crossing between
+    # the same clocks (rtl-buddy-cdc#239).
+    feedback_cache: dict[str, bool] = {}
 
     for c in crossings:
         if c.src_clock == UNCONSTRAINED_SENTINEL:
@@ -3383,10 +3431,10 @@ def check_cdc_012(
             continue
         if _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers):
             continue
-        key = (c.src_clock, c.dst_clock)
+        key = c.src_flop.cell.name
         if key not in feedback_cache:
             feedback_cache[key] = _has_dst_to_src_feedback(
-                module, c.src_clock, c.dst_clock, ctx.domains, ctx.bit_drivers
+                module, c, ctx.domains, ctx.bit_drivers, flops_by_name
             )
         if feedback_cache[key]:
             continue
