@@ -60,11 +60,12 @@ dev = [
 ]
 # Fuzz-corpus mutator dep (Stage-3 Layer B of rtl-buddy-cdc#221).
 # Only consumed under @pytest.mark.fuzz inside tests/fuzz/test_mutants.py;
-# the analyzer's runtime closure stays unchanged. xeno's
-# `requires-python = ">=3.13"` is mirrored here via the marker so the
-# py3.11 / py3.12 pytest-with-slang matrix entries don't try to resolve
-# it. Source pinned via [tool.uv.sources] to a content-addressed commit
-# until xeno reaches PyPI.
+# the analyzer's runtime closure stays unchanged. xeno relaxed its
+# floor to >=3.11 (rtl-buddy-xeno PR #17) to match this project, so the
+# fuzz dep no longer needs a Python marker — it now resolves on every
+# pytest-with-slang matrix entry (py3.11 / py3.12 / py3.13). Source
+# pinned via [tool.uv.sources] to a content-addressed commit until xeno
+# reaches PyPI.
 fuzz = [
     # ``[verible,slang]`` extras pull in xeno's verible-CST helpers and
     # pyslang elaborator — required for the three structural CDC
@@ -75,7 +76,7 @@ fuzz = [
     # and the ≥10-mutants-per-template target in
     # rtl-buddy-cdc#221 done-when criterion 4 misses on every gap
     # family whose source has few ``posedge``/``negedge`` sites.
-    "rtl-buddy-xeno[verible,slang] ; python_full_version >= '3.13'",
+    "rtl-buddy-xeno[verible,slang]",
 ]
 
 [tool.ruff]
@@ -126,11 +127,13 @@ exclude_also = [
 ]
 
 [tool.uv.sources]
-# Pinned to the v0.0.2 fix commit on rtl-buddy-xeno (xeno PR #12). That
-# commit corrects two CDC rule-id mis-mappings (CLOCK_POLARITY_SWAP
+# Pinned to rtl-buddy-xeno main. This commit relaxes requires-python to
+# >=3.11 (rtl-buddy-xeno PR #17) so this project's py3.11 / py3.12
+# entries can resolve it and the fuzz dep above drops its >=3.13 marker.
+# It still carries the CDC rule-id corrections (CLOCK_POLARITY_SWAP
 # CDC-006 → CDC-016; ATTRIBUTE_TOGGLE CDC-008 → CDC-010 for
-# glitchless_clock_mux) and skips reset-edge polarity tokens that
-# previously produced Yosys-rejected invalid SV. The downstream
-# prediction-accuracy metric in test_mutants.py climbs substantially
-# with this pin in place.
-rtl-buddy-xeno = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git", rev = "ecc1bdbb7a11abf33b0e6bea2bb7d844a241d0bb" }
+# glitchless_clock_mux) and the reset-edge skip that previously produced
+# Yosys-rejected invalid SV — so the prediction-accuracy metric in
+# test_mutants.py stays high. Content-addressed pin until xeno reaches
+# PyPI.
+rtl-buddy-xeno = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git", rev = "67f251f6d719f79f49f67aecab93093c85541ee7" }
