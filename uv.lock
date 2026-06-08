@@ -710,7 +710,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.11.0" },
 ]
-fuzz = [{ name = "rtl-buddy-xeno", extras = ["verible", "slang"], git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=67f251f6d719f79f49f67aecab93093c85541ee7" }]
+fuzz = [{ name = "rtl-buddy-xeno", extras = ["verible", "slang"], git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=6549e36519686fbc27723495c5abb7a20369b5fe" }]
 lint = [
     { name = "mypy", specifier = ">=2.1.0" },
     { name = "ruff", specifier = ">=0.11.0" },
@@ -723,17 +723,20 @@ test = [
 
 [[package]]
 name = "rtl-buddy-view"
-version = "0.2.0"
-source = { git = "https://github.com/rtl-buddy/rtl-buddy-view.git?tag=v0.2.0#1bef422ae73d49ab48201fa0cd80420c6c27016e" }
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema" },
     { name = "typer" },
 ]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f9/6a/28d289eb41185e835eae30f9d9c91d92cc89070eba5a126835229f6703fc/rtl_buddy_view-0.2.1-py3-none-any.whl", hash = "sha256:4db09ec7fbb2a0ae42e19c715ac36f62e9e99f8d7fd062007192c6fc506543bb", size = 727285, upload-time = "2026-06-05T06:26:50.418Z" },
+]
 
 [[package]]
 name = "rtl-buddy-xeno"
-version = "0.0.2"
-source = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=67f251f6d719f79f49f67aecab93093c85541ee7#67f251f6d719f79f49f67aecab93093c85541ee7" }
+version = "0.1.1.dev1+g6549e3651"
+source = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=6549e36519686fbc27723495c5abb7a20369b5fe#6549e36519686fbc27723495c5abb7a20369b5fe" }
 
 [package.optional-dependencies]
 slang = [

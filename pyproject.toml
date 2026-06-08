@@ -134,6 +134,8 @@ exclude_also = [
 # CDC-006 → CDC-016; ATTRIBUTE_TOGGLE CDC-008 → CDC-010 for
 # glitchless_clock_mux) and the reset-edge skip that previously produced
 # Yosys-rejected invalid SV — so the prediction-accuracy metric in
-# test_mutants.py stays high. Content-addressed pin until xeno reaches
-# PyPI.
-rtl-buddy-xeno = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git", rev = "67f251f6d719f79f49f67aecab93093c85541ee7" }
+# test_mutants.py stays high. xeno is on PyPI now (0.1.0) but we stay on
+# git main for these post-0.1.0 corrections; bumping to this rev (post
+# xeno #24) also resolves the transitive rtl-buddy-view from PyPI 0.2.1
+# instead of the stale v0.2.0 git tag.
+rtl-buddy-xeno = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git", rev = "6549e36519686fbc27723495c5abb7a20369b5fe" }
