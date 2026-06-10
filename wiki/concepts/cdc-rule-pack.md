@@ -49,6 +49,7 @@ Several rules depend on the same structural detectors, all free functions in `ru
 | `d_bit_to_single_bit_flop` | CDC-001, -002, -003, -005, -006 (via `_sync_chain_depth`) | `bit → Flop` reverse index for single-bit-D flops, turning `_sync_chain_depth`'s chain-extension step into an O(1) lookup |
 | `user_syncs` | CDC-001, -002, -003, -006 | Cell names of flops annotated `(* cdc_sync *)` |
 | `user_grays` | CDC-004 | Cell names of source-side flops annotated `(* cdc_gray *)` |
+| `user_handshakes` | CDC-001, -013, -014, -020 | Cell names of flops annotated `(* cdc_handshake *)` — participants in a sanctioned four-phase req/ack vector-CDC primitive (issue #247) |
 
 ### Structural walks
 
@@ -68,6 +69,7 @@ Several rules depend on the same structural detectors, all free functions in `ru
 |---|---|---|
 | `user_sync_flop_names` | populates `ctx.user_syncs` | Flops annotated `(* cdc_sync *)` / `(* synchronizer *)` / `(* async_reg *)` |
 | `user_gray_flop_names` | populates `ctx.user_grays` | Source-side flops annotated `(* cdc_gray *)` / `(* gray_code *)` |
+| `user_handshake_flop_names` | populates `ctx.user_handshakes` | Flops annotated `(* cdc_handshake *)` / `(* req_ack_handshake *)` — suppress CDC-001/-013/-014/-020 on the crossing keyed at the tagged flop |
 
 ## Rule context
 

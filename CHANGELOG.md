@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`(* cdc_handshake *)` attribute — sanctioned four-phase req/ack
+  handshake** (#247). A correct req/ack vector-CDC primitive (the
+  `ip_cdc_handshake` shape) trips four rules on its protected paths —
+  all false positives by protocol. Tag the source toggle, the held
+  payload, and the destination capture register with
+  `(* cdc_handshake *)` (alias `(* req_ack_handshake *)`) and the rule
+  keyed at each is suppressed: CDC-013 on the toggle (backpressured
+  until ack), CDC-020 on the payload (held stable across the req→ack
+  window), CDC-001 on the capture (a single dst register is the intended
+  capture under `dst_valid`), and CDC-014 on post-capture decode comb
+  (ordinary datapath). Same attribute-on-netname convention as
+  `(* cdc_sync *)` / `(* cdc_gray *)` / `(* cdc_static *)`; mark the
+  blessed primitive once and every instance is recognised, retiring the
+  per-instance waivers.
+
 - **`--project-root` anchors relative path args** (#245). The
   path-bearing args `--yosys-plugin`, `--emit-domain-map`, and
   `--emit-reset-domain-map` are now resolved relative to a stable base
