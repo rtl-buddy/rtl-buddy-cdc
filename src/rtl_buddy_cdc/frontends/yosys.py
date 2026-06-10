@@ -54,9 +54,7 @@ def elaborate(
         # Report the absolute path the CLI resolved (see #245): a bare
         # relative string is unactionable when the caller's cwd is not
         # where they think it is.
-        raise YosysError(
-            f"yosys plugin not found: {Path(plugin_path).resolve()}"
-        )
+        raise YosysError(f"yosys plugin not found: {Path(plugin_path).resolve()}")
 
     tmp_json = Path(tempfile.mkstemp(suffix=".json", prefix="rtl-buddy-cdc-")[1])
     try:
