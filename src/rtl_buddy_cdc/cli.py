@@ -175,6 +175,51 @@ _CDC_018_DEPTH_THRESHOLD_OPT = typer.Option(
     "are intentional in your design.",
     min=2,
 )
+_PROJECT_ROOT_OPT = typer.Option(
+    None,
+    "--project-root",
+    help="Base directory for resolving *relative* path-bearing args — "
+    "`--yosys-plugin`, `--emit-domain-map`, `--emit-reset-domain-map`. "
+    "Precedence: this flag if given, else the directory of `--sdc`, else "
+    "the current working directory (the legacy behaviour). Set it to a "
+    "stable root (the repo, or the cdc.yaml's directory) so those args "
+    "stay correct no matter where the tool is launched from — a driver "
+    "that runs the tool from a deeply-nested artefact dir no longer has "
+    "to hand-rebase every relative path by the cwd depth. Absolute path "
+    "args are unaffected. See issue #245.",
+)
+
+
+def _resolution_base(project_root: Path | None, sdc_path: Path | None) -> Path:
+    """Stable, absolute base for resolving relative path-bearing args.
+
+    Precedence (see ``_PROJECT_ROOT_OPT`` / issue #245):
+      1. an explicit ``--project-root``;
+      2. else the directory holding ``--sdc`` (the closest thing to the
+         config the tool is invoked against);
+      3. else ``Path.cwd()`` (legacy).
+
+    Always absolute so the resolved paths — and any "not found" / mkdir
+    diagnostics built from them — are unambiguous regardless of the
+    caller's cwd.
+    """
+    if project_root is not None:
+        return project_root.resolve()
+    if sdc_path is not None:
+        return sdc_path.resolve().parent
+    return Path.cwd()
+
+
+def _anchor(path: Path | None, base: Path) -> Path | None:
+    """Resolve a possibly-relative path arg against ``base``.
+
+    Absolute paths pass through untouched; relative ones are joined onto
+    ``base`` (the project root / SDC dir) rather than the process cwd, so
+    the arg is insensitive to where the caller chose to run the tool.
+    """
+    if path is None:
+        return None
+    return path if path.is_absolute() else base / path
 
 
 @app.command()
@@ -218,8 +263,12 @@ def analyze(
     no_findings: bool = _NO_FINDINGS_OPT,
     cdc_010_no_heuristic: bool = _CDC_010_NO_HEURISTIC_OPT,
     cdc_018_depth_threshold: int = _CDC_018_DEPTH_THRESHOLD_OPT,
+    project_root: Path | None = _PROJECT_ROOT_OPT,
 ) -> None:
     """Analyze a flattened netlist for CDC issues (primary entry point)."""
+    base = _resolution_base(project_root, sdc_path)
+    emit_domain_map = _anchor(emit_domain_map, base)
+    emit_reset_domain_map = _anchor(emit_reset_domain_map, base)
     code = _analyze_and_report(
         netlist_path,
         sdc_path,
@@ -311,12 +360,26 @@ def lint(
     no_findings: bool = _NO_FINDINGS_OPT,
     cdc_010_no_heuristic: bool = _CDC_010_NO_HEURISTIC_OPT,
     cdc_018_depth_threshold: int = _CDC_018_DEPTH_THRESHOLD_OPT,
+    project_root: Path | None = _PROJECT_ROOT_OPT,
 ) -> None:
     """Convenience wrapper: elaborate the sources using the chosen
     frontend, then analyze. With ``--frontend yosys`` (the default)
     this is equivalent to ``yosys -p 'read_verilog ...; hierarchy -top
     X; proc; flatten; opt_clean; write_json /tmp/out.json' &&
     rtl-buddy-cdc analyze --netlist /tmp/out.json --sdc ...``."""
+    # Anchor the relative path-bearing args (#245) before they reach the
+    # frontend / emit path, so they track the project root rather than
+    # whatever cwd the caller happened to launch us in.
+    base = _resolution_base(project_root, sdc_path)
+    if yosys_plugin is not None:
+        # ``--yosys-plugin`` is a str (it flows through to a yosys -p
+        # command); anchor as a Path, then hand the frontend the resolved
+        # string. An unresolvable plugin now fails with the absolute path.
+        anchored_plugin = _anchor(Path(yosys_plugin), base)
+        yosys_plugin = str(anchored_plugin) if anchored_plugin is not None else None
+    emit_domain_map = _anchor(emit_domain_map, base)
+    emit_reset_domain_map = _anchor(emit_reset_domain_map, base)
+
     # ``auto`` resolves once at the CLI surface so the preamble shows
     # the concrete frontend and downstream tooling parsing stdout
     # ("frontend: yosys"/"frontend: slang") doesn't see a third value.
@@ -680,6 +743,10 @@ def _analyze_module_and_report(
             async_crossings=async_crossings,
             clock_network_crossings=clock_net_crossings,
         )
+        # Create the parent dir (#245): an emit target under an
+        # uncommitted dir like ``.rtl-buddy/overlays/`` would otherwise
+        # raise FileNotFoundError on a fresh checkout.
+        emit_domain_map.parent.mkdir(parents=True, exist_ok=True)
         with emit_domain_map.open("w") as fh:
             json.dump(payload, fh, indent=2)
             fh.write("\n")
@@ -707,6 +774,7 @@ def _analyze_module_and_report(
             polarity_overrides,
             reset_crossings,
         )
+        emit_reset_domain_map.parent.mkdir(parents=True, exist_ok=True)
         with emit_reset_domain_map.open("w") as fh:
             json.dump(reset_payload, fh, indent=2)
             fh.write("\n")

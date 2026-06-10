@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--project-root` anchors relative path args** (#245). The
+  path-bearing args `--yosys-plugin`, `--emit-domain-map`, and
+  `--emit-reset-domain-map` are now resolved relative to a stable base
+  rather than the process cwd: `--project-root` if given, else the
+  directory of `--sdc`, else cwd (the legacy behaviour). This kills the
+  off-by-N-levels breakage a driver hit when it forwarded relative paths
+  verbatim while running the tool from a deeply-nested artefact dir.
+  Absolute paths are unaffected. Two companion fixes ship with it: the
+  `--emit-*` targets now `mkdir -p` their parent before writing (so
+  emitting into an uncommitted dir like `.rtl-buddy/overlays/` on a fresh
+  checkout no longer raises `FileNotFoundError`), and a
+  `--yosys-plugin` not-found error now reports the resolved absolute
+  path so it's actionable.
+
 - **CDC-021: flop CLK driven by undeclared port** (#206). Closes
   G-10 from the #188 coverage survey. Companion to CDC-011 on the
   clock-pin side: fires when a flop's `CLK` traces back to a
