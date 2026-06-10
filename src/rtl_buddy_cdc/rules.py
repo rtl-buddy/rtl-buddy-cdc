@@ -82,6 +82,10 @@ class _RuleContext:
     user_syncs: frozenset[str]
     user_grays: frozenset[str]
     user_statics: frozenset[str]
+    # Flops tagged ``(* cdc_handshake *)`` — participants in a sanctioned
+    # four-phase req/ack vector-CDC primitive. Suppresses CDC-001 / 013 /
+    # 014 / 020 on the crossing keyed at the tagged flop (issue #247).
+    user_handshakes: frozenset[str]
     # Bits belonging to nets tagged with
     # :data:`USER_GLITCHLESS_CLOCK_MUX_ATTRS`. Consulted by CDC-010
     # to suppress on a hand-built glitchless-clock-mux select wire.
@@ -166,6 +170,7 @@ def _build_context(
         user_syncs=frozenset(user_sync_flop_names(module)),
         user_grays=frozenset(user_gray_flop_names(module)),
         user_statics=frozenset(user_static_flop_names(module)),
+        user_handshakes=frozenset(user_handshake_flop_names(module)),
         user_glitchless_mux_bits=frozenset(user_glitchless_clock_mux_bits(module)),
         d_bit_to_single_bit_flop=d_bit_to_single_bit_flop,
         reset_sync_flop_names=frozenset(
@@ -318,6 +323,57 @@ def user_static_flop_names(module: Module) -> set[str]:
     out: set[str] = set()
     for f in find_flops(module):
         if any(isinstance(b, int) and b in static_bits for b in f.q):
+            out.add(f.cell.name)
+    return out
+
+
+# Four-phase req/ack handshake primitive (issue #247). Attach to the
+# registers that *participate* in a sanctioned vector-CDC handshake (the
+# canonical `ip_cdc_handshake` shape): the source-side req toggle, the
+# held payload register, and the destination-side capture register::
+#
+#     (* cdc_handshake *) logic              src_req;     // toggle
+#     (* cdc_handshake *) logic [WIDTH-1:0]  src_payload; // held stable
+#     (* cdc_handshake *) logic [WIDTH-1:0]  dst_data;    // single capture
+#
+# The protocol makes the otherwise-flagged paths safe by construction:
+#   - the payload is latched and held stable for the whole req→ack→done
+#     window, so the sliced-bus reconvergence CDC-020 targets cannot
+#     misresolve (no bit is mid-flight when the destination samples);
+#   - the source is backpressured (``src_ready = (src_req == ack_in_src)``)
+#     and cannot launch a new transfer until the destination acks, so the
+#     fast→slow toggle event-loss CDC-013 targets cannot drop an event;
+#   - the payload is stable under ``dst_valid``, so a *single* destination
+#     register is the intended capture (not a missing CDC-001 second
+#     stage), and feeding that capture through decode comb is ordinary
+#     datapath, not a gate wedged between sync stages (CDC-014).
+#
+# Suppresses CDC-001 / CDC-013 / CDC-014 / CDC-020 on the crossing keyed
+# at the tagged flop. Same attribute-on-netname placement convention as
+# ``cdc_sync`` / ``cdc_gray`` / ``cdc_static``. This is the opt-in escape
+# hatch from issue #247 — mark the blessed primitive once and every
+# instance is recognised, retiring the per-instance waivers.
+USER_HANDSHAKE_ATTRS: frozenset[str] = frozenset({"cdc_handshake", "req_ack_handshake"})
+
+
+def user_handshake_flop_names(module: Module) -> set[str]:
+    """Cell names of flops whose Q is named via a wire annotated with
+    ``(* cdc_handshake *)`` (or :data:`USER_HANDSHAKE_ATTRS` aliases).
+    CDC-001 / CDC-013 / CDC-014 / CDC-020 skip the crossing keyed at a
+    flop in this set — the user is asserting the flop participates in a
+    sanctioned four-phase req/ack handshake whose protocol makes the
+    structural pattern safe (see :data:`USER_HANDSHAKE_ATTRS`)."""
+    handshake_bits: set[Bit] = set()
+    for nn in module.netnames.values():
+        if USER_HANDSHAKE_ATTRS & set(nn.attributes):
+            for b in nn.bits:
+                if isinstance(b, int):
+                    handshake_bits.add(b)
+    if not handshake_bits:
+        return set()
+    out: set[str] = set()
+    for f in find_flops(module):
+        if any(isinstance(b, int) and b in handshake_bits for b in f.q):
             out.add(f.cell.name)
     return out
 
@@ -820,6 +876,8 @@ def check_cdc_001(
             continue  # CDC-011 owns crossings from unconstrained ports
         if c.dst_flop.cell.name in ctx.user_syncs:
             continue  # user vouches for the synchronizer shape
+        if c.dst_flop.cell.name in ctx.user_handshakes:
+            continue  # (* cdc_handshake *) — single capture under dst_valid is intended (#247)
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
             continue  # source is (* cdc_static *) — held constant, no metastability
         depth = _sync_chain_depth(
@@ -3238,6 +3296,8 @@ def check_cdc_013(
         q_bits = c.src_flop.cell.connections.get("Q", ())
         if len(d_bits) != 1 or len(q_bits) != 1:
             continue
+        if c.src_flop.cell.name in ctx.user_handshakes:
+            continue  # (* cdc_handshake *) — req toggle is backpressured until ack (#247)
         shape = classify_toggle_d_pin(d_bits[0], q_bits[0], module, ctx.bit_drivers)
         if shape != "toggle":
             continue
@@ -3508,6 +3568,8 @@ def check_cdc_014(
         head = c.dst_flop
         if head.cell.name in ctx.user_syncs:
             continue
+        if head.cell.name in ctx.user_handshakes:
+            continue  # (* cdc_handshake *) — post-capture decode comb is datapath (#247)
         nxt = _chain_has_inter_stage_comb(head, ctx)
         if nxt is None:
             continue
@@ -4054,6 +4116,8 @@ def check_cdc_020(
             continue
         if src_name in ctx.user_statics:
             continue
+        if src_name in ctx.user_handshakes:
+            continue  # (* cdc_handshake *) — payload held stable across req/ack window (#247)
         # Structural gray + multi-bit-sync suppression — mirrors CDC-004.
         if _is_gray_encoded_source(module, src_flop, ctx.bit_drivers) and any(
             _is_multibit_sync_first_stage(module, dst, dst_clock, ctx.domains)
