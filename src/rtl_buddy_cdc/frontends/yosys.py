@@ -51,7 +51,12 @@ def elaborate(
         raise YosysError("yosys not found on PATH (use --yosys to override)")
 
     if plugin_path is not None and not Path(plugin_path).exists():
-        raise YosysError(f"yosys plugin not found: {plugin_path}")
+        # Report the absolute path the CLI resolved (see #245): a bare
+        # relative string is unactionable when the caller's cwd is not
+        # where they think it is.
+        raise YosysError(
+            f"yosys plugin not found: {Path(plugin_path).resolve()}"
+        )
 
     tmp_json = Path(tempfile.mkstemp(suffix=".json", prefix="rtl-buddy-cdc-")[1])
     try:
