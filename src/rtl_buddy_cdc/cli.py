@@ -334,10 +334,14 @@ def lint(
     yosys_plugin: str | None = typer.Option(
         None,
         "--yosys-plugin",
+        envvar="RTL_BUDDY_SLANG_PLUGIN",
         help="Yosys frontend only: path to a Yosys plugin to load before "
         "elaboration (e.g. yosys-slang's slang.so). When set, sources are "
         "read with `read_slang --std 1800-2017 --top <top>` instead of "
-        "`read_verilog -sv`, giving full SystemVerilog-2017 support.",
+        "`read_verilog -sv`, giving full SystemVerilog-2017 support. "
+        "Falls back to the RTL_BUDDY_SLANG_PLUGIN environment variable "
+        "when the flag is omitted (the explicit flag wins); this is the "
+        "machine-local .env flow rtl_buddy populates from .rtl-buddy/.env.",
     ),
     waivers_path: Path | None = typer.Option(
         None,

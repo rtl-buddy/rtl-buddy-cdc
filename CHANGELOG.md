@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+<<<<<<< HEAD
 - **`(* cdc_handshake *)` attribute — sanctioned four-phase req/ack
   handshake** (#247). A correct req/ack vector-CDC primitive (the
   `ip_cdc_handshake` shape) trips four rules on its protected paths —
@@ -37,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkout no longer raises `FileNotFoundError`), and a
   `--yosys-plugin` not-found error now reports the resolved absolute
   path so it's actionable.
+
+- **`--yosys-plugin` reads `RTL_BUDDY_SLANG_PLUGIN`**. The
+  `lint --yosys-plugin` flag now falls back to the
+  `RTL_BUDDY_SLANG_PLUGIN` environment variable when omitted (an
+  explicit flag still wins). This lets the yosys-slang plugin
+  location be a machine-local value instead of a hard-coded path:
+  `rtl_buddy` already loads `.rtl-buddy/.env` into the environment
+  before invoking `rtl-buddy-cdc`, so a config can simply drop the
+  `--yosys-plugin` extra-arg and let the `.env` flow supply it.
+  Mirrors `rtl_buddy`'s own slang `plugin-path` resolution.
 
 - **CDC-021: flop CLK driven by undeclared port** (#206). Closes
   G-10 from the #188 coverage survey. Companion to CDC-011 on the

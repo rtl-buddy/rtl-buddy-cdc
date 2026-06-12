@@ -111,6 +111,7 @@ Standalone wrapper (`lint`):
 | Top module name (`--top`) | yes | Elaboration root |
 | `--frontend {yosys,slang,auto}` | optional | Elaboration frontend. `yosys` (default) shells out to `yosys` and runs `hierarchy; proc; flatten; opt_clean`. `slang` elaborates via the [pyslang](https://pypi.org/project/pyslang/) binding directly — no synth step, no Yosys runtime dependency. `auto` picks `slang` when pyslang is importable and falls back to `yosys` otherwise; useful in CI matrices where some jobs install the `[slang]` extra and others don't. Reaches parity with the Yosys frontend on every paired *bad/good* fixture in the regression suite. |
 | `--yosys PATH` | optional | Yosys frontend only: override the default yosys binary lookup |
+| `--yosys-plugin PATH` | optional | Yosys frontend only: load a Yosys plugin (e.g. yosys-slang's `slang.so`) and elaborate via `read_slang` for full SystemVerilog-2017 support. Falls back to the `RTL_BUDDY_SLANG_PLUGIN` environment variable when the flag is omitted; the explicit flag wins. This is the machine-local `.env` flow `rtl_buddy` populates from `.rtl-buddy/.env`. |
 | `--keep-json PATH` | optional | Yosys frontend only: save the intermediate netlist for debugging or re-runs |
 
 The slang frontend is an opt-in extra. Install it alongside the package with `pip install 'rtl-buddy-cdc[slang]'` (or `uv add 'rtl-buddy-cdc[slang]'`); the default install stays Yosys-only.
