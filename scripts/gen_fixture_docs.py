@@ -224,12 +224,18 @@ def _render(netlist: Path | None, sdc: Path, sv: Path, top: str) -> tuple[dict, 
                 "--no-findings",
                 str(sv),
             ]
-        subprocess.run(
+        elab = subprocess.run(
             cmd,
-            check=True,
             cwd=REPO_ROOT,
             capture_output=True,
         )
+        if elab.returncode != 0:
+            # Plugin-only fixtures (e.g. those importing a SystemVerilog
+            # package, which `read_verilog -sv` rejects and only the
+            # yosys-slang `read_slang` plugin elaborates) can't be doc'd
+            # by the plain Yosys frontend. Skip rather than abort the
+            # whole run — the plugin path is covered by a gated test.
+            raise _SkipFixture("plain yosys frontend could not elaborate it")
         map_data = json.loads(map_path.read_text())
         result = subprocess.run(
             [

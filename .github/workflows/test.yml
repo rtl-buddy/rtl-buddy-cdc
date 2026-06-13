@@ -11,6 +11,7 @@ on:
       - 'src/**/*.py'
       - 'tests/**/*.py'
       - 'tests/**/*.sv'
+      - 'tests/**/*.sdc'
   pull_request:
     branches: [main]
     paths:
@@ -21,6 +22,7 @@ on:
       - 'src/**/*.py'
       - 'tests/**/*.py'
       - 'tests/**/*.sv'
+      - 'tests/**/*.sdc'
 
 jobs:
   # Primary job: install with the [slang] extra so the pyslang-backed
@@ -143,3 +145,95 @@ jobs:
 
       - name: Coverage report (fuzz rule firings)
         run: uv run python -m tests.fuzz.coverage
+
+  # End-to-end exercise of the yosys-slang plugin (`read_slang`) path —
+  # the `--yosys-plugin` / RTL_BUDDY_SLANG_PLUGIN flow in cli.py /
+  # frontends/yosys.py. Every other job leaves the plugin tests skipped
+  # (RTL_BUDDY_SLANG_PLUGIN unset), so without this job the read_slang
+  # branch is untested in CI.
+  #
+  # yosys-slang needs a Yosys in its supported range (0.52–0.65); the
+  # distro `apt` Yosys is far older, so we build a pinned Yosys from
+  # source (cached by version) the way yosys-slang's own CI does, then
+  # build the fork's `build/slang.so` against that Yosys's `yosys-config`
+  # (ccache-accelerated, cached by source hash). The test itself
+  # (tests/test_yosys_slang_plugin.py) only needs the default install —
+  # the read_slang path is a Yosys subprocess, not pyslang — so no
+  # `[slang]` extra here.
+  yosys-slang-plugin:
+    name: yosys-slang plugin (read_slang) oracle
+    runs-on: ubuntu-latest
+    env:
+      # Pinned Yosys release to build the plugin against. Bump only to a
+      # version yosys-slang's README lists as supported.
+      YOSYS_VERSION: v0.64
+      # rtl-buddy fork + branch carrying this project's slang frontend.
+      YOSYS_SLANG_REPO: https://github.com/rtl-buddy/yosys-slang.git
+      YOSYS_SLANG_REF: rtl-buddy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ccache pkg-config git \
+            bison flex libreadline-dev gawk tcl-dev libffi-dev zlib1g-dev
+
+      - name: Cache Yosys ${{ env.YOSYS_VERSION }}
+        id: cache-yosys
+        uses: actions/cache@v4
+        with:
+          path: ~/yosys-install
+          key: yosys-${{ runner.os }}-${{ env.YOSYS_VERSION }}
+
+      - name: Build Yosys ${{ env.YOSYS_VERSION }}
+        if: steps.cache-yosys.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --recursive --branch "${YOSYS_VERSION}" \
+            https://github.com/YosysHQ/yosys.git yosys_build
+          make -C yosys_build config-gcc
+          # ABC is irrelevant to the read_slang -> write_json path and is
+          # the slowest part of the build; drop it to keep the job lean.
+          echo "ENABLE_ABC := 0" >> yosys_build/Makefile.conf
+          make -C yosys_build -j"$(nproc)"
+          make -C yosys_build install DESTDIR="$HOME/yosys-install"
+
+      - name: Put Yosys on PATH
+        run: echo "$HOME/yosys-install/usr/local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Yosys
+        run: |
+          yosys -V
+          yosys-config --datdir >/dev/null
+
+      - name: Cache plugin ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: yosys-slang-${{ env.YOSYS_SLANG_REF }}-${{ env.YOSYS_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            yosys-slang-${{ env.YOSYS_SLANG_REF }}-${{ env.YOSYS_VERSION }}-
+
+      - name: Build yosys-slang plugin (rtl-buddy fork @ ${{ env.YOSYS_SLANG_REF }})
+        run: |
+          git clone --recursive --branch "${YOSYS_SLANG_REF}" \
+            "${YOSYS_SLANG_REPO}" yosys-slang-src
+          ccache --max-size=2G -z
+          make -C yosys-slang-src -j"$(nproc)" \
+            CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          test -f yosys-slang-src/build/slang.so
+          # Export the built plugin so the gated test (and any rtl_buddy
+          # .env-style consumer) resolves it the same way as on a dev box.
+          echo "RTL_BUDDY_SLANG_PLUGIN=$PWD/yosys-slang-src/build/slang.so" >> "$GITHUB_ENV"
+
+      - name: Install test dependencies (default install)
+        run: uv sync --group test --python 3.13
+
+      - name: Run yosys-slang plugin oracle
+        run: uv run --python 3.13 pytest -m yosys_slang -v

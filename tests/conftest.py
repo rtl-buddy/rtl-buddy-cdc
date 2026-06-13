@@ -22,3 +22,9 @@ def pytest_configure(config) -> None:
         "markers",
         "sim: behavioural simulation oracle (opt-in; needs iverilog)",
     )
+    config.addinivalue_line(
+        "markers",
+        "yosys_slang: end-to-end yosys-slang plugin (read_slang) oracle "
+        "(gated; needs yosys on PATH + RTL_BUDDY_SLANG_PLUGIN pointing at "
+        "a built slang.so; run via `pytest -m yosys_slang`)",
+    )

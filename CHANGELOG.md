@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CI: end-to-end yosys-slang plugin (`read_slang`) oracle** (#251). A
+  new `yosys-slang plugin` job in `test.yml` builds a pinned Yosys (v0.64,
+  cached) from source and the rtl-buddy fork of `yosys-slang`
+  (branch `rtl-buddy`, ccache-accelerated) into `build/slang.so`, then
+  runs a gated test (`tests/test_yosys_slang_plugin.py`, marker
+  `yosys_slang`) that elaborates a package-typed design through the
+  `--yosys-plugin` / `RTL_BUDDY_SLANG_PLUGIN` path and asserts the
+  expected CDC finding. The fixture
+  (`tests/fixtures/slang_pkg_unsync_crossing`) imports a SystemVerilog
+  package — a construct Yosys's built-in `read_verilog -sv` rejects — so
+  a green result proves the plugin path is exercised, not bypassed.
+  Every other job leaves the test skipped (`RTL_BUDDY_SLANG_PLUGIN`
+  unset), so this is the first CI coverage of the `read_slang` branch.
+
 - **`(* cdc_handshake *)` attribute — sanctioned four-phase req/ack
   handshake** (#247). A correct req/ack vector-CDC primitive (the
   `ip_cdc_handshake` shape) trips four rules on its protected paths —
