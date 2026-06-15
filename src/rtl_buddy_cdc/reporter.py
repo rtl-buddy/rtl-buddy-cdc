@@ -438,6 +438,11 @@ def _crossing_to_dict(c: Crossing) -> dict:
         out["src_flop"] = c.src_flop.cell.name
     if c.src_port is not None:
         out["src_port"] = c.src_port
+    if c.src_boundary is not None:
+        out["src_boundary"] = {
+            "instance": c.src_boundary[0],
+            "port": c.src_boundary[1],
+        }
     return out
 
 

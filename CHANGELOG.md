@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Auto-abstract single-clock subtrees** (#256, CDC-scaling epic #253
+  phase 2). A blackboxed subtree whose entire clock set sits in one
+  async-safe domain carries no internal crossing, so it is now
+  automatically summarised to its port boundary and analysed as a
+  boundary cell instead of walked flop-by-flop — the user no longer
+  needs to know which subtrees are single-clock. New pure
+  `abstract.is_single_clock_subtree` (the SDC-driven detector) and
+  `abstract.summarise_subtree` (builds the P0 `BoundarySummary` from how
+  the parent drives the instance's clock pin). `domain.find_crossings`
+  gained a `boundaries=` argument: each summarised subtree's output port
+  is re-seeded as a virtual source so a downstream sink in a foreign
+  domain is still reported (the single `Crossing` type gains additive
+  optional `src_boundary` / `dst_boundary` endpoint fields — the public
+  JSON contract is unchanged). CDC-008 exempts boundary instances so a
+  clock entering an opaque subtree isn't mis-flagged as clock-used-as-data.
+  The orchestration (loading blackbox siblings, summarising, threading
+  the boundary set) lives in `cli.py`; the frontend-free `analyze` path
+  needs no new flag. Fixture pair `single_clock_leaf_abstract` proves the
+  safety property — the flattened design and the auto-abstracted one
+  produce identical violations and identical `summary.*`, with strictly
+  fewer flops walked in the abstracted run.
+
 - **First-class blackbox boundary support** (#255, CDC-scaling epic #253
   phase 1). A large subtree can be excluded from flattening and analysed
   as a boundary cell so big integration blocks become tractable.

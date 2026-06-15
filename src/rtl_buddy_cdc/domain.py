@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TypedDict
 
 from rtl_buddy_cdc.flops import Flop, find_flops, flop_clk_pin, is_ff_cell
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Module
 
 
 class _CrossingGroup(TypedDict):
@@ -39,6 +39,20 @@ class _PortCrossingGroup(TypedDict):
     """Per (src_port, dst_flop) accumulator for port-sourced crossings."""
 
     port: str
+    src_clock: str
+    dst_flop: "Flop"
+    dst_clock: str
+    min_hops: int
+    bits: set[Bit]
+
+
+class _BoundaryCrossingGroup(TypedDict):
+    """Per (instance.port, dst_flop) accumulator for boundary-sourced
+    crossings — an auto-abstracted subtree's output port re-seeded as a
+    virtual source in place of the flattened internal flops."""
+
+    instance: str
+    boundary_port: str
     src_clock: str
     dst_flop: "Flop"
     dst_clock: str
@@ -70,6 +84,16 @@ class Crossing:
     ``width`` is the number of distinct destination ``D`` bits
     reachable from the source on this crossing (>1 means a bus
     crossing). Port-sourced crossings are width 1.
+
+    ``src_boundary`` / ``dst_boundary`` (P0/#254) name a
+    ``(instance, port)`` endpoint on an auto-abstracted blackbox
+    boundary cell. ``src_boundary`` is set when the source is a
+    summarised subtree's output port (a virtual source seeded at the
+    subtree's domain in place of the flattened internal flops);
+    ``dst_boundary`` is reserved for data *entering* a boundary in a
+    foreign domain (P3). Setting them does not change the public JSON
+    contract — they are additive optional fields on the single
+    ``Crossing`` type, never a forked one.
     """
 
     src_clock: str
@@ -79,6 +103,8 @@ class Crossing:
     width: int
     src_flop: Flop | None = None
     src_port: str | None = None
+    src_boundary: tuple[str, str] | None = None
+    dst_boundary: tuple[str, str] | None = None
 
     @property
     def src_name(self) -> str:
@@ -87,11 +113,25 @@ class Crossing:
             return self.src_flop.name
         if self.src_port is not None:
             return f"port {self.src_port}"
+        if self.src_boundary is not None:
+            inst, port = self.src_boundary
+            return f"boundary {inst}.{port}"
         return "<unknown>"
 
     @property
     def is_port_sourced(self) -> bool:
         return self.src_port is not None
+
+    @property
+    def is_boundary_sourced(self) -> bool:
+        return self.src_boundary is not None
+
+
+# Clock name stamped on a boundary-sourced crossing whose subtree
+# domain didn't resolve to a named clock. Mirrors the SDC
+# unconstrained sentinel so ``are_async`` treats it as async to every
+# real clock (a sink in any known domain is conservatively a crossing).
+_UNKNOWN_BOUNDARY_CLOCK = "<unconstrained>"
 
 
 # Cell types that act as a transparent buffer on the clock network —
@@ -325,6 +365,7 @@ def find_crossings(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    boundaries: dict[str, "BoundarySummary"] | None = None,
 ) -> list[Crossing]:
     """Find every fanout path whose endpoints are in different domains.
 
@@ -506,6 +547,90 @@ def find_crossings(
                     min_hops=pg["min_hops"],
                     width=len(pg["bits"]),
                     src_port=pg["port"],
+                )
+            )
+
+    # Boundary-sourced crossings (P2/#256): an auto-abstracted
+    # single-clock subtree's output ports are re-seeded as virtual
+    # sources at the subtree's domain, in place of the flattened
+    # internal flops. We walk forward from each boundary instance's
+    # connected output bits the same way the port-walk does; a sink in
+    # a different domain is a crossing the parent must check
+    # (``synchronised`` ports never reach here — the summariser drops
+    # them before they become a boundary). The instance is the parent
+    # cell whose ``type`` is the summarised module name.
+    if boundaries:
+        bnd_grouped: dict[tuple[str, str, str], _BoundaryCrossingGroup] = {}
+        for inst_name, cell in module.cells.items():
+            summary = boundaries.get(cell.type)
+            if summary is None:
+                continue
+            for port_name, pb in summary.ports.items():
+                src_clk_name = pb.src_clock
+                conn = cell.connections.get(port_name, ())
+                bnd_seen: dict[Bit, int] = {}
+                bnd_frontier: list[tuple[Bit, int]] = [
+                    (b, 0) for b in conn if isinstance(b, int)
+                ]
+                for b, h in bnd_frontier:
+                    bnd_seen[b] = h
+                while bnd_frontier:
+                    bnd_next: list[tuple[Bit, int]] = []
+                    for bit, hops in bnd_frontier:
+                        for dst_flop in flop_by_d_bit.get(bit, ()):
+                            dst_fd = domains[dst_flop.cell.name]
+                            if dst_fd.clock is None:
+                                continue
+                            if (
+                                src_clk_name is not None
+                                and dst_fd.clock == src_clk_name
+                            ):
+                                continue
+                            bnd_key = (inst_name, port_name, dst_flop.cell.name)
+                            bg = bnd_grouped.get(bnd_key)
+                            if bg is None:
+                                bnd_grouped[bnd_key] = {
+                                    "instance": inst_name,
+                                    "boundary_port": port_name,
+                                    "src_clock": src_clk_name
+                                    if src_clk_name is not None
+                                    else _UNKNOWN_BOUNDARY_CLOCK,
+                                    "dst_flop": dst_fd.flop,
+                                    "dst_clock": dst_fd.clock,
+                                    "min_hops": hops,
+                                    "bits": {bit},
+                                }
+                            else:
+                                bg["bits"].add(bit)
+                                if hops < bg["min_hops"]:
+                                    bg["min_hops"] = hops
+                        if hops >= max_hops:
+                            continue
+                        for cell_name, _port, _idx in consumers.get(bit, ()):
+                            c = module.cells[cell_name]
+                            if c.type in {"$scopeinfo"}:
+                                continue
+                            if is_ff_cell(c.type):
+                                continue
+                            for ob in _cell_outputs(c):
+                                if not isinstance(ob, int):
+                                    continue
+                                prev = bnd_seen.get(ob)
+                                new_hops = hops + 1
+                                if prev is None or new_hops < prev:
+                                    bnd_seen[ob] = new_hops
+                                    bnd_next.append((ob, new_hops))
+                    bnd_frontier = bnd_next
+
+        for bg in bnd_grouped.values():
+            out_crossings.append(
+                Crossing(
+                    src_clock=bg["src_clock"],
+                    dst_flop=bg["dst_flop"],
+                    dst_clock=bg["dst_clock"],
+                    min_hops=bg["min_hops"],
+                    width=len(bg["bits"]),
+                    src_boundary=(bg["instance"], bg["boundary_port"]),
                 )
             )
 

@@ -18,6 +18,7 @@ from rtl_buddy_cdc import (
     sdc as sdc_mod,
     waivers as waivers_mod,
 )
+from rtl_buddy_cdc.abstract import summarise_subtree
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
 from rtl_buddy_cdc.clock_network import find_clock_network_crossings
 from rtl_buddy_cdc.domain_map import build_domain_map
@@ -567,7 +568,7 @@ def _analyze_and_report(
     cdc_018_depth_threshold: int = 4,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
-    module = netlist.load(netlist_path)
+    module, blackboxes = netlist.load_with_blackboxes(netlist_path)
     return _analyze_module_and_report(
         module,
         sdc_path,
@@ -585,6 +586,7 @@ def _analyze_and_report(
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
+        blackboxes=blackboxes,
     )
 
 
@@ -606,6 +608,7 @@ def _analyze_module_and_report(
     no_findings: bool = False,
     cdc_010_no_heuristic: bool = False,
     cdc_018_depth_threshold: int = 4,
+    blackboxes: dict[str, netlist.Module] | None = None,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
@@ -655,11 +658,20 @@ def _analyze_module_and_report(
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
         )
+        # Auto-abstract single-clock subtrees (#256): summarise every
+        # blackbox sibling whose whole clock set sits in one async-safe
+        # domain to its port boundary, so ``find_crossings`` re-seeds
+        # the subtree's boundary crossings without walking the (absent)
+        # internal flops. Non-single-clock siblings get no summary and
+        # are simply not re-seeded (their internals aren't in the
+        # flattened top module to begin with).
+        boundaries = _summarise_blackboxes(module, blackboxes, spec)
         crossings = find_crossings(
             module,
             port_clock=spec.port_clock,
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
+            boundaries=boundaries,
         )
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:
@@ -671,6 +683,7 @@ def _analyze_module_and_report(
                 reset_hints=reset_hints,
                 cdc_010_heuristic=not cdc_010_no_heuristic,
                 cdc_018_depth_threshold=cdc_018_depth_threshold,
+                boundary_modules=frozenset(boundaries),
             )
     else:
         domains = assign_domains(module)
@@ -859,6 +872,37 @@ def _load_baseline_keys(path: Path) -> set[tuple[str, str, str]]:
                 )
             )
     return keys
+
+
+def _summarise_blackboxes(
+    module: netlist.Module,
+    blackboxes: dict[str, netlist.Module] | None,
+    spec: "sdc_mod.ClockSpec",
+) -> dict[str, netlist.BoundarySummary]:
+    """Auto-abstract single-clock blackbox subtrees to port boundaries.
+
+    For each blackbox sibling instantiated in ``module``, build a
+    :class:`~rtl_buddy_cdc.netlist.BoundarySummary` *iff* the subtree's
+    clock set sits in one async-safe domain (the summariser returns
+    ``None`` otherwise). The returned map is keyed by *module name*
+    (matching each boundary cell's ``type``) so ``find_crossings`` can
+    re-seed the boundary's output ports as virtual sources.
+
+    Pure orchestration: detection / summarisation lives in
+    :mod:`rtl_buddy_cdc.abstract`; this only walks the instances and
+    collects the results.
+    """
+    out: dict[str, netlist.BoundarySummary] = {}
+    if not blackboxes:
+        return out
+    for cell in module.cells.values():
+        sub = blackboxes.get(cell.type)
+        if sub is None or cell.type in out:
+            continue
+        summary = summarise_subtree(module, cell, sub, spec, pin_clocks=spec.pin_clocks)
+        if summary is not None:
+            out[cell.type] = summary
+    return out
 
 
 def _filter_async(

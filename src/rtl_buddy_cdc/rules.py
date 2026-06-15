@@ -102,6 +102,15 @@ class _RuleContext:
     # disagreement with SV attributes — see :mod:`rtl_buddy_cdc.reset_hints`.
     reset_sync_flop_names: frozenset[str]
     reset_polarity_overrides: dict[str, Literal["high", "low"]]
+    # Module names of auto-abstracted single-clock boundary cells
+    # (#256). A boundary instance is an opaque summarised subtree — its
+    # internals aren't in the flattened netlist, so structural rules
+    # that walk cell pins (notably CDC-008's clock-used-as-data) must
+    # treat the instance as exempt: a clock entering its clock pin is
+    # legitimate distribution into the subtree, not a wiring bug, and
+    # firing on it would diverge from the un-abstracted (flattened)
+    # result the abstraction must preserve.
+    boundary_modules: frozenset[str] = frozenset()
 
 
 def _build_context(
@@ -109,6 +118,7 @@ def _build_context(
     clock_spec: ClockSpec | None,
     *,
     reset_hints: ResetHints | None = None,
+    boundary_modules: frozenset[str] = frozenset(),
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
 
@@ -179,6 +189,7 @@ def _build_context(
         reset_polarity_overrides=user_reset_polarity_overrides(
             module, hints=reset_hints
         ),
+        boundary_modules=boundary_modules,
     )
 
 
@@ -1685,6 +1696,13 @@ def check_cdc_008(
     seen: set[tuple[Bit, str, str]] = set()
     for cell in module.cells.values():
         if cell.name in clock_net_cells:
+            continue
+        # Auto-abstracted boundary instance (#256): an opaque
+        # single-clock subtree. We can't see its internals, so a clock
+        # on its pins is distribution into the subtree, not data — and
+        # firing here would diverge from the un-abstracted result this
+        # abstraction must preserve.
+        if cell.type in ctx.boundary_modules:
             continue
         # Gate-level FF cells ($_DFF_*, $_DFFE_*, etc.) carry the
         # clock on pin ``C`` instead of ``CLK``; exempt that pin
@@ -4452,6 +4470,7 @@ def run_all(
     reset_hints: ResetHints | None = None,
     cdc_010_heuristic: bool = True,
     cdc_018_depth_threshold: int = CDC_018_DEFAULT_THRESHOLD,
+    boundary_modules: frozenset[str] = frozenset(),
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -4459,7 +4478,12 @@ def run_all(
     # ``_bit_drivers`` were each rebuilt per rule, with
     # ``_sync_chain_depth`` re-scanning every flop per chain-extension
     # step (the worst hot path).
-    ctx = _build_context(module, clock_spec, reset_hints=reset_hints)
+    ctx = _build_context(
+        module,
+        clock_spec,
+        reset_hints=reset_hints,
+        boundary_modules=boundary_modules,
+    )
     out: list[Violation] = []
     for rule_id, rule in RULES.items():
         if rule_id == "CDC-002":
