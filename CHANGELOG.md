@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-<<<<<<< HEAD
 - **`(* cdc_handshake *)` attribute — sanctioned four-phase req/ack
   handshake** (#247). A correct req/ack vector-CDC primitive (the
   `ip_cdc_handshake` shape) trips four rules on its protected paths —
