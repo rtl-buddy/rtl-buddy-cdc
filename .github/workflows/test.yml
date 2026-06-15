@@ -181,9 +181,13 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          # libfl-dev provides FlexLexer.h (the `flex` package alone does
+          # not, on ubuntu-latest) and gperf is required by the Yosys
+          # build — both are in yosys-slang's own CI dep list. Omitting
+          # libfl-dev fails the Yosys compile at verilog_parser.tab.o.
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ccache pkg-config git \
-            bison flex libreadline-dev gawk tcl-dev libffi-dev zlib1g-dev
+            build-essential cmake ccache pkg-config git gperf \
+            bison flex libfl-dev libreadline-dev gawk tcl-dev libffi-dev zlib1g-dev
 
       - name: Cache Yosys ${{ env.YOSYS_VERSION }}
         id: cache-yosys
