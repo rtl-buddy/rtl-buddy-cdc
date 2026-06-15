@@ -354,6 +354,134 @@ def test_boundary_same_domain_sink_is_not_a_crossing() -> None:
     assert find_crossings(parent, boundaries={"sub": summary}) == []
 
 
+def _foreign_input_parent() -> tuple[Module, Cell, Module]:
+    """A parent where a clk_b flop drives the data input of a clk_a
+    single-clock blackbox ``sub`` (the blocker's exact repro).
+
+    bits: clk_a=1, clk_b=2, src_q.D=3 (port d_in), src_q.Q=4,
+          sub.d_in=4, sub.d_out=5, dst_q.D=5, dst_q.Q=6
+    The async crossing (clk_b src_q -> clk_a subtree input) lands on
+    the subtree's first internal flop, INSIDE the input boundary, so the
+    output-only boundary summary would drop it. summarise_subtree must
+    therefore refuse to abstract this subtree.
+    """
+    src = Cell(
+        name="src_q", type="$dff", connections={"CLK": (2,), "D": (3,), "Q": (4,)}
+    )
+    sub_inst = Cell(
+        name="u_sub", type="sub", connections={"clk": (1,), "d_in": (4,), "d_out": (5,)}
+    )
+    dst = Cell(
+        name="dst_q", type="$dff", connections={"CLK": (1,), "D": (5,), "Q": (6,)}
+    )
+    parent = Module(
+        name="top",
+        ports={
+            "clk_a": Port(name="clk_a", direction="input", bits=(1,)),
+            "clk_b": Port(name="clk_b", direction="input", bits=(2,)),
+            "d_in": Port(name="d_in", direction="input", bits=(3,)),
+        },
+        cells={"src_q": src, "u_sub": sub_inst, "dst_q": dst},
+        netnames={},
+    )
+    sub = Module(
+        name="sub",
+        ports={
+            "clk": Port(name="clk", direction="input", bits=()),
+            "d_in": Port(name="d_in", direction="input", bits=()),
+            "d_out": Port(name="d_out", direction="output", bits=()),
+        },
+        cells={},
+        netnames={},
+        is_blackbox=True,
+    )
+    return parent, sub_inst, sub
+
+
+def _foreign_input_spec() -> ClockSpec:
+    spec = _async_spec()
+    # src_q is a real clk_b flop; assign_domains derives its domain from
+    # the CLK pin, so no port typing is required for the foreign source.
+    return spec
+
+
+def test_summarise_refuses_foreign_domain_data_input() -> None:
+    """Result-preserving safety: a clk_b signal driven into a clk_a
+    single-clock subtree's DATA INPUT is a crossing the flattened design
+    reports at the subtree's first internal flop. The output-only
+    boundary summary seeds no input sink (P3 work), so abstracting it
+    would silently drop the crossing — summarise_subtree must refuse."""
+    parent, inst, sub = _foreign_input_parent()
+    assert abstract.summarise_subtree(parent, inst, sub, _foreign_input_spec()) is None
+
+
+def test_foreign_input_crossing_present_when_not_abstracted() -> None:
+    """The crossing the refusal preserves: with the clk_a flop standing
+    in for the subtree's first internal stage (the flattened view), the
+    normal flat walk reports the clk_b -> clk_a crossing. This is the
+    crossing abstraction would have dropped."""
+    parent, _inst, _sub = _foreign_input_parent()
+    # Replace the blackbox instance with its first internal clk_a flop to
+    # model the flattened subtree: src_q(clk_b).Q=4 -> stage0(clk_a).D=4.
+    stage0 = Cell(
+        name="u_sub.s0", type="$dff", connections={"CLK": (1,), "D": (4,), "Q": (5,)}
+    )
+    flat = Module(
+        name="top",
+        ports=parent.ports,
+        cells={
+            "src_q": parent.cells["src_q"],
+            "u_sub.s0": stage0,
+            "dst_q": parent.cells["dst_q"],
+        },
+        netnames={},
+    )
+    crossings = find_crossings(flat)
+    assert len(crossings) == 1
+    c = crossings[0]
+    assert c.src_clock == "clk_b"
+    assert c.dst_clock == "clk_a"
+
+
+def test_summarise_refuses_unconstrained_data_input() -> None:
+    """An unconstrained (untyped) top-level input feeding a clk_a
+    subtree's data input is a foreign source the boundary can't seed —
+    refuse to abstract."""
+    parent, inst, sub = _foreign_input_parent()
+    # Drive sub.d_in directly from a top input port typed <unconstrained>.
+    inst = Cell(
+        name="u_sub", type="sub", connections={"clk": (1,), "d_in": (3,), "d_out": (5,)}
+    )
+    p2 = Module(
+        name="top",
+        ports=parent.ports,
+        cells={"u_sub": inst, "dst_q": parent.cells["dst_q"]},
+        netnames={},
+    )
+    spec = _async_spec()
+    spec.port_clock["d_in"] = sdc_mod.UNCONSTRAINED_SENTINEL
+    assert abstract.summarise_subtree(p2, inst, sub, spec) is None
+
+
+def test_summarise_allows_same_domain_data_input() -> None:
+    """The control case: a clk_a (same-domain) data input does NOT block
+    abstraction — the subtree is summarised as before."""
+    parent, inst, sub = _foreign_input_parent()
+    # Re-clock the source flop to clk_a (same domain as the subtree).
+    src = Cell(
+        name="src_q", type="$dff", connections={"CLK": (1,), "D": (3,), "Q": (4,)}
+    )
+    p2 = Module(
+        name="top",
+        ports=parent.ports,
+        cells={"src_q": src, "u_sub": inst, "dst_q": parent.cells["dst_q"]},
+        netnames={},
+    )
+    summary = abstract.summarise_subtree(p2, inst, sub, _async_spec())
+    assert summary is not None
+    assert set(summary.ports) == {"d_out"}
+
+
 def test_summarise_subtree_refuses_multiclock(monkeypatch) -> None:
     """When the instance clock resolves to a clock that the detector
     rejects (multi-domain), the summariser returns None — the subtree is
@@ -370,13 +498,17 @@ def test_summarise_subtree_refuses_multiclock(monkeypatch) -> None:
 # --------------------------------------------------------------------------
 
 
-def _analyze_json(path: Path) -> dict:
+def _analyze_json_with(path: Path, sdc: Path) -> dict:
     result = runner.invoke(
         app,
-        ["analyze", "-n", str(path), "-s", str(SDC), "-f", "json"],
+        ["analyze", "-n", str(path), "-s", str(sdc), "-f", "json"],
     )
     assert result.exit_code in (0, 1), result.output
     return json.loads(result.output)
+
+
+def _analyze_json(path: Path) -> dict:
+    return _analyze_json_with(path, SDC)
 
 
 def _violation_keys(report: dict) -> list[tuple[str, str, object]]:
@@ -430,6 +562,44 @@ def test_fixture_loads_pipe_as_blackbox_sibling() -> None:
     assert blackboxes["pipe"].is_blackbox is True
     assert blackboxes["pipe"].cells == {}
     assert top.cells["u_pipe"].type == "pipe"
+
+
+# --------------------------------------------------------------------------
+# 2c — foreign-domain-input fixture: abstraction must be declined
+# --------------------------------------------------------------------------
+
+FI_DIR = Path(__file__).parent / "fixtures" / "foreign_input_no_abstract"
+FI_BB_JSON = FI_DIR / "foreign_input_no_abstract.json"
+FI_FLAT_JSON = FI_DIR / "foreign_input_no_abstract.flat.json"
+FI_SDC = FI_DIR / "foreign_input_no_abstract.sdc"
+
+
+def test_foreign_input_fixture_declines_abstraction() -> None:
+    """End-to-end: the SDC drives clk_b ``src_q`` into the clk_a ``pipe``
+    subtree's ``d_in``. The summariser must refuse to abstract ``pipe``
+    (no BoundarySummary), so the abstraction never masks the input-side
+    crossing the output-only boundary can't seed (P3 dst_boundary work).
+    """
+    from rtl_buddy_cdc import sdc as _sdc
+    from rtl_buddy_cdc.cli import _summarise_blackboxes
+
+    top, blackboxes = netlist.load_with_blackboxes(FI_BB_JSON)
+    assert set(blackboxes) == {"pipe"}
+    spec = _sdc.parse_file(FI_SDC)
+    _sdc.synthesize_unconstrained_inputs(spec, top)
+    boundaries = _summarise_blackboxes(top, blackboxes, spec)
+    assert boundaries == {}, "foreign-domain input must block abstraction"
+
+
+def test_foreign_input_flat_reports_async_crossing() -> None:
+    """The flattened fixture (``pipe`` inlined) reports the real clk_b ->
+    clk_a crossing at the subtree's first internal flop — the crossing
+    the refusal protects from being silently dropped."""
+    flat = _analyze_json_with(FI_FLAT_JSON, FI_SDC)
+    assert flat["summary"]["async_crossings"] == 1
+    (c,) = flat["crossings"]
+    assert c["src_clock"] == "clk_b"
+    assert c["dst_clock"] == "clk_a"
 
 
 def test_boundary_instance_clocks_helper() -> None:

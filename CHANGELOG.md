@@ -29,7 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs no new flag. Fixture pair `single_clock_leaf_abstract` proves the
   safety property — the flattened design and the auto-abstracted one
   produce identical violations and identical `summary.*`, with strictly
-  fewer flops walked in the abstracted run.
+  fewer flops walked in the abstracted run. To keep abstraction
+  result-preserving, the summariser **refuses to abstract** any subtree a
+  foreign-domain or unconstrained signal is driven *into* (a data input):
+  the output-only boundary seeds no input-side virtual sink yet (that is
+  P3's `dst_boundary` work), so abstracting such a subtree would silently
+  drop the crossing the flattened design reports at the subtree's first
+  internal flop. New fixture `foreign_input_no_abstract` pins this down.
 
 - **First-class blackbox boundary support** (#255, CDC-scaling epic #253
   phase 1). A large subtree can be excluded from flattening and analysed
