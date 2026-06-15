@@ -684,6 +684,7 @@ def _analyze_module_and_report(
                 cdc_010_heuristic=not cdc_010_no_heuristic,
                 cdc_018_depth_threshold=cdc_018_depth_threshold,
                 boundary_modules=frozenset(boundaries),
+                blackbox_modules=frozenset(blackboxes or {}),
             )
     else:
         domains = assign_domains(module)

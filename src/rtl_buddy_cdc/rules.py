@@ -111,6 +111,18 @@ class _RuleContext:
     # firing on it would diverge from the un-abstracted (flattened)
     # result the abstraction must preserve.
     boundary_modules: frozenset[str] = frozenset()
+    # Module names of *all* first-class blackbox boundary cells (#255),
+    # the superset of ``boundary_modules``. A blackbox the summariser
+    # *declined* to auto-abstract (foreign-domain data input, not
+    # provably single-clock) is still an opaque boundary instance: its
+    # internals are absent from the flattened netlist, so a clock on its
+    # clock pin is distribution into the subtree, not a wiring bug. We
+    # exempt these from CDC-008 too — otherwise a user who legitimately
+    # blackboxes a clocked subtree gets a spurious clock-as-data finding
+    # on the boundary instance even though abstraction was declined (a
+    # finding the un-blackboxed flattened design never reports). See
+    # rtl-buddy-cdc#257 review.
+    blackbox_modules: frozenset[str] = frozenset()
 
 
 def _build_context(
@@ -119,6 +131,7 @@ def _build_context(
     *,
     reset_hints: ResetHints | None = None,
     boundary_modules: frozenset[str] = frozenset(),
+    blackbox_modules: frozenset[str] = frozenset(),
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
 
@@ -190,6 +203,7 @@ def _build_context(
             module, hints=reset_hints
         ),
         boundary_modules=boundary_modules,
+        blackbox_modules=blackbox_modules,
     )
 
 
@@ -1697,12 +1711,16 @@ def check_cdc_008(
     for cell in module.cells.values():
         if cell.name in clock_net_cells:
             continue
-        # Auto-abstracted boundary instance (#256): an opaque
-        # single-clock subtree. We can't see its internals, so a clock
-        # on its pins is distribution into the subtree, not data — and
-        # firing here would diverge from the un-abstracted result this
-        # abstraction must preserve.
-        if cell.type in ctx.boundary_modules:
+        # Blackbox boundary instance (#255/#256): an opaque subtree
+        # whose internals are absent from the flattened netlist. A clock
+        # on its pins is distribution into the subtree, not data, so
+        # firing here would diverge from the un-abstracted (flattened)
+        # result. This covers both auto-abstracted (``boundary_modules``)
+        # and abstraction-*declined* (``blackbox_modules`` only) cells —
+        # a declined blackbox is still opaque, so a user who blackboxes a
+        # clocked subtree must not get a spurious clock-as-data finding
+        # on the boundary instance (rtl-buddy-cdc#257 review).
+        if cell.type in ctx.boundary_modules or cell.type in ctx.blackbox_modules:
             continue
         # Gate-level FF cells ($_DFF_*, $_DFFE_*, etc.) carry the
         # clock on pin ``C`` instead of ``CLK``; exempt that pin
@@ -4471,6 +4489,7 @@ def run_all(
     cdc_010_heuristic: bool = True,
     cdc_018_depth_threshold: int = CDC_018_DEFAULT_THRESHOLD,
     boundary_modules: frozenset[str] = frozenset(),
+    blackbox_modules: frozenset[str] = frozenset(),
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -4483,6 +4502,7 @@ def run_all(
         clock_spec,
         reset_hints=reset_hints,
         boundary_modules=boundary_modules,
+        blackbox_modules=blackbox_modules,
     )
     out: list[Violation] = []
     for rule_id, rule in RULES.items():

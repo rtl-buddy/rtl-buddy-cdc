@@ -8,7 +8,9 @@ P2 auto-abstract safety fixture: foreign-domain INPUT into a single-clock subtre
 
 If P2 abstracted `pipe` to its output port boundary it would seed only an output-side virtual source (clk_a) and NO input-side virtual sink, so the clk_b -> clk_a input crossing would silently vanish — the flattened design reports it, the abstracted design would not.
 
-The safety property: because a foreign-domain signal enters the subtree's data input, P2 must REFUSE to abstract `pipe` (until P3's dst_boundary input-sink seeding lands). The FLATTENED design and the "auto-abstract candidate" (pipe blackboxed) design must therefore produce IDENTICAL violations and identical summary.* counts: the blackboxed run declines the abstraction and the crossing is preserved, NOT dropped.
+The safety property: because a foreign-domain signal enters the subtree's data input, P2 must REFUSE to abstract `pipe` (until P3's dst_boundary input-sink seeding lands).
+
+Known divergence (deferred to P3 — rtl-buddy-cdc#257). With the abstraction declined, `pipe` stays an opaque blackbox carrying zero cells, so the clk_b -> clk_a crossing that the FLATTENED design reports at pipe's first internal flop (CDC-004) is NOT yet preserved in the blackboxed run: the real crossing lands inside the boundary, and input-side virtual-sink (`dst_boundary`) seeding is still deferred. The blackboxed run is therefore *conservative but not result-preserving* for this case — it reports zero crossings and zero violations rather than the flat design's one CDC-004. It does NOT invent a spurious finding: CDC-008 is exempt on blackbox boundary instances (rtl-buddy-cdc#257 review), so the boundary clock pin is not mistaken for clock-as-data. Full parity returns when P3's dst_boundary input-sink seeding lands.
 
 - **Status:** auxiliary
 - **Top module:** `foreign_input_no_abstract`

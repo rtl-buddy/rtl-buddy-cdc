@@ -602,6 +602,33 @@ def test_foreign_input_flat_reports_async_crossing() -> None:
     assert c["dst_clock"] == "clk_a"
 
 
+def test_foreign_input_blackbox_run_is_conservative_no_spurious_cdc008() -> None:
+    """CLI-level: the *declined-abstraction* blackbox run on this fixture
+    must be conservative, not wrong (rtl-buddy-cdc#257 review).
+
+    With ``pipe``'s abstraction declined (foreign-domain ``d_in``), the
+    blackbox stays opaque (zero cells), so the clk_b -> clk_a crossing
+    the FLATTENED design reports lands *inside* the boundary and is not
+    yet preserved — input-side ``dst_boundary`` seeding is deferred to
+    P3. That is an accepted, documented divergence. What must NOT happen
+    is the boundary instance's clock pin tripping CDC-008 (clock used as
+    data): a declined blackbox is still an opaque boundary, and inventing
+    a clock-as-data finding the flat design never reports would be a
+    materially wrong report. Assert the run is clean of any spurious
+    finding (zero violations) — in particular no CDC-008 on ``u_pipe``.
+    """
+    bb = _analyze_json_with(FI_BB_JSON, FI_SDC)
+    flat = _analyze_json_with(FI_FLAT_JSON, FI_SDC)
+
+    # Flat reports the real crossing as CDC-004; the blackboxed run does
+    # not yet (deferred), but it must never invent a finding.
+    assert any(v["rule_id"] == "CDC-004" for v in flat["violations"])
+    assert all(v["rule_id"] != "CDC-008" for v in bb["violations"])
+    assert bb["summary"]["violations"] == 0
+    assert bb["summary"]["crossings"] == 0
+    assert bb["summary"]["async_crossings"] == 0
+
+
 def test_boundary_instance_clocks_helper() -> None:
     """The diagnostic helper reports the clk_a domain the parent feeds
     into the boundary instance's clock pin."""

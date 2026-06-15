@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hierarchical / compositional boundary analysis** (#257, CDC-scaling
+  epic #253 phase 3). A block instantiated N times is now **analysed
+  once**: new pure `hierarchy.compose_boundaries` walks the parent's
+  blackbox instances, summarises each *distinct* module exactly once
+  (cached by the module name every instance shares), and re-applies the
+  cached `BoundarySummary` to every instance — the full flattened graph
+  is never materialised. It returns a `CompositionStats` record that
+  *proves* the sharing (`cache_hits`, `summarised`, `declined`,
+  `instances`); `cli._summarise_blackboxes` is now a thin wrapper over
+  it. The fixtures `shared_subtree_compose` and `single_clock_leaf_abstract`
+  pin the analyse-once / flat-vs-hierarchical parity properties. A
+  declined-abstraction blackbox (e.g. `foreign_input_no_abstract`, where
+  a foreign-domain signal enters a data input) stays an opaque boundary;
+  CDC-008 is exempt on **all** blackbox boundary instances — summarised
+  *and* declined — so a user who blackboxes a clocked subtree never gets
+  a spurious clock-as-data finding on the boundary instance. For a
+  declined blackbox the input-side crossing is *not yet* preserved
+  (output-only boundary; the input-side `dst_boundary` virtual-sink
+  seeding remains deferred), so the run is **conservative** for that
+  case, not result-preserving — it reports no crossing rather than the
+  flattened design's one, and never invents a finding.
+
 - **Auto-abstract single-clock subtrees** (#256, CDC-scaling epic #253
   phase 2). A blackboxed subtree whose entire clock set sits in one
   async-safe domain carries no internal crossing, so it is now
@@ -22,8 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is re-seeded as a virtual source so a downstream sink in a foreign
   domain is still reported (the single `Crossing` type gains additive
   optional `src_boundary` / `dst_boundary` endpoint fields — the public
-  JSON contract is unchanged). CDC-008 exempts boundary instances so a
-  clock entering an opaque subtree isn't mis-flagged as clock-used-as-data.
+  JSON contract is unchanged). CDC-008 exempts blackbox boundary
+  instances (both auto-abstracted and abstraction-declined) so a clock
+  entering an opaque subtree isn't mis-flagged as clock-used-as-data.
   The orchestration (loading blackbox siblings, summarising, threading
   the boundary set) lives in `cli.py`; the frontend-free `analyze` path
   needs no new flag. Fixture pair `single_clock_leaf_abstract` proves the
