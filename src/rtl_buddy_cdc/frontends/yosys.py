@@ -35,6 +35,32 @@ def elaborate(
     plugin_path: str | None = None,
     blackbox: list[str] | None = None,
 ) -> Module:
+    """Run yosys to produce a flattened netlist, returning the top module.
+
+    Back-compat single-return entry point; drops any blackbox sibling
+    modules. Use :func:`elaborate_with_blackboxes` to receive them (the
+    lint path does, so a ``--blackbox`` subtree auto-abstracts).
+    """
+    module, _blackboxes = elaborate_with_blackboxes(
+        sources,
+        top,
+        yosys_bin=yosys_bin,
+        keep_json=keep_json,
+        plugin_path=plugin_path,
+        blackbox=blackbox,
+    )
+    return module
+
+
+def elaborate_with_blackboxes(
+    sources: list[Path],
+    top: str,
+    *,
+    yosys_bin: str | None = None,
+    keep_json: Path | None = None,
+    plugin_path: str | None = None,
+    blackbox: list[str] | None = None,
+) -> tuple[Module, dict[str, Module]]:
     """Run yosys to produce a flattened netlist JSON, then load it.
 
     ``keep_json``, if set, copies the intermediate JSON to that path
@@ -111,10 +137,10 @@ def elaborate(
                 msg += f"\n{proc.stdout.strip()}"
             raise YosysError(msg)
 
-        module = netlist.load(tmp_json)
+        module, blackboxes = netlist.load_with_blackboxes(tmp_json)
         if keep_json is not None:
             shutil.copy(tmp_json, keep_json)
-        return module
+        return module, blackboxes
     finally:
         try:
             tmp_json.unlink()

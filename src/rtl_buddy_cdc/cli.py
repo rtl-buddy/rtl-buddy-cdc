@@ -22,7 +22,11 @@ from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
 from rtl_buddy_cdc.hierarchy import compose_boundaries
 from rtl_buddy_cdc.clock_network import find_clock_network_crossings
 from rtl_buddy_cdc.domain_map import build_domain_map
-from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
+from rtl_buddy_cdc.frontend import (
+    Frontend,
+    elaborate_with_blackboxes,
+    resolve_auto,
+)
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import TOOL_VERSION, AnalysisResult, _instance_path
@@ -413,10 +417,14 @@ def lint(
             typer.echo(f"src:      {s}")
 
     try:
-        module = elaborate(
+        # ``_with_blackboxes`` so the lint path auto-abstracts the same
+        # way ``analyze`` does (#257): a ``--blackbox`` subtree arrives as
+        # a sibling module the shared analysis core summarises, instead of
+        # being silently dropped by the single-return ``elaborate``.
+        module, blackboxes = elaborate_with_blackboxes(
             sources,
             top,
-            frontend=resolved_frontend,
+            resolved_frontend,
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             yosys_plugin=yosys_plugin,
@@ -458,6 +466,7 @@ def lint(
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
+        blackboxes=blackboxes or None,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -658,14 +667,17 @@ def _analyze_module_and_report(
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
         )
-        # Auto-abstract single-clock subtrees (#256): summarise every
+        # Auto-abstract single-clock subtrees (#256/#257): summarise each
         # blackbox sibling whose whole clock set sits in one async-safe
-        # domain to its port boundary, so ``find_crossings`` re-seeds
-        # the subtree's boundary crossings without walking the (absent)
-        # internal flops. Non-single-clock siblings get no summary and
-        # are simply not re-seeded (their internals aren't in the
-        # flattened top module to begin with).
-        boundaries = _summarise_blackboxes(module, blackboxes, spec)
+        # domain to its port boundary, keyed per instance so the same
+        # module under two domains is summarised correctly while identical
+        # instances hit the cache. ``find_crossings`` then re-seeds each
+        # subtree's boundary crossings (output-side virtual sources AND
+        # input-side virtual sinks) without walking the (absent) internal
+        # flops. Non-single-clock siblings get no summary and are simply
+        # not re-seeded. The same sequence runs for the lint path, which
+        # passes the blackbox siblings the frontend produced.
+        boundaries, comp_stats = compose_boundaries(module, blackboxes, spec)
         crossings = find_crossings(
             module,
             port_clock=spec.port_clock,
@@ -683,7 +695,7 @@ def _analyze_module_and_report(
                 reset_hints=reset_hints,
                 cdc_010_heuristic=not cdc_010_no_heuristic,
                 cdc_018_depth_threshold=cdc_018_depth_threshold,
-                boundary_modules=frozenset(boundaries),
+                boundary_modules=comp_stats.boundary_modules,
                 blackbox_modules=frozenset(blackboxes or {}),
             )
     else:
@@ -883,18 +895,19 @@ def _summarise_blackboxes(
     """Auto-abstract single-clock blackbox subtrees to port boundaries.
 
     Thin CLI-side wrapper over the compositional walk
-    (:func:`rtl_buddy_cdc.hierarchy.compose_boundaries`): each *distinct*
-    blackbox module is summarised once (cached by module identity) and
-    re-applied to every instance, so a block instantiated N times is
-    analysed once (#257). The returned map is keyed by *module name*
-    (matching each boundary cell's ``type``) so ``find_crossings`` can
-    re-seed the boundary's output ports as virtual sources.
+    (:func:`rtl_buddy_cdc.hierarchy.compose_boundaries`): each distinct
+    ``(module type, clock context)`` is summarised once (cached by that
+    pair) so identical instances are analysed once, while an instance in
+    a different domain gets its own correct summary (#257). The returned
+    map is keyed **per instance** (cell name) so ``find_crossings`` can
+    re-seed each instance's boundary crossings against the domain its
+    parent actually drives.
 
-    Kept as a named entry point because the test-suite and the
-    ``--blackbox`` orchestration import it directly; the
-    :class:`~rtl_buddy_cdc.hierarchy.CompositionStats` half of the
-    compose result is dropped here (callers that want the cache
-    accounting call ``compose_boundaries`` directly).
+    Kept as a named entry point because the test-suite imports it
+    directly; the :class:`~rtl_buddy_cdc.hierarchy.CompositionStats` half
+    of the compose result is dropped here (callers that want the cache
+    accounting or the CDC-008 boundary-module set call
+    ``compose_boundaries`` directly).
     """
     boundaries, _stats = compose_boundaries(module, blackboxes, spec)
     return boundaries

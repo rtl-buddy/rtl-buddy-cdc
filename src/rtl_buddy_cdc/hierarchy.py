@@ -5,15 +5,19 @@ cell (#255) and taught the summariser to abstract a single-clock
 subtree to its port boundary (#256). What was still implicit is the
 *compositional* contract the epic (#253) is actually about: a block
 instantiated N times must be **analysed once**, its boundary summary
-cached by module identity and re-applied to every instance, so the
-full flattened graph is never materialised.
+cached and re-applied to every instance, so the full flattened graph
+is never materialised.
 
 :func:`compose_boundaries` makes that explicit. It walks the parent's
-boundary instances, summarises each *distinct* blackbox module exactly
-once (keyed by module name — the cell ``type`` every instance shares),
-and returns the boundary map :func:`~rtl_buddy_cdc.domain.find_crossings`
-consumes plus a :class:`CompositionStats` record that *proves* the
-sharing (``instances`` ≥ ``summarised`` whenever a module is reused).
+boundary instances and summarises each distinct ``(module type, clock
+context)`` exactly once — caching by the pair so identical instances
+hit the cache (the analyse-once / perf win), while an instance in a
+*different* clock domain gets its own correct summary. The returned
+boundary map is keyed **per instance** so
+:func:`~rtl_buddy_cdc.domain.find_crossings` re-seeds each instance's
+boundary crossings against the domain its parent actually drives. A
+:class:`CompositionStats` record *proves* the sharing (``cache_hits``
+> 0 whenever an identical-context instance was reused).
 
 Pure orchestration: the per-subtree detection / summarisation lives in
 :mod:`rtl_buddy_cdc.abstract`; this module only walks instances and
@@ -25,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from rtl_buddy_cdc.abstract import summarise_subtree
+from rtl_buddy_cdc.abstract import _instance_clock, summarise_subtree
 from rtl_buddy_cdc.netlist import BoundarySummary, Module
 from rtl_buddy_cdc.sdc import ClockSpec
 
@@ -35,14 +39,18 @@ class CompositionStats:
     """Bookkeeping for one compositional boundary walk.
 
     ``instances`` is the number of blackbox *instances* the parent
-    carries; ``summarised`` is the number of *distinct* blackbox
-    modules a :class:`BoundarySummary` was built for. ``cache_hits``
-    counts instances whose module had already been summarised — the
-    direct evidence that a shared subtree was analysed once and reused
-    (``cache_hits == instances - distinct_modules_seen``). ``declined``
-    counts distinct modules the summariser refused to abstract (not
-    provably single-clock, or a foreign-domain data input it can't
-    seed); those instances fall through to the normal flat walk.
+    carries; ``summarised`` is the number of instances that received a
+    :class:`BoundarySummary` (one entry per abstracted instance in the
+    returned per-instance map). ``cache_hits`` counts instances whose
+    ``(module type, clock context)`` had already been summarised — the
+    direct evidence that an identical subtree was analysed once and
+    reused rather than recomputed. ``declined`` counts distinct module
+    types the summariser refused to abstract for at least one context
+    (not provably single-clock); those instances fall through to the
+    normal flat walk. ``boundary_modules`` is the set of distinct module
+    *types* that were summarised for at least one instance — the set
+    CDC-008 exempts from its clock-as-data check (the boundary cell's
+    clock pin is distribution into the opaque subtree, not data).
     """
 
     instances: int = 0
@@ -50,12 +58,13 @@ class CompositionStats:
     cache_hits: int = 0
     declined: int = 0
     declined_modules: frozenset[str] = field(default_factory=frozenset)
+    boundary_modules: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def shared_subtree_reused(self) -> bool:
-        """True iff at least one blackbox module was instantiated more
-        than once and its summary served from cache rather than being
-        recomputed."""
+        """True iff at least one ``(module, clock context)`` was
+        instantiated more than once and its summary served from cache
+        rather than being recomputed."""
         return self.cache_hits > 0
 
 
@@ -64,25 +73,27 @@ def compose_boundaries(
     blackboxes: dict[str, Module] | None,
     spec: ClockSpec,
 ) -> tuple[dict[str, BoundarySummary], CompositionStats]:
-    """Summarise every distinct blackbox subtree once and compose.
+    """Summarise every distinct ``(module, clock context)`` once and compose.
 
     Walks each boundary instance in ``top`` (an ordinary cell whose
-    ``type`` is a blackbox module name), summarising the *module* the
-    first time it is seen and serving every later instance of the same
-    module from the cache — so a block instantiated N times costs one
-    :func:`~rtl_buddy_cdc.abstract.summarise_subtree` call, not N. The
-    flattened internals of the subtree never exist in ``top`` to begin
-    with; the returned :class:`BoundarySummary` map lets
-    :func:`~rtl_buddy_cdc.domain.find_crossings` re-seed each instance's
-    boundary crossings in their place.
+    ``type`` is a blackbox module name). Summarisation is cached by the
+    ``(module type, clock context)`` pair: the first instance of a given
+    type-in-a-domain costs one
+    :func:`~rtl_buddy_cdc.abstract.summarise_subtree` call and every
+    later instance with the *same* context is served from cache (the
+    analyse-once / perf win). An instance of the same type in a
+    *different* clock domain is summarised separately, so its boundary
+    crossings are seeded against the domain its parent actually drives —
+    the per-instance correctness the type-only keying could not express.
 
-    Returns ``(boundaries, stats)``. ``boundaries`` is keyed by module
-    name (matching each instance cell's ``type``) and only contains
-    modules that were *provably* single-clock — a module the summariser
-    declined is absent (its instances are then analysed by the normal
-    flat walk, which sees no internals so reports nothing through the
-    opaque boundary). ``stats`` records the instance/cache accounting
-    the parity tests assert against.
+    Returns ``(boundaries, stats)``. ``boundaries`` is keyed **per
+    instance** (the cell name) and only contains instances whose
+    ``(module, context)`` was *provably* single-clock — a declined
+    instance is absent (analysed by the normal flat walk, which sees no
+    internals through the opaque boundary). ``find_crossings`` resolves a
+    cell's summary instance-first, falling back to a module-type key for
+    legacy hand-built callers. ``stats.boundary_modules`` carries the
+    distinct module types abstracted (for CDC-008's boundary exemption).
 
     Pure: no I/O, no mutation of ``top`` or ``blackboxes``.
     """
@@ -90,31 +101,40 @@ def compose_boundaries(
     if not blackboxes:
         return out, CompositionStats()
 
-    # First-summary cache, keyed by module identity (the cell ``type``).
-    # ``None`` records a module we summarised and *declined* so a later
-    # instance of the same declined module is also a cache hit (analysed
-    # once), not a re-summarise.
-    seen: dict[str, BoundarySummary | None] = {}
+    # Summary cache keyed by ``(module type, clock context)``. ``None``
+    # records a context we summarised and *declined* so a later instance
+    # of the same context is also a cache hit (analysed once), not a
+    # re-summarise. Keying on the resolved clock context (not just the
+    # type) is what makes one module instantiated under two domains
+    # correct while still hitting the cache for identical instances.
+    seen: dict[tuple[str, str | None], BoundarySummary | None] = {}
     instances = 0
     cache_hits = 0
     declined_modules: set[str] = set()
+    boundary_modules: set[str] = set()
 
-    for cell in top.cells.values():
+    for inst_name, cell in top.cells.items():
         sub = blackboxes.get(cell.type)
         if sub is None:
             continue
         instances += 1
-        if cell.type in seen:
-            # Shared subtree: the module was already summarised (or
-            # declined) for an earlier instance — reuse, don't recompute.
+        context = _instance_clock(top, cell, pin_clocks=spec.pin_clocks)
+        cache_key = (cell.type, context)
+        if cache_key in seen:
+            # Identical subtree in an identical clock context: reuse the
+            # already-computed (or already-declined) summary.
             cache_hits += 1
-            continue
-        summary = summarise_subtree(top, cell, sub, spec, pin_clocks=spec.pin_clocks)
-        seen[cell.type] = summary
+            summary = seen[cache_key]
+        else:
+            summary = summarise_subtree(
+                top, cell, sub, spec, pin_clocks=spec.pin_clocks
+            )
+            seen[cache_key] = summary
         if summary is None:
             declined_modules.add(cell.type)
         else:
-            out[cell.type] = summary
+            out[inst_name] = summary
+            boundary_modules.add(cell.type)
 
     stats = CompositionStats(
         instances=instances,
@@ -122,5 +142,6 @@ def compose_boundaries(
         cache_hits=cache_hits,
         declined=len(declined_modules),
         declined_modules=frozenset(declined_modules),
+        boundary_modules=frozenset(boundary_modules),
     )
     return out, stats
