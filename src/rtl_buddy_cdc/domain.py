@@ -246,6 +246,8 @@ def trace_clock_root(
     drivers: dict[Bit, tuple[str, str]] | None = None,
     max_depth: int = 16,
     bit_to_clock: dict[Bit, str] | None = None,
+    *,
+    allow_divider: bool = True,
 ) -> str | None:
     """Resolve a CLK net bit to the top-level port that ultimately drives it.
 
@@ -275,7 +277,15 @@ def trace_clock_root(
     if drivers is None:
         drivers = _bit_drivers(module)
     seen: set[Bit] = set()
-    return _trace(module, bit, drivers, seen, max_depth, bit_to_clock or {})
+    return _trace(
+        module,
+        bit,
+        drivers,
+        seen,
+        max_depth,
+        bit_to_clock or {},
+        allow_divider=allow_divider,
+    )
 
 
 def _trace(
@@ -285,6 +295,8 @@ def _trace(
     seen: set[Bit],
     depth: int,
     bit_to_clock: dict[Bit, str],
+    *,
+    allow_divider: bool = True,
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
@@ -311,7 +323,15 @@ def _trace(
     if ctype in _BUFFER_TYPES:
         a = cell.connections.get("A", ())
         if a:
-            return _trace(module, a[0], drivers, seen, depth - 1, bit_to_clock)
+            return _trace(
+                module,
+                a[0],
+                drivers,
+                seen,
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+            )
         return None
 
     # Clock gate — look at both inputs; if exactly one resolves to a
@@ -323,12 +343,28 @@ def _trace(
         a = cell.connections.get("A", ())
         b = cell.connections.get("B", ())
         a_root = (
-            _trace(module, a[0], drivers, set(seen), depth - 1, bit_to_clock)
+            _trace(
+                module,
+                a[0],
+                drivers,
+                set(seen),
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+            )
             if a
             else None
         )
         b_root = (
-            _trace(module, b[0], drivers, set(seen), depth - 1, bit_to_clock)
+            _trace(
+                module,
+                b[0],
+                drivers,
+                set(seen),
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+            )
             if b
             else None
         )
@@ -340,7 +376,13 @@ def _trace(
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
                 root = _trace(
-                    module, in_bits[0], drivers, set(seen), depth - 1, bit_to_clock
+                    module,
+                    in_bits[0],
+                    drivers,
+                    set(seen),
+                    depth - 1,
+                    bit_to_clock,
+                    allow_divider=allow_divider,
                 )
                 if root is not None:
                     return root
@@ -348,11 +390,23 @@ def _trace(
 
     # Clock divider — flop Q output. Trace the source flop's CLK back
     # to its root. Handles both higher-level ($dff*) and gate-level
-    # ($_DFF*) families via flop_clk_pin.
-    if is_ff_cell(ctype) and out_port == "Q":
+    # ($_DFF*) families via flop_clk_pin. Suppressed when
+    # ``allow_divider`` is False: a *data* net driven by a flop Q would
+    # otherwise resolve to that flop's clock and be misread as a clock
+    # net — the FIX-1 clock-pin classifier of a non-allow-listed
+    # blackbox port must not make that mistake.
+    if allow_divider and is_ff_cell(ctype) and out_port == "Q":
         clk_bits = flop_clk_pin(cell)
         if clk_bits:
-            return _trace(module, clk_bits[0], drivers, seen, depth - 1, bit_to_clock)
+            return _trace(
+                module,
+                clk_bits[0],
+                drivers,
+                seen,
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+            )
 
     return None
 

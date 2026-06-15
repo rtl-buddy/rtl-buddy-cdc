@@ -29,7 +29,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from rtl_buddy_cdc.abstract import _instance_clock, summarise_subtree
+from rtl_buddy_cdc.abstract import _instance_clocks, summarise_subtree
+from rtl_buddy_cdc.domain import Crossing
 from rtl_buddy_cdc.netlist import BoundarySummary, Module
 from rtl_buddy_cdc.sdc import ClockSpec
 
@@ -107,7 +108,7 @@ def compose_boundaries(
     # re-summarise. Keying on the resolved clock context (not just the
     # type) is what makes one module instantiated under two domains
     # correct while still hitting the cache for identical instances.
-    seen: dict[tuple[str, str | None], BoundarySummary | None] = {}
+    seen: dict[tuple[str, frozenset[str]], BoundarySummary | None] = {}
     instances = 0
     cache_hits = 0
     declined_modules: set[str] = set()
@@ -118,7 +119,13 @@ def compose_boundaries(
         if sub is None:
             continue
         instances += 1
-        context = _instance_clock(top, cell, pin_clocks=spec.pin_clocks)
+        # Clock CONTEXT is the full frozenset of clock roots the instance
+        # carries (FIX 1) — not a single root, so a dual-clock IP keys
+        # distinctly from a single-clock one and identical instances still
+        # hit the cache under the same root set.
+        context = _instance_clocks(
+            top, cell, sub, spec=spec, pin_clocks=spec.pin_clocks
+        ).roots
         cache_key = (cell.type, context)
         if cache_key in seen:
             # Identical subtree in an identical clock context: reuse the
@@ -145,3 +152,31 @@ def compose_boundaries(
         boundary_modules=frozenset(boundary_modules),
     )
     return out, stats
+
+
+def reconvergence_unsafe_instances(crossings: list[Crossing]) -> set[str]:
+    """Instances with foreign-domain crossings into >=2 DISTINCT input ports.
+
+    FIX 3 (soundness audit of #259). A single-clock block that *is*
+    abstracted but has two or more distinct foreign-domain crossings
+    entering DISTINCT input ports can hide an internal reconvergence
+    (CDC-005) the flat design would flag — the boundary collapse severs
+    the internal graph, so the reconvergence among those ports cannot be
+    checked at the boundary. Conservative policy: refuse to abstract such
+    a block.
+
+    Groups the boundary-*sink* crossings (those carrying ``dst_boundary``)
+    by instance and counts DISTINCT ``dst_boundary`` ports per instance.
+    An instance with >=2 distinct incoming ports is reconvergence-unsafe.
+    A single multi-bit bus on ONE port counts as 1 port (safe — the
+    multi-bit rules cover it).
+
+    Pure: reads only the crossing list.
+    """
+    ports_by_inst: dict[str, set[str]] = {}
+    for c in crossings:
+        if c.dst_boundary is None:
+            continue
+        inst, port = c.dst_boundary
+        ports_by_inst.setdefault(inst, set()).add(port)
+    return {inst for inst, ports in ports_by_inst.items() if len(ports) >= 2}

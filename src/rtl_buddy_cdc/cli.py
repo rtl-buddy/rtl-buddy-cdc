@@ -18,8 +18,12 @@ from rtl_buddy_cdc import (
     sdc as sdc_mod,
     waivers as waivers_mod,
 )
+from rtl_buddy_cdc.abstract import instance_clock_pins
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
-from rtl_buddy_cdc.hierarchy import compose_boundaries
+from rtl_buddy_cdc.hierarchy import (
+    compose_boundaries,
+    reconvergence_unsafe_instances,
+)
 from rtl_buddy_cdc.clock_network import find_clock_network_crossings
 from rtl_buddy_cdc.domain_map import build_domain_map
 from rtl_buddy_cdc.frontend import (
@@ -685,6 +689,76 @@ def _analyze_module_and_report(
             clock_for_port=spec.clock_for_port,
             boundaries=boundaries,
         )
+        # FIX 3 (reconvergence gate): a single-clock block that IS
+        # abstracted but has >=2 distinct foreign-domain crossings entering
+        # DISTINCT input ports can hide an internal reconvergence (CDC-005)
+        # the flat design would flag. The boundary star-collapse severs the
+        # subtree's internal graph, so that reconvergence cannot be checked
+        # at the boundary. Conservative policy: REFUSE to abstract such a
+        # block — drop it from ``boundaries`` (so it becomes opaque, no
+        # boundary crossings emitted for it) and RE-RUN find_crossings.
+        unsafe = reconvergence_unsafe_instances(crossings)
+        reconv_declined: list[str] = []
+        if unsafe:
+            reconv_ports = {
+                inst: sorted(
+                    {
+                        c.dst_boundary[1]
+                        for c in crossings
+                        if c.dst_boundary is not None and c.dst_boundary[0] == inst
+                    }
+                )
+                for inst in unsafe
+            }
+            reduced = {k: v for k, v in boundaries.items() if k not in unsafe}
+            for inst in sorted(unsafe):
+                reconv_declined.append(
+                    f"blackbox `{inst}` (`{module.cells[inst].type}`) has crossings "
+                    f"into {len(reconv_ports[inst])} input ports; reconvergence "
+                    f"among them cannot be checked at the boundary — flatten it or "
+                    f"analyse standalone."
+                )
+            boundaries = reduced
+            comp_stats = dataclasses.replace(
+                comp_stats,
+                boundary_modules=frozenset(module.cells[k].type for k in boundaries),
+            )
+            crossings = find_crossings(
+                module,
+                port_clock=spec.port_clock,
+                pin_clocks=spec.pin_clocks,
+                clock_for_port=spec.clock_for_port,
+                boundaries=boundaries,
+            )
+        # FIX 2: surface every declined/opaque blackbox (multi-clock /
+        # unresolved per FIX 1, plus the reconvergence-unsafe ones from
+        # FIX 3) as a visible diagnostic. A declined instance is absent
+        # from ``boundaries`` — its zero-cell internals are unanalysed —
+        # so without this the drop is silent. Convert it into a documented
+        # one through the existing warning surface.
+        bb_warnings: list[str] = [
+            f"blackbox `{mod}` left opaque — internal crossings not analysed; "
+            f"flatten it or constrain its clocks to abstract."
+            for mod in sorted(comp_stats.declined_modules)
+        ]
+        bb_warnings.extend(reconv_declined)
+        spec.partial_warnings.extend(bb_warnings)
+        if bb_warnings and fmt is OutputFormat.text and not no_findings:
+            for w in bb_warnings:
+                typer.echo(f"warning: {w}", err=True)
+        # FIX 4: per-instance clock-pin map for CDC-008's clock-as-data
+        # exemption — exempt only a blackbox instance's CLOCK pins, not
+        # the whole cell, so a clock wired into a genuine DATA input of a
+        # blackbox still fires.
+        boundary_clock_pins: dict[str, frozenset[str]] = {}
+        if blackboxes:
+            for inst_name, cell in module.cells.items():
+                sub = blackboxes.get(cell.type)
+                if sub is None:
+                    continue
+                boundary_clock_pins[inst_name] = instance_clock_pins(
+                    module, cell, sub, spec=spec, pin_clocks=spec.pin_clocks
+                )
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:
             violations = run_all_rules(
@@ -697,6 +771,7 @@ def _analyze_module_and_report(
                 cdc_018_depth_threshold=cdc_018_depth_threshold,
                 boundary_modules=comp_stats.boundary_modules,
                 blackbox_modules=frozenset(blackboxes or {}),
+                boundary_clock_pins=boundary_clock_pins,
             )
     else:
         domains = assign_domains(module)
