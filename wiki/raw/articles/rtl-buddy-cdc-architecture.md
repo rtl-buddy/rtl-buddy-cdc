@@ -36,9 +36,15 @@ swappable so the rule pack doesn't depend on a specific toolchain.
   partitioning only**; numeric delays and slack are ignored.
 - Not a Tcl interpreter. The SDC parser is a deliberate `shlex`-based
   pattern matcher, not a real Tcl host (see [§6](#6-sdc-parsing)).
-- Not a layered hierarchical analyzer. Today the netlist must be
-  fully flattened. Hierarchical reporting is on the roadmap (see
-  [`README.md`](../README.md)) but not architecturally present.
+- Not (yet) a fully hierarchical analyzer. The netlist is still
+  analysed as one flattened top, but since the #253 CDC-scaling work it
+  may carry **blackbox boundary** siblings: single-clock subtrees are
+  summarised to their port boundary and composed in, rather than walked
+  flop-by-flop (§4.8–§4.9). This is a deliberately conservative,
+  partial form — it abstracts only provably-single-clock subtrees and
+  errs toward over-reporting. A full per-module hierarchical pass that
+  recognises synchronisers *inside* an abstracted subtree (the
+  `synchronised` refinement, §4.9) is future work, not yet present.
 
 ## 2. Pipeline at a glance
 
@@ -455,6 +461,90 @@ blackbox sibling modules". It returns `(top, blackboxes)` where
 boundary cells resolve their summary. Two non-`$` non-blackbox modules
 is still ambiguous and raises. `netlist.load` stays as the
 back-compat single-return entry point (drops the siblings).
+
+See §4.9 for what this collapse preserves versus discards, and for the
+status and roadmap of the (currently inert) `synchronised` field.
+
+### 4.9 What abstraction preserves, what it collapses, and the `synchronised` hook
+
+**The boundary is a star-collapse onto one clock domain, not an
+input→output graph.** A summarised subtree is reduced to a single
+structural claim — *everything inside is clock domain `D`*
+(`BoundarySummary.clock`). Every output/inout port becomes a virtual
+**source** in `D`; every data input/inout port becomes a virtual
+**sink** captured in `D`. The subtree's *internal* connectivity — which
+input fans out to which output, and whether a path is registered or
+purely combinational — is **discarded by design**. There is no per-port
+input→output relation in the summary.
+
+Only the *subtree-internal* graph collapses. The **parent-side** fanin
+and fanout of the boundary ports are untouched: they are real nets in
+the flattened top, and `find_crossings` seeds the virtual source/sink
+onto those nets and walks the parent exactly as it would for any flop or
+port. A crossing from a boundary output into downstream parent logic, or
+from upstream parent logic into a boundary input, is found precisely.
+
+Precision characterisation:
+
+- **Exact (result-preserving)** for genuine single-clock *sequential*
+  logic — inputs registered before use, outputs driven by registers. The
+  flattened flops would show inputs captured in `D` and outputs launched
+  from `D`, which is exactly what the summary asserts. This is the target
+  case and the reason the collapse is safe.
+- **Over-approximating but never under-reporting** for *combinational
+  feed-through*. A foreign-domain input (`X`) that passes combinationally
+  to an output and on to a sink in domain `E` is one real path `X→E`; the
+  model splits it into two fictitious hops `X→D` (at the input sink) and
+  `D→E` (at the output source). This can raise a **false positive** —
+  e.g. a single-bit input that returns to a sink in its *own* domain is
+  flagged at both hops though the real circuit has no crossing — but it
+  can never *drop* a real crossing. For a CDC checker that is the correct
+  direction to err. (This is the documented conservative edge from the
+  #253 epic PR.)
+- **Never silently collapses a real internal crossing.**
+  `is_single_clock_subtree` refuses to abstract any subtree it cannot
+  prove sits in one async-safe domain (multiple async clocks, an
+  unresolved/forwarded clock, or differing roots not declared
+  synchronous); such a subtree is walked flat. Abstraction applies only
+  where there is provably no internal crossing to lose.
+
+**The `synchronised` field is the seam to a more precise model — and is
+presently inert.** `PortBoundary.synchronised` is hard-wired `False` by
+the summariser (`abstract.py`) and is not yet consumed (the
+`find_crossings` boundary loop only reserves space for it: *"synchronised
+ports never reach here — the summariser drops them before they become a
+boundary"*). So today the model assumes *no* boundary path is
+synchronised — the direct source of the conservative over-reporting
+above. Wiring it live means:
+
+- **Effect of `True`.** The summariser omits that port from `ports` /
+  `input_ports`, so it never becomes a virtual source/sink and raises no
+  crossing (a softer variant emits a benign *recognised-synchroniser*
+  finding instead of dropping it). Two directions: an **output** with a
+  built-in synchroniser (clean data leaves the IP), or an **input** whose
+  first internal stage is a proper two-FF synchroniser (the boundary
+  crossing is the legitimate, handled one — this is what would retire the
+  single-bit CDC-001 over-report).
+- **Detection is the hard part.** Proving a port synchronised means
+  running the existing synchroniser recognition (`_sync_chain_depth`,
+  `user_sync_flop_names`) over the subtree's register→port paths — but
+  the blackbox has **zero cells** by construction, so its internals are
+  not in the flat netlist. The bit must come from either **(a)** a real
+  per-module analysis pass — analyse each subtree *module* once in
+  isolation, detect its boundary synchronisers, and record `synchronised`
+  per port in the cached `BoundarySummary` (the compositional vision of
+  `compose_boundaries`, which already caches by `(module-type,
+  clock-context)`); or **(b)** a user annotation reusing the
+  `USER_SYNC_ATTRS` mechanism (or a `cdc.yaml` boundary declaration),
+  asserting "module *M*'s output *O* is synchronised" — the boundary
+  analogue of `user_sync_flop_names`.
+- **Soundness asymmetry.** Every other approximation in this model errs
+  toward over-reporting. `synchronised=True` is the *only* lever that can
+  make the tool **under**-report (trust a synchroniser that is not
+  there), so it may be set only when *proven* (route a) or *explicitly
+  promised* (route b), and it defaults `False`. The present pessimism is
+  the deliberate price of that default until one of the two detection
+  sources exists.
 
 ## 5. Clock-domain tracing
 
