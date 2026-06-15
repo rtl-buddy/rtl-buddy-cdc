@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TypedDict
 
 from rtl_buddy_cdc.flops import Flop, find_flops, flop_clk_pin, is_ff_cell
-from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Module
+from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module
 
 
 class _CrossingGroup(TypedDict):
@@ -132,6 +132,82 @@ class Crossing:
 # unconstrained sentinel so ``are_async`` treats it as async to every
 # real clock (a sink in any known domain is conservatively a crossing).
 _UNKNOWN_BOUNDARY_CLOCK = "<unconstrained>"
+
+# Cell ``type`` stamped on a synthetic boundary-*sink* flop standing in
+# for a blackbox input pin (P3/#257). Deliberately not a recognised FF
+# type, so ``is_ff_cell`` is False and rule helpers that special-case
+# real flops (CDC-008's clock-pin exemption, the dffe-EN gating check)
+# treat it as an ordinary opaque destination. The fake clock-pin bit
+# never participates in clock tracing — the sink's domain is recorded
+# directly on its :class:`FlopDomain`.
+_BOUNDARY_SINK_TYPE = "$boundary_sink"
+_BOUNDARY_SINK_CLK: Bit = "<boundary-sink-clk>"
+
+
+def _boundary_for(
+    boundaries: dict[str, "BoundarySummary"],
+    instance: str,
+    module_type: str,
+) -> "BoundarySummary | None":
+    """Resolve a boundary instance's summary, instance key first.
+
+    ``compose_boundaries`` (P3/#257) keys the boundary map by *instance*
+    path so the same module type instantiated in two different clock
+    domains gets a correct per-instance summary. Hand-built callers /
+    the legacy single-domain shape may still key by module *type*; the
+    type key is the fallback. Instance-first then type means both forms
+    work without double-counting (each cell resolves to one summary).
+    """
+    summary = boundaries.get(instance)
+    if summary is not None:
+        return summary
+    return boundaries.get(module_type)
+
+
+def _boundary_sink_flops(
+    module: Module,
+    boundaries: dict[str, "BoundarySummary"],
+) -> tuple[list[FlopDomain], dict[str, tuple[str, str]]]:
+    """Build virtual-sink :class:`FlopDomain`s for blackbox input pins.
+
+    For each boundary instance and each summarised *input* port, a
+    synthetic :class:`Flop` stands in for the boundary input pin the
+    flattened subtree's first internal flop would have captured. Its
+    ``D`` bits are the parent's connection to that input port and its
+    clock domain is the boundary's own resolved clock
+    (``BoundarySummary.clock``) — so the existing flop/port/boundary
+    forward walks, on reaching those ``D`` bits from a foreign-domain
+    source, emit a crossing *into* the boundary (the mirror of the
+    output-port virtual-source seeding). ``None`` (unconstrained
+    boundary clock) is left as the destination clock so a foreign source
+    still crosses; same-domain data does not (``dst_clock == src_clock``
+    is filtered at record-creation).
+
+    Returns ``(sink_domains, lookup)`` where ``lookup`` maps each
+    synthetic flop cell name to the ``(instance, port)`` pair the
+    emitting walk stamps onto ``Crossing.dst_boundary``.
+    """
+    sink_domains: list[FlopDomain] = []
+    lookup: dict[str, tuple[str, str]] = {}
+    for inst_name, cell in module.cells.items():
+        summary = _boundary_for(boundaries, inst_name, cell.type)
+        if summary is None or not summary.input_ports:
+            continue
+        for port_name in summary.input_ports:
+            conn = cell.connections.get(port_name, ())
+            d_bits = tuple(b for b in conn if isinstance(b, int))
+            if not d_bits:
+                continue
+            sink_name = f"{inst_name}.{port_name}"
+            sink_cell = Cell(
+                name=sink_name,
+                type=_BOUNDARY_SINK_TYPE,
+                connections={"D": d_bits},
+            )
+            sink_flop = Flop(cell=sink_cell, clk=_BOUNDARY_SINK_CLK, d=d_bits, q=())
+            sink_domains.append(FlopDomain(flop=sink_flop, clock=summary.clock))
+            lookup[sink_name] = (inst_name, port_name)
+    return sink_domains, lookup
 
 
 # Cell types that act as a transparent buffer on the clock network —
@@ -397,11 +473,29 @@ def find_crossings(
         for fd in assign_domains(module, pin_clocks, clock_for_port=clock_for_port)
     }
     consumers = _build_bit_consumers(module)
+
+    # Synthetic boundary-*sink* flops (P3/#257): a blackbox input pin in
+    # a domain foreign to the boundary's own clock is a crossing INTO the
+    # subtree. Fold these into ``domains`` / ``flop_by_d_bit`` so the
+    # flop-, port-, and boundary-source walks below all reach them with
+    # no special-casing; the emitting site stamps ``dst_boundary`` from
+    # ``boundary_sink_lookup``. The synthetic flops are never in
+    # ``module.cells`` and so never affect rule context built from the
+    # real netlist.
+    boundary_sink_lookup: dict[str, tuple[str, str]] = {}
+    if boundaries:
+        sink_domains, boundary_sink_lookup = _boundary_sink_flops(module, boundaries)
+        for fd in sink_domains:
+            domains[fd.flop.cell.name] = fd
+
     flop_by_d_bit: dict[Bit, list[Flop]] = defaultdict(list)
     for fd in domains.values():
         for b in fd.flop.d:
             if isinstance(b, int):
                 flop_by_d_bit[b].append(fd.flop)
+
+    def _dst_boundary_of(dst_flop: Flop) -> tuple[str, str] | None:
+        return boundary_sink_lookup.get(dst_flop.cell.name)
 
     # Grouped per (src_flop, dst_flop) pair so a multi-bit bus or a fanout
     # that hits the same destination flop on multiple D bits collapses to
@@ -478,6 +572,7 @@ def find_crossings(
             dst_clock=g["dst_clock"],
             min_hops=g["min_hops"],
             width=len(g["bits"]),
+            dst_boundary=_dst_boundary_of(g["dst_flop"]),
         )
         for g in grouped.values()
     ]
@@ -547,6 +642,7 @@ def find_crossings(
                     min_hops=pg["min_hops"],
                     width=len(pg["bits"]),
                     src_port=pg["port"],
+                    dst_boundary=_dst_boundary_of(pg["dst_flop"]),
                 )
             )
 
@@ -562,7 +658,7 @@ def find_crossings(
     if boundaries:
         bnd_grouped: dict[tuple[str, str, str], _BoundaryCrossingGroup] = {}
         for inst_name, cell in module.cells.items():
-            summary = boundaries.get(cell.type)
+            summary = _boundary_for(boundaries, inst_name, cell.type)
             if summary is None:
                 continue
             for port_name, pb in summary.ports.items():
@@ -631,6 +727,7 @@ def find_crossings(
                     min_hops=bg["min_hops"],
                     width=len(bg["bits"]),
                     src_boundary=(bg["instance"], bg["boundary_port"]),
+                    dst_boundary=_dst_boundary_of(bg["dst_flop"]),
                 )
             )
 

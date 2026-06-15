@@ -28,15 +28,7 @@ that loads the blackbox siblings and attaches the summaries lives in
 
 from __future__ import annotations
 
-from collections import defaultdict
-
-from rtl_buddy_cdc.domain import (
-    _bit_drivers,
-    _build_bit_consumers,
-    _cell_outputs,
-    assign_domains,
-    trace_clock_root,
-)
+from rtl_buddy_cdc.domain import _bit_drivers, trace_clock_root
 from rtl_buddy_cdc.flops import flop_clk_pin, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, PortBoundary
 from rtl_buddy_cdc.sdc import ClockSpec
@@ -118,122 +110,6 @@ def _instance_clock(
     return None
 
 
-def _data_bit_domains(
-    parent: Module,
-    spec: ClockSpec,
-    *,
-    pin_clocks: dict[str, str] | None = None,
-) -> dict[Bit, set[str | None]]:
-    """Forward-propagate each known source domain onto every net bit.
-
-    Seeds from each flop's ``Q`` bits (its physical clock domain, via
-    :func:`assign_domains`) and from each SDC-typed input port (its
-    ``clock_for_port`` domain — including the ``<unconstrained>``
-    sentinel for inputs the SDC never typed), then pushes those domains
-    through combinational cells exactly as :func:`find_crossings` walks
-    the data fanout (flops are sinks, not transit nodes; ``$scopeinfo``
-    is skipped). The result maps each reachable bit to the *set* of
-    source domains that can drive it.
-
-    This is the data-side companion to :func:`trace_clock_root` (which
-    resolves *clock* nets): it lets the summariser learn what domain the
-    parent drives into a blackbox instance's data **input** pins, so a
-    foreign-domain input — which the flattened design would flag as a
-    crossing at the subtree's first internal flop — blocks abstraction
-    rather than silently vanishing.
-    """
-    consumers = _build_bit_consumers(parent)
-    seeds: dict[Bit, set[str | None]] = defaultdict(set)
-
-    for fd in assign_domains(parent, pin_clocks, clock_for_port=spec.clock_for_port):
-        if fd.clock is None:
-            continue
-        for b in fd.flop.q:
-            if isinstance(b, int):
-                seeds[b].add(fd.clock)
-
-    for port_name, port in parent.ports.items():
-        if port.direction != "input":
-            continue
-        clk = spec.clock_for_port(port_name)
-        if clk is None:
-            continue
-        for b in port.bits:
-            if isinstance(b, int):
-                seeds[b].add(clk)
-
-    reached: dict[Bit, set[str | None]] = defaultdict(set)
-    frontier: list[Bit] = []
-    for b, doms in seeds.items():
-        reached[b] |= doms
-        frontier.append(b)
-
-    while frontier:
-        nxt: list[Bit] = []
-        for bit in frontier:
-            doms = reached[bit]
-            for cell_name, _port, _idx in consumers.get(bit, ()):
-                cell = parent.cells[cell_name]
-                if cell.type == "$scopeinfo" or is_ff_cell(cell.type):
-                    continue
-                for ob in _cell_outputs(cell):
-                    if not isinstance(ob, int):
-                        continue
-                    before = reached[ob]
-                    new = doms - before
-                    if new:
-                        reached[ob] = before | new
-                        nxt.append(ob)
-        frontier = nxt
-    return reached
-
-
-def _instance_inputs_same_domain(
-    parent: Module,
-    instance: Cell,
-    sub: Module,
-    domain: str | None,
-    spec: ClockSpec,
-    *,
-    pin_clocks: dict[str, str] | None = None,
-) -> bool:
-    """True iff every *data input* of ``instance`` is driven in ``domain``.
-
-    Until input-side (``dst_boundary``) virtual-sink seeding lands in P3,
-    a summarised subtree drops any crossing the parent drives **into**
-    its data inputs: the flattened design reports a crossing at the
-    subtree's first internal flop, but the abstracted boundary seeds no
-    input sink. To keep abstraction result-preserving we refuse it
-    unless every data-input bit is driven by the subtree's own domain
-    (``domain``) — i.e. there is no foreign-domain or unconstrained data
-    entering the subtree. Unreached bits (constants / undriven) carry no
-    source flop and so cannot cross into the subtree; they don't block.
-
-    Clock pins are excluded (they're consumed by :func:`_instance_clock`,
-    not data). ``domain=None`` (the subtree's clock didn't resolve) means
-    we can't prove sameness for *any* foreign input, so any typed input
-    domain blocks.
-    """
-    bit_domains = _data_bit_domains(parent, spec, pin_clocks=pin_clocks)
-    input_names = {
-        p.name for p in sub.ports.values() if p.direction in ("input", "inout")
-    }
-    for pin, bits in instance.connections.items():
-        if pin in _CLOCK_PIN_NAMES:
-            continue
-        # Only consider pins that are data *inputs* of the sub-module.
-        # Output/inout pins are summarised as virtual sources, not sinks.
-        if sub.ports and pin not in input_names:
-            continue
-        for b in bits:
-            if not isinstance(b, int):
-                continue
-            for d in bit_domains.get(b, ()):
-                if d != domain:
-                    return False
-    return True
-
-
 def summarise_subtree(
     parent: Module,
     instance: Cell,
@@ -272,30 +148,45 @@ def summarise_subtree(
     if not is_single_clock_subtree(clocks, spec):
         return None
 
-    # Result-preserving safety (P2): the boundary summary only seeds
-    # output-side virtual *sources*; it does NOT seed input-side virtual
-    # sinks (that's P3's ``dst_boundary`` work). So a foreign-domain
-    # signal the parent drives into a data input — which the flattened
-    # design flags as a crossing at the subtree's first internal flop —
-    # would silently vanish under abstraction. Refuse to abstract unless
-    # every data input is in the subtree's own domain.
-    if not _instance_inputs_same_domain(
-        parent, instance, sub, clk, spec, pin_clocks=pin_clocks
-    ):
-        return None
-
+    # Result-preserving by construction (P3/#257): the boundary summary
+    # seeds output-side virtual *sources* (``ports``) AND input-side
+    # virtual *sinks* (``input_ports``, captured in the boundary's own
+    # ``clock`` domain). A foreign-domain signal the parent drives into
+    # a data input no longer vanishes — ``find_crossings`` re-creates the
+    # crossing the flattened subtree would have reported at its first
+    # internal flop. So we abstract the single-clock subtree even when a
+    # foreign-domain input enters it; the P2 over-conservative refusal
+    # (``_instance_inputs_same_domain``) is retired.
     src_clock = clk  # may be None => conservative unconstrained source
     ports: dict[str, PortBoundary] = {}
+    input_ports: dict[str, PortBoundary] = {}
     for port in sub.ports.values():
-        if port.direction not in ("output", "inout"):
-            continue
-        ports[port.name] = PortBoundary(
-            port=port.name,
-            src_clock=src_clock,
-            synchronised=False,
-            width=len(port.bits),
-        )
-    return BoundarySummary(module=sub.name, ports=ports)
+        if port.direction in ("output", "inout"):
+            ports[port.name] = PortBoundary(
+                port=port.name,
+                src_clock=src_clock,
+                synchronised=False,
+                width=len(port.bits),
+            )
+        if port.direction in ("input", "inout") and port.name not in _CLOCK_PIN_NAMES:
+            # The sink domain for data entering the boundary is the
+            # subtree's own clock (what its first internal flop samples
+            # on). ``src_clock`` here names that capture domain. Clock
+            # pins are excluded — they carry distribution into the
+            # subtree, not data, and must never become a virtual sink
+            # (that would re-introduce the CDC-008 clock-as-data shape).
+            input_ports[port.name] = PortBoundary(
+                port=port.name,
+                src_clock=src_clock,
+                synchronised=False,
+                width=len(port.bits),
+            )
+    return BoundarySummary(
+        module=sub.name,
+        ports=ports,
+        clock=clk,
+        input_ports=input_ports,
+    )
 
 
 def boundary_instance_clocks(parent: Module) -> set[str]:

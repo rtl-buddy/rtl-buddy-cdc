@@ -66,15 +66,35 @@ class PortBoundary:
 class BoundarySummary:
     """Port-direction summary of a blackboxed subtree.
 
-    Only outputs/inouts get a :class:`PortBoundary` (inputs are driven
-    by the parent, which already knows their domain). Attached to a
-    :class:`Module` (``Module.boundary``) by the P2 summariser; P1 only
-    sets :attr:`Module.is_blackbox` from the Yosys ``blackbox``
-    attribute and leaves ``boundary`` ``None``.
+    Output/inout ports get a :class:`PortBoundary` in :attr:`ports`
+    describing the domain the subtree *drives* them in (a downstream
+    sink in a different domain is a crossing out of the boundary).
+
+    Input/inout ports get a :class:`PortBoundary` in
+    :attr:`input_ports` describing the domain the subtree's first
+    internal flop *captures* them in — :attr:`clock`, the boundary's
+    own resolved clock domain. Data the parent drives into such a port
+    from a foreign domain is a crossing *into* the boundary; the P3
+    virtual-sink seeding in :func:`~rtl_buddy_cdc.domain.find_crossings`
+    re-creates the crossing the flattened subtree would have reported
+    at its first internal flop, so abstraction stays result-preserving
+    (#257). ``inout`` ports appear in both maps.
+
+    Attached to a :class:`Module` (``Module.boundary``) by the P2/P3
+    summariser; P1 only sets :attr:`Module.is_blackbox` from the Yosys
+    ``blackbox`` attribute and leaves ``boundary`` ``None``.
     """
 
     module: str  # the summarised module's real (non-$) name
     ports: dict[str, PortBoundary]  # keyed by output/inout port name
+    # P3 (#257): the boundary's own resolved clock domain (``None`` =
+    # unconstrained / didn't resolve) and the input/inout ports whose
+    # first internal flop captures in that domain — used by
+    # ``find_crossings`` to seed a virtual sink for foreign-domain data
+    # entering the boundary. Default-empty so P1/P2-era callers and the
+    # output-only summary shape stay valid.
+    clock: str | None = None
+    input_ports: dict[str, PortBoundary] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

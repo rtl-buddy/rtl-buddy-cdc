@@ -443,6 +443,11 @@ def _crossing_to_dict(c: Crossing) -> dict:
             "instance": c.src_boundary[0],
             "port": c.src_boundary[1],
         }
+    if c.dst_boundary is not None:
+        out["dst_boundary"] = {
+            "instance": c.dst_boundary[0],
+            "port": c.dst_boundary[1],
+        }
     return out
 
 
