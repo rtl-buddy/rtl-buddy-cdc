@@ -524,6 +524,58 @@ Precision characterisation:
   synchronous); such a subtree is walked flat. Abstraction applies only
   where there is provably no internal crossing to lose.
 
+**Three soundness guards close the silent false-negatives the #259 audit
+found.** All three err toward *declining* abstraction — the conservative
+direction for a CDC checker.
+
+- **Traced multi-clock decline (`abstract._instance_clocks`).** The
+  subtree's clock SET is determined from *all* of the blackbox module's
+  input ports, not a clock-pin **name** allow-list. A port is a clock pin
+  when its name is in `_CLOCK_PIN_NAMES`, **or** it is conventionally
+  clock-named (`wr_clk` / `rd_clk` / `clk_a` / `core_clock` — the
+  `_CLOCK_NAME_HINTS` substrings) *and* its parent-side driver traces to a
+  declared clock through **clock-network cells only** (buffers / gates /
+  muxes / ports — `trace_clock_root(..., allow_divider=False)`, so a data
+  net launched by a flop `Q` is **not** misread as a clock). The full set
+  of distinct clock roots flows to `is_single_clock_subtree`, so a
+  dual-clock IP whose clock pins fall outside the name allow-list (an
+  async FIFO's `wr_clk` / `rd_clk`) presents ≥2 roots and is **declined**
+  — its internal clkA→clkB crossing is no longer silently abstracted away
+  as if the block were single-clock / combinational. The single capture
+  `clock` is the sole root (or `None` for a genuinely combinational
+  boundary), and the traced clock-pin set — not just the name allow-list —
+  is what is excluded from input-sink seeding. `compose_boundaries` keys
+  its summary cache on the **frozenset of clock roots**, so a dual-clock
+  instance keys distinctly while identical instances still hit the cache.
+
+- **Declined-opaque `partial_warning` (FIX 2).** A declined instance is
+  absent from the boundary map; its zero-cell internals are unanalysed.
+  `CompositionStats.declined_modules` (and the reconvergence-declined set
+  below) are surfaced through `spec.partial_warnings` — the existing
+  `warning: …` surface — as `blackbox \`<module>\` left opaque — internal
+  crossings not analysed; flatten it or constrain its clocks to abstract.`
+  The silent drop becomes a documented one.
+
+- **Reconvergence-unsafe skip (`hierarchy.reconvergence_unsafe_instances`,
+  FIX 3).** A single-clock block that *is* abstracted but has ≥2 distinct
+  foreign-domain crossings entering **distinct** input ports can hide an
+  internal reconvergence (CDC-005) the flat design would flag — the
+  star-collapse severs the subtree-internal graph, so that reconvergence
+  cannot be checked at the boundary. After `find_crossings`, boundary-sink
+  crossings (`dst_boundary`) are grouped by instance; an instance with ≥2
+  distinct incoming ports is reconvergence-unsafe. Such instances are
+  removed from the boundary map and `find_crossings` is **re-run** so the
+  block becomes opaque (no boundary crossings emitted for it), with a
+  FIX-2-style diagnostic naming it (`… has crossings into N input ports;
+  reconvergence among them cannot be checked at the boundary — …`). A
+  single multi-bit bus on **one** port counts as one port (safe — the
+  multi-bit rules cover it).
+
+CDC-008's blackbox exemption is correspondingly per-CLOCK-PIN (FIX 4),
+not whole-instance: only the instance's traced clock pins (or the
+`_CLOCK_PIN_NAMES` fallback) are exempt from clock-as-data, so a clock
+wired into a genuine **data** input of a blackbox still fires CDC-008.
+
 **The `synchronised` field is the seam to a more precise model — and is
 presently inert.** `PortBoundary.synchronised` is hard-wired `False` by
 the summariser (`abstract.py`) and is not yet consumed (the

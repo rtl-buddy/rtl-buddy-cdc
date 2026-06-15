@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Blackbox / auto-abstract soundness** (#259 audit). Four silent
+  false-negatives in the boundary-abstraction path are closed; all are
+  conservative — the analyzer never silently drops or downgrades a real
+  CDC hazard:
+  - **Multi-clock subtree no longer abstracted as single-clock.** The
+    clock determination for a blackbox instance now inspects **all** of
+    the module's input ports — a port is a clock pin if its name is in
+    the allow-list, or it is conventionally clock-named *and* its driver
+    traces (clock-network-only, no flop-divider step) to a declared
+    clock. The full set of distinct clock roots flows to
+    `is_single_clock_subtree`, so a dual-clock IP whose clock pins are
+    `wr_clk` / `rd_clk` (or `clk_a` / `clk_b`, outside the name
+    allow-list) presents ≥2 roots and is **declined**, instead of
+    collapsing to one domain and silently abstracting away its internal
+    clkA→clkB crossing. The traced clock-pin set also excludes clock pins
+    from input-sink seeding regardless of their name. New
+    `multi_clock_blackbox` fixture pair.
+  - **Declined / opaque blackboxes are now visible.** A blackbox the
+    summariser leaves opaque (multi-clock / unresolved, or
+    reconvergence-unsafe per below) is surfaced through
+    `spec.partial_warnings` (the existing `warning: …` surface):
+    `blackbox \`<module>\` left opaque — internal crossings not
+    analysed; …`. The silent drop becomes a documented one.
+  - **Reconvergence-unsafe single-clock blocks are refused.** A
+    single-clock block that *is* abstracted but has ≥2 distinct
+    foreign-domain crossings entering **distinct** input ports can hide
+    an internal reconvergence (CDC-005) the flat design would flag. The
+    new pure `hierarchy.reconvergence_unsafe_instances` detects this
+    after `find_crossings`; such instances are removed from the boundary
+    map, `find_crossings` is re-run so they become opaque, and a
+    diagnostic names them (`… has crossings into N input ports;
+    reconvergence among them cannot be checked at the boundary — …`). A
+    single multi-bit bus on one port stays safe. New
+    `reconvergence_two_inputs` (unsafe) and `safe_single_input` (parity
+    guard) fixture pairs.
+  - **CDC-008 blackbox exemption narrowed to clock pins.** The
+    clock-as-data exemption for a blackbox instance is now per-CLOCK-PIN
+    (the traced determination, or the `_CLOCK_PIN_NAMES` fallback) rather
+    than whole-instance, so a clock net wired into a genuine **data**
+    input of a blackbox still fires CDC-008.
+
 ### Added
 
 - **Hierarchical / compositional boundary analysis** (#257, CDC-scaling
