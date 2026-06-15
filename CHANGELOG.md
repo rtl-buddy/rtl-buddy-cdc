@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **First-class blackbox boundary support** (#255, CDC-scaling epic #253
+  phase 1). A large subtree can be excluded from flattening and analysed
+  as a boundary cell so big integration blocks become tractable.
+  `netlist.load` now accepts a flattened dump carrying blackbox boundary
+  siblings — the single-module-after-flatten invariant is relaxed to
+  "one top + N blackbox siblings", detected via the Yosys
+  `attributes.blackbox` flag (no rename-to-`$` pass). New
+  `netlist.load_with_blackboxes` returns `(top, dict[str, Module])`;
+  `Module` gains optional `is_blackbox` / `boundary` fields (the
+  `BoundarySummary` / `PortBoundary` schema is wired for the P2
+  summariser). The yosys frontend threads a `blackbox: list[str]` into
+  the `read_slang --blackboxed-module` line, surfaced as a repeatable
+  `lint --blackbox MODULE` flag (requires the yosys-slang plugin). The
+  pre-elaborated `analyze` path needs no new flag — a netlist already
+  containing blackbox boundary modules loads transparently. Fixture pair
+  `blackbox_leaf_crossing` exercises the boundary end to end. The
+  analyzer-side consumption that reports a crossing *through* a blackbox
+  (boundary-summary seeding) lands in phase 2 (#256).
+
 - **slang-frontend defensive-path test sweep + coverage ratchet 90 → 93**
   (#252). New `tests/test_cov_slang_d.py` (74 cases) covers the slang
   frontend's conservative guards and best-effort constant-fold

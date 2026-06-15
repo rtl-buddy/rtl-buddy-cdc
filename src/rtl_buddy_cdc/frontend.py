@@ -61,6 +61,7 @@ def elaborate(
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
     yosys_plugin: str | None = None,
+    blackbox: list[str] | None = None,
 ) -> Module:
     """Elaborate ``sources`` into a flattened :class:`Module`.
 
@@ -68,6 +69,10 @@ def elaborate(
     callers only see the resulting ``Module``. Frontend-specific options
     are accepted as keyword arguments and silently ignored by frontends
     that don't use them (e.g. ``yosys_bin`` is meaningless for slang).
+
+    ``blackbox`` names modules to treat as CDC boundary cells (the P1
+    ``--blackbox`` surface). It is threaded into the Yosys/``read_slang``
+    invocation; the slang (pyslang) frontend does not support it yet.
     """
     if frontend is Frontend.auto:
         frontend = resolve_auto()
@@ -80,6 +85,7 @@ def elaborate(
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             plugin_path=yosys_plugin,
+            blackbox=blackbox,
         )
     if frontend is Frontend.slang:
         from rtl_buddy_cdc.frontends import slang as slang_fe

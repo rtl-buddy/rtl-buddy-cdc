@@ -1004,13 +1004,14 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
     We stub the concrete frontend so no real yosys binary runs."""
     seen: dict[str, object] = {}
 
-    def _fake_elaborate(sources, top, *, yosys_bin, keep_json, plugin_path):
+    def _fake_elaborate(sources, top, *, yosys_bin, keep_json, plugin_path, blackbox):
         seen.update(
             sources=sources,
             top=top,
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             plugin_path=plugin_path,
+            blackbox=blackbox,
         )
         return Module(name=top, ports={}, cells={}, netnames={})
 
@@ -1024,6 +1025,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
         yosys_bin="/opt/yosys",
         keep_json=keep,
         yosys_plugin="/opt/slang.so",
+        blackbox=["leaf"],
     )
     assert module.name == "topmod"
     assert seen["sources"] == [src]
@@ -1032,6 +1034,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
     assert seen["keep_json"] == keep
     # frontend.elaborate maps ``yosys_plugin`` -> ``plugin_path``.
     assert seen["plugin_path"] == "/opt/slang.so"
+    assert seen["blackbox"] == ["leaf"]
 
 
 @pytest.mark.skipif(not PYSLANG_INSTALLED, reason="pyslang not installed")

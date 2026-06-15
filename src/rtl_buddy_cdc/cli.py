@@ -343,6 +343,17 @@ def lint(
         "when the flag is omitted (the explicit flag wins); this is the "
         "machine-local .env flow rtl_buddy populates from .rtl-buddy/.env.",
     ),
+    blackbox: list[str] = typer.Option(
+        [],
+        "--blackbox",
+        help="Treat MODULE as a CDC boundary cell: keep it un-flattened "
+        "(via read_slang `--blackboxed-module`) so a large subtree is "
+        "analysed at its port boundary instead of being elaborated into "
+        "the design. Repeatable. Requires the yosys-slang plugin "
+        "(--yosys-plugin / RTL_BUDDY_SLANG_PLUGIN). The pre-elaborated "
+        "`analyze` path needs no flag — a netlist already containing "
+        "blackbox boundary modules loads transparently. See issue #255.",
+    ),
     waivers_path: Path | None = typer.Option(
         None,
         "--waivers",
@@ -408,6 +419,7 @@ def lint(
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             yosys_plugin=yosys_plugin,
+            blackbox=list(blackbox),
         )
     except SlangFrontendUnavailable as e:
         typer.echo(f"error: {e}", err=True)
