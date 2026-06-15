@@ -477,6 +477,22 @@ input fans out to which output, and whether a path is registered or
 purely combinational — is **discarded by design**. There is no per-port
 input→output relation in the summary.
 
+This collapse **severs** internal connectivity; it does not
+*fully-connect* it. A foreign-domain input is reported as captured
+*into* `D` and goes no further — its virtual sink is a terminal flop
+with an empty `Q` (`domain.py` stamps `q=()`), so nothing propagates out
+of it. Each output is launched *from* `D` as an independent seed that
+walks only the parent's real fanout. The two never chain through a
+shared `D` hub. So the model never manufactures a path between an input
+and an *unrelated* output: given real paths `A→X` and `B→Y` but no `A→Y`
+/ `B→X`, **no spurious `A→Y` / `B→X` crossing appears** — output `X`
+still feeds only `X`'s real parent sinks, output `Y` only `Y`'s. What
+the collapse loses is the *attribution* tying a specific input's domain
+to a specific output (everything is mediated by `D`), not the separation
+between unrelated ports. The over-reporting is therefore **per-port
+(linear)** — a foreign input `X_d→D` here, an output `D→sink` there —
+never an input×output **mesh (quadratic)**.
+
 Only the *subtree-internal* graph collapses. The **parent-side** fanin
 and fanout of the boundary ports are untouched: they are real nets in
 the flattened top, and `find_crossings` seeds the virtual source/sink

@@ -113,8 +113,19 @@ Standalone wrapper (`lint`):
 | `--yosys PATH` | optional | Yosys frontend only: override the default yosys binary lookup |
 | `--yosys-plugin PATH` | optional | Yosys frontend only: load a Yosys plugin (e.g. yosys-slang's `slang.so`) and elaborate via `read_slang` for full SystemVerilog-2017 support. Falls back to the `RTL_BUDDY_SLANG_PLUGIN` environment variable when the flag is omitted; the explicit flag wins. This is the machine-local `.env` flow `rtl_buddy` populates from `.rtl-buddy/.env`. |
 | `--keep-json PATH` | optional | Yosys frontend only: save the intermediate netlist for debugging or re-runs |
+| `--blackbox MODULE` | optional | Treat `MODULE` as a CDC boundary cell: keep it un-flattened (via `read_slang --blackboxed-module`) so a large subtree is analysed at its **port boundary** instead of being elaborated into the design — the #253 scaling path. **Repeatable.** Requires the yosys-slang plugin (`--yosys-plugin` / `RTL_BUDDY_SLANG_PLUGIN`). The pre-elaborated `analyze` path needs no flag — a netlist that already contains blackbox boundary modules loads transparently. See [Blackboxing for scale](#blackboxing-for-scale). |
 
 The slang frontend is an opt-in extra. Install it alongside the package with `pip install 'rtl-buddy-cdc[slang]'` (or `uv add 'rtl-buddy-cdc[slang]'`); the default install stays Yosys-only.
+
+## Blackboxing for scale
+
+Fully flattening a large multi-clock block doesn't scale — the analysis walks every flop and its fan-in cone, even though the single-clock majority of the design carries no crossing (#253). `lint --blackbox MODULE` (repeatable) keeps the named module **un-flattened**, so it arrives as a boundary cell analysed at its **port boundary** rather than flop-by-flop:
+
+- **Single-clock** blackboxed subtrees are **auto-abstracted** — summarised to their ports (each output becomes a virtual source in the subtree's clock domain, each foreign-domain input a virtual sink) and skipped. The crossings *at* the boundary are still reported; the internals are not walked. The tool decides which blackboxed subtrees are single-clock from the SDC, so you don't have to.
+- A blackboxed subtree that is **not provably single-clock** is left fully opaque — its internal crossings are not re-created. Only blackbox a multi-clock subtree whose internal CDC you don't need checked at this level (e.g. a separately signed-off IP).
+- `analyze` consumes a pre-elaborated netlist and needs no flag — blackbox boundary modules already present in the JSON load transparently.
+
+**It is opt-in — without `--blackbox`, behavior is unchanged.** On a normally-flattened netlist with no blackbox modules there is nothing to abstract, so the analyzer walks the full flat design exactly as in prior releases (the pre-existing fixture suite is unchanged proof). The abstraction is conservative: exact for registered single-clock logic, and it over-approximates but **never under-reports** on combinational paths through a boundary — see [`wiki/raw/articles/rtl-buddy-cdc-architecture.md`](wiki/raw/articles/rtl-buddy-cdc-architecture.md) §4.8–§4.9 for the precision model.
 
 ## SDC support
 
