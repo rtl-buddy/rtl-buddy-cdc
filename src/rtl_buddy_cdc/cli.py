@@ -18,8 +18,8 @@ from rtl_buddy_cdc import (
     sdc as sdc_mod,
     waivers as waivers_mod,
 )
-from rtl_buddy_cdc.abstract import summarise_subtree
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
+from rtl_buddy_cdc.hierarchy import compose_boundaries
 from rtl_buddy_cdc.clock_network import find_clock_network_crossings
 from rtl_buddy_cdc.domain_map import build_domain_map
 from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
@@ -881,28 +881,22 @@ def _summarise_blackboxes(
 ) -> dict[str, netlist.BoundarySummary]:
     """Auto-abstract single-clock blackbox subtrees to port boundaries.
 
-    For each blackbox sibling instantiated in ``module``, build a
-    :class:`~rtl_buddy_cdc.netlist.BoundarySummary` *iff* the subtree's
-    clock set sits in one async-safe domain (the summariser returns
-    ``None`` otherwise). The returned map is keyed by *module name*
+    Thin CLI-side wrapper over the compositional walk
+    (:func:`rtl_buddy_cdc.hierarchy.compose_boundaries`): each *distinct*
+    blackbox module is summarised once (cached by module identity) and
+    re-applied to every instance, so a block instantiated N times is
+    analysed once (#257). The returned map is keyed by *module name*
     (matching each boundary cell's ``type``) so ``find_crossings`` can
     re-seed the boundary's output ports as virtual sources.
 
-    Pure orchestration: detection / summarisation lives in
-    :mod:`rtl_buddy_cdc.abstract`; this only walks the instances and
-    collects the results.
+    Kept as a named entry point because the test-suite and the
+    ``--blackbox`` orchestration import it directly; the
+    :class:`~rtl_buddy_cdc.hierarchy.CompositionStats` half of the
+    compose result is dropped here (callers that want the cache
+    accounting call ``compose_boundaries`` directly).
     """
-    out: dict[str, netlist.BoundarySummary] = {}
-    if not blackboxes:
-        return out
-    for cell in module.cells.values():
-        sub = blackboxes.get(cell.type)
-        if sub is None or cell.type in out:
-            continue
-        summary = summarise_subtree(module, cell, sub, spec, pin_clocks=spec.pin_clocks)
-        if summary is not None:
-            out[cell.type] = summary
-    return out
+    boundaries, _stats = compose_boundaries(module, blackboxes, spec)
+    return boundaries
 
 
 def _filter_async(

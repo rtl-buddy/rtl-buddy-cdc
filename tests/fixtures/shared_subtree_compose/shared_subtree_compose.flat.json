@@ -1,0 +1,105 @@
+{
+  "creator": "Yosys (hand-authored P3 #257 parity fixture; flattened twin of shared_subtree_compose.json)",
+  "modules": {
+    "shared_subtree_compose": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "shared_subtree_compose.sv:24.8"
+      },
+      "ports": {
+        "clk_a": { "direction": "input", "bits": [ 2 ] },
+        "clk_b": { "direction": "input", "bits": [ 3 ] },
+        "d_in": { "direction": "input", "bits": [ 4, 5, 6, 7 ] },
+        "q_out": { "direction": "output", "bits": [ 8, 9, 10, 11, 12, 13, 14, 15 ] }
+      },
+      "cells": {
+        "src_q": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": { "src": "shared_subtree_compose.sv:34.5" },
+          "port_directions": { "CLK": "input", "D": "input", "Q": "output" },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4, 5, 6, 7 ],
+            "Q": [ 16, 17, 18, 19 ]
+          }
+        },
+        "$flatten\\u_pipe0.s0": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": { "src": "shared_subtree_compose.sv:15.5" },
+          "port_directions": { "CLK": "input", "D": "input", "Q": "output" },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 16, 17, 18, 19 ],
+            "Q": [ 20, 21, 22, 23 ]
+          }
+        },
+        "$flatten\\u_pipe1.s0": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": { "src": "shared_subtree_compose.sv:15.5" },
+          "port_directions": { "CLK": "input", "D": "input", "Q": "output" },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 16, 17, 18, 19 ],
+            "Q": [ 24, 25, 26, 27 ]
+          }
+        },
+        "dst_q0": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": { "src": "shared_subtree_compose.sv:39.5" },
+          "port_directions": { "CLK": "input", "D": "input", "Q": "output" },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 20, 21, 22, 23 ],
+            "Q": [ 8, 9, 10, 11 ]
+          }
+        },
+        "dst_q1": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": { "src": "shared_subtree_compose.sv:40.5" },
+          "port_directions": { "CLK": "input", "D": "input", "Q": "output" },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 24, 25, 26, 27 ],
+            "Q": [ 12, 13, 14, 15 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk_a": { "hide_name": 0, "bits": [ 2 ], "attributes": { "hdlname": "clk_a" } },
+        "clk_b": { "hide_name": 0, "bits": [ 3 ], "attributes": { "hdlname": "clk_b" } },
+        "d_in": { "hide_name": 0, "bits": [ 4, 5, 6, 7 ], "attributes": { "hdlname": "d_in" } },
+        "src_q": { "hide_name": 0, "bits": [ 16, 17, 18, 19 ], "attributes": { "hdlname": "src_q" } },
+        "pipe0_q": { "hide_name": 0, "bits": [ 20, 21, 22, 23 ], "attributes": { "hdlname": "pipe0_q" } },
+        "pipe1_q": { "hide_name": 0, "bits": [ 24, 25, 26, 27 ], "attributes": { "hdlname": "pipe1_q" } },
+        "dst_q0": { "hide_name": 0, "bits": [ 8, 9, 10, 11 ], "attributes": { "hdlname": "dst_q0" } },
+        "dst_q1": { "hide_name": 0, "bits": [ 12, 13, 14, 15 ], "attributes": { "hdlname": "dst_q1" } },
+        "q_out": { "hide_name": 0, "bits": [ 8, 9, 10, 11, 12, 13, 14, 15 ], "attributes": { "hdlname": "q_out" } }
+      }
+    }
+  }
+}
