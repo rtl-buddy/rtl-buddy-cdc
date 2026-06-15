@@ -1,0 +1,209 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "afifo": {
+      "attributes": {
+        "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:19.8",
+        "blackbox": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "wr_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "rd_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "wdata": {
+          "direction": "input",
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ]
+        },
+        "rdata": {
+          "direction": "output",
+          "bits": [ 12, 13, 14, 15, 16, 17, 18, 19 ]
+        }
+      },
+      "cells": {
+      },
+      "netnames": {
+        "rd_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:21.23"
+          }
+        },
+        "rdata": {
+          "hide_name": 0,
+          "bits": [ 12, 13, 14, 15, 16, 17, 18, 19 ],
+          "attributes": {
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:23.23"
+          }
+        },
+        "wdata": {
+          "hide_name": 0,
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+          "attributes": {
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:22.23"
+          }
+        },
+        "wr_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:20.23"
+          }
+        }
+      }
+    },
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:35.8"
+      },
+      "ports": {
+        "wr_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "rd_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "din": {
+          "direction": "input",
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ]
+        },
+        "dout": {
+          "direction": "output",
+          "bits": [ 12, 13, 14, 15, 16, 17, 18, 19 ]
+        }
+      },
+      "cells": {
+        "$driver$dst_q": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:54.5"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 20, 21, 22, 23, 24, 25, 26, 27 ],
+            "Q": [ 12, 13, 14, 15, 16, 17, 18, 19 ]
+          }
+        },
+        "$driver$src_q": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:44.5"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+            "Q": [ 28, 29, 30, 31, 32, 33, 34, 35 ]
+          }
+        },
+        "u_afifo": {
+          "hide_name": 0,
+          "type": "afifo",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u_afifo",
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:47.11"
+          },
+          "port_directions": {
+            "rd_clk": "input",
+            "rdata": "output",
+            "wdata": "input",
+            "wr_clk": "input"
+          },
+          "connections": {
+            "rd_clk": [ 3 ],
+            "rdata": [ 20, 21, 22, 23, 24, 25, 26, 27 ],
+            "wdata": [ 28, 29, 30, 31, 32, 33, 34, 35 ],
+            "wr_clk": [ 2 ]
+          }
+        }
+      },
+      "netnames": {
+        "din": {
+          "hide_name": 0,
+          "bits": [ 4, 5, 6, 7, 8, 9, 10, 11 ],
+          "attributes": {
+            "hdlname": "din",
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:38.23"
+          }
+        },
+        "dout": {
+          "hide_name": 0,
+          "bits": [ 12, 13, 14, 15, 16, 17, 18, 19 ],
+          "attributes": {
+            "hdlname": "dout",
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:39.23"
+          }
+        },
+        "dst_q": {
+          "hide_name": 0,
+          "bits": [ 12, 13, 14, 15, 16, 17, 18, 19 ],
+          "attributes": {
+            "hdlname": "dst_q",
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:42.15"
+          }
+        },
+        "fifo_rd": {
+          "hide_name": 0,
+          "bits": [ 20, 21, 22, 23, 24, 25, 26, 27 ],
+          "attributes": {
+            "hdlname": "fifo_rd",
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:46.16"
+          }
+        },
+        "rd_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "rd_clk",
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:37.23"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 28, 29, 30, 31, 32, 33, 34, 35 ],
+          "attributes": {
+            "hdlname": "src_q",
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:41.15"
+          }
+        },
+        "wr_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "wr_clk",
+            "src": "tests/fixtures/multi_clock_blackbox/multi_clock_blackbox.sv:36.23"
+          }
+        }
+      }
+    }
+  }
+}
