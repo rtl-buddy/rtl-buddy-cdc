@@ -208,13 +208,20 @@ jobs:
           make -C yosys_build -j"$(nproc)"
           make -C yosys_build install DESTDIR="$HOME/yosys-install"
 
-      - name: Put Yosys on PATH
-        run: echo "$HOME/yosys-install/usr/local/bin" >> "$GITHUB_PATH"
+      # Populate the real install prefix from the DESTDIR staging tree.
+      # yosys-config bakes in its build-time prefix (/usr/local), so the
+      # plugin build's `yosys-config --cxxflags` points at
+      # /usr/local/share/yosys/include — that path must actually hold the
+      # Yosys headers (kernel/rtlil.h, ...), not just the cached staging
+      # dir. Copying the tree into / is how yosys-slang's own CI does it,
+      # and it runs on cache hits too (the build step is skipped then).
+      - name: Install Yosys into the system prefix
+        run: sudo cp -r "$HOME/yosys-install"/* /
 
       - name: Verify Yosys
         run: |
           yosys -V
-          yosys-config --datdir >/dev/null
+          test -f "$(yosys-config --datdir)/include/kernel/rtlil.h"
 
       - name: Cache plugin ccache
         uses: actions/cache@v4
