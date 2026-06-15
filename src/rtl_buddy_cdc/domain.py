@@ -107,6 +107,39 @@ _GATE_TYPES: frozenset[str] = frozenset(
 # Cell types that select one of several clock candidates.
 _MUX_TYPES: frozenset[str] = frozenset({"$mux", "$pmux"})
 
+# Cell types whose output lane ``i`` depends only on input lane ``i`` —
+# width-preserving bitwise ops and mux data paths. For these, a bit entering on
+# lane ``idx`` propagates only to output ``Y[idx]`` rather than to every output
+# bit. Anything *not* listed here (adders/shifts with carry, reductions,
+# comparisons, mux selects, memory) keeps the conservative all-outputs fan-out,
+# so a genuine cross-lane path is never dropped. This is the data-fanout analog
+# of the clock-network sets above; see ``_lane_targets`` and issue #258.
+_LANE_ALIGNED_TYPES: frozenset[str] = frozenset(
+    {
+        "$and",
+        "$or",
+        "$xor",
+        "$xnor",
+        "$not",
+        "$buf",
+        "$pos",
+        "$mux",
+        "$pmux",
+        "$bwmux",
+        "$_AND_",
+        "$_OR_",
+        "$_XOR_",
+        "$_XNOR_",
+        "$_NOT_",
+        "$_NAND_",
+        "$_NOR_",
+        "$_ANDNOT_",
+        "$_ORNOT_",
+        "$_BUF_",
+        "$_MUX_",
+    }
+)
+
 
 def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str]]:
     """Map each net bit to the ``(cell_name, output_port)`` that drives it.
@@ -409,8 +442,10 @@ def find_crossings(
                 if hops >= max_hops:
                     continue
                 # Push the bit through every consumer cell that isn't a
-                # flop, propagating to all that cell's output bits.
-                for cell_name, _port, _idx in consumers.get(bit, ()):
+                # flop, propagating along the data lanes it actually drives
+                # (see _lane_targets — bit-precise for bitwise/mux, all-outputs
+                # otherwise).
+                for cell_name, cport, idx in consumers.get(bit, ()):
                     cell = module.cells[cell_name]
                     if cell.type in {"$scopeinfo"}:
                         continue
@@ -418,7 +453,7 @@ def find_crossings(
                     # whether we landed on a flop's D pin.
                     if is_ff_cell(cell.type):
                         continue
-                    out_bits = _cell_outputs(cell)
+                    out_bits = _lane_targets(cell, cport, idx)
                     for ob in out_bits:
                         if not isinstance(ob, int):
                             continue
@@ -481,13 +516,13 @@ def find_crossings(
                                 pg["min_hops"] = hops
                     if hops >= max_hops:
                         continue
-                    for cell_name, _port, _idx in consumers.get(bit, ()):
+                    for cell_name, cport, idx in consumers.get(bit, ()):
                         cell = module.cells[cell_name]
                         if cell.type in {"$scopeinfo"}:
                             continue
                         if is_ff_cell(cell.type):
                             continue
-                        for ob in _cell_outputs(cell):
+                        for ob in _lane_targets(cell, cport, idx):
                             if not isinstance(ob, int):
                                 continue
                             prev = seen.get(ob)
@@ -530,3 +565,23 @@ def _cell_outputs(cell):
     for p in out_ports:
         bits.extend(cell.connections.get(p, ()))
     return bits
+
+
+def _lane_targets(cell, port: str, idx: int):
+    """Output bits reachable from input ``port[idx]`` of ``cell``.
+
+    For a width-preserving bitwise / mux-data cell, input lane ``idx`` drives
+    only output ``Y[idx]`` — so the data fanout stays bit-precise instead of
+    fanning a single source bit across the whole bus. Falls back to
+    ``_cell_outputs`` (all outputs) for every other cell type and for any port
+    whose width doesn't match ``Y`` (e.g. a mux select, or the wide ``B`` of a
+    ``$pmux``), which is a sound over-approximation. This removes the O(width^2)
+    fanout the all-outputs walk does on wide buses without dropping any real
+    cross-lane path; see issue #258.
+    """
+    if cell.type in _LANE_ALIGNED_TYPES:
+        ybits = cell.connections.get("Y", ())
+        inbits = cell.connections.get(port, ())
+        if len(inbits) == len(ybits) and 0 <= idx < len(ybits):
+            return [ybits[idx]]
+    return _cell_outputs(cell)
