@@ -50,6 +50,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     than whole-instance, so a clock net wired into a genuine **data**
     input of a blackbox still fires CDC-008.
 
+### Changed
+
+- **`find_crossings`: lane-aware data fanout — O(W²) → O(W) on wide buses**
+  (#258). The crossing BFS pushed each bit through a consumer cell to *all*
+  of that cell's output bits, discarding the input lane index. On a width-`W`
+  datapath bus a single source bit therefore fanned across the whole bus, and
+  every bus bit re-walked the same cone — ~`W²` work per cell. For
+  width-preserving bitwise / mux-data cells, input lane `idx` now propagates
+  only to output `Y[idx]` (`_lane_targets`); the all-outputs walk is kept as a
+  sound fallback for bit-mixing cells (adders, shifts, reductions) and for
+  ports whose width doesn't match `Y` (e.g. a mux select), so no real
+  cross-lane path is dropped. The set of reported crossings is unchanged —
+  verified across the full fixture suite plus two new `wide_bus_*` fixtures (a
+  lane-aligned `$and` bus and a lane-mixing `$add` bus). A large multi-clock
+  fabric that previously did not complete in over two hours now analyzes in
+  seconds.
 ### Added
 
 - **Hierarchical / compositional boundary analysis** (#257, CDC-scaling
