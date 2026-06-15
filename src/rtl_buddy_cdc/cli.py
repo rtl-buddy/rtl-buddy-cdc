@@ -25,7 +25,7 @@ from rtl_buddy_cdc.domain_map import build_domain_map
 from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
-from rtl_buddy_cdc.reporter import AnalysisResult, _instance_path
+from rtl_buddy_cdc.reporter import TOOL_VERSION, AnalysisResult, _instance_path
 from rtl_buddy_cdc.reset_domain import (
     assign_reset_domains,
     find_reset_crossings,
@@ -523,7 +523,7 @@ def render(
 @app.command()
 def version() -> None:
     """Print tool, yosys, and (when installed) pyslang versions."""
-    typer.echo("rtl-buddy-cdc 0.1.0")
+    typer.echo(f"rtl-buddy-cdc {TOOL_VERSION}")
     yosys = shutil.which("yosys")
     if yosys:
         out = subprocess.run(
