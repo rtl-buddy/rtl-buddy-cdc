@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **slang-frontend defensive-path test sweep + coverage ratchet 90 → 93**
+  (#252). New `tests/test_cov_slang_d.py` (74 cases) covers the slang
+  frontend's conservative guards and best-effort constant-fold
+  fallbacks — `_const_int` parameter / `ConstantValue` unwrapping,
+  `_src_attr`'s source-range fallback chain, the `None`/typeless-input
+  guards, and the `return None` legs of the expression/statement
+  lowerers (unmodelled operands → `$_UNKNOWN_`, out-of-range / runtime
+  selects, dead-arm case/if folds, dropped latches, for-loop steps that
+  don't unroll). `frontends/slang.py` was the lone module under 90%
+  (86%); it's now 95%, lifting the measured TOTAL to ~95%. The
+  `--cov-fail-under` gate in the `pytest (with slang)` job is raised
+  from 90 to 93 accordingly — ~2 points below the measured total, as
+  drift headroom rather than a backfill target.
+
 - **CI: end-to-end yosys-slang plugin (`read_slang`) oracle** (#251). A
   new `yosys-slang plugin` job in `test.yml` builds a pinned Yosys (v0.64,
   cached) from source and the rtl-buddy fork of `yosys-slang`

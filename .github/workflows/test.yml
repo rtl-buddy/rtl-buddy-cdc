@@ -55,15 +55,19 @@ jobs:
       # entry on 3.13 with pyslang silently absent. Surfaced by the
       # coverage gate in #120 / #121.
       #
-      # ``--cov-fail-under=90``: the coverage ratchet. Raised from 78
+      # ``--cov-fail-under=93``: the coverage ratchet. Raised 78 → 90
       # once the per-module test sweep (tests/test_cov_*.py) brought
-      # the analyzer + frontends + reporter + CLI to ≥90% line+branch.
-      # The number is measured WITHOUT yosys/iverilog (the fuzz / sim
-      # selections skip in this job), so it reflects exactly what this
-      # job exercises — pyslang elaboration, committed-JSON fixtures,
-      # and CliRunner-driven flows.
+      # the analyzer + frontends + reporter + CLI to ≥90% line+branch,
+      # then 90 → 93 once tests/test_cov_slang_d.py covered the slang
+      # frontend's defensive guards / constant-fold fallbacks (it was
+      # the lone module under 90, at 86%; now 95%). The gate sits ~2pts
+      # below the measured TOTAL (95%) — headroom for incidental drift,
+      # not a target to backfill toward. The number is measured WITHOUT
+      # yosys/iverilog (the fuzz / sim selections skip in this job), so
+      # it reflects exactly what this job exercises — pyslang
+      # elaboration, committed-JSON fixtures, and CliRunner-driven flows.
       - name: Run pytest (with coverage)
-        run: uv run --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=90
+        run: uv run --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=93
 
   # Companion job: install WITHOUT the [slang] extra to verify the
   # AGENTS.md "default install stays typer-only" promise. Specifically
