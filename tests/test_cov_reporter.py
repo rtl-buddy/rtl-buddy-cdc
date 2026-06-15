@@ -280,6 +280,37 @@ def test_json_crossing_carries_src_port(port_result: AnalysisResult) -> None:
     assert pc["width"] == 1
 
 
+def test_json_crossing_carries_dst_boundary() -> None:
+    """A crossing INTO an abstracted boundary serialises with a
+    ``dst_boundary`` ``{instance, port}`` block (#257 virtual-sink seeding
+    — the ``_crossing_to_dict`` branch keyed on ``c.dst_boundary``)."""
+    from rtl_buddy_cdc.domain import Crossing
+    from rtl_buddy_cdc.flops import Flop
+    from rtl_buddy_cdc.netlist import Cell
+    from rtl_buddy_cdc.reporter import _crossing_to_dict
+
+    sink = Flop(
+        cell=Cell(name="u_sub.d_in", type="$boundary_sink", connections={"D": (7,)}),
+        clk="<boundary-sink-clk>",
+        d=(7,),
+        q=(),
+    )
+    c = Crossing(
+        src_clock="clk_b",
+        dst_flop=sink,
+        dst_clock="clk_a",
+        min_hops=0,
+        width=4,
+        src_flop=None,
+        dst_boundary=("u_sub", "d_in"),
+    )
+    out = _crossing_to_dict(c)
+    assert out["dst_boundary"] == {"instance": "u_sub", "port": "d_in"}
+    assert out["dst_flop"] == "u_sub.d_in"
+    assert out["src_clock"] == "clk_b"
+    assert out["dst_clock"] == "clk_a"
+
+
 # --- reporter: _source_location guard branches ------------------------------
 
 

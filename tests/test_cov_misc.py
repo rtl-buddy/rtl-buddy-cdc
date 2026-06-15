@@ -1013,9 +1013,9 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
             plugin_path=plugin_path,
             blackbox=blackbox,
         )
-        return Module(name=top, ports={}, cells={}, netnames={})
+        return Module(name=top, ports={}, cells={}, netnames={}), {}
 
-    monkeypatch.setattr(yosys_fe, "elaborate", _fake_elaborate)
+    monkeypatch.setattr(yosys_fe, "elaborate_with_blackboxes", _fake_elaborate)
     src = tmp_path / "a.sv"
     keep = tmp_path / "k.json"
     module = elaborate(

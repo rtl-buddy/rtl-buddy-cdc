@@ -729,7 +729,7 @@ def test_lint_slang_unavailable_exits_2(tmp_path: Path, monkeypatch) -> None:
     def _boom(*args, **kwargs):
         raise SlangFrontendUnavailable("pyslang missing for test")
 
-    monkeypatch.setattr(cli_mod, "elaborate", _boom)
+    monkeypatch.setattr(cli_mod, "elaborate_with_blackboxes", _boom)
     result = runner.invoke(
         app, ["lint", str(sv), "--top", "m", "--frontend", "slang", "-s", str(sdc)]
     )
@@ -745,7 +745,7 @@ def test_lint_yosys_error_exits_2(tmp_path: Path, monkeypatch) -> None:
     def _boom(*args, **kwargs):
         raise YosysError("yosys blew up for test")
 
-    monkeypatch.setattr(cli_mod, "elaborate", _boom)
+    monkeypatch.setattr(cli_mod, "elaborate_with_blackboxes", _boom)
     result = runner.invoke(
         app, ["lint", str(sv), "--top", "m", "--frontend", "slang", "-s", str(sdc)]
     )
@@ -761,7 +761,7 @@ def test_lint_not_implemented_exits_2(tmp_path: Path, monkeypatch) -> None:
     def _boom(*args, **kwargs):
         raise NotImplementedError("frontend stub for test")
 
-    monkeypatch.setattr(cli_mod, "elaborate", _boom)
+    monkeypatch.setattr(cli_mod, "elaborate_with_blackboxes", _boom)
     result = runner.invoke(
         app, ["lint", str(sv), "--top", "m", "--frontend", "slang", "-s", str(sdc)]
     )

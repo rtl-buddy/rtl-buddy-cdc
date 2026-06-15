@@ -405,14 +405,36 @@ def _foreign_input_spec() -> ClockSpec:
     return spec
 
 
-def test_summarise_refuses_foreign_domain_data_input() -> None:
-    """Result-preserving safety: a clk_b signal driven into a clk_a
-    single-clock subtree's DATA INPUT is a crossing the flattened design
-    reports at the subtree's first internal flop. The output-only
-    boundary summary seeds no input sink (P3 work), so abstracting it
-    would silently drop the crossing — summarise_subtree must refuse."""
+def test_summarise_seeds_foreign_domain_data_input() -> None:
+    """Result-preserving by construction (P3/#257): a clk_b signal driven
+    into a clk_a single-clock subtree's DATA INPUT is a crossing the
+    flattened design reports at the subtree's first internal flop. The
+    summary now carries an INPUT-side virtual sink (``input_ports`` in the
+    boundary's ``clock`` domain) so abstracting it preserves the crossing
+    rather than dropping it — the subtree IS abstracted."""
     parent, inst, sub = _foreign_input_parent()
-    assert abstract.summarise_subtree(parent, inst, sub, _foreign_input_spec()) is None
+    summary = abstract.summarise_subtree(parent, inst, sub, _foreign_input_spec())
+    assert summary is not None
+    assert summary.clock == "clk_a"
+    assert set(summary.ports) == {"d_out"}
+    assert set(summary.input_ports) == {"d_in"}
+
+
+def test_summarise_foreign_input_crossing_seeded_via_find_crossings() -> None:
+    """End to end at the find_crossings layer: with the subtree abstracted
+    and the input sink seeded, the clk_b -> clk_a crossing INTO the
+    boundary is reported (``dst_boundary`` set), restoring parity with the
+    flattened design."""
+    parent, inst, sub = _foreign_input_parent()
+    summary = abstract.summarise_subtree(parent, inst, sub, _foreign_input_spec())
+    assert summary is not None
+    crossings = find_crossings(parent, boundaries={"u_sub": summary})
+    sink = [c for c in crossings if c.dst_boundary is not None]
+    assert len(sink) == 1
+    c = sink[0]
+    assert c.src_clock == "clk_b"
+    assert c.dst_clock == "clk_a"
+    assert c.dst_boundary == ("u_sub", "d_in")
 
 
 def test_foreign_input_crossing_present_when_not_abstracted() -> None:
@@ -443,10 +465,11 @@ def test_foreign_input_crossing_present_when_not_abstracted() -> None:
     assert c.dst_clock == "clk_a"
 
 
-def test_summarise_refuses_unconstrained_data_input() -> None:
+def test_summarise_unconstrained_data_input_still_abstracts() -> None:
     """An unconstrained (untyped) top-level input feeding a clk_a
-    subtree's data input is a foreign source the boundary can't seed —
-    refuse to abstract."""
+    subtree's data input no longer blocks abstraction: the subtree is
+    summarised and the input sink is seeded so the unconstrained-domain
+    crossing INTO the boundary is preserved by find_crossings."""
     parent, inst, sub = _foreign_input_parent()
     # Drive sub.d_in directly from a top input port typed <unconstrained>.
     inst = Cell(
@@ -460,7 +483,16 @@ def test_summarise_refuses_unconstrained_data_input() -> None:
     )
     spec = _async_spec()
     spec.port_clock["d_in"] = sdc_mod.UNCONSTRAINED_SENTINEL
-    assert abstract.summarise_subtree(p2, inst, sub, spec) is None
+    summary = abstract.summarise_subtree(p2, inst, sub, spec)
+    assert summary is not None
+    assert set(summary.input_ports) == {"d_in"}
+    # The unconstrained-domain input crosses into the clk_a boundary.
+    crossings = find_crossings(
+        p2, port_clock=spec.port_clock, boundaries={"u_sub": summary}
+    )
+    sink = [c for c in crossings if c.dst_boundary == ("u_sub", "d_in")]
+    assert len(sink) == 1
+    assert sink[0].dst_clock == "clk_a"
 
 
 def test_summarise_allows_same_domain_data_input() -> None:
@@ -574,12 +606,12 @@ FI_FLAT_JSON = FI_DIR / "foreign_input_no_abstract.flat.json"
 FI_SDC = FI_DIR / "foreign_input_no_abstract.sdc"
 
 
-def test_foreign_input_fixture_declines_abstraction() -> None:
+def test_foreign_input_fixture_abstracts_and_seeds_input_sink() -> None:
     """End-to-end: the SDC drives clk_b ``src_q`` into the clk_a ``pipe``
-    subtree's ``d_in``. The summariser must refuse to abstract ``pipe``
-    (no BoundarySummary), so the abstraction never masks the input-side
-    crossing the output-only boundary can't seed (P3 dst_boundary work).
-    """
+    subtree's ``d_in``. The summariser now abstracts ``pipe`` (per-instance
+    boundary keyed by cell name) AND records its input ports, so the
+    input-side crossing is re-seeded rather than dropped (P3 dst_boundary,
+    #257)."""
     from rtl_buddy_cdc import sdc as _sdc
     from rtl_buddy_cdc.cli import _summarise_blackboxes
 
@@ -588,7 +620,11 @@ def test_foreign_input_fixture_declines_abstraction() -> None:
     spec = _sdc.parse_file(FI_SDC)
     _sdc.synthesize_unconstrained_inputs(spec, top)
     boundaries = _summarise_blackboxes(top, blackboxes, spec)
-    assert boundaries == {}, "foreign-domain input must block abstraction"
+    # Keyed per instance; the single ``u_pipe`` instance is abstracted.
+    assert set(boundaries) == {"u_pipe"}
+    summary = boundaries["u_pipe"]
+    assert summary.clock == "clk_a"
+    assert set(summary.input_ports) == {"d_in"}
 
 
 def test_foreign_input_flat_reports_async_crossing() -> None:
@@ -602,31 +638,32 @@ def test_foreign_input_flat_reports_async_crossing() -> None:
     assert c["dst_clock"] == "clk_a"
 
 
-def test_foreign_input_blackbox_run_is_conservative_no_spurious_cdc008() -> None:
-    """CLI-level: the *declined-abstraction* blackbox run on this fixture
-    must be conservative, not wrong (rtl-buddy-cdc#257 review).
+def test_foreign_input_blackbox_run_matches_flat() -> None:
+    """CLI-level LITERAL PARITY (rtl-buddy-cdc#257): the abstracted
+    blackbox run on this fixture now produces the SAME violation set and
+    the same ``summary.crossings`` as the flattened companion.
 
-    With ``pipe``'s abstraction declined (foreign-domain ``d_in``), the
-    blackbox stays opaque (zero cells), so the clk_b -> clk_a crossing
-    the FLATTENED design reports lands *inside* the boundary and is not
-    yet preserved — input-side ``dst_boundary`` seeding is deferred to
-    P3. That is an accepted, documented divergence. What must NOT happen
-    is the boundary instance's clock pin tripping CDC-008 (clock used as
-    data): a declined blackbox is still an opaque boundary, and inventing
-    a clock-as-data finding the flat design never reports would be a
-    materially wrong report. Assert the run is clean of any spurious
-    finding (zero violations) — in particular no CDC-008 on ``u_pipe``.
+    ``pipe`` is abstracted to its port boundary; the clk_b -> clk_a
+    crossing INTO the boundary is re-seeded as a ``dst_boundary`` virtual
+    sink, so the CDC-004 the flattened design reports at pipe's first
+    internal flop reappears (anchored on the boundary input pin). The
+    boundary clock pin still does not trip CDC-008 (clock-as-data).
     """
     bb = _analyze_json_with(FI_BB_JSON, FI_SDC)
     flat = _analyze_json_with(FI_FLAT_JSON, FI_SDC)
 
-    # Flat reports the real crossing as CDC-004; the blackboxed run does
-    # not yet (deferred), but it must never invent a finding.
-    assert any(v["rule_id"] == "CDC-004" for v in flat["violations"])
+    # Same contract counts on both runs (the whole point of the parity).
+    for key in ("violations", "suppressed", "crossings", "async_crossings"):
+        assert bb["summary"][key] == flat["summary"][key], key
+    # Same rule set fires; the real crossing is a CDC-004 in both.
+    assert sorted(v["rule_id"] for v in bb["violations"]) == sorted(
+        v["rule_id"] for v in flat["violations"]
+    )
+    assert any(v["rule_id"] == "CDC-004" for v in bb["violations"])
     assert all(v["rule_id"] != "CDC-008" for v in bb["violations"])
-    assert bb["summary"]["violations"] == 0
-    assert bb["summary"]["crossings"] == 0
-    assert bb["summary"]["async_crossings"] == 0
+    # The abstracted run anchors the crossing on the boundary input pin.
+    (c,) = bb["crossings"]
+    assert c["dst_boundary"] == {"instance": "u_pipe", "port": "d_in"}
 
 
 def test_boundary_instance_clocks_helper() -> None:

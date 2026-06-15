@@ -384,11 +384,11 @@ def test_lint_blackbox_flag_forwarded(tmp_path: Path, monkeypatch) -> None:
 
     captured: dict[str, object] = {}
 
-    def fake_elaborate(sources, top, **kwargs):  # noqa: ARG001
+    def fake_elaborate(sources, top, *args, **kwargs):  # noqa: ARG001
         captured["blackbox"] = kwargs.get("blackbox")
-        return netlist.load(JSON)
+        return netlist.load(JSON), {}
 
-    monkeypatch.setattr(cli_mod, "elaborate", fake_elaborate)
+    monkeypatch.setattr(cli_mod, "elaborate_with_blackboxes", fake_elaborate)
 
     result = runner.invoke(
         app,
@@ -409,3 +409,50 @@ def test_lint_blackbox_flag_forwarded(tmp_path: Path, monkeypatch) -> None:
     )
     assert result.exit_code in (0, 1), result.output
     assert captured["blackbox"] == ["leaf", "other"]
+
+
+# --------------------------------------------------------------------------
+# #257: the lint path auto-abstracts (same shared core as analyze)
+# --------------------------------------------------------------------------
+
+LEAF_DIR = Path(__file__).parent / "fixtures" / "single_clock_leaf_abstract"
+LEAF_JSON = LEAF_DIR / "single_clock_leaf_abstract.json"
+LEAF_SDC = LEAF_DIR / "single_clock_leaf_abstract.sdc"
+
+
+def test_lint_path_auto_abstracts_single_clock_subtree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The lint path now feeds the frontend's blackbox siblings into the
+    shared analysis core, so a single-clock subtree is auto-abstracted
+    exactly like the ``analyze`` path (#257). We stub the frontend to hand
+    back the committed blackboxed netlist + its ``pipe`` sibling, run
+    ``lint``, and assert the abstracted boundary-sourced crossing surfaces
+    — identical to running ``analyze`` on the same netlist."""
+    top, blackboxes = netlist.load_with_blackboxes(LEAF_JSON)
+    assert set(blackboxes) == {"pipe"}
+
+    def fake_elaborate(sources, top_name, *args, **kwargs):  # noqa: ARG001
+        return top, blackboxes
+
+    monkeypatch.setattr(cli_mod, "elaborate_with_blackboxes", fake_elaborate)
+
+    sv = tmp_path / "x.sv"
+    sv.write_text("module x(); endmodule\n")
+    lint_res = runner.invoke(
+        app,
+        ["lint", str(sv), "--top", "top", "-s", str(LEAF_SDC), "-f", "json"],
+    )
+    assert lint_res.exit_code in (0, 1), lint_res.output
+    lint_json = json.loads(lint_res.output)
+
+    analyze_res = runner.invoke(
+        app, ["analyze", "-n", str(LEAF_JSON), "-s", str(LEAF_SDC), "-f", "json"]
+    )
+    analyze_json = json.loads(analyze_res.output)
+
+    # The lint path abstracted ``pipe`` to its boundary: a boundary-sourced
+    # crossing is present, and the contract counts match analyze.
+    assert any("src_boundary" in c for c in lint_json["crossings"])
+    assert lint_json["summary"] == analyze_json["summary"]
+    assert lint_json["crossings"] == analyze_json["crossings"]

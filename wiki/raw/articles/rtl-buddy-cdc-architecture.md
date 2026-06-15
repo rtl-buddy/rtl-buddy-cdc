@@ -257,7 +257,7 @@ class Crossing:
     src_flop: Flop | None = None # set for register-to-register
     src_port: str | None = None  # set for typed-port-to-register
     src_boundary: tuple[str, str] | None = None  # (instance, port): abstracted-subtree output
-    dst_boundary: tuple[str, str] | None = None  # reserved (P0 #254) for data entering a boundary
+    dst_boundary: tuple[str, str] | None = None  # (instance, port): data entering a boundary input
 ```
 
 Three design choices matter here:
@@ -282,10 +282,15 @@ Three design choices matter here:
    flattened internal flops that no longer exist in the netlist. The
    convenience property `src_name` returns the flop name, `"port
    <p>"`, or `"boundary <inst>.<port>"` for messages and waiver
-   matching. `dst_boundary` is the reserved symmetric field (P0 /
-   #254) for data *entering* a boundary in a foreign domain; the
-   single `Crossing` type carries both as additive optional fields so
-   the public JSON contract (`summary.crossings`) is never forked.
+   matching. `dst_boundary = (instance, port)` is the symmetric field
+   (P3 / #257) for data *entering* a boundary input in a domain foreign
+   to the boundary's own clock: `find_crossings` seeds a synthetic
+   virtual *sink* flop standing in for the boundary input pin (§7.4), so
+   the crossing the flattened subtree would have reported at its first
+   internal flop is preserved under abstraction. The single `Crossing`
+   type carries both `src_boundary` and `dst_boundary` as additive
+   optional fields so the public JSON contract (`summary.crossings`) is
+   never forked.
 
 ### 4.5 Clock topology
 
@@ -402,28 +407,45 @@ and no parent rewrite. `netlist.load` sets `is_blackbox` from the
 attribute; `boundary` is attached later by the summariser, never by
 `load`.
 
-The boundary itself is described by output/inout ports only (inputs are
-driven by the parent, which already knows their domain):
+The boundary is described by its output/inout ports (virtual sources)
+**and** its input/inout ports (virtual sinks), plus the subtree's own
+resolved clock domain:
 
 ```python
 @dataclass(frozen=True)
 class PortBoundary:
-    port: str             # output/inout port name (matches Module.ports key)
-    src_clock: str | None # clock domain driving this port; None = unconstrained
+    port: str             # port name (matches Module.ports key)
+    src_clock: str | None # output: domain driving the port; input: subtree capture domain
     synchronised: bool    # True iff every register→port path passes a synchroniser
     width: int            # number of bits on the port
 
 @dataclass(frozen=True)
 class BoundarySummary:
-    module: str                    # the summarised module's real (non-$) name
-    ports: dict[str, PortBoundary] # keyed by output/inout port name
+    module: str                          # the summarised module's real (non-$) name
+    ports: dict[str, PortBoundary]       # output/inout ports (virtual sources)
+    clock: str | None = None             # P3 #257: the subtree's own resolved clock
+    input_ports: dict[str, PortBoundary] = {}  # P3 #257: input/inout ports (virtual sinks)
 ```
 
-`synchronised=True` means a downstream sink in `src_clock` is *not* a
-crossing (the subtree retimes internally); `synchronised=False` means a
-sink in a different domain *is* a crossing the parent must check;
-`src_clock=None` is the conservative unconstrained source that crosses
-to any known-domain sink (mirroring the `<unconstrained>` sentinel).
+For an **output** port, `synchronised=True` means a downstream sink in
+`src_clock` is *not* a crossing (the subtree retimes internally);
+`synchronised=False` means a sink in a different domain *is* a crossing
+the parent must check; `src_clock=None` is the conservative unconstrained
+source that crosses to any known-domain sink (mirroring the
+`<unconstrained>` sentinel).
+
+For an **input** port (P3 / #257), `src_clock` names the boundary's own
+clock domain (`BoundarySummary.clock`) — what the subtree's first
+internal flop captures the input on. Clock pins are excluded (they are
+distribution, not data, and must never become a virtual sink — that
+would re-introduce the CDC-008 clock-as-data shape). `find_crossings`
+seeds a synthetic virtual-sink flop at each input port's connected bits,
+so foreign-domain data entering the boundary is reported as a
+`dst_boundary` crossing rather than vanishing under abstraction. This is
+the mirror of the output-port virtual-source seeding and is what makes
+abstracting a single-clock subtree with a foreign-domain input
+*result-preserving* — the P2-era refusal to abstract such subtrees is
+retired.
 
 **Relaxed single-module invariant.** `netlist.load_with_blackboxes`
 relaxes the historical "exactly one non-`$` module after flatten" rule
@@ -670,53 +692,81 @@ records with `width = 1`.
 ### 7.4 Boundary re-seeding and the compositional walk
 
 When the design carries auto-abstracted blackbox boundaries (§4.8),
-`find_crossings(module, boundaries={module_name: BoundarySummary})`
-runs a third pass alongside the flop-source and port-source walks. For
-each boundary instance and each of its summarised output ports it seeds
-a BFS frontier at the port's connected bits — exactly the port-walk
-shape — and emits a `src_boundary = (instance, port)` `Crossing` for
-every foreign-domain sink it reaches. A `synchronised=True` port never
-reaches this pass (the summariser drops it before it becomes a
-boundary); a `src_clock=None` port seeds the `<unconstrained>` sentinel
-so it crosses to any known-domain sink. The walk skips `$scopeinfo`
-transit cells and treats flops as sinks (never tunnels through them),
-identically to the flop/port walks.
+`find_crossings(module, boundaries=...)` re-seeds the boundary crossings
+the flattened subtree would have produced, on both sides:
+
+- **Output side (virtual sources).** A third pass alongside the
+  flop-source and port-source walks: for each boundary instance and each
+  summarised *output* port it seeds a BFS frontier at the port's
+  connected bits — exactly the port-walk shape — and emits a
+  `src_boundary = (instance, port)` `Crossing` for every foreign-domain
+  sink it reaches. A `synchronised=True` port never reaches this pass
+  (the summariser drops it before it becomes a boundary); a
+  `src_clock=None` port seeds the `<unconstrained>` sentinel so it
+  crosses to any known-domain sink.
+- **Input side (virtual sinks, P3 / #257).** For each summarised *input*
+  port a synthetic sink flop standing in for the boundary input pin is
+  folded into the domain map (`D` = the port's connected bits, clock =
+  `BoundarySummary.clock`). The flop-, port-, and output-boundary walks
+  then reach it with no special-casing; on landing, the emitting site
+  stamps `dst_boundary = (instance, port)`. So foreign-domain data
+  *entering* the boundary is reported as a crossing into it — the
+  crossing the flattened subtree's first internal flop would have
+  carried. The synthetic flop is never in `module.cells`, so the rule
+  context built from the real netlist is untouched; its cell `type`
+  (`$boundary_sink`) is deliberately not a recognised FF type, so
+  CDC-008's clock-pin exemption and the dffe-EN gating check treat it as
+  an ordinary opaque destination.
+
+Both walks skip `$scopeinfo` transit cells and treat flops as sinks
+(never tunnel through them), identically to the flop/port walks.
+`find_crossings` resolves each boundary cell's summary **instance-first**
+(falling back to a module-type key for legacy hand-built callers), so the
+per-instance map `compose_boundaries` returns is consumed directly.
 
 The **compositional** half lives in `hierarchy.compose_boundaries`
 (the per-module driver, subtasks 3a/3b of #257). Given the top module,
 its blackbox siblings, and the `ClockSpec`, it walks the boundary
-instances and summarises each *distinct* blackbox module **once**,
-caching by module identity (the cell `type` every instance shares) and
-serving every later instance of the same module from cache — so a block
-instantiated N times costs one `abstract.summarise_subtree` call, not
-N, and the full flattened subgraph is never materialised. It returns
-`(boundaries, CompositionStats)`; the stats (`instances`, `summarised`,
-`cache_hits`, `declined`) make the sharing observable and are what the
-parity tests assert against. `cli._summarise_blackboxes` is a thin
-wrapper that drops the stats and hands the boundary map to
-`find_crossings`. A module the summariser declines (not provably
-single-clock, or a foreign-domain data input it can't seed — the
-conservative refusal that keeps abstraction result-preserving) is
-absent from the map, so its instances fall through to the normal flat
-walk over whatever internals the netlist actually contains.
+instances and summarises each distinct `(module type, clock context)`
+**once** — caching by that pair. Every later instance with the *same*
+context is served from cache, so a block instantiated N times in one
+domain costs one `abstract.summarise_subtree` call, not N, and the full
+flattened subgraph is never materialised. The returned boundary map is
+keyed **per instance** (the cell name) so `find_crossings` re-seeds each
+instance's crossings against the domain its parent actually drives. It
+returns `(boundaries, CompositionStats)`; the stats (`instances`,
+`summarised` — one entry per abstracted instance, `cache_hits`,
+`declined`, `boundary_modules` — the distinct module types CDC-008
+exempts) make the sharing observable and are what the parity tests
+assert against. `cli._summarise_blackboxes` is a thin wrapper that drops
+the stats and hands the per-instance boundary map to `find_crossings`. A
+`(module, context)` the summariser declines (not provably single-clock —
+a genuine multi-clock subtree carrying an internal crossing) is absent
+from the map, so its instances fall through to the normal flat walk over
+whatever internals the netlist actually contains.
 
-> **Same-driving assumption.** Because the boundary map is keyed by
-> module *type*, the single summary computed for the first instance is
-> re-applied to every instance of that module. This is sound only when
-> all instances of a module are driven in the same clock domain — the
-> common case, and the contract the epic's "analyse once" goal names
-> explicitly. A design that instantiates one module under two different
-> clock domains would need a per-instance keying; that refinement is
-> deferred (see #257).
+> **Per-instance keying (#257).** The boundary map is keyed by instance
+> path, and summarisation is cached by `(module type, clock context)`.
+> So a module instantiated N times *in the same clock domain* is still
+> analysed once (the cache hit — the epic's "analyse once" goal), while
+> the same module type instantiated under *two different* clock domains
+> gets a correct per-instance summary for each: each instance's boundary
+> crossings are seeded against the domain its parent actually drives.
+> This replaces the earlier type-only keying, which could only represent
+> one domain per module type.
 
 The end-to-end safety property is **parity**: on a design small enough
 to run both ways, the auto-abstracted run (subtree blackboxed +
 summarised once) must produce the *same* violations and the same
 `summary.*` counts as the fully flattened run, while walking strictly
-fewer flops. The `single_clock_leaf_abstract` and
-`shared_subtree_compose` fixture pairs pin this — the latter proves a
-single-clock subtree instantiated twice is analysed once yet yields
-identical CDC-004 findings on the real top-level destination flops.
+fewer flops. The `single_clock_leaf_abstract`,
+`shared_subtree_compose`, and `foreign_input_no_abstract` fixture pairs
+pin this — `shared_subtree_compose` proves a single-clock subtree
+instantiated twice is analysed once yet yields identical CDC-004 findings
+on the real top-level destination flops, and `foreign_input_no_abstract`
+proves a foreign-domain signal driven *into* an abstracted subtree's
+input still surfaces its CDC-004 (anchored on the boundary input pin via
+`dst_boundary`) — identical to the flattened run.
 
 ## 8. The rule pack
 

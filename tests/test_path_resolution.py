@@ -184,7 +184,7 @@ def test_lint_yosys_plugin_anchored_to_project_root(tmp_path, monkeypatch) -> No
         captured["plugin"] = kwargs.get("yosys_plugin")
         raise YosysError("captured")
 
-    monkeypatch.setattr(cli_mod, "elaborate", _capture)
+    monkeypatch.setattr(cli_mod, "elaborate_with_blackboxes", _capture)
     monkeypatch.chdir(cwd)
     result = runner.invoke(
         app,

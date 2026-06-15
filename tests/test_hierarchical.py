@@ -3,13 +3,15 @@
 Covers the rtl-buddy-cdc side end to end without a yosys toolchain:
 
 - 3a/3b — the compositional boundary walk
-  (``hierarchy.compose_boundaries``): each distinct blackbox module is
-  summarised **once** (cached by module identity) and re-applied to
-  every instance, with a ``CompositionStats`` record that proves the
-  sharing (a block instantiated N times costs one summarise call).
+  (``hierarchy.compose_boundaries``): each distinct ``(module, clock
+  context)`` is summarised **once** (cached by that pair) while the
+  boundary map is keyed per instance, with a ``CompositionStats`` record
+  that proves the sharing (identical instances cost one summarise call)
+  and the per-instance correctness (one module under two domains gets two
+  correct summaries, #257).
 - 3c — boundary-summary consumption in ``find_crossings`` is exercised
   by the existing P2 suite; here we assert it composes across multiple
-  instances of one shared module.
+  instances of one shared module and across two clock domains.
 - 3d — the committed ``shared_subtree_compose`` fixture pair: a
   single-clock ``pipe`` instantiated twice, each feeding a foreign-domain
   flop. The FLATTENED design (both copies inlined) and the
@@ -89,16 +91,21 @@ def _two_instance_parent() -> tuple[Module, dict[str, Module]]:
 
 
 def test_compose_summarises_shared_module_once() -> None:
-    """Two instances of one module ⇒ one BoundarySummary keyed by module
-    name, and CompositionStats proves the second instance was a cache
-    hit (analysed once, re-applied)."""
+    """Two instances of one module in the SAME clock context ⇒ the
+    summariser runs once (the second instance is a cache hit), but the
+    boundary map is keyed per instance so each instance re-seeds its own
+    crossings (#257 per-instance keying)."""
     parent, blackboxes = _two_instance_parent()
     boundaries, stats = compose_boundaries(parent, blackboxes, _async_spec())
-    assert set(boundaries) == {"pipe"}
+    # Keyed per instance now, not by module type.
+    assert set(boundaries) == {"u_pipe0", "u_pipe1"}
     assert stats.instances == 2
-    assert stats.summarised == 1
+    # One summary per abstracted instance; the second was a cache hit so
+    # ``summarise_subtree`` ran exactly once (analyse-once perf win).
+    assert stats.summarised == 2
     assert stats.cache_hits == 1
     assert stats.declined == 0
+    assert stats.boundary_modules == frozenset({"pipe"})
     assert stats.shared_subtree_reused is True
 
 
@@ -116,6 +123,88 @@ def test_compose_seeds_one_crossing_per_instance() -> None:
     assert bnd == [(("u_pipe0", "d_out"), "dst0"), (("u_pipe1", "d_out"), "dst1")]
 
 
+def _two_domain_parent() -> tuple[Module, dict[str, Module]]:
+    """One module type ``pipe`` instantiated under TWO different clock
+    domains: ``u_pipe_a`` on clk_a, ``u_pipe_b`` on clk_b. Each drives a
+    flop in the *other* domain, so each instance's boundary output crosses
+    a different async boundary.
+
+    bits: clk_a=1, clk_b=2,
+          u_pipe_a(clk_a).d_out=3 -> dst_b(clk_b).D=3   (clk_a->clk_b)
+          u_pipe_b(clk_b).d_out=4 -> dst_a(clk_a).D=4   (clk_b->clk_a)
+    """
+    pa = Cell(name="u_pipe_a", type="pipe", connections={"clk": (1,), "d_out": (3,)})
+    pb = Cell(name="u_pipe_b", type="pipe", connections={"clk": (2,), "d_out": (4,)})
+    dst_b = Cell(
+        name="dst_b", type="$dff", connections={"CLK": (2,), "D": (3,), "Q": (5,)}
+    )
+    dst_a = Cell(
+        name="dst_a", type="$dff", connections={"CLK": (1,), "D": (4,), "Q": (6,)}
+    )
+    parent = Module(
+        name="top",
+        ports={
+            "clk_a": Port(name="clk_a", direction="input", bits=(1,)),
+            "clk_b": Port(name="clk_b", direction="input", bits=(2,)),
+        },
+        cells={"u_pipe_a": pa, "u_pipe_b": pb, "dst_b": dst_b, "dst_a": dst_a},
+        netnames={},
+    )
+    pipe = Module(
+        name="pipe",
+        ports={
+            "clk": Port(name="clk", direction="input", bits=()),
+            "d_out": Port(name="d_out", direction="output", bits=()),
+        },
+        cells={},
+        netnames={},
+        is_blackbox=True,
+    )
+    return parent, {"pipe": pipe}
+
+
+def test_compose_per_instance_keying_two_domains() -> None:
+    """One module type instantiated under two different clock domains gets
+    a correct per-instance summary (#257). The two instances are NOT a
+    cache hit (distinct clock contexts), and each boundary output is
+    summarised in its own domain."""
+    from rtl_buddy_cdc.domain import find_crossings
+
+    parent, blackboxes = _two_domain_parent()
+    boundaries, stats = compose_boundaries(parent, blackboxes, _async_spec())
+    assert set(boundaries) == {"u_pipe_a", "u_pipe_b"}
+    # Distinct (module, clock) contexts ⇒ two summarise calls, no cache hit.
+    assert stats.instances == 2
+    assert stats.summarised == 2
+    assert stats.cache_hits == 0
+    assert stats.boundary_modules == frozenset({"pipe"})
+    # Each instance's output port is summarised in its own clock domain.
+    assert boundaries["u_pipe_a"].ports["d_out"].src_clock == "clk_a"
+    assert boundaries["u_pipe_b"].ports["d_out"].src_clock == "clk_b"
+
+    # find_crossings re-seeds per instance against the correct domain.
+    crossings = find_crossings(parent, boundaries=boundaries)
+    bnd = sorted(
+        (c.src_boundary, c.src_clock, c.dst_clock)
+        for c in crossings
+        if c.is_boundary_sourced
+    )
+    assert bnd == [
+        (("u_pipe_a", "d_out"), "clk_a", "clk_b"),
+        (("u_pipe_b", "d_out"), "clk_b", "clk_a"),
+    ]
+
+
+def test_compose_same_context_instances_hit_cache() -> None:
+    """The perf win is preserved: two instances of the same module in the
+    SAME clock context cost one summarise call (cache hit), even though
+    the boundary map is keyed per instance."""
+    parent, blackboxes = _two_instance_parent()  # both on clk_a
+    _boundaries, stats = compose_boundaries(parent, blackboxes, _async_spec())
+    assert stats.cache_hits == 1
+    assert stats.shared_subtree_reused is True
+
+
 def test_compose_no_blackboxes_is_empty() -> None:
     """No blackbox siblings ⇒ empty map and zeroed stats."""
     parent = Module(name="top", ports={}, cells={}, netnames={})
@@ -129,26 +218,31 @@ def test_compose_no_blackboxes_is_empty() -> None:
     assert stats2 == CompositionStats()
 
 
-def test_compose_records_declined_module() -> None:
-    """A multi-clock subtree the summariser declines is recorded in
-    ``declined`` / ``declined_modules`` and absent from the boundary
-    map; a second instance of the declined module is still a cache hit
-    (declined once, not re-summarised)."""
-    # ``mix``'s clock pin traces to clk_a, but its data input is driven
-    # by a clk_b flop — a foreign-domain input the output-only summary
-    # can't seed, so summarise_subtree declines (P2 safety, preserved).
-    src = Cell(
-        name="src_b", type="$dff", connections={"CLK": (2,), "D": (7,), "Q": (8,)}
-    )
+def test_compose_records_declined_module(monkeypatch) -> None:
+    """A subtree the summariser declines (not provably single-clock) is
+    recorded in ``declined`` / ``declined_modules`` and absent from the
+    boundary map; a second instance of the same declined ``(module,
+    context)`` is still a cache hit (declined once, not re-summarised).
+
+    Post-#257 a foreign-domain data input no longer blocks abstraction
+    (it is seeded as a virtual sink), so the decline path is driven here
+    by a subtree the single-clock detector rejects — the genuine
+    multi-clock case the summariser must still refuse.
+    """
+    import rtl_buddy_cdc.hierarchy as hierarchy_mod
+
+    # Force the detector to reject ``mix`` so summarise_subtree declines,
+    # modelling a multi-clock subtree carrying an internal crossing.
+    monkeypatch.setattr(hierarchy_mod, "summarise_subtree", lambda *a, **k: None)
     m0 = Cell(
         name="u_mix0",
         type="mix",
-        connections={"clk": (1,), "d_in": (8,), "d_out": (3,)},
+        connections={"clk": (1,), "d_in": (3,), "d_out": (4,)},
     )
     m1 = Cell(
         name="u_mix1",
         type="mix",
-        connections={"clk": (1,), "d_in": (8,), "d_out": (4,)},
+        connections={"clk": (1,), "d_in": (3,), "d_out": (5,)},
     )
     parent = Module(
         name="top",
@@ -156,7 +250,7 @@ def test_compose_records_declined_module() -> None:
             "clk_a": Port(name="clk_a", direction="input", bits=(1,)),
             "clk_b": Port(name="clk_b", direction="input", bits=(2,)),
         },
-        cells={"src_b": src, "u_mix0": m0, "u_mix1": m1},
+        cells={"u_mix0": m0, "u_mix1": m1},
         netnames={},
     )
     mix = Module(
@@ -176,7 +270,8 @@ def test_compose_records_declined_module() -> None:
     assert stats.summarised == 0
     assert stats.declined == 1
     assert stats.declined_modules == frozenset({"mix"})
-    # The second instance of the declined module was served from cache.
+    assert stats.boundary_modules == frozenset()
+    # The second instance of the declined (module, context) was cached.
     assert stats.cache_hits == 1
 
 
@@ -265,8 +360,10 @@ def test_shared_subtree_compose_stats_on_fixture() -> None:
     spec = sdc_mod.parse_file(SDC)
     sdc_mod.synthesize_unconstrained_inputs(spec, top)
     boundaries, stats = compose_boundaries(top, blackboxes, spec)
-    assert set(boundaries) == {"pipe"}
+    # Per-instance keying: one entry per abstracted instance.
+    assert set(boundaries) == {"u_pipe0", "u_pipe1"}
     assert stats.instances == 2
-    assert stats.summarised == 1
+    assert stats.summarised == 2
     assert stats.cache_hits == 1
+    assert stats.boundary_modules == frozenset({"pipe"})
     assert stats.shared_subtree_reused is True

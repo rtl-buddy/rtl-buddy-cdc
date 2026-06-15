@@ -2,20 +2,18 @@
 
 <!-- generator: scripts/gen_fixture_docs.py -->
 
-P2 auto-abstract safety fixture: foreign-domain INPUT into a single-clock subtree must NOT be abstracted away (#256).
+P3 boundary input-sink parity fixture: a foreign-domain INPUT into a single-clock subtree is preserved across abstraction (#257).
 
-`top` runs two async clocks, clk_a and clk_b. The leaf `pipe` is a pure clk_a pipeline (two clk_a stages) — a SINGLE-CLOCK subtree by the clock-pin test. BUT here its `d_in` is driven by a clk_b parent flop (`src_q`), so the real async crossing (clk_b -> clk_a) lands on pipe's FIRST internal flop, *inside* the subtree's input boundary.
+`top` runs two async clocks, clk_a and clk_b. The leaf `pipe` is a pure clk_a pipeline (two clk_a stages) — a SINGLE-CLOCK subtree by the clock-pin test. Its `d_in` is driven by a clk_b parent flop (`src_q`), so the real async crossing (clk_b -> clk_a) lands on pipe's FIRST internal flop, *inside* the subtree's input boundary.
 
-If P2 abstracted `pipe` to its output port boundary it would seed only an output-side virtual source (clk_a) and NO input-side virtual sink, so the clk_b -> clk_a input crossing would silently vanish — the flattened design reports it, the abstracted design would not.
+P2 originally REFUSED to abstract `pipe` here (an output-only summary could not represent the input-side crossing). P3 retires that refusal: the summariser now records `pipe`'s data INPUT ports in the boundary's own clock domain (clk_a), and `find_crossings` seeds a virtual SINK at the boundary input pin. So the clk_b -> clk_a crossing INTO the boundary is re-created (a `dst_boundary` crossing anchored on `u_pipe.d_in`) instead of vanishing.
 
-The safety property: because a foreign-domain signal enters the subtree's data input, P2 must REFUSE to abstract `pipe` (until P3's dst_boundary input-sink seeding lands).
-
-Known divergence (deferred to P3 — rtl-buddy-cdc#257). With the abstraction declined, `pipe` stays an opaque blackbox carrying zero cells, so the clk_b -> clk_a crossing that the FLATTENED design reports at pipe's first internal flop (CDC-004) is NOT yet preserved in the blackboxed run: the real crossing lands inside the boundary, and input-side virtual-sink (`dst_boundary`) seeding is still deferred. The blackboxed run is therefore *conservative but not result-preserving* for this case — it reports zero crossings and zero violations rather than the flat design's one CDC-004. It does NOT invent a spurious finding: CDC-008 is exempt on blackbox boundary instances (rtl-buddy-cdc#257 review), so the boundary clock pin is not mistaken for clock-as-data. Full parity returns when P3's dst_boundary input-sink seeding lands.
+Parity restored (rtl-buddy-cdc#257). The FLATTENED run (pipe inlined) and the BLACKBOXED run (pipe abstracted to its port boundary) now produce IDENTICAL violations and identical `summary.*` counts: both report exactly one CDC-004 (the unprotected 4-bit clk_b -> clk_a bus crossing) and one async crossing. The blackboxed run walks fewer flops (pipe's two internal stages are summarised away) yet preserves the finding. CDC-008 still does NOT false-fire: the boundary clock pin is distribution into the opaque subtree, never seeded as a data sink, so it is not mistaken for clock-as-data.
 
 - **Status:** auxiliary
 - **Top module:** `foreign_input_no_abstract`
 - **Clocks:** `clk_a` (10.0 ns), `clk_b` (7.0 ns)
-- **Crossings:** 0 structural (0 async-per-SDC, 0 sync)
+- **Crossings:** 1 structural (1 async-per-SDC, 0 sync)
 
 ## Clock-domain map
 
@@ -31,6 +29,7 @@ flowchart LR
     p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_clk_b
     f_5141a504["$driver$src_q<br/><i>sv:46</i>"]:::ckcls_clk_b
   end
+  f_5141a504 -. "⚠ async · 4b" .-> f_f17ecf57
   subgraph rb_legend["Legend"]
     direction LR
     lg_clk_clk_a["flop · clk_a (10.0 ns)"]:::ckcls_clk_a

@@ -11,25 +11,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Hierarchical / compositional boundary analysis** (#257, CDC-scaling
   epic #253 phase 3). A block instantiated N times is now **analysed
-  once**: new pure `hierarchy.compose_boundaries` walks the parent's
-  blackbox instances, summarises each *distinct* module exactly once
-  (cached by the module name every instance shares), and re-applies the
-  cached `BoundarySummary` to every instance — the full flattened graph
-  is never materialised. It returns a `CompositionStats` record that
-  *proves* the sharing (`cache_hits`, `summarised`, `declined`,
-  `instances`); `cli._summarise_blackboxes` is now a thin wrapper over
-  it. The fixtures `shared_subtree_compose` and `single_clock_leaf_abstract`
-  pin the analyse-once / flat-vs-hierarchical parity properties. A
-  declined-abstraction blackbox (e.g. `foreign_input_no_abstract`, where
-  a foreign-domain signal enters a data input) stays an opaque boundary;
-  CDC-008 is exempt on **all** blackbox boundary instances — summarised
-  *and* declined — so a user who blackboxes a clocked subtree never gets
-  a spurious clock-as-data finding on the boundary instance. For a
-  declined blackbox the input-side crossing is *not yet* preserved
-  (output-only boundary; the input-side `dst_boundary` virtual-sink
-  seeding remains deferred), so the run is **conservative** for that
-  case, not result-preserving — it reports no crossing rather than the
-  flattened design's one, and never invents a finding.
+  once**: pure `hierarchy.compose_boundaries` walks the parent's blackbox
+  instances and summarises each distinct `(module type, clock context)`
+  exactly once (cached by that pair), so identical instances hit the
+  cache — the full flattened graph is never materialised. The boundary
+  map is now keyed **per instance**, so the same module type instantiated
+  under two different clock domains gets a correct per-instance summary
+  while identical instances still share one summarise call. It returns a
+  `CompositionStats` record that *proves* the sharing (`cache_hits`,
+  `summarised`, `declined`, `instances`, `boundary_modules`).
+- **Boundary input-sink seeding restores flat-vs-abstracted parity**
+  (#257). Data entering an opaque boundary at an input port in a domain
+  foreign to the boundary's own clock is now reported: the summariser
+  records the subtree's input/inout ports (in the boundary's `clock`
+  domain) and `find_crossings` seeds a synthetic virtual *sink* flop at
+  the boundary input pin, emitting a `Crossing` with the new
+  `dst_boundary = (instance, port)` field (serialised in the JSON
+  report). This mirrors the existing output-port virtual-source seeding,
+  so abstracting a single-clock subtree with a foreign-domain input is
+  now **result-preserving** — the previously over-conservative refusal to
+  abstract such subtrees is retired. The `foreign_input_no_abstract`
+  fixture now produces **identical** violations and `summary.*` counts
+  between the flattened and the auto-abstracted runs (one CDC-004), while
+  the abstracted run walks fewer flops. CDC-008 still never false-fires
+  on a boundary clock pin (clock pins are excluded from input-sink
+  seeding). The `shared_subtree_compose`, `single_clock_leaf_abstract`,
+  and `foreign_input_no_abstract` fixture pairs pin the
+  analyse-once / flat-vs-hierarchical parity properties.
+- **Lint path auto-abstracts** (#257). The `lint` command now feeds the
+  frontend's blackbox sibling modules into the same shared analysis core
+  as `analyze` (`frontend.elaborate_with_blackboxes` /
+  `frontends.yosys.elaborate_with_blackboxes`), so a `--blackbox` subtree
+  is auto-abstracted on the lint path too. The `analyze` path stays
+  frontend-free.
 
 - **Auto-abstract single-clock subtrees** (#256, CDC-scaling epic #253
   phase 2). A blackboxed subtree whose entire clock set sits in one
