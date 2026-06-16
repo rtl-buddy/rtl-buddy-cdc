@@ -19,7 +19,12 @@ from rtl_buddy_cdc import (
     waivers as waivers_mod,
 )
 from rtl_buddy_cdc.abstract import instance_clock_pins
-from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
+from rtl_buddy_cdc.domain import (
+    Crossing,
+    assign_domains,
+    find_crossings,
+    find_inferred_clock_candidates,
+)
 from rtl_buddy_cdc.hierarchy import (
     compose_boundaries,
     reconvergence_unsafe_instances,
@@ -891,6 +896,17 @@ def _analyze_module_and_report(
         for v in baseline_carryover
     ]
 
+    # Advisory inferred-clock candidates (P3/#263): internal nets that
+    # fan out to many flop CLK pins but carry no declared clock identity.
+    # Computed from the netlist + SDC pin map only — it never reads
+    # ``domains`` / ``crossings`` and never feeds back into them, so it
+    # cannot change any classification. Honour ``pin_clocks`` so a net the
+    # user already declared with ``create_generated_clock`` is not
+    # re-flagged.
+    inferred_clock_candidates = find_inferred_clock_candidates(
+        module, pin_clocks=spec.pin_clocks if spec is not None else None
+    )
+
     result = AnalysisResult(
         module=module,
         domains=domains,
@@ -900,6 +916,7 @@ def _analyze_module_and_report(
         violations=list(violations),
         suppressed=list(suppressed),
         baseline_carryover=list(baseline_carryover),
+        inferred_clock_candidates=inferred_clock_candidates,
     )
 
     # Domain-map emission runs *before* the normal report so a write

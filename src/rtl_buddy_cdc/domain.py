@@ -73,6 +73,38 @@ class FlopDomain:
 
 
 @dataclass(frozen=True)
+class InferredClockCandidate:
+    """An undeclared internal net used as a clock by many flops (P3/#263).
+
+    A *candidate* generated clock: a single net bit driven by a flop ``Q``
+    or by a clock-gate / latch (ICG) output that fans out to
+    ``fanout`` (>= a threshold) flop ``CLK`` pins, and is **not** already
+    named as a clock — neither a top-level input port nor a
+    ``create_generated_clock`` target (``bit_to_clock``). It is a hint
+    that the user may have forgotten a ``create_generated_clock`` so the
+    forwarded clock gets its own SDC identity.
+
+    This is **advisory only**. Emitting it never changes a flop's domain
+    or any crossing — flops behind an undeclared internal clock stay
+    domain-unknown unless a real clock-root trace already resolves them
+    (the divider/latch clauses of :func:`trace_clock_root`, which fire
+    independently of this report). The fanout heuristic alone never
+    assigns a domain; see issue #263 and the §4.7 reporter contract.
+
+    ``driver`` is the human-readable ``cell.name`` of the driving cell;
+    ``driver_kind`` is ``"flop"`` for a flop-``Q`` driver or ``"gate"``
+    for an ICG / clock-gate / latch output. ``example_sinks`` is a
+    bounded, sorted sample of the flop cell names whose ``CLK`` the net
+    drives (the full count is ``fanout``).
+    """
+
+    driver: str
+    driver_kind: str
+    fanout: int
+    example_sinks: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Crossing:
     """A fanout path that crosses domains, ending at a flop's ``D`` pin.
 
@@ -554,6 +586,105 @@ def assign_domains(
             if resolved is not None:
                 root = resolved
         out.append(FlopDomain(flop=f, clock=root))
+    return out
+
+
+# Default minimum number of flop CLK pins a candidate net must drive
+# before it is reported as a possible undeclared generated clock. Four
+# is a deliberately conservative floor: a forwarded/divided clock in an
+# SoC typically clocks a whole register bank, while a lone toggle-flop
+# whose Q happens to feed one or two CLK pins (a divide-by-2 with a tiny
+# fanout) is too noisy to flag. The threshold is advisory tuning only —
+# raising or lowering it changes only what gets *reported*, never a
+# domain or a crossing.
+_INFERRED_CLOCK_FANOUT_THRESHOLD = 4
+
+# How many sink-flop cell names to keep per candidate in
+# ``example_sinks``. The full fanout count is always ``fanout``; this is
+# just a pointer at the affected bank so the report stays bounded.
+_INFERRED_CLOCK_SINK_SAMPLE = 5
+
+
+def find_inferred_clock_candidates(
+    module: Module,
+    pin_clocks: dict[str, str] | None = None,
+    *,
+    threshold: int = _INFERRED_CLOCK_FANOUT_THRESHOLD,
+) -> list[InferredClockCandidate]:
+    """Report internal nets that *look like* undeclared generated clocks.
+
+    A candidate is a single net bit that
+
+    1. drives at least ``threshold`` flop ``CLK`` pins,
+    2. is produced by a flop ``Q`` or by a clock-gate / ICG / latch
+       output (the same cell families :func:`trace_clock_root` treats as
+       clock-network nodes), and
+    3. is **not** already a declared clock — neither a top-level input
+       port nor a ``create_generated_clock`` target (``pin_clocks`` →
+       ``bit_to_clock``).
+
+    The intent is to point the user at a forwarded/divided clock they
+    forgot to declare with ``create_generated_clock``, so its downstream
+    flops stop landing in ``domain_unknown``.
+
+    **Purely advisory.** This function reads the netlist and returns a
+    report; it assigns no domain and emits no crossing. The caller must
+    not feed its output back into :func:`assign_domains` /
+    :func:`find_crossings`. Resolving a flop behind such a net is allowed
+    ONLY when :func:`trace_clock_root` already follows the divider/latch
+    to a real root — never on this fanout heuristic. See issue #263.
+    """
+    drivers = _bit_drivers(module)
+    bit_to_clock = _build_bit_to_clock(module, pin_clocks)
+
+    # Tally, per net bit, the flop CLK pins it drives. We sort the sink
+    # names so the sample (and any equality test) is deterministic.
+    clk_sinks: dict[Bit, list[str]] = defaultdict(list)
+    for f in find_flops(module):
+        if isinstance(f.clk, int):
+            clk_sinks[f.clk].append(f.cell.name)
+
+    out: list[InferredClockCandidate] = []
+    for bit, sinks in clk_sinks.items():
+        if len(sinks) < threshold:
+            continue
+        # Already a named clock — not "forgotten". A top-level input port
+        # IS the declared clock root; a generated-clock pin is declared
+        # via SDC. Either way there is nothing for the user to add.
+        if bit in bit_to_clock:
+            continue
+        port = module.port_of_bit(bit)
+        if port is not None and port.direction == "input":
+            continue
+        drv = drivers.get(bit)
+        if drv is None:
+            continue
+        cell_name, out_port = drv
+        cell = module.cells.get(cell_name)
+        if cell is None:
+            continue
+        ctype = cell.type
+        if is_ff_cell(ctype) and out_port == "Q":
+            kind = "flop"
+        elif ctype in _GATE_TYPES or (is_latch_cell(ctype) and out_port == "Q"):
+            kind = "gate"
+        else:
+            # Driven by something that is not a recognised clock-network
+            # source (e.g. an adder output wired into a CLK pin). That is
+            # a different smell (CDC-008 territory); not a forwarded-clock
+            # candidate, so we do not report it here.
+            continue
+        ordered = sorted(sinks)
+        out.append(
+            InferredClockCandidate(
+                driver=cell_name,
+                driver_kind=kind,
+                fanout=len(ordered),
+                example_sinks=tuple(ordered[:_INFERRED_CLOCK_SINK_SAMPLE]),
+            )
+        )
+    # Stable order: widest fanout first, then driver name.
+    out.sort(key=lambda c: (-c.fanout, c.driver))
     return out
 
 

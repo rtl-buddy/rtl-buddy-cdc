@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Inferred-clock candidates** (#263). A common cause of
+  under-resolution is an undeclared internal generated clock — a
+  divided / forwarded clock the user forgot to declare with
+  `create_generated_clock`. `analyze` now reports each internal net that
+  drives ≥4 flop `CLK` pins from a flop `Q` or a clock-gate / ICG / latch
+  output and is not already a declared clock (port or
+  `create_generated_clock` target). JSON gains an additive
+  `inferred_clock_candidates` list (`{driver, driver_kind, fanout,
+  example_sinks}`); the text report adds a cyan `ⓘ` advisory line per
+  candidate. This is **advisory only**: it is computed from the netlist
+  and SDC pin map, never feeds back into domain assignment or crossing
+  detection, and so changes no domain, crossing, or violation — a flop
+  behind an undeclared internal clock stays `domain_unknown` unless a
+  real clock-root trace already resolves it (the divider / latch clauses
+  of `trace_clock_root`). Auto-assigning a clock identity from the
+  fanout heuristic alone is deliberately forbidden — it could make two
+  async groups read same-domain and silently drop a crossing. New
+  fixture `inferred_fwd_clock` (a divide-by-2 toggle flop clocking a
+  four-flop bank with no `create_generated_clock`) is flagged as a
+  candidate while its bank flops still resolve to `clk_a` via the
+  divider trace, and carries a real `clk_a → clk_b` crossing as a parity
+  anchor. The key is deliberately not pinned in `JSON_CONTRACT`.
 - **Configurable clock-trace depth** (#263). The clock-root tracer's
   hop budget — fixed at 16 — is now exposed as `--clock-trace-depth N`
   on both `analyze` and `lint` (default 16; threaded through

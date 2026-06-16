@@ -1,0 +1,361 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "inferred_fwd_clock": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:19.1-57.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "din": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "dout": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$not$tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:30$3": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:30.32-30.40"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 7 ],
+            "Y": [ 8 ]
+          }
+        },
+        "$procdff$21": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:52.5-54.32"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 9 ],
+            "Q": [ 10 ]
+          }
+        },
+        "$procdff$26": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:47.5-49.32"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$procdff$31": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:42.5-42.89"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 7 ],
+            "D": [ 11 ],
+            "Q": [ 12 ]
+          }
+        },
+        "$procdff$36": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:41.5-41.89"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 7 ],
+            "D": [ 13 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$procdff$41": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:40.5-40.89"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 7 ],
+            "D": [ 14 ],
+            "Q": [ 13 ]
+          }
+        },
+        "$procdff$46": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:39.5-39.90"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 7 ],
+            "D": [ 5 ],
+            "Q": [ 14 ]
+          }
+        },
+        "$procdff$51": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:28.5-30.41"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 8 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$xor$tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:56$16": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:56.19-56.32"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 12 ],
+            "B": [ 10 ],
+            "Y": [ 6 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\clk_div[0:0]": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:28.5-30.41"
+          }
+        },
+        "b0": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:38.9-38.11"
+          }
+        },
+        "b1": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:38.13-38.15"
+          }
+        },
+        "b2": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:38.17-38.19"
+          }
+        },
+        "b3": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:38.21-38.23"
+          }
+        },
+        "bank": {
+          "hide_name": 0,
+          "bits": [ 14, 13, 11, 12 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:43.16-43.20"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:20.17-20.22"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:21.17-21.22"
+          }
+        },
+        "clk_div": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:27.9-27.16"
+          }
+        },
+        "din": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:23.17-23.20"
+          }
+        },
+        "dout": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:24.17-24.21"
+          }
+        },
+        "q_a": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:46.9-46.12"
+          }
+        },
+        "q_b": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:51.9-51.12"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_fwd_clock/inferred_fwd_clock.sv:22.17-22.22"
+          }
+        }
+      }
+    }
+  }
+}

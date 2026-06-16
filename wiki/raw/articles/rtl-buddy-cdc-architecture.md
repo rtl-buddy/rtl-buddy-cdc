@@ -404,6 +404,41 @@ coverage. The reporter surfaces this as a report-only diagnostic
   have unresolved clock domain — excluded from CDC analysis` line, so an
   under-resolved run no longer reads as a complete one.
 
+#### Inferred-clock candidates (issue #263, P3)
+
+A frequent cause of under-resolution is an **undeclared internal
+generated clock** — a divided / forwarded clock the user forgot to
+declare with `create_generated_clock`. `domain.find_inferred_clock_candidates`
+reports each net bit that
+
+1. drives at least a threshold (default 4) flop `CLK` pins,
+2. is produced by a flop `Q` or a clock-gate / ICG / latch output (the
+   same clock-network cell families `trace_clock_root` walks), and
+3. is **not** already a declared clock — neither a top-level input port
+   nor a `create_generated_clock` target (`pin_clocks`).
+
+The report is surfaced as:
+
+- JSON `inferred_clock_candidates` (list of `{driver, driver_kind,
+  fanout, example_sinks}`) — `driver_kind` is `"flop"` or `"gate"`,
+  `example_sinks` a bounded sample of sink-flop cell names.
+- Text report — a cyan `ⓘ` advisory line per candidate naming the
+  driver and its CLK-pin fanout.
+
+This is **advisory only** and the highest silent-false-negative risk in
+the whole epic, so it defaults to *report-only*: it is computed from the
+netlist + SDC pin map, never feeds back into `assign_domains` /
+`find_crossings`, and so **cannot change a flop's domain, a crossing, or
+a violation**. A flop behind an undeclared internal clock stays
+`domain_unknown` (and is still counted there) unless a real clock-root
+trace already resolves it — the divider / latch clauses of
+`trace_clock_root`, which fire independently of this fanout heuristic.
+Auto-assigning a clock identity from the heuristic alone is forbidden:
+it could make two async groups read same-domain and silently drop a
+crossing. The contract is "report; let the human declare it". The key is
+deliberately **not** in `JSON_CONTRACT` — it is an additive advisory,
+not a pinned downstream count.
+
 ### 4.8 Blackbox boundaries and the compositional data model
 
 The CDC-scaling work (epic #253) makes a large subtree analysable at
