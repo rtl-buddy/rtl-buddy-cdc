@@ -177,7 +177,24 @@ def elaborate(sources: list[Path], top: str) -> Module:
     """Elaborate ``sources`` via pyslang and produce a :class:`Module`."""
     pyslang = _import_pyslang()
 
-    comp = pyslang.Compilation()
+    # Relax two defaults that are too strict for a *standalone block*
+    # CDC lint, keeping this frontend's leniency aligned with the
+    # yosys / read_slang path (see frontends/yosys.py): a block linted
+    # on its own legitimately has unconnected top-level SystemVerilog
+    # interface ports, and module-item references to nets declared
+    # later in the same module are valid RTL. ``AllowTopLevelIfacePorts``
+    # is already on by default in pyslang; set it explicitly so the
+    # intent survives a future default change.
+    options = pyslang.CompilationOptions()
+    options.flags = (
+        options.flags
+        | pyslang.CompilationFlags.AllowTopLevelIfacePorts
+        | pyslang.CompilationFlags.AllowUseBeforeDeclare
+    )
+    bag = pyslang.Bag()
+    bag.compilationOptions = options
+
+    comp = pyslang.Compilation(bag)
     for src in sources:
         tree = pyslang.SyntaxTree.fromFile(str(src))
         comp.addSyntaxTree(tree)

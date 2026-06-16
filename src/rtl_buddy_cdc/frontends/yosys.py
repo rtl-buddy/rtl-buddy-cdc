@@ -111,9 +111,20 @@ def elaborate_with_blackboxes(
             bb = "".join(
                 f"--blackboxed-module {shlex.quote(m)} " for m in (blackbox or ())
             )
+            # ``--allow-use-before-declare`` relaxes a yosys-slang default
+            # that is too strict for ordinary RTL: a module-item reference
+            # to a net declared later in the same module is valid SV the
+            # built-in ``read_verilog`` frontend already accepts, so the
+            # read_slang frontend should not newly reject it. (Top-level
+            # SystemVerilog interface ports are a separate matter — yosys
+            # netlists can't represent them, so ``--allow-toplevel-iface-
+            # ports`` is *unsupported* by yosys-slang; designs with an
+            # interface at the lint top must use the pyslang ``--frontend
+            # slang`` path, which elaborates them natively.)
             read_cmd = (
                 f"plugin -i {shlex.quote(plugin_path)}; "
                 f"read_slang --std 1800-2017 --top {shlex.quote(top)} "
+                f"--allow-use-before-declare "
                 f"{bb}{srcs}"
             )
         script = (
