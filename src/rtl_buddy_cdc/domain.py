@@ -14,7 +14,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypedDict
 
-from rtl_buddy_cdc.flops import Flop, find_flops, flop_clk_pin, is_ff_cell
+from rtl_buddy_cdc.flops import (
+    Flop,
+    find_flops,
+    flop_clk_pin,
+    is_ff_cell,
+    is_latch_cell,
+)
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module
 
 
@@ -440,6 +446,45 @@ def _trace(
                 bit_to_clock,
                 allow_divider=allow_divider,
             )
+
+    # Clock-path transparent latch — a latch-based ICG (or any clock
+    # routed through a $dlatch / $_DLATCH_*) where the clock enters on
+    # either the data pin (D) or the enable pin (EN coarse / E
+    # gate-level). The clock can arrive on either leg depending on the
+    # ICG coding style: ``always_latch if(en) gclk = clk;`` puts the
+    # clock on D, while a latch whose enable IS the gated clock puts it
+    # on EN. Mirror the two-input gate clause — explore both legs,
+    # first-resolves-wins (D before EN). Returning the *first* resolved
+    # root matches the existing gate-clause semantics; it is correct for
+    # the single-clock ICG (only one leg is a clock, the other is a data
+    # enable) and the conservative fallback for the pathological
+    # clock-COMBINING latch (D=clkA, EN=clkB). NOTE for the audit: a
+    # latch that genuinely combines two *different* clock roots is read
+    # as resolved to the first leg, exactly as a two-clock $and gate is
+    # today; a stricter multi-clock-combine check is left to a future
+    # rule (the same TODO the gate clause carries). This never makes a
+    # crossing disappear — it only resolves a previously domain-unknown
+    # flop to a verified upstream clock root.
+    #
+    # Gated on ``allow_divider`` for the same soundness reason as the
+    # divider clause: with the FIX-1 ``allow_divider=False`` blackbox
+    # clock-pin classifier, a *data* net latched by a $dlatch must not
+    # resolve to a clock and be misread as a clock net.
+    if allow_divider and is_latch_cell(ctype) and out_port == "Q":
+        for in_port in ("D", "EN", "E"):
+            in_bits = cell.connections.get(in_port, ())
+            if in_bits:
+                root = _trace(
+                    module,
+                    in_bits[0],
+                    drivers,
+                    set(seen),
+                    depth - 1,
+                    bit_to_clock,
+                    allow_divider=allow_divider,
+                )
+                if root is not None:
+                    return root
 
     return None
 

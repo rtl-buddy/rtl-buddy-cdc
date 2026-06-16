@@ -39,6 +39,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a bounded `domain_unknown_flops` sample list; the text report
   emits a prominent `⚠ N of M flops have unresolved clock domain —
   excluded from CDC analysis` line.
+- **Clock-path transparent latch resolution** (#263). The clock-root
+  tracer now follows a clock routed through a `$dlatch` / `$_DLATCH_*`
+  (a latch-based ICG / clock-path latch). When a flop's `CLK` net is
+  driven by a latch `Q`, the walk explores the latch's data pin (`D`)
+  and enable pin (`EN` coarse / `E` gate-level) and returns whichever
+  leg resolves to a clock root — the clock can enter on either pin
+  depending on the ICG coding style. Such flops were domain-unknown
+  before and are now resolved. This is **clock-resolution only**: latch
+  transparency never reaches data-path crossing detection, so CDC-017
+  (transparent latch in a CDC path) and every data-path crossing fire
+  exactly as before — a data-path latch stays an opaque, flagged
+  endpoint. The first-resolves-wins behaviour on a pathological
+  clock-*combining* latch (two distinct clock roots on `D` and `EN`)
+  matches the existing two-input-gate clause and is documented in the
+  architecture spec §5. New fixture `clock_through_latch` exercises both
+  the `D`-leg and `EN`-leg ICG styles and pins crossing/violation parity
+  with the latch clause disabled. The `bad_unresolved_clock_latch`
+  fixture (a clock-path latch) consequently now resolves to `clk_a`
+  (`domain_unknown == 0`); the durable `domain_unknown > 0` anchor moved
+  to `deep_clock_divider_chain`.
 
 ## [0.3.0] — 2026-06-16
 

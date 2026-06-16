@@ -1,18 +1,26 @@
 """P0 visibility (issue #263) — under-resolution is reported, never hidden.
 
-A flop clocked through a transparent latch (``bad_unresolved_clock_latch``)
-traces to domain-unknown: the clock-root tracer does not follow a ``$dlatch``
-Q, so the flop is silently excluded from CDC analysis. The P0 change surfaces
-that exclusion:
+The P0 change surfaces flops whose clock root could not be traced
+(``FlopDomain.clock is None``) so an under-resolved run no longer reads
+like a clean, complete one:
 
   - JSON ``summary.domain_unknown`` (int) counts the unresolved flops, and
     ``domain_unknown_flops`` lists a bounded sample of their cell names.
   - The text report emits a prominent ⚠ warning line.
 
-This is REPORT-ONLY: it must not change any classification. The same fixture
-carries a real clk_a→clk_b crossing, so the test also pins parity — the
-crossing/violation counts are identical to a from-scratch analysis that has
-no knowledge of the new diagnostic.
+This is REPORT-ONLY: it must not change any classification.
+
+P2 update (issue #263): the clock-root tracer now follows a clock-path
+``$dlatch``/``$_DLATCH_*`` Q. ``bad_unresolved_clock_latch`` clocks a flop
+through such a latch — at P0 that flop was domain-unknown, and this file
+pinned the diagnostic against it. With P2 active that flop RESOLVES to
+``clk_a``, so the fixture's expectation moves here: domain_unknown drops to
+0 (``test_latch_clocked_flop_now_resolves``). The P0 ``>0`` machinery (the
+non-zero count, the ⚠ warning line) is still exercised against
+``deep_clock_divider_chain`` — a flop reached only through a >16-hop divider
+chain that stays domain-unknown at the default trace depth regardless of the
+latch change. The parity anchor (a real clk_a→clk_b crossing the diagnostic
+must not perturb) lives on both fixtures.
 """
 
 from __future__ import annotations
@@ -38,25 +46,53 @@ FIX_DIR = Path(__file__).parent / "fixtures" / "bad_unresolved_clock_latch"
 JSON = FIX_DIR / "bad_unresolved_clock_latch.json"
 SDC = FIX_DIR / "bad_unresolved_clock_latch.sdc"
 
+# A flop reached only through a >16-hop divider chain stays domain-unknown at
+# the default trace depth no matter what P2 teaches the tracer about latches —
+# the durable anchor for the P0 ``>0`` machinery (count, ⚠ warning line).
+DEEP_DIR = Path(__file__).parent / "fixtures" / "deep_clock_divider_chain"
+DEEP_JSON = DEEP_DIR / "deep_clock_divider_chain.json"
+DEEP_SDC = DEEP_DIR / "deep_clock_divider_chain.sdc"
+
 
 def _skip_if_missing() -> None:
     if not JSON.exists():
         pytest.skip(f"fixture not built: {JSON}")
 
 
-def test_summary_domain_unknown_counts_the_unresolved_flop(tmp_path: Path) -> None:
-    """``summary.domain_unknown`` reports the one latch-clocked flop, and
-    ``domain_unknown_flops`` lists its cell name."""
+def _skip_if_deep_missing() -> None:
+    if not DEEP_JSON.exists():
+        pytest.skip(f"fixture not built: {DEEP_JSON}")
+
+
+def test_latch_clocked_flop_now_resolves(tmp_path: Path) -> None:
+    """P2: the clock-path-latch-clocked flop now resolves, so this fixture
+    reports ``domain_unknown == 0``. At P0 it was 1; P2 teaches ``_trace`` to
+    follow the ``$dlatch`` Q back to ``clk_a``, moving the under-resolution
+    expectation off this fixture entirely."""
     _skip_if_missing()
     out = tmp_path / "report.json"
     _analyze_and_report(JSON, SDC, None, OutputFormat.json, out)
     payload = json.loads(out.read_text())
-    assert payload["summary"]["domain_unknown"] == 1
-    # The fixture has three flops; exactly one is unresolved.
+    assert payload["summary"]["domain_unknown"] == 0
+    # All three flops resolve now (was 2 of 3 at P0).
     assert payload["summary"]["flops"] == 3
-    assert len(payload["domain_unknown_flops"]) == 1
-    # The sample list never exceeds the full count.
+    assert payload["domain_unknown_flops"] == []
+
+
+def test_summary_domain_unknown_counts_the_unresolved_flops(tmp_path: Path) -> None:
+    """``summary.domain_unknown`` reports the deep-chain unresolved flops, and
+    ``domain_unknown_flops`` lists a bounded sample of their cell names."""
+    _skip_if_deep_missing()
+    out = tmp_path / "report.json"
+    _analyze_and_report(DEEP_JSON, DEEP_SDC, None, OutputFormat.json, out)
+    payload = json.loads(out.read_text())
+    # The 30-stage divider chain leaves a stable set of flops unresolved at the
+    # default depth (the deep tap plus the stages past hop 16).
+    assert payload["summary"]["domain_unknown"] > 0
+    assert payload["domain_unknown_flops"]
+    # The sample list never exceeds the full count (and is capped at 20).
     assert len(payload["domain_unknown_flops"]) <= payload["summary"]["domain_unknown"]
+    assert len(payload["domain_unknown_flops"]) <= 20
 
 
 def test_domain_unknown_is_pinned_in_json_contract() -> None:
@@ -67,11 +103,11 @@ def test_domain_unknown_is_pinned_in_json_contract() -> None:
 
 def test_text_report_emits_prominent_unresolved_warning(tmp_path: Path) -> None:
     """The text report carries the ⚠ line naming the count and total."""
-    _skip_if_missing()
+    _skip_if_deep_missing()
     out = tmp_path / "report.txt"
-    _analyze_and_report(JSON, SDC, None, OutputFormat.text, out, color=False)
+    _analyze_and_report(DEEP_JSON, DEEP_SDC, None, OutputFormat.text, out, color=False)
     text = out.read_text()
-    assert "⚠ 1 of 3 flops have unresolved clock domain" in text
+    assert "flops have unresolved clock domain" in text
     assert "excluded from CDC analysis" in text
 
 
