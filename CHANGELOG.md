@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Coverage ratchet raised 93 → 96.** `tests/test_cov_rules_{c,d}.py`
+  cover the rule pack's remaining defensive guards and edge branches —
+  lazy-context (`ctx=None`) paths, the no-SDC async fallback, and the
+  structural-helper early returns (empty/constant bits, missing CLK,
+  no-fanin/feedback, polarity-suffix decoding, reset-tree truncation) —
+  lifting `rules.py` from 90% to 96.57% and the project TOTAL from
+  95.30% to 97.34%. The `--cov-fail-under` gate in the `pytest (with
+  slang)` job moves to 96, restoring ~1pt of headroom under the
+  measured TOTAL.
+
 ### Fixed
 
 - **CDC-001 / CDC-002 false positive on packed shift-register
