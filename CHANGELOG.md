@@ -100,6 +100,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture (a clock-path latch) consequently now resolves to `clk_a`
   (`domain_unknown == 0`); the durable `domain_unknown > 0` anchor moved
   to `deep_clock_divider_chain`.
+## [0.3.1] — 2026-06-16
+
+### Changed
+
+- **Coverage ratchet raised 93 → 96.** `tests/test_cov_rules_{c,d}.py`
+  cover the rule pack's remaining defensive guards and edge branches —
+  lazy-context (`ctx=None`) paths, the no-SDC async fallback, and the
+  structural-helper early returns (empty/constant bits, missing CLK,
+  no-fanin/feedback, polarity-suffix decoding, reset-tree truncation) —
+  lifting `rules.py` from 90% to 96.57% and the project TOTAL from
+  95.30% to 97.34%. The `--cov-fail-under` gate in the `pytest (with
+  slang)` job moves to 96, restoring ~1pt of headroom under the
+  measured TOTAL.
+
+### Fixed
+
+- **CDC-001 / CDC-002 false positive on packed shift-register
+  synchronisers** (#264). A multi-flop synchroniser written as a single
+  packed shift register — `reg [N-1:0] s; s <= {s[N-2:0], d}` with the
+  output tapped from `s[N-1]` — lowers to one multi-bit `$dff` after
+  `proc; flatten`. The synchroniser-depth walk hops between *separate*
+  1-bit flop cells, so the intra-cell shift was invisible: it stopped at
+  the multi-bit head and reported depth 1, firing a false CDC-001 ("no
+  second-stage synchroniser") on every such instance — and skewing the
+  CDC-002 depth gate. `_sync_chain_depth` now recognises the packed
+  idiom: a multi-bit flop whose `D` vector is, lane for lane, either one
+  of the flop's own `Q` bits (`D[i] == Q[j]`, an internal shift tap) or —
+  for exactly one lane — an external bit (the freshly sampled crossing).
+  It follows the per-lane shift from that single external input to the
+  terminal tap and counts the effective depth, so the packed form is
+  accepted on its own merits, identically to the separate-flop form.
+  Genuine bus crossings, gray counters, and mux-gated registers are
+  unaffected (they don't match the self-shift structure), and the walk's
+  "exactly one reader" rule still ends the chain when an intermediate
+  stage is tapped early — a packed register whose first stage is used is
+  still a depth-1 CDC-001. New `good_packed_shift_sync` /
+  `bad_packed_first_stage_used` fixture pair.
 
 ## [0.3.0] — 2026-06-16
 
@@ -1204,7 +1241,8 @@ shlex-based SDC subset (`create_clock`, `create_generated_clock`,
 through CDC-008 rule pack, Spyglass-`.swl`-style waiver matcher,
 and text / JSON / SARIF reporters.
 
-[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/releases/tag/v0.1.0
