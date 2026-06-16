@@ -1,0 +1,183 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "leaf": {
+      "attributes": {
+        "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:18.8",
+        "blackbox": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "d_in": {
+          "direction": "input",
+          "bits": [ 2, 3, 4, 5 ]
+        },
+        "d_out": {
+          "direction": "output",
+          "bits": [ 6, 7, 8, 9 ]
+        }
+      },
+      "cells": {
+      },
+      "netnames": {
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 2, 3, 4, 5 ],
+          "attributes": {
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:19.23"
+          }
+        },
+        "d_out": {
+          "hide_name": 0,
+          "bits": [ 6, 7, 8, 9 ],
+          "attributes": {
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:20.23"
+          }
+        }
+      }
+    },
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:27.8"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 4, 5, 6, 7 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 8, 9, 10, 11 ]
+        }
+      },
+      "cells": {
+        "$driver$dst_q": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:44.5"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 12, 13, 14, 15 ],
+            "Q": [ 8, 9, 10, 11 ]
+          }
+        },
+        "$driver$src_q": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:36.5"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4, 5, 6, 7 ],
+            "Q": [ 16, 17, 18, 19 ]
+          }
+        },
+        "u_leaf": {
+          "hide_name": 0,
+          "type": "leaf",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u_leaf",
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:39.10"
+          },
+          "port_directions": {
+            "d_in": "input",
+            "d_out": "output"
+          },
+          "connections": {
+            "d_in": [ 16, 17, 18, 19 ],
+            "d_out": [ 12, 13, 14, 15 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "clk_a",
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:28.23"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "clk_b",
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:29.23"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 4, 5, 6, 7 ],
+          "attributes": {
+            "hdlname": "d_in",
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:30.23"
+          }
+        },
+        "dst_q": {
+          "hide_name": 0,
+          "bits": [ 8, 9, 10, 11 ],
+          "attributes": {
+            "hdlname": "dst_q",
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:34.15"
+          }
+        },
+        "leaf_q": {
+          "hide_name": 0,
+          "bits": [ 12, 13, 14, 15 ],
+          "attributes": {
+            "hdlname": "leaf_q",
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:38.16"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 8, 9, 10, 11 ],
+          "attributes": {
+            "hdlname": "q_out",
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:31.23"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 16, 17, 18, 19 ],
+          "attributes": {
+            "hdlname": "src_q",
+            "src": "tests/fixtures/blackbox_leaf_crossing/blackbox_leaf_crossing.sv:33.15"
+          }
+        }
+      }
+    }
+  }
+}

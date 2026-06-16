@@ -10,7 +10,7 @@ done.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from rtl_buddy_cdc.domain import Crossing, assign_domains
@@ -102,6 +102,37 @@ class _RuleContext:
     # disagreement with SV attributes — see :mod:`rtl_buddy_cdc.reset_hints`.
     reset_sync_flop_names: frozenset[str]
     reset_polarity_overrides: dict[str, Literal["high", "low"]]
+    # Module names of auto-abstracted single-clock boundary cells
+    # (#256). A boundary instance is an opaque summarised subtree — its
+    # internals aren't in the flattened netlist, so structural rules
+    # that walk cell pins (notably CDC-008's clock-used-as-data) must
+    # treat the instance as exempt: a clock entering its clock pin is
+    # legitimate distribution into the subtree, not a wiring bug, and
+    # firing on it would diverge from the un-abstracted (flattened)
+    # result the abstraction must preserve.
+    boundary_modules: frozenset[str] = frozenset()
+    # Module names of *all* first-class blackbox boundary cells (#255),
+    # the superset of ``boundary_modules``. A blackbox the summariser
+    # *declined* to auto-abstract (foreign-domain data input, not
+    # provably single-clock) is still an opaque boundary instance: its
+    # internals are absent from the flattened netlist, so a clock on its
+    # clock pin is distribution into the subtree, not a wiring bug. We
+    # exempt these from CDC-008 too — otherwise a user who legitimately
+    # blackboxes a clocked subtree gets a spurious clock-as-data finding
+    # on the boundary instance even though abstraction was declined (a
+    # finding the un-blackboxed flattened design never reports). See
+    # rtl-buddy-cdc#257 review.
+    blackbox_modules: frozenset[str] = frozenset()
+    # Per-instance clock-pin port names for blackbox boundary cells
+    # (FIX 4, soundness audit of #259). Maps instance (cell) name to the
+    # set of its port names determined to be CLOCK pins (traced, not just
+    # name-allow-listed). CDC-008 exempts only those pins on a blackbox
+    # instance — a clock wired into a genuine DATA input of the blackbox
+    # still fires clock-as-data. When an instance is absent / empty here,
+    # CDC-008 falls back to the per-type ``boundary_modules`` /
+    # ``blackbox_modules`` whole-instance exemption (e.g. legacy callers
+    # that don't supply the map).
+    boundary_clock_pins: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 def _build_context(
@@ -109,6 +140,9 @@ def _build_context(
     clock_spec: ClockSpec | None,
     *,
     reset_hints: ResetHints | None = None,
+    boundary_modules: frozenset[str] = frozenset(),
+    blackbox_modules: frozenset[str] = frozenset(),
+    boundary_clock_pins: dict[str, frozenset[str]] | None = None,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
 
@@ -179,6 +213,9 @@ def _build_context(
         reset_polarity_overrides=user_reset_polarity_overrides(
             module, hints=reset_hints
         ),
+        boundary_modules=boundary_modules,
+        blackbox_modules=blackbox_modules,
+        boundary_clock_pins=boundary_clock_pins or {},
     )
 
 
@@ -1624,6 +1661,15 @@ def _clock_network_cells(
     return cells
 
 
+# Fallback clock-pin name allow-list for CDC-008's per-pin blackbox
+# exemption (FIX 4) when the caller did not supply a traced
+# ``boundary_clock_pins`` map. Mirrors ``abstract._CLOCK_PIN_NAMES``;
+# kept local so the rule pack stays import-light.
+_BLACKBOX_CLOCK_PIN_NAMES: frozenset[str] = frozenset(
+    {"CLK", "clk", "C", "clock", "clk_i"}
+)
+
+
 def check_cdc_008(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -1682,10 +1728,33 @@ def check_cdc_008(
     # triple where the bit appears on a non-CLK input pin. We dedupe
     # at the (bit, cell, pin) granularity so a multi-bit pin reporting
     # the same clock once doesn't blow up to N violations.
+    # FIX 4 (soundness audit of #259): the CDC-008 exemption for a
+    # blackbox boundary instance is per-CLOCK-PIN, not per-instance. A
+    # clock on the instance's clock pin is legitimate distribution into
+    # the opaque subtree, but a clock wired into a genuine DATA input of
+    # the blackbox is still a clock-as-data bug the flattened design
+    # would report — so only the traced clock pins are exempt.
+    is_blackbox_inst = {
+        cell.name: (
+            cell.type in ctx.boundary_modules or cell.type in ctx.blackbox_modules
+        )
+        for cell in module.cells.values()
+    }
     seen: set[tuple[Bit, str, str]] = set()
     for cell in module.cells.values():
         if cell.name in clock_net_cells:
             continue
+        # Per-instance clock-pin exemption set for a blackbox boundary
+        # cell. When the caller supplied a traced map (``boundary_clock_pins``)
+        # we use the instance's entry; otherwise we fall back to the name
+        # allow-list so legacy callers that exempt by module type still
+        # behave (whole-instance exemption is *retired* — a data pin now
+        # fires regardless of how the instance was abstracted).
+        bb_clock_pins: frozenset[str] | None = None
+        if is_blackbox_inst.get(cell.name):
+            bb_clock_pins = ctx.boundary_clock_pins.get(cell.name)
+            if bb_clock_pins is None:
+                bb_clock_pins = _BLACKBOX_CLOCK_PIN_NAMES
         # Gate-level FF cells ($_DFF_*, $_DFFE_*, etc.) carry the
         # clock on pin ``C`` instead of ``CLK``; exempt that pin
         # too when the cell is a flop. Without this exemption,
@@ -1696,6 +1765,10 @@ def check_cdc_008(
             if port_name == "CLK" or port_name in _OUTPUT_PINS:
                 continue
             if ff_cell and port_name == "C":
+                continue
+            if bb_clock_pins is not None and port_name in bb_clock_pins:
+                # This blackbox pin is a clock pin — distribution, not
+                # data. A non-clock (data) pin falls through and fires.
                 continue
             for idx, b in enumerate(bits):
                 if not isinstance(b, int) or b not in clock_bits:
@@ -4452,6 +4525,9 @@ def run_all(
     reset_hints: ResetHints | None = None,
     cdc_010_heuristic: bool = True,
     cdc_018_depth_threshold: int = CDC_018_DEFAULT_THRESHOLD,
+    boundary_modules: frozenset[str] = frozenset(),
+    blackbox_modules: frozenset[str] = frozenset(),
+    boundary_clock_pins: dict[str, frozenset[str]] | None = None,
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -4459,7 +4535,14 @@ def run_all(
     # ``_bit_drivers`` were each rebuilt per rule, with
     # ``_sync_chain_depth`` re-scanning every flop per chain-extension
     # step (the worst hot path).
-    ctx = _build_context(module, clock_spec, reset_hints=reset_hints)
+    ctx = _build_context(
+        module,
+        clock_spec,
+        reset_hints=reset_hints,
+        boundary_modules=boundary_modules,
+        blackbox_modules=blackbox_modules,
+        boundary_clock_pins=boundary_clock_pins,
+    )
     out: list[Violation] = []
     for rule_id, rule in RULES.items():
         if rule_id == "CDC-002":

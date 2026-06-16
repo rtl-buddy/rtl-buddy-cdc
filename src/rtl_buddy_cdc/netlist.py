@@ -46,11 +46,71 @@ class Netname:
 
 
 @dataclass(frozen=True)
+class PortBoundary:
+    """CDC summary of one output/inout port of a blackboxed subtree.
+
+    Produced by the P2 summariser (not by ``load``). ``synchronised``
+    True means every register→port path inside the subtree passes a
+    recognised synchroniser, so a downstream sink in ``src_clock`` is
+    *not* a crossing. ``src_clock`` None mirrors today's
+    ``<unconstrained>`` async-against-any-sink source.
+    """
+
+    port: str  # output/inout port name (matches Module.ports key)
+    src_clock: str | None  # clock domain driving this port; None = unconstrained
+    synchronised: bool  # True iff every register->port path is synchronised
+    width: int  # number of bits on the port (len(Port.bits))
+
+
+@dataclass(frozen=True)
+class BoundarySummary:
+    """Port-direction summary of a blackboxed subtree.
+
+    Output/inout ports get a :class:`PortBoundary` in :attr:`ports`
+    describing the domain the subtree *drives* them in (a downstream
+    sink in a different domain is a crossing out of the boundary).
+
+    Input/inout ports get a :class:`PortBoundary` in
+    :attr:`input_ports` describing the domain the subtree's first
+    internal flop *captures* them in — :attr:`clock`, the boundary's
+    own resolved clock domain. Data the parent drives into such a port
+    from a foreign domain is a crossing *into* the boundary; the P3
+    virtual-sink seeding in :func:`~rtl_buddy_cdc.domain.find_crossings`
+    re-creates the crossing the flattened subtree would have reported
+    at its first internal flop, so abstraction stays result-preserving
+    (#257). ``inout`` ports appear in both maps.
+
+    Attached to a :class:`Module` (``Module.boundary``) by the P2/P3
+    summariser; P1 only sets :attr:`Module.is_blackbox` from the Yosys
+    ``blackbox`` attribute and leaves ``boundary`` ``None``.
+    """
+
+    module: str  # the summarised module's real (non-$) name
+    ports: dict[str, PortBoundary]  # keyed by output/inout port name
+    # P3 (#257): the boundary's own resolved clock domain (``None`` =
+    # unconstrained / didn't resolve) and the input/inout ports whose
+    # first internal flop captures in that domain — used by
+    # ``find_crossings`` to seed a virtual sink for foreign-domain data
+    # entering the boundary. Default-empty so P1/P2-era callers and the
+    # output-only summary shape stay valid.
+    clock: str | None = None
+    input_ports: dict[str, PortBoundary] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Module:
     name: str
     ports: dict[str, Port]
     cells: dict[str, Cell]
     netnames: dict[str, Netname]
+    # P1/P0 blackbox support. A flattened, summarised subtree arrives as
+    # an ordinary Yosys-JSON module carrying ``attributes.blackbox`` with
+    # zero cells; ``load`` sets ``is_blackbox`` from that attribute.
+    # ``boundary`` is attached later by the P2 summariser, never by
+    # ``load``. Defaults keep every existing ``Module`` consumer
+    # (find_flops / assign_domains / find_crossings / rules) unchanged.
+    is_blackbox: bool = False
+    boundary: BoundarySummary | None = None
 
     def port_of_bit(self, bit: Bit) -> Port | None:
         """Return the top-level port that owns ``bit`` if any."""
@@ -70,31 +130,24 @@ def _bits(raw: list[Bit]) -> tuple[Bit, ...]:
     return tuple(raw)
 
 
-def load(path: str | Path) -> Module:
-    """Load a single-module Yosys JSON dump.
+def _is_blackbox(raw: dict) -> bool:
+    """True iff a raw Yosys-JSON module carries a truthy ``blackbox``
+    attribute.
 
-    The CDC analyzer always works on a fully-flattened design, so we
-    expect exactly one user module (``$scopeinfo`` and similar pseudo
-    cells inside it are tolerated).
+    Yosys serialises the attribute as a bit-string (``"00…01"`` when
+    set). A blackboxed subtree survives ``flatten`` with its real name
+    and this attribute (verified by the P1 prep probe), so the loader
+    keys on the attribute rather than a ``$``-prefix rename pass.
     """
-    data = json.loads(Path(path).read_text())
-    mods = data.get("modules", {})
-    if not mods:
-        raise ValueError(f"{path}: no modules in JSON")
-    if len(mods) > 1:
-        # Pick the one without a leading "$" (Yosys uses $-prefixed names
-        # for paramod / blackbox stubs after flatten).
-        candidates = [n for n in mods if not n.startswith("$")]
-        if len(candidates) != 1:
-            raise ValueError(
-                f"{path}: expected exactly one user module after flatten, "
-                f"got {list(mods)}"
-            )
-        name = candidates[0]
-    else:
-        name = next(iter(mods))
+    val = raw.get("attributes", {}).get("blackbox")
+    if val is None:
+        return False
+    # Any non-zero bit (or a non-bit-string truthy value) counts. The
+    # canonical set form is "00…01"; tolerate "1"/"true" defensively.
+    return any(ch not in ("0", "") for ch in str(val))
 
-    raw = mods[name]
+
+def _parse_module(name: str, raw: dict, *, is_blackbox: bool) -> Module:
     ports = {
         pn: Port(name=pn, direction=pd["direction"], bits=_bits(pd["bits"]))
         for pn, pd in raw.get("ports", {}).items()
@@ -117,4 +170,66 @@ def load(path: str | Path) -> Module:
         )
         for nn, nd in raw.get("netnames", {}).items()
     }
-    return Module(name=name, ports=ports, cells=cells, netnames=netnames)
+    return Module(
+        name=name,
+        ports=ports,
+        cells=cells,
+        netnames=netnames,
+        is_blackbox=is_blackbox,
+    )
+
+
+def load_with_blackboxes(path: str | Path) -> tuple[Module, dict[str, Module]]:
+    """Load a flattened Yosys JSON dump that may carry blackbox siblings.
+
+    Returns ``(top, blackboxes)`` where ``top`` is the single non-``$``
+    non-blackbox user module and ``blackboxes`` is a (possibly empty)
+    ``dict`` of blackboxed boundary modules keyed by module name. A
+    blackboxed subtree survives ``flatten`` with its real name and a
+    truthy ``attributes.blackbox`` (P1 prep probe); the parent keeps
+    each instance as an ordinary cell whose ``type`` is the blackbox
+    module name, so no parent rewrite is needed.
+
+    The single-module invariant is relaxed from "exactly one non-``$``
+    module" to "exactly one non-``$`` non-blackbox module (the top) +
+    zero-or-more blackbox sibling modules". Two non-``$`` non-blackbox
+    modules after flatten is still ambiguous and raises.
+    """
+    data = json.loads(Path(path).read_text())
+    mods = data.get("modules", {})
+    if not mods:
+        raise ValueError(f"{path}: no modules in JSON")
+
+    blackboxes: dict[str, Module] = {}
+    top_candidates: list[str] = []
+    for n, raw in mods.items():
+        if _is_blackbox(raw):
+            blackboxes[n] = _parse_module(n, raw, is_blackbox=True)
+        elif not n.startswith("$"):
+            # $-prefixed paramod / blackbox stubs (the legacy convention)
+            # are still discarded; only real user modules are top
+            # candidates.
+            top_candidates.append(n)
+
+    if len(top_candidates) != 1:
+        raise ValueError(
+            f"{path}: expected exactly one user module after flatten, got {list(mods)}"
+        )
+    name = top_candidates[0]
+    top = _parse_module(name, mods[name], is_blackbox=False)
+    return top, blackboxes
+
+
+def load(path: str | Path) -> Module:
+    """Load a flattened Yosys JSON dump, returning the top module.
+
+    The CDC analyzer always works on a fully-flattened design, so we
+    expect exactly one user (non-blackbox) module; ``$scopeinfo`` and
+    similar pseudo cells inside it are tolerated, and ``$``-prefixed
+    paramod / blackbox stubs are discarded. Blackbox boundary siblings
+    (``attributes.blackbox``) are accepted and dropped on the floor by
+    this back-compat entry point — use :func:`load_with_blackboxes` to
+    receive them.
+    """
+    top, _ = load_with_blackboxes(path)
+    return top

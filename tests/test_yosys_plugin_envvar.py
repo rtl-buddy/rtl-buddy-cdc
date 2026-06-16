@@ -38,7 +38,7 @@ def _patch_elaborate(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
         box.update(kwargs)
         raise _Captured
 
-    monkeypatch.setattr(cli, "elaborate", fake_elaborate)
+    monkeypatch.setattr(cli, "elaborate_with_blackboxes", fake_elaborate)
     return box
 
 

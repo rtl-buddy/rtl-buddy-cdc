@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Blackbox / auto-abstract soundness** (#259 audit). Four silent
+  false-negatives in the boundary-abstraction path are closed; all are
+  conservative — the analyzer never silently drops or downgrades a real
+  CDC hazard:
+  - **Multi-clock subtree no longer abstracted as single-clock.** The
+    clock determination for a blackbox instance now inspects **all** of
+    the module's input ports — a port is a clock pin if its name is in
+    the allow-list, or it is conventionally clock-named *and* its driver
+    traces (clock-network-only, no flop-divider step) to a declared
+    clock. The full set of distinct clock roots flows to
+    `is_single_clock_subtree`, so a dual-clock IP whose clock pins are
+    `wr_clk` / `rd_clk` (or `clk_a` / `clk_b`, outside the name
+    allow-list) presents ≥2 roots and is **declined**, instead of
+    collapsing to one domain and silently abstracting away its internal
+    clkA→clkB crossing. The traced clock-pin set also excludes clock pins
+    from input-sink seeding regardless of their name. New
+    `multi_clock_blackbox` fixture pair.
+  - **Declined / opaque blackboxes are a waivable error.** A blackbox the
+    summariser leaves opaque (multi-clock / unresolved, or
+    reconvergence-unsafe per below) is an unanalysed boundary — a coverage
+    gap. Each such instance is emitted as a per-instance **`error`** with
+    `rule_id = "CDC-BBX"` (`blackbox \`<inst>\` left opaque — …`), so the
+    run **fails by default** (exit 1) rather than passing with only a
+    warning. Intentional opacity (a separately signed-off IP) is
+    acknowledged by waiving it: `waive CDC-BBX <instance-regex>`. The
+    silent drop becomes a fail-by-default, explicitly-acknowledged one.
+  - **Reconvergence-unsafe single-clock blocks are refused.** A
+    single-clock block that *is* abstracted but has ≥2 distinct
+    foreign-domain crossings entering **distinct** input ports can hide
+    an internal reconvergence (CDC-005) the flat design would flag. The
+    new pure `hierarchy.reconvergence_unsafe_instances` detects this
+    after `find_crossings`; such instances are removed from the boundary
+    map, `find_crossings` is re-run so they become opaque, and each is
+    emitted as the same waivable `CDC-BBX` error (`… has crossings into N
+    input ports; reconvergence among them cannot be checked …`). A
+    single multi-bit bus on one port stays safe. New
+    `reconvergence_two_inputs` (unsafe) and `safe_single_input` (parity
+    guard) fixture pairs.
+  - **CDC-008 blackbox exemption narrowed to clock pins.** The
+    clock-as-data exemption for a blackbox instance is now per-CLOCK-PIN
+    (the traced determination, or the `_CLOCK_PIN_NAMES` fallback) rather
+    than whole-instance, so a clock net wired into a genuine **data**
+    input of a blackbox still fires CDC-008.
+
 ### Changed
 
 - **`find_crossings`: lane-aware data fanout — O(W²) → O(W) on wide buses**
@@ -23,8 +69,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lane-aligned `$and` bus and a lane-mixing `$add` bus). A large multi-clock
   fabric that previously did not complete in over two hours now analyzes in
   seconds.
-
 ### Added
+
+- **Hierarchical / compositional boundary analysis** (#257, CDC-scaling
+  epic #253 phase 3). A block instantiated N times is now **analysed
+  once**: pure `hierarchy.compose_boundaries` walks the parent's blackbox
+  instances and summarises each distinct `(module type, clock context)`
+  exactly once (cached by that pair), so identical instances hit the
+  cache — the full flattened graph is never materialised. The boundary
+  map is now keyed **per instance**, so the same module type instantiated
+  under two different clock domains gets a correct per-instance summary
+  while identical instances still share one summarise call. It returns a
+  `CompositionStats` record that *proves* the sharing (`cache_hits`,
+  `summarised`, `declined`, `instances`, `boundary_modules`).
+- **Boundary input-sink seeding restores flat-vs-abstracted parity**
+  (#257). Data entering an opaque boundary at an input port in a domain
+  foreign to the boundary's own clock is now reported: the summariser
+  records the subtree's input/inout ports (in the boundary's `clock`
+  domain) and `find_crossings` seeds a synthetic virtual *sink* flop at
+  the boundary input pin, emitting a `Crossing` with the new
+  `dst_boundary = (instance, port)` field (serialised in the JSON
+  report). This mirrors the existing output-port virtual-source seeding,
+  so abstracting a single-clock subtree with a foreign-domain input is
+  now **result-preserving** — the previously over-conservative refusal to
+  abstract such subtrees is retired. The `foreign_input_no_abstract`
+  fixture now produces **identical** violations and `summary.*` counts
+  between the flattened and the auto-abstracted runs (one CDC-004), while
+  the abstracted run walks fewer flops. CDC-008 still never false-fires
+  on a boundary clock pin (clock pins are excluded from input-sink
+  seeding). The `shared_subtree_compose`, `single_clock_leaf_abstract`,
+  and `foreign_input_no_abstract` fixture pairs pin the
+  analyse-once / flat-vs-hierarchical parity properties.
+- **Lint path auto-abstracts** (#257). The `lint` command now feeds the
+  frontend's blackbox sibling modules into the same shared analysis core
+  as `analyze` (`frontend.elaborate_with_blackboxes` /
+  `frontends.yosys.elaborate_with_blackboxes`), so a `--blackbox` subtree
+  is auto-abstracted on the lint path too. The `analyze` path stays
+  frontend-free.
+
+- **Auto-abstract single-clock subtrees** (#256, CDC-scaling epic #253
+  phase 2). A blackboxed subtree whose entire clock set sits in one
+  async-safe domain carries no internal crossing, so it is now
+  automatically summarised to its port boundary and analysed as a
+  boundary cell instead of walked flop-by-flop — the user no longer
+  needs to know which subtrees are single-clock. New pure
+  `abstract.is_single_clock_subtree` (the SDC-driven detector) and
+  `abstract.summarise_subtree` (builds the P0 `BoundarySummary` from how
+  the parent drives the instance's clock pin). `domain.find_crossings`
+  gained a `boundaries=` argument: each summarised subtree's output port
+  is re-seeded as a virtual source so a downstream sink in a foreign
+  domain is still reported (the single `Crossing` type gains additive
+  optional `src_boundary` / `dst_boundary` endpoint fields — the public
+  JSON contract is unchanged). CDC-008 exempts blackbox boundary
+  instances (both auto-abstracted and abstraction-declined) so a clock
+  entering an opaque subtree isn't mis-flagged as clock-used-as-data.
+  The orchestration (loading blackbox siblings, summarising, threading
+  the boundary set) lives in `cli.py`; the frontend-free `analyze` path
+  needs no new flag. Fixture pair `single_clock_leaf_abstract` proves the
+  safety property — the flattened design and the auto-abstracted one
+  produce identical violations and identical `summary.*`, with strictly
+  fewer flops walked in the abstracted run. To keep abstraction
+  result-preserving, the summariser **refuses to abstract** any subtree a
+  foreign-domain or unconstrained signal is driven *into* (a data input):
+  the output-only boundary seeds no input-side virtual sink yet (that is
+  P3's `dst_boundary` work), so abstracting such a subtree would silently
+  drop the crossing the flattened design reports at the subtree's first
+  internal flop. New fixture `foreign_input_no_abstract` pins this down.
+
+- **First-class blackbox boundary support** (#255, CDC-scaling epic #253
+  phase 1). A large subtree can be excluded from flattening and analysed
+  as a boundary cell so big integration blocks become tractable.
+  `netlist.load` now accepts a flattened dump carrying blackbox boundary
+  siblings — the single-module-after-flatten invariant is relaxed to
+  "one top + N blackbox siblings", detected via the Yosys
+  `attributes.blackbox` flag (no rename-to-`$` pass). New
+  `netlist.load_with_blackboxes` returns `(top, dict[str, Module])`;
+  `Module` gains optional `is_blackbox` / `boundary` fields (the
+  `BoundarySummary` / `PortBoundary` schema is wired for the P2
+  summariser). The yosys frontend threads a `blackbox: list[str]` into
+  the `read_slang --blackboxed-module` line, surfaced as a repeatable
+  `lint --blackbox MODULE` flag (requires the yosys-slang plugin). The
+  pre-elaborated `analyze` path needs no new flag — a netlist already
+  containing blackbox boundary modules loads transparently. Fixture pair
+  `blackbox_leaf_crossing` exercises the boundary end to end. The
+  analyzer-side consumption that reports a crossing *through* a blackbox
+  (boundary-summary seeding) lands in phase 2 (#256).
 
 - **slang-frontend defensive-path test sweep + coverage ratchet 90 → 93**
   (#252). New `tests/test_cov_slang_d.py` (74 cases) covers the slang

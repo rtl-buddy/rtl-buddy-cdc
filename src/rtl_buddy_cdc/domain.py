@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TypedDict
 
 from rtl_buddy_cdc.flops import Flop, find_flops, flop_clk_pin, is_ff_cell
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module
 
 
 class _CrossingGroup(TypedDict):
@@ -39,6 +39,20 @@ class _PortCrossingGroup(TypedDict):
     """Per (src_port, dst_flop) accumulator for port-sourced crossings."""
 
     port: str
+    src_clock: str
+    dst_flop: "Flop"
+    dst_clock: str
+    min_hops: int
+    bits: set[Bit]
+
+
+class _BoundaryCrossingGroup(TypedDict):
+    """Per (instance.port, dst_flop) accumulator for boundary-sourced
+    crossings — an auto-abstracted subtree's output port re-seeded as a
+    virtual source in place of the flattened internal flops."""
+
+    instance: str
+    boundary_port: str
     src_clock: str
     dst_flop: "Flop"
     dst_clock: str
@@ -70,6 +84,16 @@ class Crossing:
     ``width`` is the number of distinct destination ``D`` bits
     reachable from the source on this crossing (>1 means a bus
     crossing). Port-sourced crossings are width 1.
+
+    ``src_boundary`` / ``dst_boundary`` (P0/#254) name a
+    ``(instance, port)`` endpoint on an auto-abstracted blackbox
+    boundary cell. ``src_boundary`` is set when the source is a
+    summarised subtree's output port (a virtual source seeded at the
+    subtree's domain in place of the flattened internal flops);
+    ``dst_boundary`` is reserved for data *entering* a boundary in a
+    foreign domain (P3). Setting them does not change the public JSON
+    contract — they are additive optional fields on the single
+    ``Crossing`` type, never a forked one.
     """
 
     src_clock: str
@@ -79,6 +103,8 @@ class Crossing:
     width: int
     src_flop: Flop | None = None
     src_port: str | None = None
+    src_boundary: tuple[str, str] | None = None
+    dst_boundary: tuple[str, str] | None = None
 
     @property
     def src_name(self) -> str:
@@ -87,11 +113,101 @@ class Crossing:
             return self.src_flop.name
         if self.src_port is not None:
             return f"port {self.src_port}"
+        if self.src_boundary is not None:
+            inst, port = self.src_boundary
+            return f"boundary {inst}.{port}"
         return "<unknown>"
 
     @property
     def is_port_sourced(self) -> bool:
         return self.src_port is not None
+
+    @property
+    def is_boundary_sourced(self) -> bool:
+        return self.src_boundary is not None
+
+
+# Clock name stamped on a boundary-sourced crossing whose subtree
+# domain didn't resolve to a named clock. Mirrors the SDC
+# unconstrained sentinel so ``are_async`` treats it as async to every
+# real clock (a sink in any known domain is conservatively a crossing).
+_UNKNOWN_BOUNDARY_CLOCK = "<unconstrained>"
+
+# Cell ``type`` stamped on a synthetic boundary-*sink* flop standing in
+# for a blackbox input pin (P3/#257). Deliberately not a recognised FF
+# type, so ``is_ff_cell`` is False and rule helpers that special-case
+# real flops (CDC-008's clock-pin exemption, the dffe-EN gating check)
+# treat it as an ordinary opaque destination. The fake clock-pin bit
+# never participates in clock tracing — the sink's domain is recorded
+# directly on its :class:`FlopDomain`.
+_BOUNDARY_SINK_TYPE = "$boundary_sink"
+_BOUNDARY_SINK_CLK: Bit = "<boundary-sink-clk>"
+
+
+def _boundary_for(
+    boundaries: dict[str, "BoundarySummary"],
+    instance: str,
+    module_type: str,
+) -> "BoundarySummary | None":
+    """Resolve a boundary instance's summary, instance key first.
+
+    ``compose_boundaries`` (P3/#257) keys the boundary map by *instance*
+    path so the same module type instantiated in two different clock
+    domains gets a correct per-instance summary. Hand-built callers /
+    the legacy single-domain shape may still key by module *type*; the
+    type key is the fallback. Instance-first then type means both forms
+    work without double-counting (each cell resolves to one summary).
+    """
+    summary = boundaries.get(instance)
+    if summary is not None:
+        return summary
+    return boundaries.get(module_type)
+
+
+def _boundary_sink_flops(
+    module: Module,
+    boundaries: dict[str, "BoundarySummary"],
+) -> tuple[list[FlopDomain], dict[str, tuple[str, str]]]:
+    """Build virtual-sink :class:`FlopDomain`s for blackbox input pins.
+
+    For each boundary instance and each summarised *input* port, a
+    synthetic :class:`Flop` stands in for the boundary input pin the
+    flattened subtree's first internal flop would have captured. Its
+    ``D`` bits are the parent's connection to that input port and its
+    clock domain is the boundary's own resolved clock
+    (``BoundarySummary.clock``) — so the existing flop/port/boundary
+    forward walks, on reaching those ``D`` bits from a foreign-domain
+    source, emit a crossing *into* the boundary (the mirror of the
+    output-port virtual-source seeding). ``None`` (unconstrained
+    boundary clock) is left as the destination clock so a foreign source
+    still crosses; same-domain data does not (``dst_clock == src_clock``
+    is filtered at record-creation).
+
+    Returns ``(sink_domains, lookup)`` where ``lookup`` maps each
+    synthetic flop cell name to the ``(instance, port)`` pair the
+    emitting walk stamps onto ``Crossing.dst_boundary``.
+    """
+    sink_domains: list[FlopDomain] = []
+    lookup: dict[str, tuple[str, str]] = {}
+    for inst_name, cell in module.cells.items():
+        summary = _boundary_for(boundaries, inst_name, cell.type)
+        if summary is None or not summary.input_ports:
+            continue
+        for port_name in summary.input_ports:
+            conn = cell.connections.get(port_name, ())
+            d_bits = tuple(b for b in conn if isinstance(b, int))
+            if not d_bits:
+                continue
+            sink_name = f"{inst_name}.{port_name}"
+            sink_cell = Cell(
+                name=sink_name,
+                type=_BOUNDARY_SINK_TYPE,
+                connections={"D": d_bits},
+            )
+            sink_flop = Flop(cell=sink_cell, clk=_BOUNDARY_SINK_CLK, d=d_bits, q=())
+            sink_domains.append(FlopDomain(flop=sink_flop, clock=summary.clock))
+            lookup[sink_name] = (inst_name, port_name)
+    return sink_domains, lookup
 
 
 # Cell types that act as a transparent buffer on the clock network —
@@ -163,6 +279,8 @@ def trace_clock_root(
     drivers: dict[Bit, tuple[str, str]] | None = None,
     max_depth: int = 16,
     bit_to_clock: dict[Bit, str] | None = None,
+    *,
+    allow_divider: bool = True,
 ) -> str | None:
     """Resolve a CLK net bit to the top-level port that ultimately drives it.
 
@@ -192,7 +310,15 @@ def trace_clock_root(
     if drivers is None:
         drivers = _bit_drivers(module)
     seen: set[Bit] = set()
-    return _trace(module, bit, drivers, seen, max_depth, bit_to_clock or {})
+    return _trace(
+        module,
+        bit,
+        drivers,
+        seen,
+        max_depth,
+        bit_to_clock or {},
+        allow_divider=allow_divider,
+    )
 
 
 def _trace(
@@ -202,6 +328,8 @@ def _trace(
     seen: set[Bit],
     depth: int,
     bit_to_clock: dict[Bit, str],
+    *,
+    allow_divider: bool = True,
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
@@ -228,7 +356,15 @@ def _trace(
     if ctype in _BUFFER_TYPES:
         a = cell.connections.get("A", ())
         if a:
-            return _trace(module, a[0], drivers, seen, depth - 1, bit_to_clock)
+            return _trace(
+                module,
+                a[0],
+                drivers,
+                seen,
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+            )
         return None
 
     # Clock gate — look at both inputs; if exactly one resolves to a
@@ -240,12 +376,28 @@ def _trace(
         a = cell.connections.get("A", ())
         b = cell.connections.get("B", ())
         a_root = (
-            _trace(module, a[0], drivers, set(seen), depth - 1, bit_to_clock)
+            _trace(
+                module,
+                a[0],
+                drivers,
+                set(seen),
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+            )
             if a
             else None
         )
         b_root = (
-            _trace(module, b[0], drivers, set(seen), depth - 1, bit_to_clock)
+            _trace(
+                module,
+                b[0],
+                drivers,
+                set(seen),
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+            )
             if b
             else None
         )
@@ -257,7 +409,13 @@ def _trace(
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
                 root = _trace(
-                    module, in_bits[0], drivers, set(seen), depth - 1, bit_to_clock
+                    module,
+                    in_bits[0],
+                    drivers,
+                    set(seen),
+                    depth - 1,
+                    bit_to_clock,
+                    allow_divider=allow_divider,
                 )
                 if root is not None:
                     return root
@@ -265,11 +423,23 @@ def _trace(
 
     # Clock divider — flop Q output. Trace the source flop's CLK back
     # to its root. Handles both higher-level ($dff*) and gate-level
-    # ($_DFF*) families via flop_clk_pin.
-    if is_ff_cell(ctype) and out_port == "Q":
+    # ($_DFF*) families via flop_clk_pin. Suppressed when
+    # ``allow_divider`` is False: a *data* net driven by a flop Q would
+    # otherwise resolve to that flop's clock and be misread as a clock
+    # net — the FIX-1 clock-pin classifier of a non-allow-listed
+    # blackbox port must not make that mistake.
+    if allow_divider and is_ff_cell(ctype) and out_port == "Q":
         clk_bits = flop_clk_pin(cell)
         if clk_bits:
-            return _trace(module, clk_bits[0], drivers, seen, depth - 1, bit_to_clock)
+            return _trace(
+                module,
+                clk_bits[0],
+                drivers,
+                seen,
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+            )
 
     return None
 
@@ -358,6 +528,7 @@ def find_crossings(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    boundaries: dict[str, "BoundarySummary"] | None = None,
 ) -> list[Crossing]:
     """Find every fanout path whose endpoints are in different domains.
 
@@ -389,11 +560,29 @@ def find_crossings(
         for fd in assign_domains(module, pin_clocks, clock_for_port=clock_for_port)
     }
     consumers = _build_bit_consumers(module)
+
+    # Synthetic boundary-*sink* flops (P3/#257): a blackbox input pin in
+    # a domain foreign to the boundary's own clock is a crossing INTO the
+    # subtree. Fold these into ``domains`` / ``flop_by_d_bit`` so the
+    # flop-, port-, and boundary-source walks below all reach them with
+    # no special-casing; the emitting site stamps ``dst_boundary`` from
+    # ``boundary_sink_lookup``. The synthetic flops are never in
+    # ``module.cells`` and so never affect rule context built from the
+    # real netlist.
+    boundary_sink_lookup: dict[str, tuple[str, str]] = {}
+    if boundaries:
+        sink_domains, boundary_sink_lookup = _boundary_sink_flops(module, boundaries)
+        for fd in sink_domains:
+            domains[fd.flop.cell.name] = fd
+
     flop_by_d_bit: dict[Bit, list[Flop]] = defaultdict(list)
     for fd in domains.values():
         for b in fd.flop.d:
             if isinstance(b, int):
                 flop_by_d_bit[b].append(fd.flop)
+
+    def _dst_boundary_of(dst_flop: Flop) -> tuple[str, str] | None:
+        return boundary_sink_lookup.get(dst_flop.cell.name)
 
     # Grouped per (src_flop, dst_flop) pair so a multi-bit bus or a fanout
     # that hits the same destination flop on multiple D bits collapses to
@@ -472,6 +661,7 @@ def find_crossings(
             dst_clock=g["dst_clock"],
             min_hops=g["min_hops"],
             width=len(g["bits"]),
+            dst_boundary=_dst_boundary_of(g["dst_flop"]),
         )
         for g in grouped.values()
     ]
@@ -541,6 +731,92 @@ def find_crossings(
                     min_hops=pg["min_hops"],
                     width=len(pg["bits"]),
                     src_port=pg["port"],
+                    dst_boundary=_dst_boundary_of(pg["dst_flop"]),
+                )
+            )
+
+    # Boundary-sourced crossings (P2/#256): an auto-abstracted
+    # single-clock subtree's output ports are re-seeded as virtual
+    # sources at the subtree's domain, in place of the flattened
+    # internal flops. We walk forward from each boundary instance's
+    # connected output bits the same way the port-walk does; a sink in
+    # a different domain is a crossing the parent must check
+    # (``synchronised`` ports never reach here — the summariser drops
+    # them before they become a boundary). The instance is the parent
+    # cell whose ``type`` is the summarised module name.
+    if boundaries:
+        bnd_grouped: dict[tuple[str, str, str], _BoundaryCrossingGroup] = {}
+        for inst_name, cell in module.cells.items():
+            summary = _boundary_for(boundaries, inst_name, cell.type)
+            if summary is None:
+                continue
+            for port_name, pb in summary.ports.items():
+                src_clk_name = pb.src_clock
+                conn = cell.connections.get(port_name, ())
+                bnd_seen: dict[Bit, int] = {}
+                bnd_frontier: list[tuple[Bit, int]] = [
+                    (b, 0) for b in conn if isinstance(b, int)
+                ]
+                for b, h in bnd_frontier:
+                    bnd_seen[b] = h
+                while bnd_frontier:
+                    bnd_next: list[tuple[Bit, int]] = []
+                    for bit, hops in bnd_frontier:
+                        for dst_flop in flop_by_d_bit.get(bit, ()):
+                            dst_fd = domains[dst_flop.cell.name]
+                            if dst_fd.clock is None:
+                                continue
+                            if (
+                                src_clk_name is not None
+                                and dst_fd.clock == src_clk_name
+                            ):
+                                continue
+                            bnd_key = (inst_name, port_name, dst_flop.cell.name)
+                            bg = bnd_grouped.get(bnd_key)
+                            if bg is None:
+                                bnd_grouped[bnd_key] = {
+                                    "instance": inst_name,
+                                    "boundary_port": port_name,
+                                    "src_clock": src_clk_name
+                                    if src_clk_name is not None
+                                    else _UNKNOWN_BOUNDARY_CLOCK,
+                                    "dst_flop": dst_fd.flop,
+                                    "dst_clock": dst_fd.clock,
+                                    "min_hops": hops,
+                                    "bits": {bit},
+                                }
+                            else:
+                                bg["bits"].add(bit)
+                                if hops < bg["min_hops"]:
+                                    bg["min_hops"] = hops
+                        if hops >= max_hops:
+                            continue
+                        for cell_name, _port, _idx in consumers.get(bit, ()):
+                            c = module.cells[cell_name]
+                            if c.type in {"$scopeinfo"}:
+                                continue
+                            if is_ff_cell(c.type):
+                                continue
+                            for ob in _cell_outputs(c):
+                                if not isinstance(ob, int):
+                                    continue
+                                prev = bnd_seen.get(ob)
+                                new_hops = hops + 1
+                                if prev is None or new_hops < prev:
+                                    bnd_seen[ob] = new_hops
+                                    bnd_next.append((ob, new_hops))
+                    bnd_frontier = bnd_next
+
+        for bg in bnd_grouped.values():
+            out_crossings.append(
+                Crossing(
+                    src_clock=bg["src_clock"],
+                    dst_flop=bg["dst_flop"],
+                    dst_clock=bg["dst_clock"],
+                    min_hops=bg["min_hops"],
+                    width=len(bg["bits"]),
+                    src_boundary=(bg["instance"], bg["boundary_port"]),
+                    dst_boundary=_dst_boundary_of(bg["dst_flop"]),
                 )
             )
 

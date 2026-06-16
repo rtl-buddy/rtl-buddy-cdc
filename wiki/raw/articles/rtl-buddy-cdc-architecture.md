@@ -36,9 +36,15 @@ swappable so the rule pack doesn't depend on a specific toolchain.
   partitioning only**; numeric delays and slack are ignored.
 - Not a Tcl interpreter. The SDC parser is a deliberate `shlex`-based
   pattern matcher, not a real Tcl host (see [§6](#6-sdc-parsing)).
-- Not a layered hierarchical analyzer. Today the netlist must be
-  fully flattened. Hierarchical reporting is on the roadmap (see
-  [`README.md`](../README.md)) but not architecturally present.
+- Not (yet) a fully hierarchical analyzer. The netlist is still
+  analysed as one flattened top, but since the #253 CDC-scaling work it
+  may carry **blackbox boundary** siblings: single-clock subtrees are
+  summarised to their port boundary and composed in, rather than walked
+  flop-by-flop (§4.8–§4.9). This is a deliberately conservative,
+  partial form — it abstracts only provably-single-clock subtrees and
+  errs toward over-reporting. A full per-module hierarchical pass that
+  recognises synchronisers *inside* an abstracted subtree (the
+  `synchronised` refinement, §4.9) is future work, not yet present.
 
 ## 2. Pipeline at a glance
 
@@ -109,9 +115,11 @@ without one the tool prints the structural summary and exits 0.
 | `frontend.py` | Frontend factory: pick a frontend by name, dispatch to its `elaborate` | `Frontend`, `elaborate` |
 | `frontends/yosys.py` | Yosys frontend: shell out to `yosys` then `netlist.load` the JSON | `elaborate`, `YosysError` |
 | `frontends/slang.py` | slang frontend: elaborate SystemVerilog via pyslang directly | `elaborate`, `SlangFrontendUnavailable`, `SlangElaborationError` |
-| `netlist.py` | Parse Yosys `write_json` output into typed structs | `Module`, `Cell`, `Port`, `Netname` |
+| `netlist.py` | Parse Yosys `write_json` output into typed structs | `Module`, `Cell`, `Port`, `Netname`, `BoundarySummary`, `PortBoundary` |
 | `flops.py` | Recognise the 11 Yosys FF cell variants and extract CLK / D / Q | `Flop`, `FF_CELL_TYPES` |
 | `domain.py` | Trace clock roots, find flop→flop crossings | `FlopDomain`, `Crossing`, `trace_clock_root`, `find_crossings` |
+| `abstract.py` | Detect + summarise single-clock subtrees to a port boundary (#256) | `is_single_clock_subtree`, `summarise_subtree` |
+| `hierarchy.py` | Compositional boundary walk: summarise each shared module once (#257) | `compose_boundaries`, `CompositionStats` |
 | `sdc.py` | Parse the CDC-relevant SDC subset | `ClockSpec`, `Clock` |
 | `rules.py` | The CDC-001..-008 rule pack | `Violation`, `RULES`, `run_all` |
 | `waivers.py` | Per-violation suppression with regex | `Waiver`, `SuppressedViolation` |
@@ -254,6 +262,8 @@ class Crossing:
     width: int                   # # distinct dst-D bits reachable from src
     src_flop: Flop | None = None # set for register-to-register
     src_port: str | None = None  # set for typed-port-to-register
+    src_boundary: tuple[str, str] | None = None  # (instance, port): abstracted-subtree output
+    dst_boundary: tuple[str, str] | None = None  # (instance, port): data entering a boundary input
 ```
 
 Three design choices matter here:
@@ -267,12 +277,26 @@ Three design choices matter here:
    port-to-flop) wire — the classic sync first stage. `min_hops >= 1`
    is what CDC-003 ("combinational logic before sync") fires on for
    flop sources.
-3. **Source endpoint is either a flop or a port.** Exactly one of
-   `src_flop` and `src_port` is set. Port endpoints are emitted by
-   `find_crossings(module, port_clock=...)` when the SDC has typed
-   the port via `set_input_delay -clock <c>`. The convenience
-   property `src_name` returns either the flop name or `"port <p>"`
-   for messages and waiver matching.
+3. **Source endpoint is a flop, a port, or an abstracted boundary.**
+   Exactly one of `src_flop`, `src_port`, and `src_boundary` is set.
+   Port endpoints are emitted by `find_crossings(module,
+   port_clock=...)` when the SDC has typed the port via
+   `set_input_delay -clock <c>`. `src_boundary = (instance, port)`
+   endpoints come from an auto-abstracted single-clock subtree
+   (§4.8 / §7.4): the summarised subtree's output port is re-seeded
+   as a virtual source at the subtree's domain, standing in for the
+   flattened internal flops that no longer exist in the netlist. The
+   convenience property `src_name` returns the flop name, `"port
+   <p>"`, or `"boundary <inst>.<port>"` for messages and waiver
+   matching. `dst_boundary = (instance, port)` is the symmetric field
+   (P3 / #257) for data *entering* a boundary input in a domain foreign
+   to the boundary's own clock: `find_crossings` seeds a synthetic
+   virtual *sink* flop standing in for the boundary input pin (§7.4), so
+   the crossing the flattened subtree would have reported at its first
+   internal flop is preserved under abstraction. The single `Crossing`
+   type carries both `src_boundary` and `dst_boundary` as additive
+   optional fields so the public JSON contract (`summary.crossings`) is
+   never forked.
 
 ### 4.5 Clock topology
 
@@ -359,6 +383,243 @@ formatter. It contains everything any output mode might need:
 (after SDC filter), `spec`, `violations` (kept), `suppressed`. No
 formatter does additional analysis — this struct is the boundary
 between "analyzer" and "presentation".
+
+### 4.8 Blackbox boundaries and the compositional data model
+
+The CDC-scaling work (epic #253) makes a large subtree analysable at
+its **port boundary** instead of flattening it flop-by-flop. The data
+model carries this without a sibling type — two optional, default-empty
+fields extend the existing frozen `Module`, so every existing `Module`
+consumer (`find_flops` / `assign_domains` / `find_crossings` / the rule
+pack) keeps working untouched:
+
+```python
+@dataclass(frozen=True)
+class Module:
+    name: str
+    ports: dict[str, Port]
+    cells: dict[str, Cell]
+    netnames: dict[str, Netname]
+    is_blackbox: bool = False            # P1 #255: from attributes.blackbox
+    boundary: BoundarySummary | None = None  # attached by the P2 summariser
+```
+
+A blackboxed subtree arrives as an ordinary Yosys-JSON module carrying
+a truthy `attributes.blackbox` bit-string and **zero cells** — it
+survives `flatten` with its real (non-`$`) name (verified by the P1
+prep probe), and the parent keeps each instance as an ordinary `Cell`
+whose `type` is the blackbox module name. So there is no new cell type
+and no parent rewrite. `netlist.load` sets `is_blackbox` from the
+attribute; `boundary` is attached later by the summariser, never by
+`load`.
+
+The boundary is described by its output/inout ports (virtual sources)
+**and** its input/inout ports (virtual sinks), plus the subtree's own
+resolved clock domain:
+
+```python
+@dataclass(frozen=True)
+class PortBoundary:
+    port: str             # port name (matches Module.ports key)
+    src_clock: str | None # output: domain driving the port; input: subtree capture domain
+    synchronised: bool    # True iff every register→port path passes a synchroniser
+    width: int            # number of bits on the port
+
+@dataclass(frozen=True)
+class BoundarySummary:
+    module: str                          # the summarised module's real (non-$) name
+    ports: dict[str, PortBoundary]       # output/inout ports (virtual sources)
+    clock: str | None = None             # P3 #257: the subtree's own resolved clock
+    input_ports: dict[str, PortBoundary] = {}  # P3 #257: input/inout ports (virtual sinks)
+```
+
+For an **output** port, `synchronised=True` means a downstream sink in
+`src_clock` is *not* a crossing (the subtree retimes internally);
+`synchronised=False` means a sink in a different domain *is* a crossing
+the parent must check; `src_clock=None` is the conservative unconstrained
+source that crosses to any known-domain sink (mirroring the
+`<unconstrained>` sentinel).
+
+For an **input** port (P3 / #257), `src_clock` names the boundary's own
+clock domain (`BoundarySummary.clock`) — what the subtree's first
+internal flop captures the input on. Clock pins are excluded (they are
+distribution, not data, and must never become a virtual sink — that
+would re-introduce the CDC-008 clock-as-data shape). `find_crossings`
+seeds a synthetic virtual-sink flop at each input port's connected bits,
+so foreign-domain data entering the boundary is reported as a
+`dst_boundary` crossing rather than vanishing under abstraction. This is
+the mirror of the output-port virtual-source seeding and is what makes
+abstracting a single-clock subtree with a foreign-domain input
+*result-preserving* — the P2-era refusal to abstract such subtrees is
+retired.
+
+**Relaxed single-module invariant.** `netlist.load_with_blackboxes`
+relaxes the historical "exactly one non-`$` module after flatten" rule
+to "exactly one non-`$` **non-blackbox** module (the top) + zero-or-more
+blackbox sibling modules". It returns `(top, blackboxes)` where
+`blackboxes` is a `dict[str, Module]` keyed by module name so the top's
+boundary cells resolve their summary. Two non-`$` non-blackbox modules
+is still ambiguous and raises. `netlist.load` stays as the
+back-compat single-return entry point (drops the siblings).
+
+See §4.9 for what this collapse preserves versus discards, and for the
+status and roadmap of the (currently inert) `synchronised` field.
+
+### 4.9 What abstraction preserves, what it collapses, and the `synchronised` hook
+
+**The boundary is a star-collapse onto one clock domain, not an
+input→output graph.** A summarised subtree is reduced to a single
+structural claim — *everything inside is clock domain `D`*
+(`BoundarySummary.clock`). Every output/inout port becomes a virtual
+**source** in `D`; every data input/inout port becomes a virtual
+**sink** captured in `D`. The subtree's *internal* connectivity — which
+input fans out to which output, and whether a path is registered or
+purely combinational — is **discarded by design**. There is no per-port
+input→output relation in the summary.
+
+This collapse **severs** internal connectivity; it does not
+*fully-connect* it. A foreign-domain input is reported as captured
+*into* `D` and goes no further — its virtual sink is a terminal flop
+with an empty `Q` (`domain.py` stamps `q=()`), so nothing propagates out
+of it. Each output is launched *from* `D` as an independent seed that
+walks only the parent's real fanout. The two never chain through a
+shared `D` hub. So the model never manufactures a path between an input
+and an *unrelated* output: given real paths `A→X` and `B→Y` but no `A→Y`
+/ `B→X`, **no spurious `A→Y` / `B→X` crossing appears** — output `X`
+still feeds only `X`'s real parent sinks, output `Y` only `Y`'s. What
+the collapse loses is the *attribution* tying a specific input's domain
+to a specific output (everything is mediated by `D`), not the separation
+between unrelated ports. The over-reporting is therefore **per-port
+(linear)** — a foreign input `X_d→D` here, an output `D→sink` there —
+never an input×output **mesh (quadratic)**.
+
+Only the *subtree-internal* graph collapses. The **parent-side** fanin
+and fanout of the boundary ports are untouched: they are real nets in
+the flattened top, and `find_crossings` seeds the virtual source/sink
+onto those nets and walks the parent exactly as it would for any flop or
+port. A crossing from a boundary output into downstream parent logic, or
+from upstream parent logic into a boundary input, is found precisely.
+
+Precision characterisation:
+
+- **Exact (result-preserving)** for genuine single-clock *sequential*
+  logic — inputs registered before use, outputs driven by registers. The
+  flattened flops would show inputs captured in `D` and outputs launched
+  from `D`, which is exactly what the summary asserts. This is the target
+  case and the reason the collapse is safe.
+- **Over-approximating but never under-reporting** for *combinational
+  feed-through*. A foreign-domain input (`X`) that passes combinationally
+  to an output and on to a sink in domain `E` is one real path `X→E`; the
+  model splits it into two fictitious hops `X→D` (at the input sink) and
+  `D→E` (at the output source). This can raise a **false positive** —
+  e.g. a single-bit input that returns to a sink in its *own* domain is
+  flagged at both hops though the real circuit has no crossing — but it
+  can never *drop* a real crossing. For a CDC checker that is the correct
+  direction to err. (This is the documented conservative edge from the
+  #253 epic PR.)
+- **Never silently collapses a real internal crossing.**
+  `is_single_clock_subtree` refuses to abstract any subtree it cannot
+  prove sits in one async-safe domain (multiple async clocks, an
+  unresolved/forwarded clock, or differing roots not declared
+  synchronous); such a subtree is walked flat. Abstraction applies only
+  where there is provably no internal crossing to lose.
+
+**Three soundness guards close the silent false-negatives the #259 audit
+found.** All three err toward *declining* abstraction — the conservative
+direction for a CDC checker.
+
+- **Traced multi-clock decline (`abstract._instance_clocks`).** The
+  subtree's clock SET is determined from *all* of the blackbox module's
+  input ports, not a clock-pin **name** allow-list. A port is a clock pin
+  when its name is in `_CLOCK_PIN_NAMES`, **or** it is conventionally
+  clock-named (`wr_clk` / `rd_clk` / `clk_a` / `core_clock` — the
+  `_CLOCK_NAME_HINTS` substrings) *and* its parent-side driver traces to a
+  declared clock through **clock-network cells only** (buffers / gates /
+  muxes / ports — `trace_clock_root(..., allow_divider=False)`, so a data
+  net launched by a flop `Q` is **not** misread as a clock). The full set
+  of distinct clock roots flows to `is_single_clock_subtree`, so a
+  dual-clock IP whose clock pins fall outside the name allow-list (an
+  async FIFO's `wr_clk` / `rd_clk`) presents ≥2 roots and is **declined**
+  — its internal clkA→clkB crossing is no longer silently abstracted away
+  as if the block were single-clock / combinational. The single capture
+  `clock` is the sole root (or `None` for a genuinely combinational
+  boundary), and the traced clock-pin set — not just the name allow-list —
+  is what is excluded from input-sink seeding. `compose_boundaries` keys
+  its summary cache on the **frozenset of clock roots**, so a dual-clock
+  instance keys distinctly while identical instances still hit the cache.
+
+- **Declined-opaque `CDC-BBX` error (FIX 2).** A declined instance is
+  absent from the boundary map; its zero-cell internals are unanalysed —
+  a coverage gap. Each declined instance (from
+  `CompositionStats.declined_modules`, plus the reconvergence-declined set
+  below) is emitted as a per-instance **`error`-severity `Violation`** with
+  `rule_id = "CDC-BBX"` and `cell_name = <instance>`, folded into the
+  `violations` list before waiver/baseline/exit-code processing. So it is
+  rendered in every format, **fails the run by default** (exit 1), and is
+  **waivable** — intentional opacity (a separately signed-off IP) is
+  acknowledged with `waive CDC-BBX <instance-regex>`, moving it to the
+  suppressed tally. The silent drop becomes a fail-by-default, explicitly
+  acknowledged one. (`CDC-BBX` is emitted by the CLI orchestration, not the
+  rule pack — it is an analysis-coverage finding, not a structural rule.)
+
+- **Reconvergence-unsafe skip (`hierarchy.reconvergence_unsafe_instances`,
+  FIX 3).** A single-clock block that *is* abstracted but has ≥2 distinct
+  foreign-domain crossings entering **distinct** input ports can hide an
+  internal reconvergence (CDC-005) the flat design would flag — the
+  star-collapse severs the subtree-internal graph, so that reconvergence
+  cannot be checked at the boundary. After `find_crossings`, boundary-sink
+  crossings (`dst_boundary`) are grouped by instance; an instance with ≥2
+  distinct incoming ports is reconvergence-unsafe. Such instances are
+  removed from the boundary map and `find_crossings` is **re-run** so the
+  block becomes opaque (no boundary crossings emitted for it), and the
+  instance is emitted as the same per-instance `CDC-BBX` error (`… has
+  crossings into N input ports; reconvergence among them cannot be checked
+  at the boundary — …`), waivable like any other. A
+  single multi-bit bus on **one** port counts as one port (safe — the
+  multi-bit rules cover it).
+
+CDC-008's blackbox exemption is correspondingly per-CLOCK-PIN (FIX 4),
+not whole-instance: only the instance's traced clock pins (or the
+`_CLOCK_PIN_NAMES` fallback) are exempt from clock-as-data, so a clock
+wired into a genuine **data** input of a blackbox still fires CDC-008.
+
+**The `synchronised` field is the seam to a more precise model — and is
+presently inert.** `PortBoundary.synchronised` is hard-wired `False` by
+the summariser (`abstract.py`) and is not yet consumed (the
+`find_crossings` boundary loop only reserves space for it: *"synchronised
+ports never reach here — the summariser drops them before they become a
+boundary"*). So today the model assumes *no* boundary path is
+synchronised — the direct source of the conservative over-reporting
+above. Wiring it live means:
+
+- **Effect of `True`.** The summariser omits that port from `ports` /
+  `input_ports`, so it never becomes a virtual source/sink and raises no
+  crossing (a softer variant emits a benign *recognised-synchroniser*
+  finding instead of dropping it). Two directions: an **output** with a
+  built-in synchroniser (clean data leaves the IP), or an **input** whose
+  first internal stage is a proper two-FF synchroniser (the boundary
+  crossing is the legitimate, handled one — this is what would retire the
+  single-bit CDC-001 over-report).
+- **Detection is the hard part.** Proving a port synchronised means
+  running the existing synchroniser recognition (`_sync_chain_depth`,
+  `user_sync_flop_names`) over the subtree's register→port paths — but
+  the blackbox has **zero cells** by construction, so its internals are
+  not in the flat netlist. The bit must come from either **(a)** a real
+  per-module analysis pass — analyse each subtree *module* once in
+  isolation, detect its boundary synchronisers, and record `synchronised`
+  per port in the cached `BoundarySummary` (the compositional vision of
+  `compose_boundaries`, which already caches by `(module-type,
+  clock-context)`); or **(b)** a user annotation reusing the
+  `USER_SYNC_ATTRS` mechanism (or a `cdc.yaml` boundary declaration),
+  asserting "module *M*'s output *O* is synchronised" — the boundary
+  analogue of `user_sync_flop_names`.
+- **Soundness asymmetry.** Every other approximation in this model errs
+  toward over-reporting. `synchronised=True` is the *only* lever that can
+  make the tool **under**-report (trust a synchroniser that is not
+  there), so it may be set only when *proven* (route a) or *explicitly
+  promised* (route b), and it defaults `False`. The present pessimism is
+  the deliberate price of that default until one of the two detection
+  sources exists.
 
 ## 5. Clock-domain tracing
 
@@ -592,6 +853,85 @@ records with `width = 1`.
   clock connections so the data BFS doesn't follow them.
 - **Same-domain crossings.** Filtered out at record-creation time —
   if `dst_clock == src_clock`, no record is created.
+
+### 7.4 Boundary re-seeding and the compositional walk
+
+When the design carries auto-abstracted blackbox boundaries (§4.8),
+`find_crossings(module, boundaries=...)` re-seeds the boundary crossings
+the flattened subtree would have produced, on both sides:
+
+- **Output side (virtual sources).** A third pass alongside the
+  flop-source and port-source walks: for each boundary instance and each
+  summarised *output* port it seeds a BFS frontier at the port's
+  connected bits — exactly the port-walk shape — and emits a
+  `src_boundary = (instance, port)` `Crossing` for every foreign-domain
+  sink it reaches. A `synchronised=True` port never reaches this pass
+  (the summariser drops it before it becomes a boundary); a
+  `src_clock=None` port seeds the `<unconstrained>` sentinel so it
+  crosses to any known-domain sink.
+- **Input side (virtual sinks, P3 / #257).** For each summarised *input*
+  port a synthetic sink flop standing in for the boundary input pin is
+  folded into the domain map (`D` = the port's connected bits, clock =
+  `BoundarySummary.clock`). The flop-, port-, and output-boundary walks
+  then reach it with no special-casing; on landing, the emitting site
+  stamps `dst_boundary = (instance, port)`. So foreign-domain data
+  *entering* the boundary is reported as a crossing into it — the
+  crossing the flattened subtree's first internal flop would have
+  carried. The synthetic flop is never in `module.cells`, so the rule
+  context built from the real netlist is untouched; its cell `type`
+  (`$boundary_sink`) is deliberately not a recognised FF type, so
+  CDC-008's clock-pin exemption and the dffe-EN gating check treat it as
+  an ordinary opaque destination.
+
+Both walks skip `$scopeinfo` transit cells and treat flops as sinks
+(never tunnel through them), identically to the flop/port walks.
+`find_crossings` resolves each boundary cell's summary **instance-first**
+(falling back to a module-type key for legacy hand-built callers), so the
+per-instance map `compose_boundaries` returns is consumed directly.
+
+The **compositional** half lives in `hierarchy.compose_boundaries`
+(the per-module driver, subtasks 3a/3b of #257). Given the top module,
+its blackbox siblings, and the `ClockSpec`, it walks the boundary
+instances and summarises each distinct `(module type, clock context)`
+**once** — caching by that pair. Every later instance with the *same*
+context is served from cache, so a block instantiated N times in one
+domain costs one `abstract.summarise_subtree` call, not N, and the full
+flattened subgraph is never materialised. The returned boundary map is
+keyed **per instance** (the cell name) so `find_crossings` re-seeds each
+instance's crossings against the domain its parent actually drives. It
+returns `(boundaries, CompositionStats)`; the stats (`instances`,
+`summarised` — one entry per abstracted instance, `cache_hits`,
+`declined`, `boundary_modules` — the distinct module types CDC-008
+exempts) make the sharing observable and are what the parity tests
+assert against. `cli._summarise_blackboxes` is a thin wrapper that drops
+the stats and hands the per-instance boundary map to `find_crossings`. A
+`(module, context)` the summariser declines (not provably single-clock —
+a genuine multi-clock subtree carrying an internal crossing) is absent
+from the map, so its instances fall through to the normal flat walk over
+whatever internals the netlist actually contains.
+
+> **Per-instance keying (#257).** The boundary map is keyed by instance
+> path, and summarisation is cached by `(module type, clock context)`.
+> So a module instantiated N times *in the same clock domain* is still
+> analysed once (the cache hit — the epic's "analyse once" goal), while
+> the same module type instantiated under *two different* clock domains
+> gets a correct per-instance summary for each: each instance's boundary
+> crossings are seeded against the domain its parent actually drives.
+> This replaces the earlier type-only keying, which could only represent
+> one domain per module type.
+
+The end-to-end safety property is **parity**: on a design small enough
+to run both ways, the auto-abstracted run (subtree blackboxed +
+summarised once) must produce the *same* violations and the same
+`summary.*` counts as the fully flattened run, while walking strictly
+fewer flops. The `single_clock_leaf_abstract`,
+`shared_subtree_compose`, and `foreign_input_no_abstract` fixture pairs
+pin this — `shared_subtree_compose` proves a single-clock subtree
+instantiated twice is analysed once yet yields identical CDC-004 findings
+on the real top-level destination flops, and `foreign_input_no_abstract`
+proves a foreign-domain signal driven *into* an abstracted subtree's
+input still surfaces its CDC-004 (anchored on the boundary input pin via
+`dst_boundary`) — identical to the flattened run.
 
 ## 8. The rule pack
 

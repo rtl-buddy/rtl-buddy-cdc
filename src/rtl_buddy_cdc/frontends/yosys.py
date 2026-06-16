@@ -33,7 +33,34 @@ def elaborate(
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
     plugin_path: str | None = None,
+    blackbox: list[str] | None = None,
 ) -> Module:
+    """Run yosys to produce a flattened netlist, returning the top module.
+
+    Back-compat single-return entry point; drops any blackbox sibling
+    modules. Use :func:`elaborate_with_blackboxes` to receive them (the
+    lint path does, so a ``--blackbox`` subtree auto-abstracts).
+    """
+    module, _blackboxes = elaborate_with_blackboxes(
+        sources,
+        top,
+        yosys_bin=yosys_bin,
+        keep_json=keep_json,
+        plugin_path=plugin_path,
+        blackbox=blackbox,
+    )
+    return module
+
+
+def elaborate_with_blackboxes(
+    sources: list[Path],
+    top: str,
+    *,
+    yosys_bin: str | None = None,
+    keep_json: Path | None = None,
+    plugin_path: str | None = None,
+    blackbox: list[str] | None = None,
+) -> tuple[Module, dict[str, Module]]:
     """Run yosys to produce a flattened netlist JSON, then load it.
 
     ``keep_json``, if set, copies the intermediate JSON to that path
@@ -45,6 +72,17 @@ def elaborate(
     instead of ``read_verilog``. This is required for designs that use
     SystemVerilog-2017 constructs (e.g. ``import pkg::*``) that Yosys's
     built-in frontend rejects.
+
+    ``blackbox``, if set, names modules to treat as CDC boundary cells:
+    each becomes a ``--blackboxed-module <name>`` flag on the
+    ``read_slang`` line. The listed module survives ``flatten`` with its
+    real name and an ``attributes.blackbox`` flag (P1 prep probe), so
+    ``netlist.load`` keys on the attribute — no rename-to-``$`` pass. The
+    boundary cell carries port directions and zero internals; the parent
+    keeps the instance as an ordinary cell of that ``type``.
+    ``--blackboxed-module`` is a ``read_slang`` option, so blackboxing
+    requires the slang plugin path; requesting it without a plugin is an
+    error.
     """
     yosys = yosys_bin or shutil.which("yosys")
     if yosys is None or not Path(yosys).exists():
@@ -56,15 +94,27 @@ def elaborate(
         # where they think it is.
         raise YosysError(f"yosys plugin not found: {Path(plugin_path).resolve()}")
 
+    if blackbox and plugin_path is None:
+        raise YosysError(
+            "--blackbox requires the yosys-slang plugin "
+            "(--yosys-plugin / RTL_BUDDY_SLANG_PLUGIN): blackboxing is a "
+            "read_slang feature, the built-in read_verilog frontend has no "
+            "equivalent"
+        )
+
     tmp_json = Path(tempfile.mkstemp(suffix=".json", prefix="rtl-buddy-cdc-")[1])
     try:
         srcs = " ".join(shlex.quote(str(s)) for s in sources)
         if plugin_path is None:
             read_cmd = f"read_verilog -sv {srcs}"
         else:
+            bb = "".join(
+                f"--blackboxed-module {shlex.quote(m)} " for m in (blackbox or ())
+            )
             read_cmd = (
                 f"plugin -i {shlex.quote(plugin_path)}; "
-                f"read_slang --std 1800-2017 --top {shlex.quote(top)} {srcs}"
+                f"read_slang --std 1800-2017 --top {shlex.quote(top)} "
+                f"{bb}{srcs}"
             )
         script = (
             f"{read_cmd}; "
@@ -87,10 +137,10 @@ def elaborate(
                 msg += f"\n{proc.stdout.strip()}"
             raise YosysError(msg)
 
-        module = netlist.load(tmp_json)
+        module, blackboxes = netlist.load_with_blackboxes(tmp_json)
         if keep_json is not None:
             shutil.copy(tmp_json, keep_json)
-        return module
+        return module, blackboxes
     finally:
         try:
             tmp_json.unlink()

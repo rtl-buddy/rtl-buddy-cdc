@@ -18,13 +18,22 @@ from rtl_buddy_cdc import (
     sdc as sdc_mod,
     waivers as waivers_mod,
 )
+from rtl_buddy_cdc.abstract import instance_clock_pins
 from rtl_buddy_cdc.domain import Crossing, assign_domains, find_crossings
+from rtl_buddy_cdc.hierarchy import (
+    compose_boundaries,
+    reconvergence_unsafe_instances,
+)
 from rtl_buddy_cdc.clock_network import find_clock_network_crossings
 from rtl_buddy_cdc.domain_map import build_domain_map
-from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
+from rtl_buddy_cdc.frontend import (
+    Frontend,
+    elaborate_with_blackboxes,
+    resolve_auto,
+)
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
-from rtl_buddy_cdc.reporter import AnalysisResult, _instance_path
+from rtl_buddy_cdc.reporter import TOOL_VERSION, AnalysisResult, _instance_path
 from rtl_buddy_cdc.reset_domain import (
     assign_reset_domains,
     find_reset_crossings,
@@ -46,6 +55,16 @@ from rtl_buddy_cdc.rules import (
 from rtl_buddy_cdc.waivers import SuppressedViolation
 
 app = typer.Typer(help="CDC linting tool for RTL designs.")
+
+# Rule id for the blackbox-boundary coverage finding. Emitted by the CLI
+# orchestration (not the rule pack): a blackboxed subtree the analyzer
+# cannot soundly abstract — multi-clock / unresolved (left opaque) or
+# reconvergence-unsafe (≥2 incoming crossings) — is an unanalysed boundary,
+# i.e. a coverage gap. It fires at ``error`` severity so it fails the run by
+# default; intentional opacity (a separately signed-off IP) is acknowledged
+# by waiving it (``waive CDC-BBX <instance-regex>``). Per instance, so the
+# cell-name regex addresses one boundary at a time.
+BBOX_RULE_ID = "CDC-BBX"
 
 
 class OutputFormat(str, Enum):
@@ -343,6 +362,17 @@ def lint(
         "when the flag is omitted (the explicit flag wins); this is the "
         "machine-local .env flow rtl_buddy populates from .rtl-buddy/.env.",
     ),
+    blackbox: list[str] = typer.Option(
+        [],
+        "--blackbox",
+        help="Treat MODULE as a CDC boundary cell: keep it un-flattened "
+        "(via read_slang `--blackboxed-module`) so a large subtree is "
+        "analysed at its port boundary instead of being elaborated into "
+        "the design. Repeatable. Requires the yosys-slang plugin "
+        "(--yosys-plugin / RTL_BUDDY_SLANG_PLUGIN). The pre-elaborated "
+        "`analyze` path needs no flag — a netlist already containing "
+        "blackbox boundary modules loads transparently. See issue #255.",
+    ),
     waivers_path: Path | None = typer.Option(
         None,
         "--waivers",
@@ -401,13 +431,18 @@ def lint(
             typer.echo(f"src:      {s}")
 
     try:
-        module = elaborate(
+        # ``_with_blackboxes`` so the lint path auto-abstracts the same
+        # way ``analyze`` does (#257): a ``--blackbox`` subtree arrives as
+        # a sibling module the shared analysis core summarises, instead of
+        # being silently dropped by the single-return ``elaborate``.
+        module, blackboxes = elaborate_with_blackboxes(
             sources,
             top,
-            frontend=resolved_frontend,
+            resolved_frontend,
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             yosys_plugin=yosys_plugin,
+            blackbox=list(blackbox),
         )
     except SlangFrontendUnavailable as e:
         typer.echo(f"error: {e}", err=True)
@@ -445,6 +480,7 @@ def lint(
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
+        blackboxes=blackboxes or None,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -510,7 +546,7 @@ def render(
 @app.command()
 def version() -> None:
     """Print tool, yosys, and (when installed) pyslang versions."""
-    typer.echo("rtl-buddy-cdc 0.1.0")
+    typer.echo(f"rtl-buddy-cdc {TOOL_VERSION}")
     yosys = shutil.which("yosys")
     if yosys:
         out = subprocess.run(
@@ -555,7 +591,7 @@ def _analyze_and_report(
     cdc_018_depth_threshold: int = 4,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
-    module = netlist.load(netlist_path)
+    module, blackboxes = netlist.load_with_blackboxes(netlist_path)
     return _analyze_module_and_report(
         module,
         sdc_path,
@@ -573,6 +609,7 @@ def _analyze_and_report(
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
+        blackboxes=blackboxes,
     )
 
 
@@ -594,6 +631,7 @@ def _analyze_module_and_report(
     no_findings: bool = False,
     cdc_010_no_heuristic: bool = False,
     cdc_018_depth_threshold: int = 4,
+    blackboxes: dict[str, netlist.Module] | None = None,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
@@ -643,12 +681,109 @@ def _analyze_module_and_report(
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
         )
+        # Auto-abstract single-clock subtrees (#256/#257): summarise each
+        # blackbox sibling whose whole clock set sits in one async-safe
+        # domain to its port boundary, keyed per instance so the same
+        # module under two domains is summarised correctly while identical
+        # instances hit the cache. ``find_crossings`` then re-seeds each
+        # subtree's boundary crossings (output-side virtual sources AND
+        # input-side virtual sinks) without walking the (absent) internal
+        # flops. Non-single-clock siblings get no summary and are simply
+        # not re-seeded. The same sequence runs for the lint path, which
+        # passes the blackbox siblings the frontend produced.
+        boundaries, comp_stats = compose_boundaries(module, blackboxes, spec)
         crossings = find_crossings(
             module,
             port_clock=spec.port_clock,
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
+            boundaries=boundaries,
         )
+        # FIX 3 (reconvergence gate): a single-clock block that IS
+        # abstracted but has >=2 distinct foreign-domain crossings entering
+        # DISTINCT input ports can hide an internal reconvergence (CDC-005)
+        # the flat design would flag. The boundary star-collapse severs the
+        # subtree's internal graph, so that reconvergence cannot be checked
+        # at the boundary. Conservative policy: REFUSE to abstract such a
+        # block — drop it from ``boundaries`` (so it becomes opaque, no
+        # boundary crossings emitted for it) and RE-RUN find_crossings.
+        unsafe = reconvergence_unsafe_instances(crossings)
+        # Coverage findings for blackboxes the analyzer cannot soundly
+        # abstract — emitted as ``error`` Violations (waivable) so an
+        # unanalysed boundary fails the run rather than passing with only a
+        # warning. Folded into ``violations`` after the rule pass below.
+        bb_violations: list[Violation] = []
+        if unsafe:
+            reconv_ports = {
+                inst: sorted(
+                    {
+                        c.dst_boundary[1]
+                        for c in crossings
+                        if c.dst_boundary is not None and c.dst_boundary[0] == inst
+                    }
+                )
+                for inst in unsafe
+            }
+            for inst in sorted(unsafe):
+                bb_violations.append(
+                    Violation(
+                        rule_id=BBOX_RULE_ID,
+                        severity="error",
+                        message=(
+                            f"blackbox `{inst}` (`{module.cells[inst].type}`) has "
+                            f"crossings into {len(reconv_ports[inst])} input ports; "
+                            f"reconvergence among them cannot be checked at the "
+                            f"boundary — flatten it or analyse standalone "
+                            f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                        ),
+                        cell_name=inst,
+                    )
+                )
+            boundaries = {k: v for k, v in boundaries.items() if k not in unsafe}
+            comp_stats = dataclasses.replace(
+                comp_stats,
+                boundary_modules=frozenset(module.cells[k].type for k in boundaries),
+            )
+            crossings = find_crossings(
+                module,
+                port_clock=spec.port_clock,
+                pin_clocks=spec.pin_clocks,
+                clock_for_port=spec.clock_for_port,
+                boundaries=boundaries,
+            )
+        # FIX 2 (now an error): every declined/opaque blackbox (multi-clock /
+        # unresolved per FIX 1) is a coverage gap — its zero-cell internals
+        # are unanalysed and it is absent from ``boundaries``. Emit one
+        # ``error`` per instance so it is waivable by cell name and carries a
+        # source location, instead of a silent drop.
+        for inst, cell in module.cells.items():
+            if cell.type in comp_stats.declined_modules:
+                bb_violations.append(
+                    Violation(
+                        rule_id=BBOX_RULE_ID,
+                        severity="error",
+                        message=(
+                            f"blackbox `{inst}` (`{cell.type}`) left opaque — not "
+                            f"provably single-clock; internal crossings not analysed. "
+                            f"Flatten it or analyse standalone "
+                            f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                        ),
+                        cell_name=inst,
+                    )
+                )
+        # FIX 4: per-instance clock-pin map for CDC-008's clock-as-data
+        # exemption — exempt only a blackbox instance's CLOCK pins, not
+        # the whole cell, so a clock wired into a genuine DATA input of a
+        # blackbox still fires.
+        boundary_clock_pins: dict[str, frozenset[str]] = {}
+        if blackboxes:
+            for inst_name, cell in module.cells.items():
+                sub = blackboxes.get(cell.type)
+                if sub is None:
+                    continue
+                boundary_clock_pins[inst_name] = instance_clock_pins(
+                    module, cell, sub, spec=spec, pin_clocks=spec.pin_clocks
+                )
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:
             violations = run_all_rules(
@@ -659,7 +794,15 @@ def _analyze_module_and_report(
                 reset_hints=reset_hints,
                 cdc_010_heuristic=not cdc_010_no_heuristic,
                 cdc_018_depth_threshold=cdc_018_depth_threshold,
+                boundary_modules=comp_stats.boundary_modules,
+                blackbox_modules=frozenset(blackboxes or {}),
+                boundary_clock_pins=boundary_clock_pins,
             )
+            # Blackbox-boundary coverage findings lead the list so an
+            # unanalysed boundary is the first thing reported; they are
+            # ordinary ``error`` Violations from here on (waivable,
+            # exit-code-driving).
+            violations = bb_violations + violations
     else:
         domains = assign_domains(module)
         crossings = find_crossings(module)
@@ -847,6 +990,32 @@ def _load_baseline_keys(path: Path) -> set[tuple[str, str, str]]:
                 )
             )
     return keys
+
+
+def _summarise_blackboxes(
+    module: netlist.Module,
+    blackboxes: dict[str, netlist.Module] | None,
+    spec: "sdc_mod.ClockSpec",
+) -> dict[str, netlist.BoundarySummary]:
+    """Auto-abstract single-clock blackbox subtrees to port boundaries.
+
+    Thin CLI-side wrapper over the compositional walk
+    (:func:`rtl_buddy_cdc.hierarchy.compose_boundaries`): each distinct
+    ``(module type, clock context)`` is summarised once (cached by that
+    pair) so identical instances are analysed once, while an instance in
+    a different domain gets its own correct summary (#257). The returned
+    map is keyed **per instance** (cell name) so ``find_crossings`` can
+    re-seed each instance's boundary crossings against the domain its
+    parent actually drives.
+
+    Kept as a named entry point because the test-suite imports it
+    directly; the :class:`~rtl_buddy_cdc.hierarchy.CompositionStats` half
+    of the compose result is dropped here (callers that want the cache
+    accounting or the CDC-008 boundary-module set call
+    ``compose_boundaries`` directly).
+    """
+    boundaries, _stats = compose_boundaries(module, blackboxes, spec)
+    return boundaries
 
 
 def _filter_async(

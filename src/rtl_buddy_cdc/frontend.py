@@ -61,6 +61,7 @@ def elaborate(
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
     yosys_plugin: str | None = None,
+    blackbox: list[str] | None = None,
 ) -> Module:
     """Elaborate ``sources`` into a flattened :class:`Module`.
 
@@ -68,21 +69,56 @@ def elaborate(
     callers only see the resulting ``Module``. Frontend-specific options
     are accepted as keyword arguments and silently ignored by frontends
     that don't use them (e.g. ``yosys_bin`` is meaningless for slang).
+
+    ``blackbox`` names modules to treat as CDC boundary cells (the P1
+    ``--blackbox`` surface). It is threaded into the Yosys/``read_slang``
+    invocation; the slang (pyslang) frontend does not support it yet.
+    """
+    module, _blackboxes = elaborate_with_blackboxes(
+        sources,
+        top,
+        frontend,
+        yosys_bin=yosys_bin,
+        keep_json=keep_json,
+        yosys_plugin=yosys_plugin,
+        blackbox=blackbox,
+    )
+    return module
+
+
+def elaborate_with_blackboxes(
+    sources: list[Path],
+    top: str,
+    frontend: Frontend = Frontend.yosys,
+    *,
+    yosys_bin: str | None = None,
+    keep_json: Path | None = None,
+    yosys_plugin: str | None = None,
+    blackbox: list[str] | None = None,
+) -> tuple[Module, dict[str, Module]]:
+    """Elaborate ``sources`` into a top :class:`Module` plus its blackbox
+    sibling modules (keyed by module name).
+
+    Same dispatch as :func:`elaborate`, but surfaces the blackbox
+    boundary siblings the Yosys ``--blackbox`` surface produces so the
+    ``lint`` path can auto-abstract them (#257). The slang frontend has
+    no blackbox support yet and returns an empty sibling map.
     """
     if frontend is Frontend.auto:
         frontend = resolve_auto()
     if frontend is Frontend.yosys:
         from rtl_buddy_cdc.frontends import yosys as yosys_fe
 
-        return yosys_fe.elaborate(
+        return yosys_fe.elaborate_with_blackboxes(
             sources,
             top,
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             plugin_path=yosys_plugin,
+            blackbox=blackbox,
         )
     if frontend is Frontend.slang:
         from rtl_buddy_cdc.frontends import slang as slang_fe
 
-        return slang_fe.elaborate(sources, top)
+        return slang_fe.elaborate(sources, top), {}
     raise ValueError(f"unknown frontend: {frontend!r}")
