@@ -205,6 +205,13 @@ GOOD_FIXTURES = [
     # source register. Four async per-lane crossings; CDC-020 stays
     # silent on the gray-coded source.
     ("good_sliced_bus_gray_marked", 4),
+    # Packed shift-register synchronizer (issue #264): a 2FF sync
+    # coded as one `reg [1:0]` that shifts (`{sync_sr[0], src_q}`)
+    # lowers to a single multi-bit $dff. The depth walk recognises the
+    # intra-cell shift and counts depth 2, so CDC-001/002/003 stay
+    # silent just like the separate-flop good_2ff_sync. One async
+    # crossing (src_q → the packed register's first stage).
+    ("good_packed_shift_sync", 1),
 ]
 
 

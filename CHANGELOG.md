@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CDC-001 / CDC-002 false positive on packed shift-register
+  synchronisers** (#264). A multi-flop synchroniser written as a single
+  packed shift register — `reg [N-1:0] s; s <= {s[N-2:0], d}` with the
+  output tapped from `s[N-1]` — lowers to one multi-bit `$dff` after
+  `proc; flatten`. The synchroniser-depth walk hops between *separate*
+  1-bit flop cells, so the intra-cell shift was invisible: it stopped at
+  the multi-bit head and reported depth 1, firing a false CDC-001 ("no
+  second-stage synchroniser") on every such instance — and skewing the
+  CDC-002 depth gate. `_sync_chain_depth` now recognises the packed
+  idiom: a multi-bit flop whose `D` vector is, lane for lane, either one
+  of the flop's own `Q` bits (`D[i] == Q[j]`, an internal shift tap) or —
+  for exactly one lane — an external bit (the freshly sampled crossing).
+  It follows the per-lane shift from that single external input to the
+  terminal tap and counts the effective depth, so the packed form is
+  accepted on its own merits, identically to the separate-flop form.
+  Genuine bus crossings, gray counters, and mux-gated registers are
+  unaffected (they don't match the self-shift structure), and the walk's
+  "exactly one reader" rule still ends the chain when an intermediate
+  stage is tapped early — a packed register whose first stage is used is
+  still a depth-1 CDC-001. New `good_packed_shift_sync` /
+  `bad_packed_first_stage_used` fixture pair.
+
 ## [0.3.0] — 2026-06-16
 
 ### Fixed
