@@ -212,3 +212,50 @@ def test_no_candidate_stays_quiet() -> None:
     tbuf = io.StringIO()
     render_text(result, tbuf, color=False)
     assert "undeclared internal clock candidate" not in tbuf.getvalue()
+
+
+# --- gate-driven candidate (issue #263) -------------------------------------
+GATE_DIR = Path(__file__).parent / "fixtures" / "inferred_gate_clock"
+GATE_JSON = GATE_DIR / "inferred_gate_clock.json"
+GATE_SDC = GATE_DIR / "inferred_gate_clock.sdc"
+
+
+def test_gate_driven_inferred_candidate() -> None:
+    """An undeclared ICG/gate output (`clk & en`) fanning out to four flop
+    CLK pins is reported as a candidate with ``driver_kind='gate'`` — the
+    gate-driver branch of candidate detection (the flop-Q branch is
+    covered by ``inferred_fwd_clock``). Advisory only: the four flops
+    still resolve to ``clk`` via the gate clause, so nothing is
+    reclassified."""
+    if not GATE_JSON.exists():
+        pytest.skip(f"fixture not built: {GATE_JSON}")
+    module = netlist.load(GATE_JSON)
+    spec = sdc_mod.parse_file(GATE_SDC)
+    cands = find_inferred_clock_candidates(module, pin_clocks=spec.pin_clocks)
+    assert len(cands) == 1, cands
+    assert cands[0].driver_kind == "gate"
+    assert cands[0].fanout == 4
+    # No reclassification: every flop still resolves to clk.
+    sdc_mod.synthesize_unconstrained_inputs(spec, module)
+    domains = assign_domains(
+        module, pin_clocks=spec.pin_clocks, clock_for_port=spec.clock_for_port
+    )
+    assert all(d.clock == "clk" for d in domains), [
+        (d.flop.cell.name, d.clock) for d in domains
+    ]
+
+
+def test_gate_driven_candidate_renders_in_json_and_text(tmp_path: Path) -> None:
+    """The gate candidate surfaces in both the JSON list and the text
+    advisory line via the full analyze/report path."""
+    if not GATE_JSON.exists():
+        pytest.skip(f"fixture not built: {GATE_JSON}")
+    jout = tmp_path / "report.json"
+    _analyze_and_report(GATE_JSON, GATE_SDC, None, OutputFormat.json, jout)
+    payload = json.loads(jout.read_text())
+    cands = payload.get("inferred_clock_candidates")
+    assert cands and any(c["driver_kind"] == "gate" for c in cands), payload
+    tout = tmp_path / "report.txt"
+    _analyze_and_report(GATE_JSON, GATE_SDC, None, OutputFormat.text, tout)
+    text = tout.read_text()
+    assert "ⓘ" in text or "inferred" in text.lower()

@@ -91,6 +91,19 @@ def test_icg_port_enable_still_resolves() -> None:
     )
 
 
+def test_combine_generated_clock_declines() -> None:
+    """A DECLARED generated clock (`gdiv`, via create_generated_clock)
+    combined with a different real clock (`clkB`) on a gate declines too —
+    a generated-clock target is a real clock identity, so two distinct
+    declared clocks meet and the flop must not silently resolve to one."""
+    domains = _domains("clock_combine_generated")
+    assert domains
+    clocks = {fd.flop.cell.name: fd.clock for fd in domains}
+    # The gclk flop (gdiv & clkB) declines; the divider flop resolves to clkA.
+    assert None in clocks.values(), f"combine flop must decline: {clocks}"
+    assert "clkA" in clocks.values(), f"divider flop should resolve to clkA: {clocks}"
+
+
 def test_combine_decline_does_not_perturb_others() -> None:
     """The decline is local: declining the combining flop must not change
     how an unambiguous flop in the same design resolves. We confirm the

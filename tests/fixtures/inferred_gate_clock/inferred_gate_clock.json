@@ -1,0 +1,237 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "inferred_gate_clock": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:10.1-23.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "en": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "din": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "q0": {
+          "direction": "output",
+          "bits": [ 5 ]
+        },
+        "q1": {
+          "direction": "output",
+          "bits": [ 6 ]
+        },
+        "q2": {
+          "direction": "output",
+          "bits": [ 7 ]
+        },
+        "q3": {
+          "direction": "output",
+          "bits": [ 8 ]
+        }
+      },
+      "cells": {
+        "$and$tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:16$1": {
+          "hide_name": 1,
+          "type": "$and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:16.15-16.23"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 2 ],
+            "B": [ 3 ],
+            "Y": [ 9 ]
+          }
+        },
+        "$procdff$6": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:21.3-21.35"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 9 ],
+            "D": [ 7 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$procdff$7": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:20.3-20.35"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 9 ],
+            "D": [ 6 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procdff$8": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:19.3-19.35"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 9 ],
+            "D": [ 5 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$procdff$9": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:18.3-18.36"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 9 ],
+            "D": [ 4 ],
+            "Q": [ 5 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:11.17-11.20"
+          }
+        },
+        "din": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:13.17-13.20"
+          }
+        },
+        "en": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:12.17-12.19"
+          }
+        },
+        "gclk": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:16.8-16.12"
+          }
+        },
+        "q0": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:14.17-14.19"
+          }
+        },
+        "q1": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:14.21-14.23"
+          }
+        },
+        "q2": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:14.25-14.27"
+          }
+        },
+        "q3": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:14.29-14.31"
+          }
+        },
+        "r0": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:17.8-17.10"
+          }
+        },
+        "r1": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:17.12-17.14"
+          }
+        },
+        "r2": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:17.16-17.18"
+          }
+        },
+        "r3": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/inferred_gate_clock/inferred_gate_clock.sv:17.20-17.22"
+          }
+        }
+      }
+    }
+  }
+}
