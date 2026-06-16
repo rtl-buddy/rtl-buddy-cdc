@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Frontend leniency for standalone-block lint.** Both slang-based
+  frontends now tolerate two constructs the built-in `read_verilog`
+  frontend already accepts, so switching a design onto a slang frontend
+  doesn't newly reject structurally-valid sources:
+  - The **pyslang frontend** (`--frontend slang`) sets
+    `AllowTopLevelIfacePorts` (explicit; already a pyslang default) and
+    `AllowUseBeforeDeclare`. This lets a block with an **unconnected
+    top-level SystemVerilog interface port** (e.g. `apb_intf.subordinate
+    apb`) be CDC-linted on its own — the yosys `read_slang` path can't
+    do this at all, since a yosys netlist has no interface ports, so
+    interface-bearing block tops must use `--frontend slang`.
+  - The **yosys `read_slang` frontend** passes `--allow-use-before-declare`
+    so a module-item reference to a net declared later in the same
+    module no longer fails elaboration. (`--allow-toplevel-iface-ports`
+    is *unsupported* by yosys-slang and is intentionally not passed.)
 - **Clock-combining nodes decline instead of silently picking one leg**
   (#263 soundness). When a clock-network gate (`$and`/`$or`…) or a
   clock-path transparent latch (`$dlatch`/`$_DLATCH_*`) combines two
