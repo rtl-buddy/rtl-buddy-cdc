@@ -73,6 +73,8 @@ def compose_boundaries(
     top: Module,
     blackboxes: dict[str, Module] | None,
     spec: ClockSpec,
+    *,
+    max_depth: int = 16,
 ) -> tuple[dict[str, BoundarySummary], CompositionStats]:
     """Summarise every distinct ``(module, clock context)`` once and compose.
 
@@ -97,6 +99,16 @@ def compose_boundaries(
     distinct module types abstracted (for CDC-008's boundary exemption).
 
     Pure: no I/O, no mutation of ``top`` or ``blackboxes``.
+
+    ``max_depth`` is the clock-trace hop budget threaded to
+    :func:`~rtl_buddy_cdc.abstract._instance_clocks` /
+    :func:`~rtl_buddy_cdc.abstract.summarise_subtree` (default 16,
+    surfaced as ``--clock-trace-depth``). It MUST equal the budget the
+    crossing walk uses on the same run so the abstraction decision and
+    the crossing walk resolve the same clock roots — a mismatch could
+    let a deep clock pin be missed here and collapse a multi-clock
+    boundary to a false single-clock summary, dropping its internal
+    crossing. See issue #263.
     """
     out: dict[str, BoundarySummary] = {}
     if not blackboxes:
@@ -124,7 +136,7 @@ def compose_boundaries(
         # distinctly from a single-clock one and identical instances still
         # hit the cache under the same root set.
         context = _instance_clocks(
-            top, cell, sub, spec=spec, pin_clocks=spec.pin_clocks
+            top, cell, sub, spec=spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
         ).roots
         cache_key = (cell.type, context)
         if cache_key in seen:
@@ -134,7 +146,7 @@ def compose_boundaries(
             summary = seen[cache_key]
         else:
             summary = summarise_subtree(
-                top, cell, sub, spec, pin_clocks=spec.pin_clocks
+                top, cell, sub, spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
             )
             seen[cache_key] = summary
         if summary is None:

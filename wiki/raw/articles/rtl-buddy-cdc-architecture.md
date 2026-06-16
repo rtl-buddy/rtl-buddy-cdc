@@ -384,6 +384,61 @@ formatter. It contains everything any output mode might need:
 formatter does additional analysis — this struct is the boundary
 between "analyzer" and "presentation".
 
+#### Under-resolution visibility (issue #263)
+
+A flop whose clock root the tracer cannot resolve carries
+`FlopDomain.clock is None` and is **excluded from crossing detection** —
+a crossing into or out of it cannot be classified. On large netlists a
+non-trivial fraction of flops can land here, silently shrinking
+coverage. The reporter surfaces this as a report-only diagnostic
+(it never changes a classification):
+
+- JSON `summary.domain_unknown` (int) — count of `None`-clock flops.
+  This key is pinned in `JSON_CONTRACT` so downstream `rtl_buddy` can
+  treat a non-zero value as coverage degradation rather than a clean run.
+- JSON `domain_unknown_flops` (list) — a bounded sample (first
+  `_DOMAIN_UNKNOWN_SAMPLE_CAP`, currently 20) of the unresolved flops'
+  cell names, in `domains` order, to point at the under-resolved
+  subtrees. The full count is always `summary.domain_unknown`.
+- Text report — when the count is non-zero, a prominent `⚠ N of M flops
+  have unresolved clock domain — excluded from CDC analysis` line, so an
+  under-resolved run no longer reads as a complete one.
+
+#### Inferred-clock candidates (issue #263, P3)
+
+A frequent cause of under-resolution is an **undeclared internal
+generated clock** — a divided / forwarded clock the user forgot to
+declare with `create_generated_clock`. `domain.find_inferred_clock_candidates`
+reports each net bit that
+
+1. drives at least a threshold (default 4) flop `CLK` pins,
+2. is produced by a flop `Q` or a clock-gate / ICG / latch output (the
+   same clock-network cell families `trace_clock_root` walks), and
+3. is **not** already a declared clock — neither a top-level input port
+   nor a `create_generated_clock` target (`pin_clocks`).
+
+The report is surfaced as:
+
+- JSON `inferred_clock_candidates` (list of `{driver, driver_kind,
+  fanout, example_sinks}`) — `driver_kind` is `"flop"` or `"gate"`,
+  `example_sinks` a bounded sample of sink-flop cell names.
+- Text report — a cyan `ⓘ` advisory line per candidate naming the
+  driver and its CLK-pin fanout.
+
+This is **advisory only** and the highest silent-false-negative risk in
+the whole epic, so it defaults to *report-only*: it is computed from the
+netlist + SDC pin map, never feeds back into `assign_domains` /
+`find_crossings`, and so **cannot change a flop's domain, a crossing, or
+a violation**. A flop behind an undeclared internal clock stays
+`domain_unknown` (and is still counted there) unless a real clock-root
+trace already resolves it — the divider / latch clauses of
+`trace_clock_root`, which fire independently of this fanout heuristic.
+Auto-assigning a clock identity from the heuristic alone is forbidden:
+it could make two async groups read same-domain and silently drop a
+crossing. The contract is "report; let the human declare it". The key is
+deliberately **not** in `JSON_CONTRACT` — it is an additive advisory,
+not a pinned downstream count.
+
 ### 4.8 Blackbox boundaries and the compositional data model
 
 The CDC-scaling work (epic #253) makes a large subtree analysable at
@@ -634,15 +689,77 @@ Cell-type categories the walker recognizes:
 | Category | Yosys cell types | Behavior |
 |---|---|---|
 | Buffer / inverter | `$not`, `$logic_not`, `$buf`, `$pos`, `$reduce_bool`, `$_BUF_`, `$_NOT_` | Transparent: trace the single `A` input |
-| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side that resolves to a clock is the root, the other is the gate's enable |
-| Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects) |
+| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline (see below) |
+| Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline |
 | FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root |
+| Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
 
 The walker maintains a per-call `seen` set keyed on bit ID and a
 `max_depth` counter (default 16), so cycles in the clock network
 terminate cleanly. The depth budget is intentionally low — clock
 networks rarely exceed a handful of hops, and a deep walk is more
 likely to be following data than clock.
+
+**Clock-combining decline on multi-input clock cells (issue #263).**
+The two-input gate clause and the clock-path latch clause both explore
+several legs (gate: `A`/`B`; latch: `D`/`EN`/`E`) and resolve them
+through one rule (`_pick_combining_root`), using a `clock_identity`
+predicate built in `assign_domains` from the SDC (`clock_for_port` plus
+the `create_generated_clock` set):
+
+- **exactly one declared clock among the legs** → that clock, regardless
+  of leg order. This is the common, safe ICG: one leg is a clock, the
+  other a *non-clock* enable (e.g. a plain `clk_en` input port, which is
+  not a declared clock and so is not a competing identity). The
+  `icg_port_enable` fixture pins this.
+- **two or more distinct declared clocks combining on one net** (e.g. an
+  `$and` with `A=clkA, B=clkB`, or a `$dlatch` with `D=clkA, EN=clkB`)
+  → **decline** (`None`). Such a cell mixes clock domains; the
+  downstream flop's domain is genuinely ambiguous (its clock physically
+  toggles on both), so the tracer refuses to assert one leg and the flop
+  is surfaced as `domain_unknown` rather than silently mislabelled. The
+  `clock_combine_latch` / `clock_combine_gate` fixtures pin this.
+- **no declared clock among the legs** (an undeclared internal root, or
+  a caller with no SDC clock context) → first-resolved leg, the prior
+  behaviour, unchanged.
+
+A **mux** is deliberately *not* subject to this — it selects one of its
+clock inputs rather than combining them, so first-resolves-wins is
+correct there. Two legs that map to the *same* declared clock (the
+`ck0_a` / `ck0_b` ports of one `create_clock`, issue #166) are one
+identity, not a combine, and resolve normally. The decline only ever
+turns a previously *mislabelled* flop into a loud `domain_unknown`; it
+never drops a crossing carried by the design's other, unambiguous flops.
+A dedicated rule that *flags* the combine (rather than only declining to
+classify it) is left to future work.
+
+The budget is configurable. `assign_domains(module, ...,
+max_depth=N)` and `find_crossings(module, ..., max_depth=N)` forward
+`N` to `trace_clock_root`; the CLI surfaces it as
+`--clock-trace-depth` on both `analyze` and `lint` (default 16). A
+deep clock tree — a long divider / buffer / ICG chain — can exceed
+16 hops and leave its downstream flops domain-unknown (counted in
+`summary.domain_unknown`, §8.x); raising the budget resolves them
+without a code change. The change is monotone: a larger budget can
+only resolve **more** flops, never fewer, so the default leaves every
+result identical to a fixed-16 walk. The crossing walk's own
+`max_hops` data-fanout budget (§7) is a separate concern and is not
+affected. See issue #263.
+
+`--clock-trace-depth` threads to **every** clock-root trace on a run,
+not only the crossing walk. The boundary-abstraction decision
+(`compose_boundaries` → `summarise_subtree` → `_instance_clocks`,
+§4.8) and the clock-network surface (`find_clock_network_crossings`,
+§8) and the rule-context per-flop domain view (`run_all` →
+`_build_context`) all take the same `max_depth`. This is a
+**soundness** requirement, not a convenience: if the abstraction
+decision ran at a fixed 16 while the crossing walk ran at a raised
+depth, a dual-clock blackbox whose second clock pin is fed through a
+>16-hop clock chain would present only its shallow root, look
+single-clock, and be abstracted away — silently dropping its internal
+async crossing (the false-negative §4.9 forbids). Because both sides
+share the budget, the abstraction can never collapse a boundary the
+crossing walk would keep multi-clock.
 
 ### 5.1 Internal-pin generated clocks
 

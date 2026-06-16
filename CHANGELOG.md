@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Clock-combining nodes decline instead of silently picking one leg**
+  (#263 soundness). When a clock-network gate (`$and`/`$or`…) or a
+  clock-path transparent latch (`$dlatch`/`$_DLATCH_*`) combines two
+  **distinct declared clocks** on its legs (e.g. `D=clkA, EN=clkB`), the
+  clock-root tracer now returns `None` (leaving the flop
+  `domain_unknown`, surfaced by the under-resolution report) rather than
+  resolving the flop to the first leg. Such a cell genuinely mixes clock
+  domains, so asserting one leg silently mislabels a flop whose clock
+  toggles on both. The decline is gated on a `clock_identity` predicate
+  (built from the SDC), so the common, safe ICG — one clock plus a
+  *non-clock* enable port — still resolves; only a real two-declared-clock
+  combine declines, and a clock **mux** (which selects, not combines) is
+  unaffected. New fixtures `clock_combine_latch`, `clock_combine_gate`
+  (decline) and `icg_port_enable` (the regression guard: a port-enabled
+  ICG must still resolve). This supersedes the previous first-leg-wins
+  behaviour on multi-clock combines; single-clock results are unchanged.
+
+### Added
+
+- **Inferred-clock candidates** (#263). A common cause of
+  under-resolution is an undeclared internal generated clock — a
+  divided / forwarded clock the user forgot to declare with
+  `create_generated_clock`. `analyze` now reports each internal net that
+  drives ≥4 flop `CLK` pins from a flop `Q` or a clock-gate / ICG / latch
+  output and is not already a declared clock (port or
+  `create_generated_clock` target). JSON gains an additive
+  `inferred_clock_candidates` list (`{driver, driver_kind, fanout,
+  example_sinks}`); the text report adds a cyan `ⓘ` advisory line per
+  candidate. This is **advisory only**: it is computed from the netlist
+  and SDC pin map, never feeds back into domain assignment or crossing
+  detection, and so changes no domain, crossing, or violation — a flop
+  behind an undeclared internal clock stays `domain_unknown` unless a
+  real clock-root trace already resolves it (the divider / latch clauses
+  of `trace_clock_root`). Auto-assigning a clock identity from the
+  fanout heuristic alone is deliberately forbidden — it could make two
+  async groups read same-domain and silently drop a crossing. New
+  fixture `inferred_fwd_clock` (a divide-by-2 toggle flop clocking a
+  four-flop bank with no `create_generated_clock`) is flagged as a
+  candidate while its bank flops still resolve to `clk_a` via the
+  divider trace, and carries a real `clk_a → clk_b` crossing as a parity
+  anchor. The key is deliberately not pinned in `JSON_CONTRACT`.
+- **Configurable clock-trace depth** (#263). The clock-root tracer's
+  hop budget — fixed at 16 — is now exposed as `--clock-trace-depth N`
+  on both `analyze` and `lint` (default 16; threaded through
+  `assign_domains(..., max_depth=N)` / `find_crossings(..., max_depth=N)`).
+  A deep clock tree (a long divider / buffer / ICG chain) can exceed
+  16 hops and leave its downstream flops domain-unknown (visible in
+  `summary.domain_unknown`); raising the budget resolves them without a
+  code change. The change is monotone — a larger budget only ever
+  resolves **more** flops, never fewer — so the default leaves every
+  result identical. New fixture `deep_clock_divider_chain` (a 30-stage
+  ripple divider) is domain-unknown at the default and resolves at
+  `--clock-trace-depth 40`, and pins crossing/violation parity across
+  depths. `--clock-trace-depth` threads to **every** clock-root trace
+  on a run — the boundary-abstraction decision
+  (`compose_boundaries` / `summarise_subtree` / `_instance_clocks`),
+  the clock-network surface (`find_clock_network_crossings`), and the
+  rule-context domain view (`run_all` / `_build_context`) — so the
+  abstraction decision and the crossing walk always resolve the same
+  clock roots. This keeps the opt-in high-depth mode sound: a
+  dual-clock blackbox whose second clock pin sits beyond 16 hops is
+  correctly declined (not abstracted away) when the depth is raised,
+  instead of silently dropping its internal crossing.
+- **Under-resolution visibility** (#263). A flop whose clock root the
+  tracer cannot resolve is excluded from crossing detection; on large
+  netlists this silently shrank coverage with no diagnostic. The
+  reporter now surfaces it (report-only — no classification changes):
+  JSON gains `summary.domain_unknown` (int, pinned in `JSON_CONTRACT`)
+  and a bounded `domain_unknown_flops` sample list; the text report
+  emits a prominent `⚠ N of M flops have unresolved clock domain —
+  excluded from CDC analysis` line.
+- **Clock-path transparent latch resolution** (#263). The clock-root
+  tracer now follows a clock routed through a `$dlatch` / `$_DLATCH_*`
+  (a latch-based ICG / clock-path latch). When a flop's `CLK` net is
+  driven by a latch `Q`, the walk explores the latch's data pin (`D`)
+  and enable pin (`EN` coarse / `E` gate-level) and returns whichever
+  leg resolves to a clock root — the clock can enter on either pin
+  depending on the ICG coding style. Such flops were domain-unknown
+  before and are now resolved. This is **clock-resolution only**: latch
+  transparency never reaches data-path crossing detection, so CDC-017
+  (transparent latch in a CDC path) and every data-path crossing fire
+  exactly as before — a data-path latch stays an opaque, flagged
+  endpoint. The first-resolves-wins behaviour on a pathological
+  clock-*combining* latch (two distinct clock roots on `D` and `EN`)
+  matches the existing two-input-gate clause and is documented in the
+  architecture spec §5. New fixture `clock_through_latch` exercises both
+  the `D`-leg and `EN`-leg ICG styles and pins crossing/violation parity
+  with the latch clause disabled. The `bad_unresolved_clock_latch`
+  fixture (a clock-path latch) consequently now resolves to `clk_a`
+  (`domain_unknown == 0`); the durable `domain_unknown > 0` anchor moved
+  to `deep_clock_divider_chain`.
 ## [0.3.1] — 2026-06-16
 
 ### Changed

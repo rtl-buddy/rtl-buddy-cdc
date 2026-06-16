@@ -69,6 +69,7 @@ def find_clock_network_crossings(
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
     use_heuristic: bool = True,
+    max_depth: int = 16,
 ) -> list[ClockNetworkCrossing]:
     """Enumerate every clock-network-driven async flop→flop pair.
 
@@ -89,10 +90,19 @@ def find_clock_network_crossings(
     flops, per cell downstream flops, the final crossings list) is
     sorted by name so two runs on the same input produce the same
     sequence.
+
+    ``max_depth`` is the clock-trace hop budget forwarded to
+    :func:`~rtl_buddy_cdc.domain.assign_domains` (default 16, surfaced
+    as ``--clock-trace-depth``). It must match the budget the main
+    crossing walk uses so this clock-network view of per-flop domains
+    agrees with the crossings list at any depth. See issue #263.
     """
     pin_clocks = clock_spec.pin_clocks if clock_spec is not None else None
     flop_domains = assign_domains(
-        module, pin_clocks=pin_clocks, clock_for_port=clock_for_port
+        module,
+        pin_clocks=pin_clocks,
+        clock_for_port=clock_for_port,
+        max_depth=max_depth,
     )
     flop_by_name = {fd.flop.cell.name: fd.flop for fd in flop_domains}
     domain_by_name = {fd.flop.cell.name: fd.clock for fd in flop_domains}

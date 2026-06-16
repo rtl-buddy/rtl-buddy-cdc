@@ -20,7 +20,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import IO
 
-from rtl_buddy_cdc.domain import Crossing, FlopDomain
+from rtl_buddy_cdc.domain import Crossing, FlopDomain, InferredClockCandidate
 from rtl_buddy_cdc.netlist import Module
 from rtl_buddy_cdc.rules import Violation
 from rtl_buddy_cdc.sdc import ClockSpec
@@ -41,7 +41,22 @@ JSON_CONTRACT: dict[str, type] = {
     "summary.violations": int,
     "summary.suppressed": int,
     "summary.crossings": int,
+    # Count of flops whose clock root could not be traced
+    # (``FlopDomain.clock is None``). Such flops are excluded from CDC
+    # analysis — a crossing into/out of them cannot be classified — so
+    # a non-zero count means the run under-resolved the design. Pinned
+    # here so downstream ``rtl_buddy`` can surface coverage degradation
+    # rather than silently treating an under-resolved run as complete.
+    # Issue #263.
+    "summary.domain_unknown": int,
 }
+
+# Cap on how many unresolved-flop cell names land in
+# ``domain_unknown_flops``. The list is a debugging aid (which subtrees
+# under-resolved), not an exhaustive inventory; ``summary.domain_unknown``
+# carries the full count. Kept bounded so a pathologically
+# under-resolved netlist can't bloat the JSON report.
+_DOMAIN_UNKNOWN_SAMPLE_CAP = 20
 
 # Short-form descriptions per rule. Keep this terse — the long-form
 # message is already attached to each result.
@@ -77,6 +92,14 @@ class AnalysisResult:
     spec: ClockSpec | None
     violations: list[Violation]
     suppressed: list[SuppressedViolation] = field(default_factory=list)
+    # Advisory hints (P3/#263): internal nets that fan out to many flop
+    # CLK pins but are not declared as a clock — possible undeclared
+    # ``create_generated_clock`` targets. Report-only; they never change a
+    # domain, crossing, or violation, so the default-empty field keeps
+    # every existing AnalysisResult construction unchanged.
+    inferred_clock_candidates: list[InferredClockCandidate] = field(
+        default_factory=list
+    )
     # Findings filtered out by ``--baseline``: present in a baseline
     # JSON report so they're not re-flagged on this run. Visible in the
     # report (separate tally) but never drive the exit code — the
@@ -215,6 +238,41 @@ def _render_design_summary(
             f"{'s' if len(result.spec.async_groups) != 1 else ''}"
         )
     out.write(f"  {cross_summary}\n")
+
+    # Coverage warning (issue #263): flops whose clock root we could not
+    # trace are silently excluded from crossing detection. Surfacing the
+    # count keeps an under-resolved run from reading like a clean,
+    # complete analysis. Report-only — classification is unchanged.
+    n_unknown = sum(1 for fd in result.domains if fd.clock is None)
+    if n_unknown:
+        out.write(
+            f"  {s.yellow}{s.bold}⚠ {n_unknown} of {len(result.domains)} "
+            f"flops have unresolved clock domain — excluded from CDC "
+            f"analysis{s.reset}\n"
+        )
+
+    # Inferred-clock advisory (issue #263, P3): internal nets that fan
+    # out to many flop CLK pins but carry no declared clock identity —
+    # likely a forwarded/divided clock the user forgot to declare with
+    # `create_generated_clock`. Advisory ONLY: these never change a
+    # domain or a crossing; declaring them is what would let the
+    # downstream flops resolve. The flops they clock are still counted in
+    # the `domain_unknown` total above unless a real trace already
+    # resolved them.
+    if result.inferred_clock_candidates:
+        n = len(result.inferred_clock_candidates)
+        out.write(
+            f"  {s.cyan}ⓘ {n} undeclared internal clock candidate"
+            f"{'s' if n != 1 else ''} (net drives ≥4 flop CLK pins, not in "
+            f"SDC) — add create_generated_clock to resolve:{s.reset}\n"
+        )
+        for cand in result.inferred_clock_candidates:
+            sinks = ", ".join(cand.example_sinks)
+            more = ", …" if cand.fanout > len(cand.example_sinks) else ""
+            out.write(
+                f"    {s.dim}{cand.driver} ({cand.driver_kind}) → "
+                f"{cand.fanout} CLK pins [{sinks}{more}]{s.reset}\n"
+            )
 
     if verbose and result.crossings:
         out.write(f"\n{s.dim}  Crossings:{s.reset}\n")
@@ -355,7 +413,18 @@ def _severity_counts(violations: list[Violation]) -> dict[str, int]:
 # --- json -------------------------------------------------------------------
 
 
+def _domain_unknown_flops(result: AnalysisResult) -> list[str]:
+    """Cell names of flops whose clock root could not be traced.
+
+    Order follows ``result.domains`` (deterministic across runs). The
+    full count is ``len(...)``; callers cap the *sample* they emit but
+    never the count.
+    """
+    return [fd.flop.cell.name for fd in result.domains if fd.clock is None]
+
+
 def render_json(result: AnalysisResult, out: IO[str]) -> None:
+    unknown_flops = _domain_unknown_flops(result)
     payload = {
         "tool": {"name": TOOL_NAME, "version": TOOL_VERSION},
         "module": result.module.name,
@@ -368,7 +437,32 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             "violations": len(result.violations),
             "suppressed": len(result.suppressed),
             "baseline_carryover": len(result.baseline_carryover),
+            # Coverage diagnostic (issue #263): how many flops the clock-
+            # root tracer left unresolved. These are EXCLUDED from CDC
+            # analysis, so a non-zero value means the report does not
+            # cover the whole design. Report-only — never changes a
+            # classification.
+            "domain_unknown": len(unknown_flops),
         },
+        # Bounded sample of unresolved-flop cell names to aid debugging
+        # (which subtrees under-resolved). Full count lives in
+        # ``summary.domain_unknown``; this list is capped.
+        "domain_unknown_flops": unknown_flops[:_DOMAIN_UNKNOWN_SAMPLE_CAP],
+        # Advisory (issue #263, P3): undeclared internal nets used as a
+        # clock by many flops — likely a forgotten
+        # ``create_generated_clock``. Report-only; never reflects a domain
+        # or crossing change. Each entry carries the driver cell, whether
+        # it is a flop-Q or a clock-gate output, the CLK-pin fanout, and a
+        # bounded sample of sink flops. Empty list when none.
+        "inferred_clock_candidates": [
+            {
+                "driver": c.driver,
+                "driver_kind": c.driver_kind,
+                "fanout": c.fanout,
+                "example_sinks": list(c.example_sinks),
+            }
+            for c in result.inferred_clock_candidates
+        ],
         "by_instance": _by_instance(result.violations),
         "domains": [
             {"flop": fd.flop.cell.name, "clock": fd.clock} for fd in result.domains

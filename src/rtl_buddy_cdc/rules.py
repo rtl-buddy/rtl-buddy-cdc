@@ -143,15 +143,23 @@ def _build_context(
     boundary_modules: frozenset[str] = frozenset(),
     blackbox_modules: frozenset[str] = frozenset(),
     boundary_clock_pins: dict[str, frozenset[str]] | None = None,
+    max_depth: int = 16,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
 
     Pure function of ``(module, clock_spec)``; safe to call multiple
     times but pointless — the whole point is amortising the work
     across rules.
+
+    ``max_depth`` is the clock-trace hop budget forwarded to
+    :func:`~rtl_buddy_cdc.domain.assign_domains` (default 16, surfaced
+    as ``--clock-trace-depth``). It must match the budget the crossing
+    walk uses so ``ctx.domains`` — the rule-context per-flop domain
+    view, consulted by CDC-010 and the domain-map path — agrees with
+    the crossings list at any depth. See issue #263.
     """
     flops = tuple(find_flops(module))
-    flop_domains = assign_domains(module)
+    flop_domains = assign_domains(module, max_depth=max_depth)
     domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
 
     bit_drivers: dict[Bit, tuple[str, str, int]] = {}
@@ -4622,6 +4630,7 @@ def run_all(
     boundary_modules: frozenset[str] = frozenset(),
     blackbox_modules: frozenset[str] = frozenset(),
     boundary_clock_pins: dict[str, frozenset[str]] | None = None,
+    max_depth: int = 16,
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -4636,6 +4645,7 @@ def run_all(
         boundary_modules=boundary_modules,
         blackbox_modules=blackbox_modules,
         boundary_clock_pins=boundary_clock_pins,
+        max_depth=max_depth,
     )
     out: list[Violation] = []
     for rule_id, rule in RULES.items():

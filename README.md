@@ -101,9 +101,14 @@ Primary mode (`analyze`):
 | `--no-findings` | optional | Skip rule evaluation entirely. Only meaningful with `--emit-domain-map` / `--emit-reset-domain-map`: the run exits 0 on successful elaboration + map emission, 2 on elaboration failure, and the normal report is suppressed. |
 | `--cdc-018-depth-threshold N` | optional | Minimum sync-chain depth at which CDC-018 (cascaded synchroniser) fires. Defaults to **4** — chains of depth 2 or 3 stay silent (the textbook 2FF sync, plus a 3-stage chain common in high-MTBF designs). Raise to 5 if 4-stage chains are intentional in your design. Must be ≥ 2. |
 | `--cdc-010-no-heuristic` | optional | Disable CDC-010's pin-name heuristic fallback for tech-mapped cells. By default an input pin named `E` / `EN` / `CE` / `GATE` / `SE` (case-insensitive) on a cell type outside the explicit map is treated as a control pin. Pass this flag when a library's pin naming conflicts (e.g. a vendor that uses `EN` for something other than enable) and you'd rather take the false negative than a false positive. The explicit map covering Yosys primitives and `simplemap` / `abc` gate-level cells is unaffected. |
+| `--clock-trace-depth N` | optional | Maximum hop budget when tracing a flop's `CLK` net back to its top-level clock port — buffers, clock gates, muxes and divider flops each cost a hop. Defaults to **16**. A deep clock tree (a long divider / buffer / ICG chain) can exceed it and leave its downstream flops domain-unknown (visible as `summary.domain_unknown`); raise it (e.g. 40) to resolve them without a code change. Monotone: a larger budget only ever resolves **more** flops, never fewer, so the default leaves results identical. Must be ≥ 1. (rtl-buddy-cdc#263) |
 | `--project-root DIR` | optional | Base directory for resolving **relative** path-bearing args (`--emit-domain-map`, `--emit-reset-domain-map`, and `--yosys-plugin` in `lint`). Precedence: this flag, else the directory of `--sdc`, else the current working directory. Set it to a stable root so those paths stay correct regardless of where the tool is launched — a driver running the tool from a nested artefact dir no longer has to hand-rebase every relative path. Absolute path args are unaffected. (rtl-buddy-cdc#245) |
 
 Standalone wrapper (`lint`):
+
+`lint` accepts every `analyze` reporting/analysis flag above
+(`--sdc`, `--waivers`, `--strict`, `--cdc-018-depth-threshold`,
+`--clock-trace-depth`, …) in addition to the elaboration inputs below.
 
 | Input | Required | Purpose |
 |---|---|---|
@@ -205,7 +210,7 @@ rtl-buddy-cdc is a flop-based analyzer — the BFS walker traces nets between `$
 `--format text|json|sarif` (default `text`), `--output PATH` to write to a file.
 
 - **Text** — human-readable summary suitable for terminals and CI logs. Inside each rule group, violations are bucketed by hierarchical instance path (`[top]` / `u_block_a / u_sync`); the bucketing collapses to a flat layout when every finding in the rule group lives at the top instance.
-- **JSON** — structured, includes summary counts, full crossing/violation lists, and source locations. Stable schema for downstream consumers (rtl-buddy itself, custom dashboards). Every violation also carries an `instance_path: list[str]`; a top-level `by_instance` summary aggregates kept violations by path.
+- **JSON** — structured, includes summary counts, full crossing/violation lists, and source locations. Stable schema for downstream consumers (rtl-buddy itself, custom dashboards). Every violation also carries an `instance_path: list[str]`; a top-level `by_instance` summary aggregates kept violations by path. `summary.domain_unknown` (with a bounded `domain_unknown_flops` sample) reports flops whose clock root could not be traced, and an additive `inferred_clock_candidates` list flags undeclared internal nets that drive ≥4 flop `CLK` pins (a likely-forgotten `create_generated_clock`). Both are report-only diagnostics — they never change a domain, crossing, or violation. (rtl-buddy-cdc#263)
 - **SARIF 2.1.0** — GitHub-Code-Scanning-compatible. `tool.driver.rules` populated for every rule that fired in the run; results carry `physicalLocation.region` and, when the violation lives inside a child instance, a `logicalLocations` entry whose `fullyQualifiedName` is the dot-joined instance path. Suppressed (waived) findings are emitted with a SARIF `suppressions` field so the alert exists but doesn't fail the build.
 
 To inspect SARIF locally without uploading, the easiest paths are the [SARIF Viewer VS Code extension](https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer) or the browser-based [Microsoft SARIF web viewer](https://microsoft.github.io/sarif-web-component/).
