@@ -732,6 +732,92 @@ def _bit_reader_count(module: Module) -> dict[Bit, int]:
     return counts
 
 
+def _packed_shift_register_depth(
+    head: Flop,
+    reader_counts: dict[Bit, int],
+) -> int | None:
+    """Effective synchroniser depth when ``head`` is a *packed* shift
+    register — a single multi-bit flop coded as ``q <= {q[N-2:0], d}``.
+
+    A textbook N-FF synchroniser can be written either as N separate
+    1-bit flops (``s0 <= d; s1 <= s0; …``) or as one ``reg [N-1:0]``
+    that shifts (``s <= {s[N-2:0], d}``). After ``proc; flatten`` the
+    second form lowers to a single multi-bit ``$dff`` whose stage-to-
+    stage movement is *intra-cell* (``D[i] = Q[i-1]``). The plain
+    flop→flop walk in :func:`_sync_chain_depth` sees no inter-cell
+    D→Q hops, stops at the head, and returns depth 1 — a false CDC-001
+    on every such instance (issue #264).
+
+    This recognises the idiom structurally: a flop whose ``D`` vector
+    is, lane for lane, either one of the flop's *own* ``Q`` bits (an
+    internal shift tap, ``D[i] == Q[j]``) or — for exactly one lane —
+    an external bit (the freshly sampled crossing signal). Following
+    the per-lane shift from that single external input lane to the
+    terminal tap yields the effective depth.
+
+    Returns ``None`` when ``head`` is not this shape, so the caller
+    falls back to its depth-1 verdict. Non-matches include a genuine
+    multi-bit **bus** crossing (≥ 2 external lanes, no self-feedback),
+    a gray-coded counter (``D`` bits are comb-cell outputs, not raw
+    ``Q`` bits), and an enabled register whose ``D`` is a mux output.
+
+    The walk mirrors :func:`_sync_chain_depth`'s "exactly one reader"
+    rule: an intermediate lane whose ``Q`` is read by anything other
+    than the single follow-on shift lane ends the chain (the
+    synchronised value is already in use).
+    """
+    n = len(head.q)
+    if n < 2 or len(head.d) != n:
+        return None
+    if not all(isinstance(b, int) for b in head.q):
+        return None
+    if not all(isinstance(b, int) for b in head.d):
+        return None
+    # Lane index of each of the flop's own Q bits. Distinct bits only;
+    # a repeated Q bit isn't a well-formed register and breaks the
+    # per-lane shift assumption.
+    q_index: dict[Bit, int] = {}
+    for i, qb in enumerate(head.q):
+        if qb in q_index:
+            return None
+        q_index[qb] = i
+    # Per-lane successor: lane ``j`` shifts its old value into lane
+    # ``i`` iff ``D[i] == Q[j]``. Lanes whose ``D`` is not one of the
+    # flop's own ``Q`` bits are external inputs.
+    succ: dict[int, int] = {}
+    external_lanes: list[int] = []
+    for i, db in enumerate(head.d):
+        j = q_index.get(db)
+        if j is None:
+            external_lanes.append(i)
+            continue
+        # Q[j] driving two different D lanes is a fanout, not a clean
+        # linear shift register — bail rather than guess a depth.
+        if j in succ:
+            return None
+        succ[j] = i
+    # A packed shift-register synchroniser has exactly one freshly
+    # sampled lane (the crossing bit). Zero means pure feedback; more
+    # than one means an unrelated multi-input register (e.g. a bus).
+    if len(external_lanes) != 1:
+        return None
+    depth = 1
+    cur = external_lanes[0]
+    visited = {cur}
+    while True:
+        # Intra-cell hop only extends the chain if this lane's output
+        # feeds exactly the next shift lane and nothing else.
+        if reader_counts.get(head.q[cur], 0) != 1:
+            break
+        nxt = succ.get(cur)
+        if nxt is None or nxt in visited:
+            break
+        depth += 1
+        visited.add(nxt)
+        cur = nxt
+    return depth if depth >= 2 else None
+
+
 def _sync_chain_depth(
     module: Module,
     head: Flop,
@@ -776,6 +862,14 @@ def _sync_chain_depth(
         # 1-bit chains only at this stage — multi-bit syncs are bus
         # crossings, handled by a separate rule.
         if len(current.q) != 1 or len(current.q) != len(current.d):
+            # …unless the multi-bit head is a *packed* shift-register
+            # synchroniser (``q <= {q[N-2:0], d}``), where the whole
+            # chain lives intra-cell. Recognise that idiom and return
+            # its effective depth instead of the false depth-1 (#264).
+            if current is head:
+                packed = _packed_shift_register_depth(current, reader_counts)
+                if packed is not None:
+                    return packed
             break
         next_q = current.q[0]
         if not isinstance(next_q, int):
