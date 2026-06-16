@@ -7,13 +7,13 @@ core) pin the fixes:
 - ``multi_clock_blackbox`` (FIX 1) — a dual-clock IP whose clock pins
   are NOT in the name allow-list (``wr_clk`` / ``rd_clk``) with a real
   internal wr_clk -> rd_clk crossing. FLAT: the crossing fires.
-  BLACKBOXED: the block is DECLINED (>=2 distinct clock roots), a
-  partial_warning names it, and the run does NOT silently pass it as
-  clean (the headline test).
+  BLACKBOXED: the block is DECLINED (>=2 distinct clock roots), emitted
+  as a waivable ``CDC-BBX`` error (exit 1), and the run does NOT silently
+  pass it as clean (the headline test).
 - ``reconvergence_two_inputs`` (FIX 3) — a single-clock(clk_d) block
   with TWO foreign-domain (clk_x) inputs that reconverge internally.
   FLAT: CDC-005 fires. BLACKBOXED: reconvergence-unsafe — the block is
-  refused (opaque) and the reconvergence diagnostic is emitted.
+  refused (opaque) and emitted as a waivable ``CDC-BBX`` error.
 - ``safe_single_input`` (FIX 3 over-fire guard) — a single-clock(clk_d)
   block with ONE foreign-domain input. FLAT: reports the crossing.
   BLACKBOXED: abstracted cleanly, SAME crossing reported (parity), and
@@ -107,15 +107,20 @@ def test_multi_clock_blackbox_is_declined() -> None:
     assert ic.roots == frozenset({"wr_clk", "rd_clk"})
 
 
-def test_multi_clock_blackbox_warns_and_does_not_silently_pass() -> None:
-    """BLACKBOXED end-to-end: a partial_warning NAMES the opaque block and
-    the run does not present it as analysed-clean. The block is declined,
-    so its internal crossing is no longer SILENTLY abstracted away — the
-    drop is documented via the warning surface (FIX 1 + FIX 2)."""
+def test_multi_clock_blackbox_errors_and_does_not_silently_pass() -> None:
+    """BLACKBOXED end-to-end: the opaque block is a CDC-BBX *error* (waivable)
+    naming the boundary, so its internal crossing is no longer SILENTLY
+    abstracted away — the run fails by default (exit 1) rather than passing
+    with only a warning (FIX 1 + FIX 2)."""
     flat, bb, sdc = _paths("multi_clock_blackbox")
-    report, stderr = _analyze(bb, sdc)
-    assert "blackbox `afifo` left opaque" in stderr
-    assert "internal crossings not analysed" in stderr
+    report, _ = _analyze(bb, sdc)
+    bbx = [v for v in report["violations"] if v["rule_id"] == "CDC-BBX"]
+    assert len(bbx) == 1
+    assert "afifo" in bbx[0]["message"]
+    assert "left opaque" in bbx[0]["message"]
+    # Fails the run by default.
+    run = runner.invoke(app, ["analyze", "-n", str(bb), "-s", str(sdc)])
+    assert run.exit_code == 1
 
 
 # --------------------------------------------------------------------------
@@ -151,14 +156,45 @@ def test_reconvergence_blackbox_is_skipped_and_warned() -> None:
     )
     assert reconvergence_unsafe_instances(crossings) == {"u_recon"}
 
-    # End-to-end: the diagnostic is surfaced and no boundary-sourced /
-    # boundary-sink crossing leaks for the skipped instance.
-    report, stderr = _analyze(bb, sdc)
-    assert "blackbox `u_recon` (`recon`)" in stderr
-    assert "reconvergence among them cannot be checked" in stderr
+    # End-to-end: the skipped instance is a CDC-BBX error (waivable), no
+    # boundary crossing leaks for it, and the run fails by default.
+    report, _ = _analyze(bb, sdc)
+    bbx = [v for v in report["violations"] if v["rule_id"] == "CDC-BBX"]
+    assert len(bbx) == 1
+    assert "u_recon" in bbx[0]["message"]
+    assert "reconvergence among them cannot be checked" in bbx[0]["message"]
     for c in report["crossings"]:
         assert c.get("dst_boundary") is None
         assert c.get("src_boundary") is None
+    run = runner.invoke(app, ["analyze", "-n", str(bb), "-s", str(sdc)])
+    assert run.exit_code == 1
+
+
+def test_blackbox_opacity_error_is_waivable(tmp_path) -> None:
+    """Intentional opacity (a separately signed-off IP) is acknowledged by
+    waiving CDC-BBX: the finding moves to ``suppressed`` and the run exits 0,
+    so fail-by-default does not block a deliberate boundary."""
+    flat, bb, sdc = _paths("multi_clock_blackbox")
+    waiver = tmp_path / "bbx.swl"
+    waiver.write_text("waive CDC-BBX .*  intentionally signed-off IP\n")
+    run = runner.invoke(
+        app,
+        [
+            "analyze",
+            "-n",
+            str(bb),
+            "-s",
+            str(sdc),
+            "--waivers",
+            str(waiver),
+            "-f",
+            "json",
+        ],
+    )
+    rep = json.loads(run.output)
+    assert rep["summary"]["violations"] == 0
+    assert rep["summary"]["suppressed"] == 1
+    assert run.exit_code == 0
 
 
 # --------------------------------------------------------------------------

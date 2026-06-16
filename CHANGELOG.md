@@ -26,21 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     clkA→clkB crossing. The traced clock-pin set also excludes clock pins
     from input-sink seeding regardless of their name. New
     `multi_clock_blackbox` fixture pair.
-  - **Declined / opaque blackboxes are now visible.** A blackbox the
+  - **Declined / opaque blackboxes are a waivable error.** A blackbox the
     summariser leaves opaque (multi-clock / unresolved, or
-    reconvergence-unsafe per below) is surfaced through
-    `spec.partial_warnings` (the existing `warning: …` surface):
-    `blackbox \`<module>\` left opaque — internal crossings not
-    analysed; …`. The silent drop becomes a documented one.
+    reconvergence-unsafe per below) is an unanalysed boundary — a coverage
+    gap. Each such instance is emitted as a per-instance **`error`** with
+    `rule_id = "CDC-BBX"` (`blackbox \`<inst>\` left opaque — …`), so the
+    run **fails by default** (exit 1) rather than passing with only a
+    warning. Intentional opacity (a separately signed-off IP) is
+    acknowledged by waiving it: `waive CDC-BBX <instance-regex>`. The
+    silent drop becomes a fail-by-default, explicitly-acknowledged one.
   - **Reconvergence-unsafe single-clock blocks are refused.** A
     single-clock block that *is* abstracted but has ≥2 distinct
     foreign-domain crossings entering **distinct** input ports can hide
     an internal reconvergence (CDC-005) the flat design would flag. The
     new pure `hierarchy.reconvergence_unsafe_instances` detects this
     after `find_crossings`; such instances are removed from the boundary
-    map, `find_crossings` is re-run so they become opaque, and a
-    diagnostic names them (`… has crossings into N input ports;
-    reconvergence among them cannot be checked at the boundary — …`). A
+    map, `find_crossings` is re-run so they become opaque, and each is
+    emitted as the same waivable `CDC-BBX` error (`… has crossings into N
+    input ports; reconvergence among them cannot be checked …`). A
     single multi-bit bus on one port stays safe. New
     `reconvergence_two_inputs` (unsafe) and `safe_single_input` (parity
     guard) fixture pairs.

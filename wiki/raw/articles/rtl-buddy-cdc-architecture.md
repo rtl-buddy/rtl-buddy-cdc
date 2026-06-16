@@ -548,13 +548,19 @@ direction for a CDC checker.
   its summary cache on the **frozenset of clock roots**, so a dual-clock
   instance keys distinctly while identical instances still hit the cache.
 
-- **Declined-opaque `partial_warning` (FIX 2).** A declined instance is
-  absent from the boundary map; its zero-cell internals are unanalysed.
-  `CompositionStats.declined_modules` (and the reconvergence-declined set
-  below) are surfaced through `spec.partial_warnings` — the existing
-  `warning: …` surface — as `blackbox \`<module>\` left opaque — internal
-  crossings not analysed; flatten it or constrain its clocks to abstract.`
-  The silent drop becomes a documented one.
+- **Declined-opaque `CDC-BBX` error (FIX 2).** A declined instance is
+  absent from the boundary map; its zero-cell internals are unanalysed —
+  a coverage gap. Each declined instance (from
+  `CompositionStats.declined_modules`, plus the reconvergence-declined set
+  below) is emitted as a per-instance **`error`-severity `Violation`** with
+  `rule_id = "CDC-BBX"` and `cell_name = <instance>`, folded into the
+  `violations` list before waiver/baseline/exit-code processing. So it is
+  rendered in every format, **fails the run by default** (exit 1), and is
+  **waivable** — intentional opacity (a separately signed-off IP) is
+  acknowledged with `waive CDC-BBX <instance-regex>`, moving it to the
+  suppressed tally. The silent drop becomes a fail-by-default, explicitly
+  acknowledged one. (`CDC-BBX` is emitted by the CLI orchestration, not the
+  rule pack — it is an analysis-coverage finding, not a structural rule.)
 
 - **Reconvergence-unsafe skip (`hierarchy.reconvergence_unsafe_instances`,
   FIX 3).** A single-clock block that *is* abstracted but has ≥2 distinct
@@ -565,9 +571,10 @@ direction for a CDC checker.
   crossings (`dst_boundary`) are grouped by instance; an instance with ≥2
   distinct incoming ports is reconvergence-unsafe. Such instances are
   removed from the boundary map and `find_crossings` is **re-run** so the
-  block becomes opaque (no boundary crossings emitted for it), with a
-  FIX-2-style diagnostic naming it (`… has crossings into N input ports;
-  reconvergence among them cannot be checked at the boundary — …`). A
+  block becomes opaque (no boundary crossings emitted for it), and the
+  instance is emitted as the same per-instance `CDC-BBX` error (`… has
+  crossings into N input ports; reconvergence among them cannot be checked
+  at the boundary — …`), waivable like any other. A
   single multi-bit bus on **one** port counts as one port (safe — the
   multi-bit rules cover it).
 

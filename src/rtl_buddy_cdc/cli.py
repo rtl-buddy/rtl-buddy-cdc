@@ -56,6 +56,16 @@ from rtl_buddy_cdc.waivers import SuppressedViolation
 
 app = typer.Typer(help="CDC linting tool for RTL designs.")
 
+# Rule id for the blackbox-boundary coverage finding. Emitted by the CLI
+# orchestration (not the rule pack): a blackboxed subtree the analyzer
+# cannot soundly abstract — multi-clock / unresolved (left opaque) or
+# reconvergence-unsafe (≥2 incoming crossings) — is an unanalysed boundary,
+# i.e. a coverage gap. It fires at ``error`` severity so it fails the run by
+# default; intentional opacity (a separately signed-off IP) is acknowledged
+# by waiving it (``waive CDC-BBX <instance-regex>``). Per instance, so the
+# cell-name regex addresses one boundary at a time.
+BBOX_RULE_ID = "CDC-BBX"
+
 
 class OutputFormat(str, Enum):
     text = "text"
@@ -698,7 +708,11 @@ def _analyze_module_and_report(
         # block — drop it from ``boundaries`` (so it becomes opaque, no
         # boundary crossings emitted for it) and RE-RUN find_crossings.
         unsafe = reconvergence_unsafe_instances(crossings)
-        reconv_declined: list[str] = []
+        # Coverage findings for blackboxes the analyzer cannot soundly
+        # abstract — emitted as ``error`` Violations (waivable) so an
+        # unanalysed boundary fails the run rather than passing with only a
+        # warning. Folded into ``violations`` after the rule pass below.
+        bb_violations: list[Violation] = []
         if unsafe:
             reconv_ports = {
                 inst: sorted(
@@ -710,15 +724,22 @@ def _analyze_module_and_report(
                 )
                 for inst in unsafe
             }
-            reduced = {k: v for k, v in boundaries.items() if k not in unsafe}
             for inst in sorted(unsafe):
-                reconv_declined.append(
-                    f"blackbox `{inst}` (`{module.cells[inst].type}`) has crossings "
-                    f"into {len(reconv_ports[inst])} input ports; reconvergence "
-                    f"among them cannot be checked at the boundary — flatten it or "
-                    f"analyse standalone."
+                bb_violations.append(
+                    Violation(
+                        rule_id=BBOX_RULE_ID,
+                        severity="error",
+                        message=(
+                            f"blackbox `{inst}` (`{module.cells[inst].type}`) has "
+                            f"crossings into {len(reconv_ports[inst])} input ports; "
+                            f"reconvergence among them cannot be checked at the "
+                            f"boundary — flatten it or analyse standalone "
+                            f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                        ),
+                        cell_name=inst,
+                    )
                 )
-            boundaries = reduced
+            boundaries = {k: v for k, v in boundaries.items() if k not in unsafe}
             comp_stats = dataclasses.replace(
                 comp_stats,
                 boundary_modules=frozenset(module.cells[k].type for k in boundaries),
@@ -730,22 +751,26 @@ def _analyze_module_and_report(
                 clock_for_port=spec.clock_for_port,
                 boundaries=boundaries,
             )
-        # FIX 2: surface every declined/opaque blackbox (multi-clock /
-        # unresolved per FIX 1, plus the reconvergence-unsafe ones from
-        # FIX 3) as a visible diagnostic. A declined instance is absent
-        # from ``boundaries`` — its zero-cell internals are unanalysed —
-        # so without this the drop is silent. Convert it into a documented
-        # one through the existing warning surface.
-        bb_warnings: list[str] = [
-            f"blackbox `{mod}` left opaque — internal crossings not analysed; "
-            f"flatten it or constrain its clocks to abstract."
-            for mod in sorted(comp_stats.declined_modules)
-        ]
-        bb_warnings.extend(reconv_declined)
-        spec.partial_warnings.extend(bb_warnings)
-        if bb_warnings and fmt is OutputFormat.text and not no_findings:
-            for w in bb_warnings:
-                typer.echo(f"warning: {w}", err=True)
+        # FIX 2 (now an error): every declined/opaque blackbox (multi-clock /
+        # unresolved per FIX 1) is a coverage gap — its zero-cell internals
+        # are unanalysed and it is absent from ``boundaries``. Emit one
+        # ``error`` per instance so it is waivable by cell name and carries a
+        # source location, instead of a silent drop.
+        for inst, cell in module.cells.items():
+            if cell.type in comp_stats.declined_modules:
+                bb_violations.append(
+                    Violation(
+                        rule_id=BBOX_RULE_ID,
+                        severity="error",
+                        message=(
+                            f"blackbox `{inst}` (`{cell.type}`) left opaque — not "
+                            f"provably single-clock; internal crossings not analysed. "
+                            f"Flatten it or analyse standalone "
+                            f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                        ),
+                        cell_name=inst,
+                    )
+                )
         # FIX 4: per-instance clock-pin map for CDC-008's clock-as-data
         # exemption — exempt only a blackbox instance's CLOCK pins, not
         # the whole cell, so a clock wired into a genuine DATA input of a
@@ -773,6 +798,11 @@ def _analyze_module_and_report(
                 blackbox_modules=frozenset(blackboxes or {}),
                 boundary_clock_pins=boundary_clock_pins,
             )
+            # Blackbox-boundary coverage findings lead the list so an
+            # unanalysed boundary is the first thing reported; they are
+            # ordinary ``error`` Violations from here on (waivable,
+            # exit-code-driving).
+            violations = bb_violations + violations
     else:
         domains = assign_domains(module)
         crossings = find_crossings(module)
