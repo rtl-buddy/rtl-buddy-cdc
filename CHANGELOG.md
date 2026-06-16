@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-16
+
+### Changed
+
+- **Coverage ratchet raised 93 → 96.** `tests/test_cov_rules_{c,d}.py`
+  cover the rule pack's remaining defensive guards and edge branches —
+  lazy-context (`ctx=None`) paths, the no-SDC async fallback, and the
+  structural-helper early returns (empty/constant bits, missing CLK,
+  no-fanin/feedback, polarity-suffix decoding, reset-tree truncation) —
+  lifting `rules.py` from 90% to 96.57% and the project TOTAL from
+  95.30% to 97.34%. The `--cov-fail-under` gate in the `pytest (with
+  slang)` job moves to 96, restoring ~1pt of headroom under the
+  measured TOTAL.
+
 ### Fixed
 
 - **CDC-001 / CDC-002 false positive on packed shift-register
@@ -1134,7 +1148,8 @@ shlex-based SDC subset (`create_clock`, `create_generated_clock`,
 through CDC-008 rule pack, Spyglass-`.swl`-style waiver matcher,
 and text / JSON / SARIF reporters.
 
-[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/releases/tag/v0.1.0
