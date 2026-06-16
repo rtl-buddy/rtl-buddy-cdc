@@ -11,3 +11,6 @@ htmlcov/
 coverage.xml
 *.swp
 .DS_Store
+
+# workflow scratch (issue #263 run) — never committed
+.wf263/

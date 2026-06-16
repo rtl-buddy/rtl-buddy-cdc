@@ -384,6 +384,26 @@ formatter. It contains everything any output mode might need:
 formatter does additional analysis — this struct is the boundary
 between "analyzer" and "presentation".
 
+#### Under-resolution visibility (issue #263)
+
+A flop whose clock root the tracer cannot resolve carries
+`FlopDomain.clock is None` and is **excluded from crossing detection** —
+a crossing into or out of it cannot be classified. On large netlists a
+non-trivial fraction of flops can land here, silently shrinking
+coverage. The reporter surfaces this as a report-only diagnostic
+(it never changes a classification):
+
+- JSON `summary.domain_unknown` (int) — count of `None`-clock flops.
+  This key is pinned in `JSON_CONTRACT` so downstream `rtl_buddy` can
+  treat a non-zero value as coverage degradation rather than a clean run.
+- JSON `domain_unknown_flops` (list) — a bounded sample (first
+  `_DOMAIN_UNKNOWN_SAMPLE_CAP`, currently 20) of the unresolved flops'
+  cell names, in `domains` order, to point at the under-resolved
+  subtrees. The full count is always `summary.domain_unknown`.
+- Text report — when the count is non-zero, a prominent `⚠ N of M flops
+  have unresolved clock domain — excluded from CDC analysis` line, so an
+  under-resolved run no longer reads as a complete one.
+
 ### 4.8 Blackbox boundaries and the compositional data model
 
 The CDC-scaling work (epic #253) makes a large subtree analysable at

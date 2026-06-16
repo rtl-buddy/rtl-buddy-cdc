@@ -41,7 +41,22 @@ JSON_CONTRACT: dict[str, type] = {
     "summary.violations": int,
     "summary.suppressed": int,
     "summary.crossings": int,
+    # Count of flops whose clock root could not be traced
+    # (``FlopDomain.clock is None``). Such flops are excluded from CDC
+    # analysis — a crossing into/out of them cannot be classified — so
+    # a non-zero count means the run under-resolved the design. Pinned
+    # here so downstream ``rtl_buddy`` can surface coverage degradation
+    # rather than silently treating an under-resolved run as complete.
+    # Issue #263.
+    "summary.domain_unknown": int,
 }
+
+# Cap on how many unresolved-flop cell names land in
+# ``domain_unknown_flops``. The list is a debugging aid (which subtrees
+# under-resolved), not an exhaustive inventory; ``summary.domain_unknown``
+# carries the full count. Kept bounded so a pathologically
+# under-resolved netlist can't bloat the JSON report.
+_DOMAIN_UNKNOWN_SAMPLE_CAP = 20
 
 # Short-form descriptions per rule. Keep this terse — the long-form
 # message is already attached to each result.
@@ -216,6 +231,18 @@ def _render_design_summary(
         )
     out.write(f"  {cross_summary}\n")
 
+    # Coverage warning (issue #263): flops whose clock root we could not
+    # trace are silently excluded from crossing detection. Surfacing the
+    # count keeps an under-resolved run from reading like a clean,
+    # complete analysis. Report-only — classification is unchanged.
+    n_unknown = sum(1 for fd in result.domains if fd.clock is None)
+    if n_unknown:
+        out.write(
+            f"  {s.yellow}{s.bold}⚠ {n_unknown} of {len(result.domains)} "
+            f"flops have unresolved clock domain — excluded from CDC "
+            f"analysis{s.reset}\n"
+        )
+
     if verbose and result.crossings:
         out.write(f"\n{s.dim}  Crossings:{s.reset}\n")
         for c in result.crossings:
@@ -355,7 +382,18 @@ def _severity_counts(violations: list[Violation]) -> dict[str, int]:
 # --- json -------------------------------------------------------------------
 
 
+def _domain_unknown_flops(result: AnalysisResult) -> list[str]:
+    """Cell names of flops whose clock root could not be traced.
+
+    Order follows ``result.domains`` (deterministic across runs). The
+    full count is ``len(...)``; callers cap the *sample* they emit but
+    never the count.
+    """
+    return [fd.flop.cell.name for fd in result.domains if fd.clock is None]
+
+
 def render_json(result: AnalysisResult, out: IO[str]) -> None:
+    unknown_flops = _domain_unknown_flops(result)
     payload = {
         "tool": {"name": TOOL_NAME, "version": TOOL_VERSION},
         "module": result.module.name,
@@ -368,7 +406,17 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             "violations": len(result.violations),
             "suppressed": len(result.suppressed),
             "baseline_carryover": len(result.baseline_carryover),
+            # Coverage diagnostic (issue #263): how many flops the clock-
+            # root tracer left unresolved. These are EXCLUDED from CDC
+            # analysis, so a non-zero value means the report does not
+            # cover the whole design. Report-only — never changes a
+            # classification.
+            "domain_unknown": len(unknown_flops),
         },
+        # Bounded sample of unresolved-flop cell names to aid debugging
+        # (which subtrees under-resolved). Full count lives in
+        # ``summary.domain_unknown``; this list is capped.
+        "domain_unknown_flops": unknown_flops[:_DOMAIN_UNKNOWN_SAMPLE_CAP],
         "by_instance": _by_instance(result.violations),
         "domains": [
             {"flop": fd.flop.cell.name, "clock": fd.clock} for fd in result.domains

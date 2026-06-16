@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Under-resolution visibility** (#263). A flop whose clock root the
+  tracer cannot resolve is excluded from crossing detection; on large
+  netlists this silently shrank coverage with no diagnostic. The
+  reporter now surfaces it (report-only — no classification changes):
+  JSON gains `summary.domain_unknown` (int, pinned in `JSON_CONTRACT`)
+  and a bounded `domain_unknown_flops` sample list; the text report
+  emits a prominent `⚠ N of M flops have unresolved clock domain —
+  excluded from CDC analysis` line.
+
 ## [0.3.0] — 2026-06-16
 
 ### Fixed
