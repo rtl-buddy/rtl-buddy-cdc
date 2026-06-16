@@ -664,6 +664,34 @@ terminate cleanly. The depth budget is intentionally low — clock
 networks rarely exceed a handful of hops, and a deep walk is more
 likely to be following data than clock.
 
+The budget is configurable. `assign_domains(module, ...,
+max_depth=N)` and `find_crossings(module, ..., max_depth=N)` forward
+`N` to `trace_clock_root`; the CLI surfaces it as
+`--clock-trace-depth` on both `analyze` and `lint` (default 16). A
+deep clock tree — a long divider / buffer / ICG chain — can exceed
+16 hops and leave its downstream flops domain-unknown (counted in
+`summary.domain_unknown`, §8.x); raising the budget resolves them
+without a code change. The change is monotone: a larger budget can
+only resolve **more** flops, never fewer, so the default leaves every
+result identical to a fixed-16 walk. The crossing walk's own
+`max_hops` data-fanout budget (§7) is a separate concern and is not
+affected. See issue #263.
+
+`--clock-trace-depth` threads to **every** clock-root trace on a run,
+not only the crossing walk. The boundary-abstraction decision
+(`compose_boundaries` → `summarise_subtree` → `_instance_clocks`,
+§4.8) and the clock-network surface (`find_clock_network_crossings`,
+§8) and the rule-context per-flop domain view (`run_all` →
+`_build_context`) all take the same `max_depth`. This is a
+**soundness** requirement, not a convenience: if the abstraction
+decision ran at a fixed 16 while the crossing walk ran at a raised
+depth, a dual-clock blackbox whose second clock pin is fed through a
+>16-hop clock chain would present only its shallow root, look
+single-clock, and be abstracted away — silently dropping its internal
+async crossing (the false-negative §4.9 forbids). Because both sides
+share the budget, the abstraction can never collapse a boundary the
+crossing walk would keep multi-clock.
+
 ### 5.1 Internal-pin generated clocks
 
 `trace_clock_root` accepts an optional `bit_to_clock` short-circuit

@@ -99,6 +99,18 @@ _SYNC_DEPTH_OPT = typer.Option(
     help="Required synchronizer depth for CDC-002. Default 2 (rule "
     "silent unless raised). Set to 3+ for high-speed / low-MTBF designs.",
 )
+_CLOCK_TRACE_DEPTH_OPT = typer.Option(
+    16,
+    "--clock-trace-depth",
+    min=1,
+    help="Maximum hop budget when tracing a flop's CLK net back to its "
+    "top-level clock port (buffers, clock gates, muxes, divider flops "
+    "each cost a hop). Default 16. Deep clock trees (long divider / "
+    "buffer / ICG chains) can exceed it and leave flops domain-unknown "
+    "(see the `domain_unknown` count); raise it (e.g. 40) to resolve "
+    "them. Raising only ever resolves MORE flops — it never drops a "
+    "crossing — so the default leaves results identical. See issue #263.",
+)
 _VERBOSE_OPT = typer.Option(
     False,
     "--verbose",
@@ -272,6 +284,7 @@ def analyze(
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
     sync_depth: int = _SYNC_DEPTH_OPT,
+    clock_trace_depth: int = _CLOCK_TRACE_DEPTH_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
     strict: bool = _STRICT_OPT,
@@ -305,6 +318,7 @@ def analyze(
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
+        clock_trace_depth=clock_trace_depth,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -384,6 +398,7 @@ def lint(
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
     sync_depth: int = _SYNC_DEPTH_OPT,
+    clock_trace_depth: int = _CLOCK_TRACE_DEPTH_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
     strict: bool = _STRICT_OPT,
@@ -480,6 +495,7 @@ def lint(
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
+        clock_trace_depth=clock_trace_depth,
         blackboxes=blackboxes or None,
     )
     if code != 0:
@@ -589,6 +605,7 @@ def _analyze_and_report(
     no_findings: bool = False,
     cdc_010_no_heuristic: bool = False,
     cdc_018_depth_threshold: int = 4,
+    clock_trace_depth: int = 16,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module, blackboxes = netlist.load_with_blackboxes(netlist_path)
@@ -609,6 +626,7 @@ def _analyze_and_report(
         no_findings=no_findings,
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
+        clock_trace_depth=clock_trace_depth,
         blackboxes=blackboxes,
     )
 
@@ -631,6 +649,7 @@ def _analyze_module_and_report(
     no_findings: bool = False,
     cdc_010_no_heuristic: bool = False,
     cdc_018_depth_threshold: int = 4,
+    clock_trace_depth: int = 16,
     blackboxes: dict[str, netlist.Module] | None = None,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
@@ -680,6 +699,7 @@ def _analyze_module_and_report(
             module,
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
+            max_depth=clock_trace_depth,
         )
         # Auto-abstract single-clock subtrees (#256/#257): summarise each
         # blackbox sibling whose whole clock set sits in one async-safe
@@ -691,13 +711,16 @@ def _analyze_module_and_report(
         # flops. Non-single-clock siblings get no summary and are simply
         # not re-seeded. The same sequence runs for the lint path, which
         # passes the blackbox siblings the frontend produced.
-        boundaries, comp_stats = compose_boundaries(module, blackboxes, spec)
+        boundaries, comp_stats = compose_boundaries(
+            module, blackboxes, spec, max_depth=clock_trace_depth
+        )
         crossings = find_crossings(
             module,
             port_clock=spec.port_clock,
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
             boundaries=boundaries,
+            max_depth=clock_trace_depth,
         )
         # FIX 3 (reconvergence gate): a single-clock block that IS
         # abstracted but has >=2 distinct foreign-domain crossings entering
@@ -750,6 +773,7 @@ def _analyze_module_and_report(
                 pin_clocks=spec.pin_clocks,
                 clock_for_port=spec.clock_for_port,
                 boundaries=boundaries,
+                max_depth=clock_trace_depth,
             )
         # FIX 2 (now an error): every declined/opaque blackbox (multi-clock /
         # unresolved per FIX 1) is a coverage gap — its zero-cell internals
@@ -782,7 +806,12 @@ def _analyze_module_and_report(
                 if sub is None:
                     continue
                 boundary_clock_pins[inst_name] = instance_clock_pins(
-                    module, cell, sub, spec=spec, pin_clocks=spec.pin_clocks
+                    module,
+                    cell,
+                    sub,
+                    spec=spec,
+                    pin_clocks=spec.pin_clocks,
+                    max_depth=clock_trace_depth,
                 )
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:
@@ -797,6 +826,7 @@ def _analyze_module_and_report(
                 boundary_modules=comp_stats.boundary_modules,
                 blackbox_modules=frozenset(blackboxes or {}),
                 boundary_clock_pins=boundary_clock_pins,
+                max_depth=clock_trace_depth,
             )
             # Blackbox-boundary coverage findings lead the list so an
             # unanalysed boundary is the first thing reported; they are
@@ -804,8 +834,8 @@ def _analyze_module_and_report(
             # exit-code-driving).
             violations = bb_violations + violations
     else:
-        domains = assign_domains(module)
-        crossings = find_crossings(module)
+        domains = assign_domains(module, max_depth=clock_trace_depth)
+        crossings = find_crossings(module, max_depth=clock_trace_depth)
 
     suppressed: list[SuppressedViolation] = []
     if waivers_path is not None:
@@ -881,6 +911,7 @@ def _analyze_module_and_report(
             spec,
             clock_for_port=spec.clock_for_port if spec is not None else None,
             use_heuristic=not cdc_010_no_heuristic,
+            max_depth=clock_trace_depth,
         )
         payload = build_domain_map(
             module,
@@ -996,6 +1027,8 @@ def _summarise_blackboxes(
     module: netlist.Module,
     blackboxes: dict[str, netlist.Module] | None,
     spec: "sdc_mod.ClockSpec",
+    *,
+    max_depth: int = 16,
 ) -> dict[str, netlist.BoundarySummary]:
     """Auto-abstract single-clock blackbox subtrees to port boundaries.
 
@@ -1014,7 +1047,9 @@ def _summarise_blackboxes(
     accounting or the CDC-008 boundary-module set call
     ``compose_boundaries`` directly).
     """
-    boundaries, _stats = compose_boundaries(module, blackboxes, spec)
+    boundaries, _stats = compose_boundaries(
+        module, blackboxes, spec, max_depth=max_depth
+    )
     return boundaries
 
 

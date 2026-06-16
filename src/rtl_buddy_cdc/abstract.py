@@ -155,6 +155,7 @@ def _instance_clocks(
     *,
     spec: ClockSpec | None = None,
     pin_clocks: dict[str, str] | None = None,
+    max_depth: int = 16,
 ) -> _InstanceClocks:
     """Determine the clock SET (and clock-pin port names) of a subtree.
 
@@ -176,6 +177,15 @@ def _instance_clocks(
     list). Without it we fall back to every connected pin that isn't a
     known output pin — used by the diagnostic helper. Output ports of a
     blackbox are never clock pins.
+
+    ``max_depth`` is the clock-trace hop budget forwarded to
+    :func:`trace_clock_root` (default 16, surfaced as
+    ``--clock-trace-depth``). It MUST match the budget the crossing walk
+    uses on the same run: the abstraction decision and the crossing walk
+    have to resolve the same set of clock roots, or a deep clock pin the
+    walk would resolve could be dropped here and collapse a genuinely
+    multi-clock boundary to a (false) single-clock summary — the
+    silent-drop hazard the brief forbids. See issue #263.
     """
     drivers = _bit_drivers(parent)
     from rtl_buddy_cdc.domain import _build_bit_to_clock
@@ -200,7 +210,13 @@ def _instance_clocks(
             # walker (divider rule included — a forwarded / divided clock
             # on an explicit clock pin is legitimate). It is a clock pin
             # regardless of whether the trace resolves.
-            root = trace_clock_root(parent, bits[0], drivers, bit_to_clock=bit_to_clock)
+            root = trace_clock_root(
+                parent,
+                bits[0],
+                drivers,
+                max_depth=max_depth,
+                bit_to_clock=bit_to_clock,
+            )
             clock_pins.add(pin)
             if root is not None:
                 roots.add(root)
@@ -219,6 +235,7 @@ def _instance_clocks(
                 parent,
                 bits[0],
                 drivers,
+                max_depth=max_depth,
                 bit_to_clock=bit_to_clock,
                 allow_divider=False,
             )
@@ -234,6 +251,7 @@ def _instance_clock(
     *,
     spec: ClockSpec | None = None,
     pin_clocks: dict[str, str] | None = None,
+    max_depth: int = 16,
 ) -> str | None:
     """Resolve the *single* clock root feeding a blackbox instance.
 
@@ -243,7 +261,9 @@ def _instance_clock(
     pin, or — deliberately — a multi-clock instance, which the
     summariser declines via :func:`_instance_clocks`).
     """
-    ic = _instance_clocks(parent, instance, spec=spec, pin_clocks=pin_clocks)
+    ic = _instance_clocks(
+        parent, instance, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+    )
     if len(ic.roots) == 1:
         return next(iter(ic.roots))
     return None
@@ -256,6 +276,7 @@ def summarise_subtree(
     spec: ClockSpec,
     *,
     pin_clocks: dict[str, str] | None = None,
+    max_depth: int = 16,
 ) -> BoundarySummary | None:
     """Summarise a blackboxed single-clock subtree to its port boundary.
 
@@ -277,8 +298,17 @@ def summarise_subtree(
     in a different domain is still flagged as a crossing the parent
     must check. ``src_clock=None`` (clock pin that didn't resolve) is a
     legitimate conservative unconstrained source.
+
+    ``max_depth`` is forwarded to :func:`_instance_clocks` (default 16,
+    surfaced as ``--clock-trace-depth``). It must match the budget the
+    crossing walk uses so the abstraction decision sees the same clock
+    roots — otherwise a deep clock pin the walk resolves could be missed
+    here and collapse a multi-clock boundary to a false single-clock
+    summary, silently dropping its internal crossing. See issue #263.
     """
-    ic = _instance_clocks(parent, instance, sub, spec=spec, pin_clocks=pin_clocks)
+    ic = _instance_clocks(
+        parent, instance, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+    )
     # The subtree's clock set: ALL distinct roots driving the instance's
     # clock pins (FIX 1). A dual-clock IP (e.g. ``wr_clk`` / ``rd_clk``)
     # therefore presents >=2 roots and is declined below — its internal
@@ -336,11 +366,12 @@ def summarise_subtree(
     )
 
 
-def boundary_instance_clocks(parent: Module) -> set[str]:
+def boundary_instance_clocks(parent: Module, *, max_depth: int = 16) -> set[str]:
     """Diagnostic: the clock-pin domains every blackbox instance carries.
 
     Not used in the main path; handy for callers / tests that want to
     see what domains the parent feeds into its boundary cells.
+    ``max_depth`` is the clock-trace hop budget (default 16).
     """
     drivers = _bit_drivers(parent)
     out: set[str] = set()
@@ -356,7 +387,7 @@ def boundary_instance_clocks(parent: Module) -> set[str]:
                     bits = b
                     break
         if bits:
-            root = trace_clock_root(parent, bits[0], drivers)
+            root = trace_clock_root(parent, bits[0], drivers, max_depth=max_depth)
             if root is not None:
                 out.add(root)
     return out
@@ -369,6 +400,7 @@ def instance_clock_pins(
     *,
     spec: ClockSpec | None = None,
     pin_clocks: dict[str, str] | None = None,
+    max_depth: int = 16,
 ) -> frozenset[str]:
     """The set of port names determined to be clock pins on ``instance``.
 
@@ -378,5 +410,5 @@ def instance_clock_pins(
     traced determination as the summariser, so the two never disagree.
     """
     return _instance_clocks(
-        parent, instance, sub, spec=spec, pin_clocks=pin_clocks
+        parent, instance, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
     ).clock_pins

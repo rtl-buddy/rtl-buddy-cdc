@@ -101,9 +101,14 @@ Primary mode (`analyze`):
 | `--no-findings` | optional | Skip rule evaluation entirely. Only meaningful with `--emit-domain-map` / `--emit-reset-domain-map`: the run exits 0 on successful elaboration + map emission, 2 on elaboration failure, and the normal report is suppressed. |
 | `--cdc-018-depth-threshold N` | optional | Minimum sync-chain depth at which CDC-018 (cascaded synchroniser) fires. Defaults to **4** — chains of depth 2 or 3 stay silent (the textbook 2FF sync, plus a 3-stage chain common in high-MTBF designs). Raise to 5 if 4-stage chains are intentional in your design. Must be ≥ 2. |
 | `--cdc-010-no-heuristic` | optional | Disable CDC-010's pin-name heuristic fallback for tech-mapped cells. By default an input pin named `E` / `EN` / `CE` / `GATE` / `SE` (case-insensitive) on a cell type outside the explicit map is treated as a control pin. Pass this flag when a library's pin naming conflicts (e.g. a vendor that uses `EN` for something other than enable) and you'd rather take the false negative than a false positive. The explicit map covering Yosys primitives and `simplemap` / `abc` gate-level cells is unaffected. |
+| `--clock-trace-depth N` | optional | Maximum hop budget when tracing a flop's `CLK` net back to its top-level clock port — buffers, clock gates, muxes and divider flops each cost a hop. Defaults to **16**. A deep clock tree (a long divider / buffer / ICG chain) can exceed it and leave its downstream flops domain-unknown (visible as `summary.domain_unknown`); raise it (e.g. 40) to resolve them without a code change. Monotone: a larger budget only ever resolves **more** flops, never fewer, so the default leaves results identical. Must be ≥ 1. (rtl-buddy-cdc#263) |
 | `--project-root DIR` | optional | Base directory for resolving **relative** path-bearing args (`--emit-domain-map`, `--emit-reset-domain-map`, and `--yosys-plugin` in `lint`). Precedence: this flag, else the directory of `--sdc`, else the current working directory. Set it to a stable root so those paths stay correct regardless of where the tool is launched — a driver running the tool from a nested artefact dir no longer has to hand-rebase every relative path. Absolute path args are unaffected. (rtl-buddy-cdc#245) |
 
 Standalone wrapper (`lint`):
+
+`lint` accepts every `analyze` reporting/analysis flag above
+(`--sdc`, `--waivers`, `--strict`, `--cdc-018-depth-threshold`,
+`--clock-trace-depth`, …) in addition to the elaboration inputs below.
 
 | Input | Required | Purpose |
 |---|---|---|

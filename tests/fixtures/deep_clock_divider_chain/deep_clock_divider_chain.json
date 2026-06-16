@@ -1,0 +1,1650 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "deep_clock_divider_chain": {
+      "attributes": {
+        "dynports": "00000000000000000000000000000001",
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:21.1-54.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:33$2": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:33.42-33.49"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 6 ],
+            "Y": [ 7 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$10": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 8 ],
+            "Y": [ 9 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$12": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 10 ],
+            "Y": [ 11 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$14": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 12 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$16": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 14 ],
+            "Y": [ 15 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$18": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 16 ],
+            "Y": [ 17 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$20": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 18 ],
+            "Y": [ 19 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$22": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 20 ],
+            "Y": [ 21 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$24": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 22 ],
+            "Y": [ 23 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$26": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 24 ],
+            "Y": [ 25 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$28": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 26 ],
+            "Y": [ 27 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$30": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 28 ],
+            "Y": [ 29 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$32": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 30 ],
+            "Y": [ 31 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$34": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 32 ],
+            "Y": [ 33 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$36": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 34 ],
+            "Y": [ 35 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$38": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 36 ],
+            "Y": [ 37 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$40": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 38 ],
+            "Y": [ 39 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$42": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 40 ],
+            "Y": [ 41 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$44": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 42 ],
+            "Y": [ 43 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$46": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 44 ],
+            "Y": [ 45 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$48": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 46 ],
+            "Y": [ 47 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$50": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 48 ],
+            "Y": [ 49 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$52": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 50 ],
+            "Y": [ 51 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$54": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 52 ],
+            "Y": [ 53 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$56": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 54 ],
+            "Y": [ 55 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$58": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 56 ],
+            "Y": [ 57 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$60": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 58 ],
+            "Y": [ 59 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$62": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 60 ],
+            "Y": [ 61 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$64": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 62 ],
+            "Y": [ 63 ]
+          }
+        },
+        "$not$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37$8": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.55-37.63"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 64 ],
+            "Y": [ 65 ]
+          }
+        },
+        "$procdff$65": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 60 ],
+            "D": [ 63 ],
+            "Q": [ 62 ]
+          }
+        },
+        "$procdff$66": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 58 ],
+            "D": [ 61 ],
+            "Q": [ 60 ]
+          }
+        },
+        "$procdff$67": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 56 ],
+            "D": [ 59 ],
+            "Q": [ 58 ]
+          }
+        },
+        "$procdff$68": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 54 ],
+            "D": [ 57 ],
+            "Q": [ 56 ]
+          }
+        },
+        "$procdff$69": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 52 ],
+            "D": [ 55 ],
+            "Q": [ 54 ]
+          }
+        },
+        "$procdff$70": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 50 ],
+            "D": [ 53 ],
+            "Q": [ 52 ]
+          }
+        },
+        "$procdff$71": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 48 ],
+            "D": [ 51 ],
+            "Q": [ 50 ]
+          }
+        },
+        "$procdff$72": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 46 ],
+            "D": [ 49 ],
+            "Q": [ 48 ]
+          }
+        },
+        "$procdff$73": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 44 ],
+            "D": [ 47 ],
+            "Q": [ 46 ]
+          }
+        },
+        "$procdff$74": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 42 ],
+            "D": [ 45 ],
+            "Q": [ 44 ]
+          }
+        },
+        "$procdff$75": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 40 ],
+            "D": [ 43 ],
+            "Q": [ 42 ]
+          }
+        },
+        "$procdff$76": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 38 ],
+            "D": [ 41 ],
+            "Q": [ 40 ]
+          }
+        },
+        "$procdff$77": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 36 ],
+            "D": [ 39 ],
+            "Q": [ 38 ]
+          }
+        },
+        "$procdff$78": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 34 ],
+            "D": [ 37 ],
+            "Q": [ 36 ]
+          }
+        },
+        "$procdff$79": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 32 ],
+            "D": [ 35 ],
+            "Q": [ 34 ]
+          }
+        },
+        "$procdff$80": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 30 ],
+            "D": [ 33 ],
+            "Q": [ 32 ]
+          }
+        },
+        "$procdff$81": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 28 ],
+            "D": [ 31 ],
+            "Q": [ 30 ]
+          }
+        },
+        "$procdff$82": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 26 ],
+            "D": [ 29 ],
+            "Q": [ 28 ]
+          }
+        },
+        "$procdff$83": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 24 ],
+            "D": [ 27 ],
+            "Q": [ 26 ]
+          }
+        },
+        "$procdff$84": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 22 ],
+            "D": [ 25 ],
+            "Q": [ 24 ]
+          }
+        },
+        "$procdff$85": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 20 ],
+            "D": [ 23 ],
+            "Q": [ 22 ]
+          }
+        },
+        "$procdff$86": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 18 ],
+            "D": [ 21 ],
+            "Q": [ 20 ]
+          }
+        },
+        "$procdff$87": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 16 ],
+            "D": [ 19 ],
+            "Q": [ 18 ]
+          }
+        },
+        "$procdff$88": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 14 ],
+            "D": [ 17 ],
+            "Q": [ 16 ]
+          }
+        },
+        "$procdff$89": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 12 ],
+            "D": [ 15 ],
+            "Q": [ 14 ]
+          }
+        },
+        "$procdff$90": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 10 ],
+            "D": [ 13 ],
+            "Q": [ 12 ]
+          }
+        },
+        "$procdff$91": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 8 ],
+            "D": [ 11 ],
+            "Q": [ 10 ]
+          }
+        },
+        "$procdff$92": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 64 ],
+            "D": [ 9 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$procdff$93": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 6 ],
+            "D": [ 65 ],
+            "Q": [ 64 ]
+          }
+        },
+        "$procdff$94": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:50.5-50.43"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 66 ],
+            "Q": [ 67 ]
+          }
+        },
+        "$procdff$95": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:48.5-48.44"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 66 ]
+          }
+        },
+        "$procdff$96": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:44.5-44.55"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 62 ],
+            "D": [ 4 ],
+            "Q": [ 68 ]
+          }
+        },
+        "$procdff$97": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:33.5-33.50"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 7 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$xor$tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:52$6": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:52.20-52.32"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 68 ],
+            "B": [ 67 ],
+            "Y": [ 5 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\div[0:0]": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:33.5-33.50"
+          }
+        },
+        "$0\\div[10:10]": {
+          "hide_name": 1,
+          "bits": [ 25 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[11:11]": {
+          "hide_name": 1,
+          "bits": [ 27 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[12:12]": {
+          "hide_name": 1,
+          "bits": [ 29 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[13:13]": {
+          "hide_name": 1,
+          "bits": [ 31 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[14:14]": {
+          "hide_name": 1,
+          "bits": [ 33 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[15:15]": {
+          "hide_name": 1,
+          "bits": [ 35 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[16:16]": {
+          "hide_name": 1,
+          "bits": [ 37 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[17:17]": {
+          "hide_name": 1,
+          "bits": [ 39 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[18:18]": {
+          "hide_name": 1,
+          "bits": [ 41 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[19:19]": {
+          "hide_name": 1,
+          "bits": [ 43 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[1:1]": {
+          "hide_name": 1,
+          "bits": [ 65 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[20:20]": {
+          "hide_name": 1,
+          "bits": [ 45 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[21:21]": {
+          "hide_name": 1,
+          "bits": [ 47 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[22:22]": {
+          "hide_name": 1,
+          "bits": [ 49 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[23:23]": {
+          "hide_name": 1,
+          "bits": [ 51 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[24:24]": {
+          "hide_name": 1,
+          "bits": [ 53 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[25:25]": {
+          "hide_name": 1,
+          "bits": [ 55 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[26:26]": {
+          "hide_name": 1,
+          "bits": [ 57 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[27:27]": {
+          "hide_name": 1,
+          "bits": [ 59 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[28:28]": {
+          "hide_name": 1,
+          "bits": [ 61 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[29:29]": {
+          "hide_name": 1,
+          "bits": [ 63 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[2:2]": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[3:3]": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[4:4]": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[5:5]": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[6:6]": {
+          "hide_name": 1,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[7:7]": {
+          "hide_name": 1,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[8:8]": {
+          "hide_name": 1,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "$0\\div[9:9]": {
+          "hide_name": 1,
+          "bits": [ 23 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:37.13-37.64"
+          }
+        },
+        "a_q": {
+          "hide_name": 0,
+          "bits": [ 66 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:47.11-47.14"
+          }
+        },
+        "b_q": {
+          "hide_name": 0,
+          "bits": [ 67 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:49.11-49.14"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:22.18-22.23"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:23.18-23.23"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:24.18-24.22"
+          }
+        },
+        "deep_q": {
+          "hide_name": 0,
+          "bits": [ 68 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:43.11-43.17"
+          }
+        },
+        "div": {
+          "hide_name": 0,
+          "bits": [ 6, 64, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:31.24-31.27"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/deep_clock_divider_chain/deep_clock_divider_chain.sv:25.18-25.23"
+          }
+        }
+      }
+    }
+  }
+}

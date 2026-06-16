@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Configurable clock-trace depth** (#263). The clock-root tracer's
+  hop budget — fixed at 16 — is now exposed as `--clock-trace-depth N`
+  on both `analyze` and `lint` (default 16; threaded through
+  `assign_domains(..., max_depth=N)` / `find_crossings(..., max_depth=N)`).
+  A deep clock tree (a long divider / buffer / ICG chain) can exceed
+  16 hops and leave its downstream flops domain-unknown (visible in
+  `summary.domain_unknown`); raising the budget resolves them without a
+  code change. The change is monotone — a larger budget only ever
+  resolves **more** flops, never fewer — so the default leaves every
+  result identical. New fixture `deep_clock_divider_chain` (a 30-stage
+  ripple divider) is domain-unknown at the default and resolves at
+  `--clock-trace-depth 40`, and pins crossing/violation parity across
+  depths. `--clock-trace-depth` threads to **every** clock-root trace
+  on a run — the boundary-abstraction decision
+  (`compose_boundaries` / `summarise_subtree` / `_instance_clocks`),
+  the clock-network surface (`find_clock_network_crossings`), and the
+  rule-context domain view (`run_all` / `_build_context`) — so the
+  abstraction decision and the crossing walk always resolve the same
+  clock roots. This keeps the opt-in high-depth mode sound: a
+  dual-clock blackbox whose second clock pin sits beyond 16 hops is
+  correctly declined (not abstracted away) when the depth is raised,
+  instead of silently dropping its internal crossing.
 - **Under-resolution visibility** (#263). A flop whose clock root the
   tracer cannot resolve is excluded from crossing detection; on large
   netlists this silently shrank coverage with no diagnostic. The

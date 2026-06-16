@@ -476,6 +476,7 @@ def assign_domains(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
 ) -> list[FlopDomain]:
     """Build per-flop ``FlopDomain`` records from clock-network tracing.
 
@@ -488,12 +489,21 @@ def assign_domains(
     clock mux whose ``B`` leg is ``ck0_b``: without normalisation the
     downstream flop's domain leaks as ``"ck0_b"`` (the port name) when
     the SDC-canonical answer is ``"ck0"``. See issue #166.
+
+    ``max_depth`` is the clock-trace hop budget handed to
+    :func:`trace_clock_root` per flop (default 16). Raising it lets a
+    deeper clock tree (a long divider / buffer / ICG chain) resolve
+    without a code change; it only ever resolves MORE flops, never
+    fewer, so the default keeps results identical to a fixed-16 walk.
+    Surfaced as ``--clock-trace-depth`` on the CLI. See issue #263.
     """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
     out: list[FlopDomain] = []
     for f in find_flops(module):
-        root = trace_clock_root(module, f.clk, drivers, bit_to_clock=bit_to_clock)
+        root = trace_clock_root(
+            module, f.clk, drivers, max_depth=max_depth, bit_to_clock=bit_to_clock
+        )
         if root is not None and clock_for_port is not None:
             resolved = clock_for_port(root)
             if resolved is not None:
@@ -529,6 +539,7 @@ def find_crossings(
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
     boundaries: dict[str, "BoundarySummary"] | None = None,
+    max_depth: int = 16,
 ) -> list[Crossing]:
     """Find every fanout path whose endpoints are in different domains.
 
@@ -554,10 +565,19 @@ def find_crossings(
     leak as e.g. ``ck0_b`` while ``flop_domains[].clock`` shows
     ``ck0`` — two views of the same domain disagreeing. See
     issue #166.
+
+    ``max_depth`` is forwarded to :func:`assign_domains` (default 16)
+    so the per-flop domain identities that feed the crossing walk use
+    the same clock-trace hop budget the CLI exposes as
+    ``--clock-trace-depth``. Raising it only resolves more flops; the
+    crossing walk's own ``max_hops`` data-fanout budget is unrelated
+    and unchanged. See issue #263.
     """
     domains = {
         fd.flop.cell.name: fd
-        for fd in assign_domains(module, pin_clocks, clock_for_port=clock_for_port)
+        for fd in assign_domains(
+            module, pin_clocks, clock_for_port=clock_for_port, max_depth=max_depth
+        )
     }
     consumers = _build_bit_consumers(module)
 
