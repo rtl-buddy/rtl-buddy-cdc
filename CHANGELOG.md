@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Clock-combining nodes decline instead of silently picking one leg**
+  (#263 soundness). When a clock-network gate (`$and`/`$or`…) or a
+  clock-path transparent latch (`$dlatch`/`$_DLATCH_*`) combines two
+  **distinct declared clocks** on its legs (e.g. `D=clkA, EN=clkB`), the
+  clock-root tracer now returns `None` (leaving the flop
+  `domain_unknown`, surfaced by the under-resolution report) rather than
+  resolving the flop to the first leg. Such a cell genuinely mixes clock
+  domains, so asserting one leg silently mislabels a flop whose clock
+  toggles on both. The decline is gated on a `clock_identity` predicate
+  (built from the SDC), so the common, safe ICG — one clock plus a
+  *non-clock* enable port — still resolves; only a real two-declared-clock
+  combine declines, and a clock **mux** (which selects, not combines) is
+  unaffected. New fixtures `clock_combine_latch`, `clock_combine_gate`
+  (decline) and `icg_port_enable` (the regression guard: a port-enabled
+  ICG must still resolve). This supersedes the previous first-leg-wins
+  behaviour on multi-clock combines; single-clock results are unchanged.
+
 ### Added
 
 - **Inferred-clock candidates** (#263). A common cause of

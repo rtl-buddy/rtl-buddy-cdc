@@ -319,6 +319,7 @@ def trace_clock_root(
     bit_to_clock: dict[Bit, str] | None = None,
     *,
     allow_divider: bool = True,
+    clock_identity: Callable[[str], str | None] | None = None,
 ) -> str | None:
     """Resolve a CLK net bit to the top-level port that ultimately drives it.
 
@@ -328,7 +329,10 @@ def trace_clock_root(
     - single-input buffers and inverters (transparent),
     - two-input clock gates (``$and``/``$or``…) where exactly one of
       the inputs traces back to a clock port — the other is treated
-      as the gate's enable,
+      as the gate's enable; when ``clock_identity`` is supplied and two
+      *different* declared clocks combine on the gate (or a clock-path
+      latch), the walk declines (returns ``None``) rather than silently
+      picking one leg, so the flop is surfaced as under-resolved,
     - clock muxes — both candidate roots are explored, the first one
       that resolves wins (the analyzer can't statically know which
       side ``S`` selects),
@@ -356,7 +360,51 @@ def trace_clock_root(
         max_depth,
         bit_to_clock or {},
         allow_divider=allow_divider,
+        clock_identity=clock_identity,
     )
+
+
+def _pick_combining_root(
+    roots: list[str],
+    clock_identity: Callable[[str], str | None] | None,
+) -> str | None:
+    """Choose the single clock root of a combining cell, or decline.
+
+    ``roots`` are the resolved (non-``None``) roots of a gate's / latch's
+    legs, in leg order. ``clock_identity`` maps a raw root to its
+    canonical declared-clock name (or ``None`` for a leg that is *not* a
+    declared clock — e.g. a plain enable port). With it:
+
+    - **two or more distinct declared clocks** combine on one net — a
+      genuine clock-mixing point whose downstream domain is ambiguous;
+      return ``None`` so the flop is surfaced as under-resolved rather
+      than silently asserted to one leg (#263 soundness hardening);
+    - **exactly one** declared clock among the legs — return that leg
+      (the normal ICG: clock + non-clock enable), regardless of leg
+      order, so a clock-on-enable shape resolves correctly too;
+    - **no** declared clock among the legs (an undeclared internal root,
+      or no SDC clock context) — fall back to the first resolved root,
+      the pre-#263 first-leg-wins behaviour.
+
+    When ``clock_identity`` is ``None`` (callers with no clock-set
+    context) the behaviour is unconditionally first-leg-wins, unchanged.
+    Two legs that map to the *same* clock (e.g. ``ck0_a`` / ``ck0_b`` of
+    one ``create_clock``) are one identity, not a combine — see #166.
+    """
+    distinct = list(dict.fromkeys(roots))
+    if not distinct:
+        return None
+    if clock_identity is None:
+        return distinct[0]
+    ids = [(r, clock_identity(r)) for r in distinct]
+    real = {cid for (_, cid) in ids if cid is not None}
+    if len(real) >= 2:
+        return None  # genuine clock-combining node — decline loudly
+    if real:
+        for r, cid in ids:
+            if cid is not None:
+                return r  # the single declared-clock leg, any leg order
+    return distinct[0]  # no declared clock among legs — prior behaviour
 
 
 def _trace(
@@ -368,6 +416,7 @@ def _trace(
     bit_to_clock: dict[Bit, str],
     *,
     allow_divider: bool = True,
+    clock_identity: Callable[[str], str | None] | None = None,
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
@@ -390,6 +439,18 @@ def _trace(
     cell = module.cells[cell_name]
     ctype = cell.type
 
+    def _leg(b: Bit) -> str | None:
+        return _trace(
+            module,
+            b,
+            drivers,
+            set(seen),
+            depth - 1,
+            bit_to_clock,
+            allow_divider=allow_divider,
+            clock_identity=clock_identity,
+        )
+
     # Transparent through single-input cells.
     if ctype in _BUFFER_TYPES:
         a = cell.connections.get("A", ())
@@ -402,59 +463,36 @@ def _trace(
                 depth - 1,
                 bit_to_clock,
                 allow_divider=allow_divider,
+                clock_identity=clock_identity,
             )
         return None
 
-    # Clock gate — look at both inputs; if exactly one resolves to a
-    # clock port, that's our root. If both resolve, the cell is
-    # combining two clock domains and we (conservatively) pick the
-    # first; a stricter check would emit a violation, but we leave
-    # that to a future rule.
+    # Clock gate — a two-input ICG shape ($and/$or…) where normally one
+    # leg is the clock and the other an enable. Explore both legs; if
+    # exactly one resolves to a declared clock, that is the root. If two
+    # *different* declared clocks combine here, the cell mixes clock
+    # domains and the downstream flop's domain is ambiguous — decline
+    # (``_pick_combining_root`` returns None), surfacing the flop as
+    # under-resolved rather than silently asserting one leg (#263).
     if ctype in _GATE_TYPES:
-        a = cell.connections.get("A", ())
-        b = cell.connections.get("B", ())
-        a_root = (
-            _trace(
-                module,
-                a[0],
-                drivers,
-                set(seen),
-                depth - 1,
-                bit_to_clock,
-                allow_divider=allow_divider,
-            )
-            if a
-            else None
-        )
-        b_root = (
-            _trace(
-                module,
-                b[0],
-                drivers,
-                set(seen),
-                depth - 1,
-                bit_to_clock,
-                allow_divider=allow_divider,
-            )
-            if b
-            else None
-        )
-        return a_root or b_root
+        roots: list[str] = []
+        for in_port in ("A", "B"):
+            in_bits = cell.connections.get(in_port, ())
+            if in_bits:
+                r = _leg(in_bits[0])
+                if r is not None:
+                    roots.append(r)
+        return _pick_combining_root(roots, clock_identity)
 
-    # Clock mux — return whichever side resolves.
+    # Clock mux — return whichever side resolves. A mux *selects* one of
+    # its clock inputs (it does not combine them), so first-resolves-wins
+    # is correct and it is deliberately NOT routed through the combining
+    # decline above.
     if ctype in _MUX_TYPES:
         for in_port in ("A", "B"):
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
-                root = _trace(
-                    module,
-                    in_bits[0],
-                    drivers,
-                    set(seen),
-                    depth - 1,
-                    bit_to_clock,
-                    allow_divider=allow_divider,
-                )
+                root = _leg(in_bits[0])
                 if root is not None:
                     return root
         return None
@@ -477,6 +515,7 @@ def _trace(
                 depth - 1,
                 bit_to_clock,
                 allow_divider=allow_divider,
+                clock_identity=clock_identity,
             )
 
     # Clock-path transparent latch — a latch-based ICG (or any clock
@@ -485,38 +524,27 @@ def _trace(
     # gate-level). The clock can arrive on either leg depending on the
     # ICG coding style: ``always_latch if(en) gclk = clk;`` puts the
     # clock on D, while a latch whose enable IS the gated clock puts it
-    # on EN. Mirror the two-input gate clause — explore both legs,
-    # first-resolves-wins (D before EN). Returning the *first* resolved
-    # root matches the existing gate-clause semantics; it is correct for
-    # the single-clock ICG (only one leg is a clock, the other is a data
-    # enable) and the conservative fallback for the pathological
-    # clock-COMBINING latch (D=clkA, EN=clkB). NOTE for the audit: a
-    # latch that genuinely combines two *different* clock roots is read
-    # as resolved to the first leg, exactly as a two-clock $and gate is
-    # today; a stricter multi-clock-combine check is left to a future
-    # rule (the same TODO the gate clause carries). This never makes a
-    # crossing disappear — it only resolves a previously domain-unknown
-    # flop to a verified upstream clock root.
+    # on EN. Explore every leg and resolve through the SAME combining
+    # rule as the gate clause: one declared clock + a non-clock enable
+    # resolves to that clock (normal ICG); two *different* declared
+    # clocks combining decline (#263 soundness — never silently assert
+    # one leg of a genuine clock-combining latch). Never makes a crossing
+    # disappear: it only resolves a previously domain-unknown flop to a
+    # verified upstream clock root, or declines.
     #
     # Gated on ``allow_divider`` for the same soundness reason as the
     # divider clause: with the FIX-1 ``allow_divider=False`` blackbox
     # clock-pin classifier, a *data* net latched by a $dlatch must not
     # resolve to a clock and be misread as a clock net.
     if allow_divider and is_latch_cell(ctype) and out_port == "Q":
+        roots = []
         for in_port in ("D", "EN", "E"):
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
-                root = _trace(
-                    module,
-                    in_bits[0],
-                    drivers,
-                    set(seen),
-                    depth - 1,
-                    bit_to_clock,
-                    allow_divider=allow_divider,
-                )
-                if root is not None:
-                    return root
+                r = _leg(in_bits[0])
+                if r is not None:
+                    roots.append(r)
+        return _pick_combining_root(roots, clock_identity)
 
     return None
 
@@ -576,10 +604,45 @@ def assign_domains(
     """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
+    generated_clocks = set(bit_to_clock.values())
+
+    def clock_identity(root: str) -> str | None:
+        """Canonical declared-clock name for a raw trace root, else None.
+
+        A leg is a *declared clock* if the SDC maps its port into a
+        named clock (``clock_for_port``) or it is a
+        ``create_generated_clock`` target. Non-clock legs (a plain enable
+        port, an undeclared internal net) return None so they never count
+        toward a clock-combining decline. Used by the gate / latch
+        clauses to tell a real two-clock combine apart from the common
+        clock + enable-port ICG (#263).
+        """
+        if clock_for_port is not None:
+            named = clock_for_port(root)
+            # The synthesized ``<unconstrained>`` sentinel — stamped on
+            # every *untyped* input port by
+            # ``synthesize_unconstrained_inputs`` before ``assign_domains``
+            # on the CLI path — is NOT a real clock identity. It must never
+            # count as a competing clock, or a normal ICG whose enable comes
+            # from an untyped input port (clk + enable-port) would be misread
+            # as a two-clock combine and wrongly decline, silently dropping
+            # that flop's crossings. Mirrors the SDC sentinel; see
+            # ``_UNKNOWN_BOUNDARY_CLOCK``.
+            if named is not None and named != _UNKNOWN_BOUNDARY_CLOCK:
+                return named
+        if root in generated_clocks:
+            return root
+        return None
+
     out: list[FlopDomain] = []
     for f in find_flops(module):
         root = trace_clock_root(
-            module, f.clk, drivers, max_depth=max_depth, bit_to_clock=bit_to_clock
+            module,
+            f.clk,
+            drivers,
+            max_depth=max_depth,
+            bit_to_clock=bit_to_clock,
+            clock_identity=clock_identity,
         )
         if root is not None and clock_for_port is not None:
             resolved = clock_for_port(root)

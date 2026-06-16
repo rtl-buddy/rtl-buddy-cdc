@@ -689,10 +689,10 @@ Cell-type categories the walker recognizes:
 | Category | Yosys cell types | Behavior |
 |---|---|---|
 | Buffer / inverter | `$not`, `$logic_not`, `$buf`, `$pos`, `$reduce_bool`, `$_BUF_`, `$_NOT_` | Transparent: trace the single `A` input |
-| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side that resolves to a clock is the root, the other is the gate's enable |
-| Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects) |
+| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline (see below) |
+| Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline |
 | FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root |
-| Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level), first one to resolve wins (`D` before `EN`). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
+| Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
 
 The walker maintains a per-call `seen` set keyed on bit ID and a
 `max_depth` counter (default 16), so cycles in the clock network
@@ -700,23 +700,38 @@ terminate cleanly. The depth budget is intentionally low — clock
 networks rarely exceed a handful of hops, and a deep walk is more
 likely to be following data than clock.
 
-**First-resolves-wins on multi-input clock cells (audit note).** The
-two-input gate clause and the clock-path latch clause both explore
-several inputs and return the *first* that resolves to a clock root
-(gate: `A` before `B`; latch: `D` before `EN`/`E`). For a legitimate
-single-clock ICG this is exact — only one input is a clock, the other
-is a data enable that does not trace to a clock root. For a
-*pathological* cell that genuinely combines two **different** clock
-roots (e.g. an `$and` with `A=clkA, B=clkB`, or a latch with
-`D=clkA, EN=clkB`), the walk reports the first leg and the downstream
-flop reads as that one domain. This is the established, conservative
-gate-clause behaviour, deliberately matched by the latch clause for
-consistency; it is sound for crossing detection (a flop labelled
-clkA still crosses against every clkB source) but does not *itself*
-flag the multi-clock combine — a stricter clock-combine rule is left
-to future work. The first-resolves-wins choice never makes a crossing
-disappear: it only assigns a previously domain-unknown flop a verified
-upstream clock root.
+**Clock-combining decline on multi-input clock cells (issue #263).**
+The two-input gate clause and the clock-path latch clause both explore
+several legs (gate: `A`/`B`; latch: `D`/`EN`/`E`) and resolve them
+through one rule (`_pick_combining_root`), using a `clock_identity`
+predicate built in `assign_domains` from the SDC (`clock_for_port` plus
+the `create_generated_clock` set):
+
+- **exactly one declared clock among the legs** → that clock, regardless
+  of leg order. This is the common, safe ICG: one leg is a clock, the
+  other a *non-clock* enable (e.g. a plain `clk_en` input port, which is
+  not a declared clock and so is not a competing identity). The
+  `icg_port_enable` fixture pins this.
+- **two or more distinct declared clocks combining on one net** (e.g. an
+  `$and` with `A=clkA, B=clkB`, or a `$dlatch` with `D=clkA, EN=clkB`)
+  → **decline** (`None`). Such a cell mixes clock domains; the
+  downstream flop's domain is genuinely ambiguous (its clock physically
+  toggles on both), so the tracer refuses to assert one leg and the flop
+  is surfaced as `domain_unknown` rather than silently mislabelled. The
+  `clock_combine_latch` / `clock_combine_gate` fixtures pin this.
+- **no declared clock among the legs** (an undeclared internal root, or
+  a caller with no SDC clock context) → first-resolved leg, the prior
+  behaviour, unchanged.
+
+A **mux** is deliberately *not* subject to this — it selects one of its
+clock inputs rather than combining them, so first-resolves-wins is
+correct there. Two legs that map to the *same* declared clock (the
+`ck0_a` / `ck0_b` ports of one `create_clock`, issue #166) are one
+identity, not a combine, and resolve normally. The decline only ever
+turns a previously *mislabelled* flop into a loud `domain_unknown`; it
+never drops a crossing carried by the design's other, unambiguous flops.
+A dedicated rule that *flags* the combine (rather than only declining to
+classify it) is left to future work.
 
 The budget is configurable. `assign_domains(module, ...,
 max_depth=N)` and `find_crossings(module, ..., max_depth=N)` forward
