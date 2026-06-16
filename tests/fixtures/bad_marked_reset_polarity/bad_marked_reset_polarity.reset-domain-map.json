@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "generator": {
     "name": "rtl-buddy-cdc",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "design": {
     "top": "bad_marked_reset_polarity",
