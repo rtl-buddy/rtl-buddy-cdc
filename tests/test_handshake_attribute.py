@@ -34,12 +34,14 @@ FIX = Path(__file__).parent / "fixtures"
 
 # Each fixture fires exactly the named rule on the keyed flop; the rule
 # keys the suppression on that same flop (dst capture / src toggle /
-# chain head / sliced source), so tagging it must silence the finding.
+# chain head / sliced source / src payload), so tagging it must silence
+# the finding.
 _CASES = [
     ("CDC-001", "bad_single_ff_sync"),
     ("CDC-013", "bad_toggle_no_xor_tail"),
     ("CDC-014", "bad_comb_between_sync_stages"),
     ("CDC-020", "bad_sliced_bus_reconvergence"),
+    ("CDC-012", "bad_functional_datahold_enable"),
 ]
 
 

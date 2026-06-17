@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-06-17
+
+### Fixed
+
+- **CDC-012 false positive on `(* cdc_handshake *)` primitives.** CDC-012
+  (functional data-hold on a gated multi-bit crossing) is silenced when
+  it finds a synced-back ack in the source flop's register-neighbourhood
+  (`_has_dst_to_src_feedback`), but that structural walk can't always see
+  the in-primitive ack of a req/ack handshake — it depends on how the
+  toggle/ack flops lower, and differs across frontends (it was reachable
+  under the yosys frontend but not under pyslang for the same design).
+  A four-phase req/ack primitive whose participants are tagged
+  `(* cdc_handshake *)` therefore tripped CDC-012 even though the
+  handshake's `src_ready` backpressure holds the payload — exactly
+  CDC-012's hold guarantee. `check_cdc_012` now honours the annotation
+  directly (skip when either endpoint of the crossing is tagged), the
+  same opt-in the attribute already provides for CDC-001/013/014/020
+  (#247). Covered by extending the `(* cdc_handshake *)` suppression
+  parametrisation to CDC-012's `bad_functional_datahold_enable` fixture.
+
 ## [0.3.2] — 2026-06-16
 
 ### Changed
@@ -1258,7 +1278,8 @@ shlex-based SDC subset (`create_clock`, `create_generated_clock`,
 through CDC-008 rule pack, Spyglass-`.swl`-style waiver matcher,
 and text / JSON / SARIF reporters.
 
-[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.2.0...v0.3.0

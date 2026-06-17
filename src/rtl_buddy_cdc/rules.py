@@ -3631,6 +3631,13 @@ def check_cdc_012(
       ``dst_clock`` flop (no handshake feedback) — see
       :func:`_has_dst_to_src_feedback`.
 
+    Suppressed when either endpoint of the crossing is tagged
+    ``(* cdc_handshake *)`` (issue #247): the attribute vouches a
+    sanctioned req/ack primitive whose synced-back ack holds the
+    payload, which is precisely CDC-012's hold guarantee — but the
+    structural feedback walk can't always see the in-primitive ack, so
+    the annotation is honoured directly (as CDC-001/013/014/020 do).
+
     Severity ``warning`` — the rule's structural heuristic for
     "handshake present" can't see application-level guarantees (e.g. a
     slow-write config-register bus where the host writes once and waits
@@ -3665,6 +3672,20 @@ def check_cdc_012(
         if c.src_flop.cell.name in ctx.user_grays:
             continue
         if _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers):
+            continue
+        # A (* cdc_handshake *)-vouched req/ack primitive holds the
+        # source payload via its synced-back ack/backpressure until the
+        # destination captures — exactly the guarantee CDC-012 checks
+        # for. The structural feedback walk can't always see the
+        # in-primitive ack (it depends on how the toggle/ack flops lower,
+        # and differs across frontends), so honour the annotation the
+        # same way CDC-001/013/014/020 do (#247). Either endpoint of the
+        # crossing being a tagged participant marks the whole crossing as
+        # part of the sanctioned primitive.
+        if (
+            c.src_flop.cell.name in ctx.user_handshakes
+            or c.dst_flop.cell.name in ctx.user_handshakes
+        ):
             continue
         key = c.src_flop.cell.name
         if key not in feedback_cache:
