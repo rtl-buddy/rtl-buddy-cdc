@@ -40,7 +40,7 @@ src/rtl_buddy_cdc/
 ├── domain.py          # trace_clock_root + find_crossings (BFS) + Crossing
 ├── sdc.py             # SDC parser: Tcl tokenizer + per-command arg-spec table
 ├── rules.py           # CDC-001..-008 + RULES registry + run_all + helpers
-├── waivers.py         # Spyglass-.swl-style waiver parser + apply()
+├── waivers.py         # .swl-style waiver parser + apply()
 └── reporter.py        # AnalysisResult + render_text / render_json / render_sarif
 tests/
 ├── fixtures/

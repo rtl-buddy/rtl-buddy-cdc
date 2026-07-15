@@ -65,5 +65,5 @@ def test_attribute_aliases() -> None:
 
     assert "cdc_sync" in USER_SYNC_ATTRS
     assert "synchronizer" in USER_SYNC_ATTRS
-    # Vivado-style alias for projects already using `(* ASYNC_REG *)`.
+    # common synthesis-attribute alias for projects already using `(* ASYNC_REG *)`.
     assert "async_reg" in USER_SYNC_ATTRS

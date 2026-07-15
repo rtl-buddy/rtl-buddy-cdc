@@ -10,7 +10,7 @@ Known gaps and roadmap items are tracked at the end of this README.
 
 ## Why
 
-CDC bugs are notoriously hard to catch in simulation and devastating in silicon. Commercial CDC tools (Spyglass, Questa CDC, VC SpyGlass) are excellent but expensive and closed. The open-source EDA stack has strong synthesis (Yosys) and STA (OpenSTA) but lacks a dedicated CDC linter. `rtl-buddy-cdc` fills that gap with a pragmatic ruleset, fast iteration, and a Python codebase that's easy to extend.
+CDC bugs are notoriously hard to catch in simulation and devastating in silicon. Commercial CDC tools are excellent but expensive and closed. The open-source EDA stack has strong synthesis (Yosys) and STA (OpenSTA) but lacks a dedicated CDC linter. `rtl-buddy-cdc` fills that gap with a pragmatic ruleset, fast iteration, and a Python codebase that's easy to extend.
 
 ## Architecture
 
@@ -237,7 +237,7 @@ Mark a flop as a user-vetted synchronizer first stage by attaching an attribute 
 ```sv
 (* cdc_sync *) logic dst_q;             // canonical synchronizer first stage
 (* synchronizer *) logic dst_q;         // alias
-(* async_reg = "TRUE" *) logic dst_q;   // Vivado-compatible alias
+(* async_reg = "TRUE" *) logic dst_q;   // common synthesis-attribute alias
 (* cdc_gray *) logic [N-1:0] src_bus;   // source bus is gray-coded
 (* gray_code *) logic [N-1:0] src_bus;  // alias
 (* cdc_static *) logic [N-1:0] cfg_q;   // quasi-static source (config bit / mode reg)
@@ -359,7 +359,7 @@ Not yet:
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
-- [ ] In-RTL pragma comments (`// rtl-buddy-cdc disable-rule …`, Spyglass-style block suppression) for inline waiving without an external file
+- [ ] In-RTL pragma comments (`// rtl-buddy-cdc disable-rule …`, in-file block suppression) for inline waiving without an external file
 - [ ] Instance-scoped waivers (`waive CDC-001 inst:u_block_a/.*`) — natural follow-on to hierarchical reporting now that `instance_path` is on every violation
 - [ ] Glitch detection on data path through async muxes / clock-gate enables
 

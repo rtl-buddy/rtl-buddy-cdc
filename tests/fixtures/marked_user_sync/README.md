@@ -2,7 +2,7 @@
 
 <!-- generator: scripts/gen_fixture_docs.py -->
 
-Mark a conventional 2FF synchronizer with `(* cdc_sync *)` to declare the first stage as user-vetted. The structural depth keeps both rtl-buddy-cdc and SpyGlass clean; the attribute exercises the marker plumbing without relying on a single-stage waiver.
+Mark a conventional 2FF synchronizer with `(* cdc_sync *)` to declare the first stage as user-vetted. The two real flop stages keep the structural depth check (CDC-001/-002) clean; the attribute exercises the marker plumbing without relying on a single-stage waiver.
 
 - **Status:** marker — exercises an SV attribute (`cdc_sync` / `cdc_gray` / …)
 - **Top module:** `marked_user_sync`

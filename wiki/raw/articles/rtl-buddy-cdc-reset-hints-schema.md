@@ -179,7 +179,7 @@ Mirrored exactly by the test fixture
 - Analysis-side pipeline: [`rtl-buddy-cdc-reset-domain-analysis.md`](rtl-buddy-cdc-reset-domain-analysis.md) §8
   (SV attributes — same vocabulary, different surface).
 - Emit-map schema (consumer-facing): [`rtl-buddy-cdc-reset-domain-map-schema.md`](rtl-buddy-cdc-reset-domain-map-schema.md).
-- Migration utility from Spyglass SGDC: rtl-buddy-cdc#131
+- Migration utility from external SGDC-style constraint files: rtl-buddy-cdc#131
   (blocked on this issue / not yet implemented).
 - Loader module: `src/rtl_buddy_cdc/reset_hints.py`.
 - CLI wiring: `src/rtl_buddy_cdc/cli.py::_RESET_HINTS_OPT`.

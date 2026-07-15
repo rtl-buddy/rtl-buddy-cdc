@@ -1275,7 +1275,7 @@ shlex-based SDC subset (`create_clock`, `create_generated_clock`,
 `set_clock_groups -asynchronous` / `-logically_exclusive` /
 `-physically_exclusive`, `set_false_path -from/-to`,
 `set_input_delay -clock`, `set_output_delay -clock`), CDC-001
-through CDC-008 rule pack, Spyglass-`.swl`-style waiver matcher,
+through CDC-008 rule pack, `.swl`-style waiver matcher,
 and text / JSON / SARIF reporters.
 
 [Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.3...HEAD

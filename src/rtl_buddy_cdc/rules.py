@@ -238,7 +238,7 @@ def _build_context(
 # Yosys preserves the attribute on the *netname* (not the cell), so
 # we map back from a tagged netname's bits to the flop whose Q
 # produces them. Multiple aliases are accepted so projects using
-# Spyglass-style or Vivado-style tags don't have to rename.
+# other common synthesis-attribute tags don't have to rename.
 USER_SYNC_ATTRS: frozenset[str] = frozenset({"cdc_sync", "synchronizer", "async_reg"})
 
 
