@@ -1,7 +1,8 @@
 // Mark a conventional 2FF synchronizer with `(* cdc_sync *)` to
-// declare the first stage as user-vetted. The structural depth keeps
-// both rtl-buddy-cdc and SpyGlass clean; the attribute exercises the
-// marker plumbing without relying on a single-stage waiver.
+// declare the first stage as user-vetted. The two real flop stages
+// keep the structural depth check (CDC-001/-002) clean; the attribute
+// exercises the marker plumbing without relying on a single-stage
+// waiver.
 
 module marked_user_sync (
     input  logic src_clk,

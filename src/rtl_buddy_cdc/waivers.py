@@ -25,8 +25,8 @@ Matching:
 Waivers are applied *after* the rule pass: each ``Violation`` either
 survives or is moved into a ``suppressed`` list along with the
 matching waiver. They are not silent — the report keeps a tally and
-calls out the reason. This matches the Spyglass ``.swl`` workflow at
-a much smaller surface.
+calls out the reason. This matches the common ``.swl`` waiver-file
+workflow at a much smaller surface.
 """
 
 from __future__ import annotations

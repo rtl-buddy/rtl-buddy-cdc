@@ -1693,7 +1693,7 @@ and waiver-line number), not silently dropped. They appear in JSON
 output and in SARIF as `suppressions`. They don't drive the exit
 code, so a fully-waived run returns 0.
 
-This deliberately mimics the Spyglass `.swl` workflow at a much
+This deliberately mimics the common `.swl` waiver-file workflow at a much
 smaller surface — no scope qualifiers, no severity overrides, no
 expiry dates. Add those when a real project asks for them, not
 preemptively.

@@ -36,8 +36,9 @@ module good_disjoint_fanout_sync_chains (
 
     // Two independent synchronizer chains, fed by independent source
     // registers. This keeps the fixture focused on the "disjoint
-    // downstream cones" positive shape without tripping SpyGlass'
-    // multi-synchronized-control check on a single source flop.
+    // downstream cones" positive shape without tripping the
+    // reconvergent multi-synchronizer check (CDC-005) on a single
+    // source flop.
     logic sync_a_meta, sync_a_q;
     logic sync_b_meta, sync_b_q;
     always_ff @(posedge dst_clk or negedge rst_n) begin

@@ -33,7 +33,7 @@ A hit on any of the three suppresses. First matching waiver wins (top-down).
 - Suppressed findings are **kept in the report** (with matching reason and waiver line number), not silently dropped
 - They appear in JSON output and in SARIF as `suppressions`
 - They **don't drive the exit code** — a fully-waived run returns 0
-- Deliberately mimics Spyglass `.swl` workflow at a smaller surface: no scope qualifiers, severity overrides, or expiry dates
+- Deliberately mimics the common `.swl` waiver-file workflow at a smaller surface: no scope qualifiers, severity overrides, or expiry dates
 
 ## Reporting
 
