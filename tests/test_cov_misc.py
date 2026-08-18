@@ -1004,13 +1004,16 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
     We stub the concrete frontend so no real yosys binary runs."""
     seen: dict[str, object] = {}
 
-    def _fake_elaborate(sources, top, *, yosys_bin, keep_json, plugin_path, blackbox):
+    def _fake_elaborate(
+        sources, top, *, yosys_bin, keep_json, plugin_path, single_unit, blackbox
+    ):
         seen.update(
             sources=sources,
             top=top,
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             plugin_path=plugin_path,
+            single_unit=single_unit,
             blackbox=blackbox,
         )
         return Module(name=top, ports={}, cells={}, netnames={}), {}
@@ -1025,6 +1028,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
         yosys_bin="/opt/yosys",
         keep_json=keep,
         yosys_plugin="/opt/slang.so",
+        single_unit=True,
         blackbox=["leaf"],
     )
     assert module.name == "topmod"
@@ -1034,6 +1038,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
     assert seen["keep_json"] == keep
     # frontend.elaborate maps ``yosys_plugin`` -> ``plugin_path``.
     assert seen["plugin_path"] == "/opt/slang.so"
+    assert seen["single_unit"] is True
     assert seen["blackbox"] == ["leaf"]
 
 
@@ -1241,6 +1246,46 @@ def test_yosys_plugin_path_builds_read_slang_command(monkeypatch, tmp_path: Path
     assert "read_verilog" not in script
     assert "--top topmod" in script
     assert str(fake_plugin) in script
+
+
+def test_yosys_plugin_single_unit_builds_read_slang_command(
+    monkeypatch, tmp_path: Path
+):
+    """``single_unit`` adds Slang's shared-compilation-unit switch."""
+    fake_yosys = tmp_path / "yosys"
+    fake_yosys.write_text("#!/bin/sh\n")
+    fake_plugin = tmp_path / "slang.so"
+    fake_plugin.write_text("")
+    captured: dict[str, str] = {}
+
+    class _Proc:
+        returncode = 1
+        stderr = "stop"
+        stdout = ""
+
+    def _fake_run(cmd, capture_output, text):  # noqa: ANN001
+        captured["script"] = cmd[3]
+        return _Proc()
+
+    monkeypatch.setattr(yosys_fe.subprocess, "run", _fake_run)
+    with pytest.raises(YosysError):
+        yosys_fe.elaborate(
+            [Path("a.sv")],
+            "topmod",
+            yosys_bin=str(fake_yosys),
+            plugin_path=str(fake_plugin),
+            single_unit=True,
+        )
+    assert "read_slang --std 1800-2017 --top topmod --single-unit" in captured["script"]
+
+
+def test_yosys_single_unit_without_plugin_errors(monkeypatch, tmp_path: Path) -> None:
+    """The switch is meaningful only for Slang's ``read_slang`` command."""
+    fake_yosys = tmp_path / "yosys"
+    fake_yosys.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(yosys_fe.shutil, "which", lambda _name: str(fake_yosys))
+    with pytest.raises(YosysError, match="--single-unit requires"):
+        yosys_fe.elaborate([Path("a.sv")], "topmod", single_unit=True)
 
 
 def test_yosys_success_path_with_keep_json(monkeypatch, tmp_path: Path) -> None:

@@ -61,6 +61,7 @@ def elaborate(
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
     yosys_plugin: str | None = None,
+    single_unit: bool = False,
     blackbox: list[str] | None = None,
 ) -> Module:
     """Elaborate ``sources`` into a flattened :class:`Module`.
@@ -81,6 +82,7 @@ def elaborate(
         yosys_bin=yosys_bin,
         keep_json=keep_json,
         yosys_plugin=yosys_plugin,
+        single_unit=single_unit,
         blackbox=blackbox,
     )
     return module
@@ -94,6 +96,7 @@ def elaborate_with_blackboxes(
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
     yosys_plugin: str | None = None,
+    single_unit: bool = False,
     blackbox: list[str] | None = None,
 ) -> tuple[Module, dict[str, Module]]:
     """Elaborate ``sources`` into a top :class:`Module` plus its blackbox
@@ -115,6 +118,7 @@ def elaborate_with_blackboxes(
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             plugin_path=yosys_plugin,
+            single_unit=single_unit,
             blackbox=blackbox,
         )
     if frontend is Frontend.slang:

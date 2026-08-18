@@ -87,3 +87,10 @@ def test_no_plugin_when_neither_set(monkeypatch: pytest.MonkeyPatch) -> None:
     result = _invoke({"RTL_BUDDY_SLANG_PLUGIN": None}, [])
     assert isinstance(result.exception, _Captured), result.output
     assert box["yosys_plugin"] is None
+
+
+def test_single_unit_reaches_frontend(monkeypatch: pytest.MonkeyPatch) -> None:
+    box = _patch_elaborate(monkeypatch)
+    result = _invoke({}, ["--single-unit"])
+    assert isinstance(result.exception, _Captured), result.output
+    assert box["single_unit"] is True

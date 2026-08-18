@@ -33,6 +33,7 @@ def elaborate(
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
     plugin_path: str | None = None,
+    single_unit: bool = False,
     blackbox: list[str] | None = None,
 ) -> Module:
     """Run yosys to produce a flattened netlist, returning the top module.
@@ -47,6 +48,7 @@ def elaborate(
         yosys_bin=yosys_bin,
         keep_json=keep_json,
         plugin_path=plugin_path,
+        single_unit=single_unit,
         blackbox=blackbox,
     )
     return module
@@ -59,6 +61,7 @@ def elaborate_with_blackboxes(
     yosys_bin: str | None = None,
     keep_json: Path | None = None,
     plugin_path: str | None = None,
+    single_unit: bool = False,
     blackbox: list[str] | None = None,
 ) -> tuple[Module, dict[str, Module]]:
     """Run yosys to produce a flattened netlist JSON, then load it.
@@ -72,6 +75,10 @@ def elaborate_with_blackboxes(
     instead of ``read_verilog``. This is required for designs that use
     SystemVerilog-2017 constructs (e.g. ``import pkg::*``) that Yosys's
     built-in frontend rejects.
+
+    ``single_unit`` makes ``read_slang`` compile all sources together, sharing
+    preprocessor definitions. It is useful for legacy filelists that define a
+    macro in one source and consume it in a later source.
 
     ``blackbox``, if set, names modules to treat as CDC boundary cells:
     each becomes a ``--blackboxed-module <name>`` flag on the
@@ -101,6 +108,11 @@ def elaborate_with_blackboxes(
             "read_slang feature, the built-in read_verilog frontend has no "
             "equivalent"
         )
+    if single_unit and plugin_path is None:
+        raise YosysError(
+            "--single-unit requires the yosys-slang plugin "
+            "(--yosys-plugin / RTL_BUDDY_SLANG_PLUGIN)"
+        )
 
     tmp_json = Path(tempfile.mkstemp(suffix=".json", prefix="rtl-buddy-cdc-")[1])
     try:
@@ -124,6 +136,7 @@ def elaborate_with_blackboxes(
             read_cmd = (
                 f"plugin -i {shlex.quote(plugin_path)}; "
                 f"read_slang --std 1800-2017 --top {shlex.quote(top)} "
+                f"{'--single-unit ' if single_unit else ''}"
                 f"--allow-use-before-declare "
                 f"{bb}{srcs}"
             )
