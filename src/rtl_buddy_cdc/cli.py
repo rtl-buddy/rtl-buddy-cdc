@@ -116,6 +116,19 @@ _CLOCK_TRACE_DEPTH_OPT = typer.Option(
     "them. Raising only ever resolves MORE flops — it never drops a "
     "crossing — so the default leaves results identical. See issue #263.",
 )
+_SYNC_PRIMITIVE_OPT = typer.Option(
+    [],
+    "--sync-primitive",
+    help="Register MODULE as a sanctioned CDC synchroniser primitive: a "
+    "crossing landing in an instance of it is safe by construction, the "
+    "instance is summarised at its destination clock instead of being "
+    "declined as a multi-clock blackbox (no CDC-BBX), and its "
+    "`DEST_SYNC_FF` parameter is checked by CDC-022. Repeatable. The "
+    "Xilinx XPM CDC family (xpm_cdc_single / _array_single / _gray / "
+    "_handshake / _pulse / _sync_rst / _async_rst) is recognised "
+    "built-in — use this only for an in-house or other-vendor macro. "
+    "See issue #275.",
+)
 _VERBOSE_OPT = typer.Option(
     False,
     "--verbose",
@@ -289,6 +302,7 @@ def analyze(
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
     sync_depth: int = _SYNC_DEPTH_OPT,
+    sync_primitive: list[str] = _SYNC_PRIMITIVE_OPT,
     clock_trace_depth: int = _CLOCK_TRACE_DEPTH_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
@@ -324,6 +338,7 @@ def analyze(
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
         clock_trace_depth=clock_trace_depth,
+        sync_primitives=frozenset(sync_primitive),
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -403,6 +418,7 @@ def lint(
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
     sync_depth: int = _SYNC_DEPTH_OPT,
+    sync_primitive: list[str] = _SYNC_PRIMITIVE_OPT,
     clock_trace_depth: int = _CLOCK_TRACE_DEPTH_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
@@ -502,6 +518,7 @@ def lint(
         cdc_018_depth_threshold=cdc_018_depth_threshold,
         clock_trace_depth=clock_trace_depth,
         blackboxes=blackboxes or None,
+        sync_primitives=frozenset(sync_primitive),
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -611,6 +628,7 @@ def _analyze_and_report(
     cdc_010_no_heuristic: bool = False,
     cdc_018_depth_threshold: int = 4,
     clock_trace_depth: int = 16,
+    sync_primitives: frozenset[str] = frozenset(),
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module, blackboxes = netlist.load_with_blackboxes(netlist_path)
@@ -633,6 +651,7 @@ def _analyze_and_report(
         cdc_018_depth_threshold=cdc_018_depth_threshold,
         clock_trace_depth=clock_trace_depth,
         blackboxes=blackboxes,
+        sync_primitives=sync_primitives,
     )
 
 
@@ -656,6 +675,7 @@ def _analyze_module_and_report(
     cdc_018_depth_threshold: int = 4,
     clock_trace_depth: int = 16,
     blackboxes: dict[str, netlist.Module] | None = None,
+    sync_primitives: frozenset[str] = frozenset(),
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
@@ -717,7 +737,11 @@ def _analyze_module_and_report(
         # not re-seeded. The same sequence runs for the lint path, which
         # passes the blackbox siblings the frontend produced.
         boundaries, comp_stats = compose_boundaries(
-            module, blackboxes, spec, max_depth=clock_trace_depth
+            module,
+            blackboxes,
+            spec,
+            max_depth=clock_trace_depth,
+            sync_primitives=sync_primitives,
         )
         crossings = find_crossings(
             module,
@@ -832,6 +856,7 @@ def _analyze_module_and_report(
                 blackbox_modules=frozenset(blackboxes or {}),
                 boundary_clock_pins=boundary_clock_pins,
                 max_depth=clock_trace_depth,
+                sync_primitives=sync_primitives,
             )
             # Blackbox-boundary coverage findings lead the list so an
             # unanalysed boundary is the first thing reported; they are

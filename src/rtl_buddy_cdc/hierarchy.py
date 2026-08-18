@@ -29,9 +29,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from rtl_buddy_cdc.abstract import _instance_clocks, summarise_subtree
+from rtl_buddy_cdc.abstract import (
+    _instance_clocks,
+    summarise_subtree,
+    summarise_sync_primitive,
+)
 from rtl_buddy_cdc.domain import Crossing
 from rtl_buddy_cdc.netlist import BoundarySummary, Module
+from rtl_buddy_cdc.primitives import is_sync_primitive, normalise_type
 from rtl_buddy_cdc.sdc import ClockSpec
 
 
@@ -52,6 +57,10 @@ class CompositionStats:
     *types* that were summarised for at least one instance — the set
     CDC-008 exempts from its clock-as-data check (the boundary cell's
     clock pin is distribution into the opaque subtree, not data).
+    ``primitive_modules`` (#275) is the subset of ``boundary_modules``
+    recognised as sanctioned CDC synchroniser macros (the ``xpm_cdc_*``
+    family plus any ``--sync-primitive`` registrations) — summarised as
+    synchronisers rather than as single-clock subtrees.
     """
 
     instances: int = 0
@@ -60,6 +69,7 @@ class CompositionStats:
     declined: int = 0
     declined_modules: frozenset[str] = field(default_factory=frozenset)
     boundary_modules: frozenset[str] = field(default_factory=frozenset)
+    primitive_modules: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def shared_subtree_reused(self) -> bool:
@@ -75,6 +85,7 @@ def compose_boundaries(
     spec: ClockSpec,
     *,
     max_depth: int = 16,
+    sync_primitives: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, BoundarySummary], CompositionStats]:
     """Summarise every distinct ``(module, clock context)`` once and compose.
 
@@ -125,12 +136,31 @@ def compose_boundaries(
     cache_hits = 0
     declined_modules: set[str] = set()
     boundary_modules: set[str] = set()
+    primitive_modules: set[str] = set()
 
     for inst_name, cell in top.cells.items():
         sub = blackboxes.get(cell.type)
         if sub is None:
             continue
         instances += 1
+        if is_sync_primitive(cell.type, sync_primitives):
+            # Recognised CDC macro (#275): summarised as a synchroniser,
+            # never declined as "not provably single-clock". Deliberately
+            # NOT cached — the primitive summary depends on WHICH root is
+            # the destination, and the cache key's clock context is a
+            # frozenset, so two instances wired src/dest in opposite
+            # directions would collide. Tracing two clock pins is cheap.
+            prim = summarise_sync_primitive(
+                top, cell, sub, spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
+            )
+            if prim is not None:
+                out[inst_name] = prim
+                boundary_modules.add(cell.type)
+                primitive_modules.add(normalise_type(cell.type))
+                continue
+            # Destination clock unidentifiable — fall through to the
+            # generic path so the instance is declined (and reported)
+            # rather than silently vouched for.
         # Clock CONTEXT is the full frozenset of clock roots the instance
         # carries (FIX 1) — not a single root, so a dual-clock IP keys
         # distinctly from a single-clock one and identical instances still
@@ -162,6 +192,7 @@ def compose_boundaries(
         declined=len(declined_modules),
         declined_modules=frozenset(declined_modules),
         boundary_modules=frozenset(boundary_modules),
+        primitive_modules=frozenset(primitive_modules),
     )
     return out, stats
 

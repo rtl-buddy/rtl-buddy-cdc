@@ -1,0 +1,416 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "xpm_cdc_blackbox": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "xpm_cdc_blackbox.sv:49.1-95.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "flag_in": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "cnt_in": {
+          "direction": "input",
+          "bits": [ 5, 6, 7, 8 ]
+        },
+        "flag_out": {
+          "direction": "output",
+          "bits": [ 9 ]
+        },
+        "cnt_out": {
+          "direction": "output",
+          "bits": [ 10, 11, 12, 13 ]
+        }
+      },
+      "cells": {
+        "$procdff$5": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "xpm_cdc_blackbox.sv:91.5-91.51"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 14, 15, 16, 17 ],
+            "Q": [ 10, 11, 12, 13 ]
+          }
+        },
+        "$procdff$6": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "xpm_cdc_blackbox.sv:90.5-90.52"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 18 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$procdff$7": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "xpm_cdc_blackbox.sv:61.5-61.49"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 5, 6, 7, 8 ],
+            "Q": [ 19, 20, 21, 22 ]
+          }
+        },
+        "$procdff$8": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "xpm_cdc_blackbox.sv:60.5-60.50"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 23 ]
+          }
+        },
+        "u_cnt_sync": {
+          "hide_name": 0,
+          "type": "xpm_cdc_gray",
+          "parameters": {
+            "DEST_SYNC_FF": "00000000000000000000000000000100",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "xpm_cdc_blackbox.sv:80.7-85.6"
+          },
+          "port_directions": {
+            "dest_clk": "input",
+            "dest_out_bin": "output",
+            "src_clk": "input",
+            "src_in_bin": "input"
+          },
+          "connections": {
+            "dest_clk": [ 3 ],
+            "dest_out_bin": [ 14, 15, 16, 17 ],
+            "src_clk": [ 2 ],
+            "src_in_bin": [ 19, 20, 21, 22 ]
+          }
+        },
+        "u_flag_sync": {
+          "hide_name": 0,
+          "type": "xpm_cdc_single",
+          "parameters": {
+            "DEST_SYNC_FF": "00000000000000000000000000000100",
+            "SRC_INPUT_REG": "00000000000000000000000000000000"
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "xpm_cdc_blackbox.sv:70.7-75.6"
+          },
+          "port_directions": {
+            "dest_clk": "input",
+            "dest_out": "output",
+            "src_clk": "input",
+            "src_in": "input"
+          },
+          "connections": {
+            "dest_clk": [ 3 ],
+            "dest_out": [ 18 ],
+            "src_clk": [ 2 ],
+            "src_in": [ 23 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\cnt_b[3:0]": {
+          "hide_name": 1,
+          "bits": [ 14, 15, 16, 17 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:91.5-91.51"
+          }
+        },
+        "$0\\cnt_q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 5, 6, 7, 8 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:61.5-61.49"
+          }
+        },
+        "$0\\flag_b[0:0]": {
+          "hide_name": 1,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:90.5-90.52"
+          }
+        },
+        "$0\\flag_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:60.5-60.50"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:50.23-50.28"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:51.23-51.28"
+          }
+        },
+        "cnt_b": {
+          "hide_name": 0,
+          "bits": [ 10, 11, 12, 13 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:89.15-89.20"
+          }
+        },
+        "cnt_in": {
+          "hide_name": 0,
+          "bits": [ 5, 6, 7, 8 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:53.23-53.29"
+          }
+        },
+        "cnt_out": {
+          "hide_name": 0,
+          "bits": [ 10, 11, 12, 13 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:55.23-55.30"
+          }
+        },
+        "cnt_q": {
+          "hide_name": 0,
+          "bits": [ 19, 20, 21, 22 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:59.15-59.20"
+          }
+        },
+        "cnt_sync": {
+          "hide_name": 0,
+          "bits": [ 14, 15, 16, 17 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:65.16-65.24"
+          }
+        },
+        "flag_b": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:88.15-88.21"
+          }
+        },
+        "flag_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:52.23-52.30"
+          }
+        },
+        "flag_out": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:54.23-54.31"
+          }
+        },
+        "flag_q": {
+          "hide_name": 0,
+          "bits": [ 23 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:58.15-58.21"
+          }
+        },
+        "flag_sync": {
+          "hide_name": 0,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:64.16-64.25"
+          }
+        }
+      }
+    },
+    "xpm_cdc_gray": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "dynports": "00000000000000000000000000000001",
+        "src": "xpm_cdc_blackbox.sv:34.1-47.10"
+      },
+      "parameter_default_values": {
+        "DEST_SYNC_FF": "00000000000000000000000000000100",
+        "INIT_SYNC_FF": "00000000000000000000000000000000",
+        "REG_OUTPUT": "00000000000000000000000000000000",
+        "SIM_ASSERT_CHK": "00000000000000000000000000000000",
+        "SIM_LOSSLESS_GRAY_CHK": "00000000000000000000000000000000",
+        "WIDTH": "00000000000000000000000000000010"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "src_in_bin": {
+          "direction": "input",
+          "bits": [ 3, 4 ]
+        },
+        "dest_clk": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "dest_out_bin": {
+          "direction": "output",
+          "bits": [ 6, 7 ]
+        }
+      },
+      "cells": {
+      },
+      "netnames": {
+        "dest_clk": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:44.29-44.37"
+          }
+        },
+        "dest_out_bin": {
+          "hide_name": 0,
+          "bits": [ 6, 7 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:45.29-45.41"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:42.29-42.36"
+          }
+        },
+        "src_in_bin": {
+          "hide_name": 0,
+          "bits": [ 3, 4 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:43.29-43.39"
+          }
+        }
+      }
+    },
+    "xpm_cdc_single": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "xpm_cdc_blackbox.sv:20.1-31.10"
+      },
+      "parameter_default_values": {
+        "DEST_SYNC_FF": "00000000000000000000000000000100",
+        "INIT_SYNC_FF": "00000000000000000000000000000000",
+        "SIM_ASSERT_CHK": "00000000000000000000000000000000",
+        "SRC_INPUT_REG": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "src_in": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "dest_clk": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "dest_out": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+      },
+      "netnames": {
+        "dest_clk": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:28.17-28.25"
+          }
+        },
+        "dest_out": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:29.17-29.25"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:26.17-26.24"
+          }
+        },
+        "src_in": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "xpm_cdc_blackbox.sv:27.17-27.23"
+          }
+        }
+      }
+    }
+  }
+}
