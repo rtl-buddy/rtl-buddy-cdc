@@ -27,7 +27,7 @@ from rtl_buddy_cdc.sdc import ClockSpec
 from rtl_buddy_cdc.waivers import SuppressedViolation
 
 TOOL_NAME = "rtl-buddy-cdc"
-TOOL_VERSION = "0.3.3"
+TOOL_VERSION = "0.4.0"
 TOOL_INFO_URI = "https://github.com/rtl-buddy/rtl-buddy-cdc"
 
 # JSON output schema contract — these dotted keys are PUBLIC API.
@@ -77,6 +77,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "CDC-015": "Sync chain asynchronously reset from a foreign clock domain",
     "CDC-016": "Opposite-edge synchroniser (halves MTBF)",
     "CDC-017": "Transparent latch in CDC path",
+    "CDC-022": "CDC primitive with insufficient DEST_SYNC_FF depth",
 }
 
 

@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-18
+
+### Added
+
+- **XPM CDC macro recognition** (#275). Real FPGA designs synchronise
+  with a vendor macro rather than a hand-rolled 2FF chain, and the
+  Xilinx XPM CDC family (`xpm_cdc_single`, `xpm_cdc_array_single`,
+  `xpm_cdc_gray`, `xpm_cdc_handshake`, `xpm_cdc_pulse`,
+  `xpm_cdc_sync_rst`, `xpm_cdc_async_rst`) is the dominant case. Its
+  sources ship inside the vendor install tree, so a filelist built from
+  project RTL carries only the instantiation — the analyzer saw a
+  bodyless, **dual-clock** blackbox, decided it was "not provably
+  single-clock", and declined it. Two failures followed: one `CDC-BBX`
+  error per instance (a 40-macro design needed 40 waivers), and — less
+  visible — the crossing through the macro **vanished**, because a
+  declined instance seeds neither a boundary source nor a boundary sink.
+
+  The new `rtl_buddy_cdc.primitives` registry recognises the family **by
+  module name**. That is the deliberate choice: the name is the
+  contract (a fixed, documented, versioned library whose ports are
+  rigidly `src_*` / `dest_*` and whose clocks are `src_clk` /
+  `dest_clk`), and it is the only route that works when the sources
+  aren't there. A recognised instance is summarised by
+  `abstract.summarise_sync_primitive` as a *synchroniser*: each output
+  port is stamped with the domain that really drives it and marked
+  `synchronised=True`, and no virtual sink is seeded on its data inputs.
+
+  Recognition deliberately does **not** become a blind spot — because
+  each output carries its true domain, a `dest_out` consumed by a flop
+  in some *third* domain is still reported by the ordinary
+  `dst_clock != src_clock` test. We accept the crossing the macro
+  handles and keep the one it doesn't.
+
+- **CDC-022 — recognised CDC primitive with insufficient sync depth**
+  (#275). The blackbox analogue of CDC-002. A macro carries its stage
+  count as a *parameter* (`DEST_SYNC_FF`, plus `SRC_SYNC_FF` on
+  `xpm_cdc_handshake`), not as a chain the analyzer can walk, so once
+  the macro is recognised CDC-002 can never speak to depth again.
+  CDC-022 reads the parameter, firing `warning` (`--strict` → error)
+  when it is below `--sync-depth`. It reads only `Cell.type` /
+  `Cell.parameters`, so it works even when the macro arrived as a bare
+  unresolved cell with no blackbox sibling; an XPM instantiation that
+  leaves the parameter at its default is checked against UG974's
+  documented default of 4 rather than skipped. **New rule id — nothing
+  was renamed**; the rule-id set is a downstream contract.
+
+- **`--sync-primitive MODULE`** (repeatable, #275). Registers a
+  site-local or other-vendor CDC macro for the same treatment. Mirrors
+  the existing repeatable `--blackbox` option — no new config file, no
+  new schema. Registered names get no XPM port-naming promise, so all
+  of their outputs are attributed to the destination clock (the
+  conservative reading). A registered macro whose destination clock
+  can't be identified is **not** silently vouched for: it falls through
+  to the generic path and is declined as before.
+
+### Fixed
+
+- **`(* ASYNC_REG *)` never matched the Xilinx spelling** (#275).
+  `USER_SYNC_ATTRS` has carried an `async_reg` alias since the marker
+  plumbing landed, precisely to honour the Xilinx synthesis attribute —
+  but Xilinx (and the XPM macro sources) write
+  `(* ASYNC_REG = "TRUE" *)`, and Yosys preserves attribute names
+  verbatim, so a case-sensitive match never fired on the one idiom the
+  alias existed for. `user_sync_flop_names` now matches attribute names
+  case-insensitively. This also gives the "user *does* have the XPM
+  sources in the filelist" route for free, with no XPM-specific code.
+
 ## [0.3.3] — 2026-06-17
 
 ### Fixed
