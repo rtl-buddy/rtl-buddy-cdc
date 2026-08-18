@@ -396,6 +396,12 @@ def lint(
         "when the flag is omitted (the explicit flag wins); this is the "
         "machine-local .env flow rtl_buddy populates from .rtl-buddy/.env.",
     ),
+    single_unit: bool = typer.Option(
+        False,
+        "--single-unit",
+        help="Yosys Slang frontend only: compile all sources as one "
+        "compilation unit, sharing preprocessor macro definitions.",
+    ),
     blackbox: list[str] = typer.Option(
         [],
         "--blackbox",
@@ -478,6 +484,7 @@ def lint(
             yosys_bin=yosys_bin,
             keep_json=keep_json,
             yosys_plugin=yosys_plugin,
+            single_unit=single_unit,
             blackbox=list(blackbox),
         )
     except SlangFrontendUnavailable as e:
