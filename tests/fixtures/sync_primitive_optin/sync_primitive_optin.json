@@ -1,0 +1,222 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "acme_cdc_sync": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "sync_primitive_optin.sv:18.1-26.10"
+      },
+      "parameter_default_values": {
+        "DEST_SYNC_FF": "00000000000000000000000000000011"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "src_in": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "dest_clk": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "dest_out": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+      },
+      "netnames": {
+        "dest_clk": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:23.17-23.25"
+          }
+        },
+        "dest_out": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:24.17-24.25"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:21.17-21.24"
+          }
+        },
+        "src_in": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:22.17-22.23"
+          }
+        }
+      }
+    },
+    "sync_primitive_optin": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "sync_primitive_optin.sv:28.1-50.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "flag_in": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "flag_out": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+        "$procdff$3": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "sync_primitive_optin.sv:48.5-48.52"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 6 ],
+            "Q": [ 5 ]
+          }
+        },
+        "$procdff$4": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "sync_primitive_optin.sv:35.5-35.50"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 7 ]
+          }
+        },
+        "u_acme": {
+          "hide_name": 0,
+          "type": "acme_cdc_sync",
+          "parameters": {
+            "DEST_SYNC_FF": "00000000000000000000000000000011"
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "sync_primitive_optin.sv:40.7-45.6"
+          },
+          "port_directions": {
+            "dest_clk": "input",
+            "dest_out": "output",
+            "src_clk": "input",
+            "src_in": "input"
+          },
+          "connections": {
+            "dest_clk": [ 3 ],
+            "dest_out": [ 6 ],
+            "src_clk": [ 2 ],
+            "src_in": [ 7 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\flag_b[0:0]": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:48.5-48.52"
+          }
+        },
+        "$0\\flag_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:35.5-35.50"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:29.17-29.22"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:30.17-30.22"
+          }
+        },
+        "flag_b": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:47.9-47.15"
+          }
+        },
+        "flag_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:31.17-31.24"
+          }
+        },
+        "flag_out": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:32.17-32.25"
+          }
+        },
+        "flag_q": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:34.9-34.15"
+          }
+        },
+        "flag_sync": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "sync_primitive_optin.sv:37.10-37.19"
+          }
+        }
+      }
+    }
+  }
+}

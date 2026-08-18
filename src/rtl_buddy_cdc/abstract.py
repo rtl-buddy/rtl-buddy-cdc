@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from rtl_buddy_cdc.domain import _bit_drivers, trace_clock_root
 from rtl_buddy_cdc.flops import flop_clk_pin, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, PortBoundary
+from rtl_buddy_cdc.primitives import clock_pin_role, port_domain
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL as _UNCONSTRAINED, ClockSpec
 
 # Yosys cell-port names a blackbox instance may use to carry a clock.
@@ -363,6 +364,118 @@ def summarise_subtree(
         ports=ports,
         clock=clk,
         input_ports=input_ports,
+    )
+
+
+def summarise_sync_primitive(
+    parent: Module,
+    instance: Cell,
+    sub: Module,
+    spec: ClockSpec,
+    *,
+    pin_clocks: dict[str, str] | None = None,
+    max_depth: int = 16,
+) -> BoundarySummary | None:
+    """Summarise a recognised CDC macro (issue #275) as a *synchroniser*.
+
+    The sibling of :func:`summarise_subtree` for instances whose module
+    type is in the sanctioned-primitive registry
+    (:mod:`rtl_buddy_cdc.primitives`). The generic summariser declines
+    these — an XPM CDC macro is dual-clock by construction, so
+    :func:`is_single_clock_subtree` is False and the instance becomes a
+    ``CDC-BBX`` coverage finding while its crossing silently vanishes.
+    Here the multi-clock-ness is the *point*: the macro is the
+    synchroniser.
+
+    The summary exploits the family's rigid port convention:
+
+    - Each **output** port is stamped with the domain that actually
+      drives it — ``dest_*`` outputs at the ``dest_clk`` root, ``src_*``
+      outputs (``xpm_cdc_handshake.src_rcv``) at the ``src_clk`` root —
+      and marked ``synchronised=True``. The port *width* is taken from
+      the parent-side connection, not from ``sub.ports``: a ``dynports``
+      blackbox stub reports its default-parameter width, not the
+      instantiated one.
+    - ``input_ports`` is left **empty**, so no virtual sink is seeded.
+      A crossing into a recognised synchroniser's data input is safe by
+      construction — that is the whole reason the macro exists — and
+      with no boundary sink the reconvergence gate can never trip on it
+      either.
+
+    Note what this does *not* suppress: because each output carries the
+    domain it is really driven in, a ``dest_out`` consumed by a flop in
+    some *third* domain is still emitted as a crossing by the existing
+    ``dst_clock != src_clock`` test in
+    :func:`~rtl_buddy_cdc.domain.find_crossings`. We accept the crossing
+    the macro handles and keep the one it doesn't.
+
+    Returns ``None`` — deferring to the generic path, i.e. declining —
+    when the instance's destination-side clock pin cannot be identified.
+    That happens when ``dest_clk`` is driven by something that doesn't
+    resolve to a declared clock (an undeclared port, an unresolved
+    generated clock); refusing to vouch for the macro there is the
+    conservative reading, and CDC-021 / CDC-BBX then say why.
+    """
+    ic = _instance_clocks(
+        parent, instance, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+    )
+    if not ic.clock_pins:
+        return None
+    drivers = _bit_drivers(parent)
+    from rtl_buddy_cdc.domain import _build_bit_to_clock
+
+    bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
+
+    roles: dict[str, str | None] = {}
+    unclassified: list[str | None] = []
+    for pin in sorted(ic.clock_pins):
+        bits = instance.connections.get(pin)
+        root = (
+            trace_clock_root(
+                parent, bits[0], drivers, max_depth=max_depth, bit_to_clock=bit_to_clock
+            )
+            if bits
+            else None
+        )
+        role = clock_pin_role(pin)
+        if role is None:
+            unclassified.append(root)
+        else:
+            roles.setdefault(role, root)
+    if "dest" not in roles:
+        # A single unclassifiable clock pin is the destination clock (the
+        # only clock the macro has). Two or more and we can't tell which
+        # side is which — decline rather than guess.
+        if len(ic.clock_pins) == 1 and unclassified:
+            roles["dest"] = unclassified[0]
+        else:
+            return None
+    dest_clock = roles["dest"]
+    # A macro with no separate source clock pin (``xpm_cdc_sync_rst`` /
+    # ``xpm_cdc_async_rst`` take an asynchronous *reset*, not a clock)
+    # drives everything from the destination side.
+    src_clock = roles.get("src", dest_clock)
+
+    ports: dict[str, PortBoundary] = {}
+    for port in sub.ports.values():
+        if port.direction not in ("output", "inout"):
+            continue
+        if port.name in ic.clock_pins:
+            continue
+        conn = instance.connections.get(port.name)
+        width = len(conn) if conn else len(port.bits)
+        side = port_domain(instance.type, port.name)
+        ports[port.name] = PortBoundary(
+            port=port.name,
+            src_clock=src_clock if side == "src" else dest_clock,
+            synchronised=True,
+            width=width,
+        )
+    return BoundarySummary(
+        module=sub.name,
+        ports=ports,
+        clock=dest_clock,
+        input_ports={},
     )
 
 

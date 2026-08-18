@@ -676,6 +676,79 @@ above. Wiring it live means:
   the deliberate price of that default until one of the two detection
   sources exists.
 
+### 4.10 Recognised CDC primitives (issue #275)
+
+The star-collapse of §4.9 assumes the boundary is a *design* subtree the
+analyzer would otherwise have to walk. A **vendor CDC macro** is a
+different kind of object: it is dual-clock by construction (`src_clk` +
+`dest_clk`), so `is_single_clock_subtree` is False and
+`summarise_subtree` declines it — producing a `CDC-BBX` coverage error
+per instance *and* dropping the crossing through it entirely (a declined
+instance is absent from `boundaries`, so neither a boundary source nor a
+boundary sink is seeded). On an XPM-based design that is both a false
+positive flood and a silent blind spot.
+
+`primitives.py` is the registry that resolves this: a small table of
+module names (the seven-member Xilinx `xpm_cdc_*` family, plus any
+`--sync-primitive` registrations) that the analyzer treats as
+*sanctioned synchronisers*. `compose_boundaries` consults it **before**
+the generic path and, on a hit, calls
+`abstract.summarise_sync_primitive` instead of `summarise_subtree`.
+
+**Recognition is by module NAME, not by elaborating the macro.** XPM
+sources live in the vendor install tree and are injected at synthesis, so
+a filelist built from project RTL does not contain them — an
+elaboration-based recogniser would serve almost nobody. The name is
+sufficient because the library's port convention is rigid: every
+data/control port is `src_*` or `dest_*` and every clock pin is
+`src_clk` / `dest_clk`.
+
+The resulting `BoundarySummary` differs from a §4.9 summary in three
+ways, and each is load-bearing:
+
+1. **`clock` is the destination clock**, resolved from the `dest_clk`
+   pin specifically rather than from "the sole root". The clock pins
+   surfaced by `_instance_clocks` are classified by name
+   (`clock_pin_role`); a macro with exactly one, unclassifiable, clock
+   pin takes it as the destination. If the destination cannot be
+   identified — two clock pins that say neither `src` nor `dest`, or an
+   unresolved `dest_clk` — the summariser returns `None` and the
+   instance **falls through to the generic path**, i.e. is declined and
+   reported. Registering a macro is not a licence to skip it.
+2. **Each output port is stamped with the domain that actually drives
+   it** and carries `synchronised=True` — the first real use of the
+   `PortBoundary.synchronised` hook §4.9 reserved. `dest_*` outputs are
+   launched from the destination clock, `xpm_cdc_handshake.src_rcv` from
+   the source clock. Port *width* comes from the parent-side connection,
+   not from `sub.ports`: a `dynports` blackbox stub reports its
+   default-parameter width, not the instantiated one.
+3. **`input_ports` is empty** — no virtual sink. A crossing into a
+   recognised synchroniser's data input is safe by construction, which
+   is the whole reason the macro exists. As a side effect the
+   reconvergence gate (`reconvergence_unsafe_instances`) can never trip
+   on a macro with two data inputs, since it groups on `dst_boundary`.
+
+The suppression that results is a *consequence of naming the right
+domain*, not an unconditional skip. Because each output carries its true
+domain, a `dest_out` consumed by a flop in a **third** domain is still
+emitted by the ordinary `dst_clock != src_clock` test in
+`find_crossings`. The macro's own crossing is accepted; a crossing the
+macro does not cover is kept.
+
+Instances are deliberately **not cached** by `compose_boundaries`. The
+cache key is `(module type, frozenset of clock roots)`, and a frozenset
+cannot distinguish two instances of the same macro wired src/dest in
+opposite directions — they would collide and one would get the other's
+destination clock. Tracing two clock pins is cheap; correctness is not
+negotiable here. `CompositionStats.primitive_modules` records the
+recognised types (a subset of `boundary_modules`).
+
+A complementary, zero-XPM-code route serves users who *do* have the
+sources: XPM tags its internal stages `(* ASYNC_REG = "TRUE" *)`, and
+`user_sync_flop_names` matches `USER_SYNC_ATTRS` case-insensitively, so
+flattened internals are recognised through the ordinary `(* cdc_sync *)`
+machinery.
+
 ## 5. Clock-domain tracing
 
 `domain.trace_clock_root` is the heart of CDC-008 and the foundation
@@ -1666,6 +1739,45 @@ source-side handshake — exactly the pattern CDC-012 catches. Each
 was extended with a synced-back ack and source-held payload so
 they now demonstrate the real-world correct pattern rather than
 just "doesn't trigger CDC-004."
+
+### 8.17 CDC-022 — CDC primitive with insufficient sync depth
+
+Recognising a vendor CDC macro (§4.10) removes its crossing from the
+report, which removes CDC-002's only handle on synchroniser depth for
+that path. The depth did not disappear, though — it moved from a
+walkable flop chain into an **instance parameter**: `DEST_SYNC_FF` on
+every XPM CDC macro, plus `SRC_SYNC_FF` on `xpm_cdc_handshake` for the
+returning ack. Without CDC-022 a project that sets `--sync-depth 3`
+would silently accept every `DEST_SYNC_FF=2` instance in the design;
+the rule restores the check at the only place the number is visible.
+
+Detection is unusually simple, and deliberately so: `check_cdc_022`
+reads `Cell.type` and `Cell.parameters` and nothing else. It therefore
+fires whether or not a blackbox sibling module was loaded for the
+macro — a macro that arrived as a bare unresolved cell type still gets
+its depth checked, which is the common shape in a vendor-emitted
+netlist.
+
+Two defaulting decisions:
+
+- Yosys records only **overridden** parameters on a cell, so an
+  instantiation that takes XPM's default has no `DEST_SYNC_FF` entry at
+  all. Staying silent there would make the rule useless on the most
+  common instantiation style, so an XPM macro with the parameter absent
+  is checked against UG974's documented default of **4**.
+- A `--sync-primitive`-registered macro has **no** known default. An
+  absent parameter there is skipped rather than assumed — we have no
+  basis to invent a number for a third party's macro.
+
+Severity is `warning` (`--strict` → error), mirroring CDC-002. A
+2-stage synchroniser is correct engineering at most clock rates; the
+finding is "shallower than *this project* asked for", not "broken".
+
+CDC-022 is a **new rule id**. The rule-id set is a downstream contract
+(waiver files, rtl-buddy-xeno's mutation-operator predictions,
+`rb cdc` reporting), so ids are added, never renamed — the same
+discipline the CDC-007 → RDC-001 rename had to pay for with a
+legacy-id alias in `waivers.py`.
 
 ## 9. Waivers
 

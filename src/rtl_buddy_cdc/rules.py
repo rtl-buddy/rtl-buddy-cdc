@@ -16,6 +16,12 @@ from typing import Callable, Literal
 from rtl_buddy_cdc.domain import Crossing, assign_domains
 from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell, is_latch_cell
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
+from rtl_buddy_cdc.primitives import (
+    is_sync_primitive,
+    is_xpm_primitive,
+    normalise_type as normalise_primitive_type,
+    sync_depths as primitive_sync_depths,
+)
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.reset_hints import ResetHints
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
@@ -247,10 +253,17 @@ def user_sync_flop_names(module: Module) -> set[str]:
     with one of the :data:`USER_SYNC_ATTRS`. These are treated by
     CDC-001 / CDC-002 / CDC-003 / CDC-006 as "trust-me, this is a
     correctly-engineered synchronizer" — the structural rule passes
-    skip them."""
+    skip them.
+
+    Attribute names are matched **case-insensitively** (#275). The
+    ``async_reg`` alias exists to honour the Xilinx synthesis attribute,
+    but Xilinx (and the XPM CDC macro sources) spell it
+    ``(* ASYNC_REG = "TRUE" *)`` and Yosys preserves the attribute name
+    verbatim — so a case-sensitive match never fired on the very idiom
+    the alias was added for."""
     sync_bits: set[Bit] = set()
     for nn in module.netnames.values():
-        if USER_SYNC_ATTRS & set(nn.attributes):
+        if USER_SYNC_ATTRS & {a.lower() for a in nn.attributes}:
             for b in nn.bits:
                 if isinstance(b, int):
                     sync_bits.add(b)
@@ -4540,6 +4553,72 @@ def check_cdc_018(
     return violations
 
 
+def check_cdc_022(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    required_depth: int = 2,
+    *,
+    ctx: _RuleContext | None = None,  # noqa: ARG001
+    sync_primitives: frozenset[str] = frozenset(),
+) -> list[Violation]:
+    """CDC-022 — Recognised CDC primitive with insufficient sync depth.
+
+    The blackbox analogue of CDC-002 (issue #275). A sanctioned CDC
+    macro — the ``xpm_cdc_*`` family, or a site registration via
+    ``--sync-primitive`` — carries its synchroniser stage count as a
+    *parameter* (``DEST_SYNC_FF``, plus ``SRC_SYNC_FF`` on
+    ``xpm_cdc_handshake``), not as a flop chain the analyzer can walk.
+    Once the macro is recognised as a synchroniser its crossing stops
+    being reported, so without this rule a project that requires
+    ``--sync-depth 3`` would silently accept every ``DEST_SYNC_FF=2``
+    instance in the design. CDC-022 restores that check at the only
+    place the depth is visible: the instance parameter.
+
+    Severity ``warning`` (``--strict`` promotes to ``error``), matching
+    CDC-002 — a 2-stage synchroniser is correct engineering at most
+    clock rates; the finding is "shallower than *this project* asked
+    for", not "broken".
+
+    Reads only ``Cell.type`` / ``Cell.parameters``, so it fires whether
+    or not a blackbox sibling module was loaded for the macro. An XPM
+    instantiation that leaves the parameter at its default gets UG974's
+    documented default (4) rather than being skipped; a user-registered
+    primitive with no ``DEST_SYNC_FF`` override is skipped (no known
+    default to assume).
+    """
+    violations: list[Violation] = []
+    for inst_name, cell in sorted(module.cells.items()):
+        if not is_sync_primitive(cell.type, sync_primitives):
+            continue
+        # XPM documents a 2..10 range for its depth parameters; a
+        # site-registered primitive has no range we can quote.
+        range_hint = " (XPM accepts 2..10)" if is_xpm_primitive(cell.type) else ""
+        for param, depth in sorted(
+            primitive_sync_depths(cell, sync_primitives).items()
+        ):
+            if depth >= required_depth:
+                continue
+            violations.append(
+                Violation(
+                    rule_id="CDC-022",
+                    severity="warning",
+                    message=(
+                        f"synchroniser primitive `{inst_name}` "
+                        f"(`{normalise_primitive_type(cell.type)}`) declares "
+                        f"{param}={depth}, below the project's required "
+                        f"synchroniser depth of {required_depth}. The macro's "
+                        f"stage count is a parameter, not a flop chain, so "
+                        f"CDC-002 cannot see it. Raise {param} on the "
+                        f"instantiation{range_hint} or lower --sync-depth if "
+                        f"{depth} stages are sufficient here."
+                    ),
+                    cell_name=inst_name,
+                )
+            )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -4569,6 +4648,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-019": check_cdc_019,
     "CDC-020": check_cdc_020,
     "CDC-021": check_cdc_021,
+    "CDC-022": check_cdc_022,
 }
 
 
@@ -4652,6 +4732,7 @@ def run_all(
     blackbox_modules: frozenset[str] = frozenset(),
     boundary_clock_pins: dict[str, frozenset[str]] | None = None,
     max_depth: int = 16,
+    sync_primitives: frozenset[str] = frozenset(),
 ) -> list[Violation]:
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
@@ -4682,6 +4763,17 @@ def run_all(
                     clock_spec,
                     ctx=ctx,
                     use_heuristic=cdc_010_heuristic,
+                )
+            )
+        elif rule_id == "CDC-022":
+            out.extend(
+                check_cdc_022(
+                    module,
+                    crossings,
+                    clock_spec,
+                    required_depth,
+                    ctx=ctx,
+                    sync_primitives=sync_primitives,
                 )
             )
         elif rule_id == "CDC-018":
