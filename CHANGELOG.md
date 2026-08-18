@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Single-compilation-unit Yosys Slang elaboration** (#277). The new
+  `rtl-buddy-cdc lint --single-unit` option forwards `--single-unit` to
+  `read_slang`, allowing project filelists whose packages, macros, or other
+  compilation-unit state intentionally span source files to use the
+  yosys-slang frontend without wrapper files or source rewrites.
+
 - **XPM CDC macro recognition** (#275). Real FPGA designs synchronise
   with a vendor macro rather than a hand-rolled 2FF chain, and the
   Xilinx XPM CDC family (`xpm_cdc_single`, `xpm_cdc_array_single`,
