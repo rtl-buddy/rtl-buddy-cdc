@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from rtl_buddy_cdc import pragma
 from rtl_buddy_cdc.cli import app
 
 PYSLANG_INSTALLED = importlib.util.find_spec("pyslang") is not None
@@ -126,16 +127,87 @@ def test_analyze_help_documents_the_gap() -> None:
     assert "rbcdc" in result.output
 
 
-def test_violation_source_file_returns_none_without_a_location() -> None:
-    """The file-scope resolver is total: a violation the analyzer can't
+def test_violation_source_ref_returns_none_without_a_location() -> None:
+    """The location resolver is total: a violation the analyzer can't
     place (no cell, or a cell carrying no ``src``) resolves to ``None``
     and is therefore never waived by a pragma."""
     from rtl_buddy_cdc import netlist as netlist_mod
-    from rtl_buddy_cdc.cli import _violation_source_file  # noqa: PLC2701
+    from rtl_buddy_cdc.cli import _violation_source_ref  # noqa: PLC2701
     from rtl_buddy_cdc.rules import Violation
 
     module = netlist_mod.load(NETLIST)
     unplaced = Violation(rule_id="CDC-BBX", severity="error", message="opaque")
-    assert _violation_source_file(module, unplaced) is None
+    assert _violation_source_ref(module, unplaced) is None
     missing_cell = dataclasses.replace(unplaced, cell_name="$no_such_cell")
-    assert _violation_source_file(module, missing_cell) is None
+    assert _violation_source_ref(module, missing_cell) is None
+
+
+# --- block scoping, end to end (issue #43) ----------------------------------
+
+BLOCK_FIX = Path(__file__).parent / "fixtures" / "pragma_block_scope"
+BLOCK_SV = BLOCK_FIX / "pragma_block_scope.sv"
+BLOCK_SDC = BLOCK_FIX / "pragma_block_scope.sdc"
+
+
+def _lint_block(*extra: str, frontend: str = "slang") -> object:
+    return runner.invoke(
+        app,
+        [
+            "lint",
+            "--frontend",
+            frontend,
+            "--top",
+            "pragma_block_scope",
+            "--sdc",
+            str(BLOCK_SDC),
+            *extra,
+            str(BLOCK_SV),
+        ],
+    )
+
+
+@pytest.mark.skipif(not PYSLANG_INSTALLED, reason="pyslang not installed")
+def test_block_scope_suppresses_inside_and_keeps_outside() -> None:
+    """The fixture has two identical CDC-001 crossings; only the one
+    inside the disable/enable block is waived, so the run still fails."""
+    result = _lint_block("--format", "json")
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["summary"]["violations"] == 1
+    assert payload["summary"]["suppressed"] == 1
+
+    (kept,) = payload["violations"]
+    (sup,) = payload["suppressed"]
+    kept_line = kept["location"]["start_line"]
+    sup_line = sup["location"]["start_line"]
+    waiver = sup["waiver"]
+    # The suppressed one is inside [start, end); the kept one is after.
+    assert waiver["origin"] == str(BLOCK_SV)
+    assert waiver["source_line"] <= sup_line < waiver["end_line"]
+    assert kept_line >= waiver["end_line"]
+
+
+@pytest.mark.skipif(not PYSLANG_INSTALLED, reason="pyslang not installed")
+def test_block_scope_renders_its_range_in_the_text_report() -> None:
+    """Optional polish from #43: a closed block shows as a range, so a
+    block-scoped pragma is visibly narrower than a file-scoped one."""
+    result = _lint_block()
+    assert f"(pragma {BLOCK_SV}:37-42)" in result.output
+
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="yosys not on PATH")
+def test_block_scope_is_frontend_independent() -> None:
+    result = _lint_block(frontend="yosys")
+    assert result.exit_code == 1, result.output
+    assert "Suppressed by waivers (1)" in result.output
+    assert f"(pragma {BLOCK_SV}:37-42)" in result.output
+
+
+def test_unclosed_pragma_still_renders_without_a_range() -> None:
+    """The phase-2 form (no `enable-rule`) keeps its single-location
+    rendering — the two shapes stay distinguishable."""
+    from rtl_buddy_cdc.reporter import _waiver_provenance  # noqa: PLC2701
+
+    (open_block,) = pragma.scan([SV])
+    assert open_block.end_line is None
+    assert _waiver_provenance(open_block) == f"pragma {SV}:26"

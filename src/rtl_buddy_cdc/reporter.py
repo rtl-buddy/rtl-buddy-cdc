@@ -386,9 +386,14 @@ def _waiver_provenance(w: Waiver) -> str:
     A waiver-file entry only has a line number (the file is the one the
     user passed to ``--waivers``). An in-RTL pragma has an ``origin``,
     so it renders as a source location — ``src.sv:42`` — which is both
-    clickable and unambiguous against the waiver-file form."""
+    clickable and unambiguous against the waiver-file form. A pragma
+    closed by an ``enable-rule`` renders its whole block as
+    ``src.sv:42-58``, so a block-scoped suppression is visibly
+    narrower than one that runs to the end of the file."""
     if w.origin is None:
         return f"waiver line {w.source_line}"
+    if w.end_line is not None:
+        return f"pragma {w.origin}:{w.source_line}-{w.end_line}"
     return f"pragma {w.origin}:{w.source_line}"
 
 
@@ -492,10 +497,16 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
                     "reason": s.waiver.reason,
                     # ``source_line`` is a line in ``origin`` when that
                     # is set (an in-RTL pragma), else in the --waivers
-                    # file. ``origin`` is the added key, so a consumer
-                    # that ignores it keeps reading the old shape.
+                    # file. ``origin`` / ``end_line`` are added keys, so
+                    # a consumer that ignores them keeps reading the old
+                    # shape. ``end_line`` closes the pragma's half-open
+                    # ``[source_line, end_line)`` block; null means the
+                    # pragma runs to the end of its file (and is always
+                    # null for a waiver-file entry, which has no line
+                    # scope).
                     "source_line": s.waiver.source_line,
                     "origin": s.waiver.origin,
+                    "end_line": s.waiver.end_line,
                 },
             }
             for s in result.suppressed

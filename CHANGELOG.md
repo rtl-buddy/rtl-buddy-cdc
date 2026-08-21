@@ -66,8 +66,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suppressed list, `analyze` over the same committed netlist still
   exits 1.
 
-  Block-scoped `enable-rule` lands with #43; today a pragma covers its
-  whole file.
+  **Block scoping** (#43): an `enable-rule` closes the region a
+  `disable-rule` opened, so a suppression can cover one always-block
+  instead of a whole file.
+
+  ```systemverilog
+  // rbcdc: disable-rule CDC-001 vetted by hand
+  always_ff @(posedge dst_clk) q <= src_q;
+  // rbcdc: enable-rule CDC-001
+  ```
+
+  The region is half-open — `[disable_line, enable_line)` — so the
+  `enable-rule` line is outside it. Pairing is per rule id, so blocks
+  for different rules interleave without interfering; re-disabling an
+  open rule ends the running region and starts a fresh one (the newer
+  reason applies from there); a stray `enable-rule` is ignored; and a
+  `disable-rule` with no `enable-rule` runs to the end of the file —
+  the file-scoped form, unchanged.
+
+  `Waiver` gains `start_line` / `end_line` (both null on a
+  waiver-file entry, which has no line scope) and `waivers.apply`'s
+  resolver widened from a file to a `SourceRef(file, line)` — the
+  keyword is now `locate`. A finding located to a file but not a line
+  falls back to file scope: a range check the analyzer can't perform
+  shouldn't silently swallow the suppression.
+
+  A closed block reports its range, which is what makes a block-scoped
+  waiver visibly narrower than a file-scoped one:
+
+  ```text
+  Suppressed by waivers (2)
+    CDC-001  vetted by hand              (pragma rtl/dut.sv:37-42)
+    CDC-004  whole file, generated code  (pragma rtl/gen.sv:3)
+  ```
+
+  JSON `suppressed[].waiver` carries `end_line` alongside `origin`.
+  Fixture `pragma_block_scope` is the paired case: two identical
+  CDC-001 crossings, the one inside the block suppressed and the one
+  after it kept, so the run still exits 1.
 
 - **`--blackbox` now refuses a module that drives a clock output**
   (`CDC-BBX`, #273). The boundary-soundness check declined a candidate
