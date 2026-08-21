@@ -297,6 +297,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clocks and previously reported clean (bar an unexplained
   `domain_unknown` count) will now report a CDC-023 `warning`.
 
+- **DFT / scan-mode SV attribute recognition** (#44) — *patch:
+  recognition only, no behaviour change.* `SCAN_MODE_ATTRS`
+  (`scan_en` / `scan_mode` / `test_mode` / `dft_scan_en`, matched
+  case-insensitively) and `rules.scan_mode_port_names(module)` name the
+  top-level input ports a DFT insertion flow marks as test-mode
+  controls — the select of the classic scan clock mux
+  `$mux(S=scan_en, A=func_clk, B=scan_clk)` that mixes two async clocks
+  into one `CLK` net and makes every crossing behind it read as a CDC
+  failure.
+
+  Nothing in the rule pack consults the helper yet, so **no fixture's
+  findings move**; issue #45 wires it in behind an opt-in
+  `--ignore-scan-mode`. Deliberately split: the recognition is
+  uncontroversial, the suppression is a soundness decision that
+  deserves its own review.
+
+  Both frontends already carry the attribute through — Yosys preserves
+  a declaration attribute on the input port's netname, and the slang
+  frontend's `_collect_port` forwards `PortSymbol` attributes onto the
+  same netname (the #38 fix, which happened to cover inputs as well as
+  outputs). Pinned for inputs specifically by
+  `test_slang_lowering.py::test_input_port_scan_mode_attribute_reaches_netname`,
+  so a frontend regression can't silently make the recognition a
+  Yosys-only feature.
+
 ### Fixed
 
 - **CDC-011 now sees an untyped sync reset on a dedicated `SRST` pin**

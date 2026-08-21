@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from rtl_buddy_cdc.frontend import Frontend, elaborate
+from rtl_buddy_cdc.rules import scan_mode_port_names
 
 PYSLANG_INSTALLED = importlib.util.find_spec("pyslang") is not None
 if not PYSLANG_INSTALLED:
@@ -467,6 +468,31 @@ endmodule
 """
     module = _elaborate_full(tmp_path, src)
     assert "cdc_sync" in module.netnames["q"].attributes
+
+
+def test_input_port_scan_mode_attribute_reaches_netname(tmp_path: Path) -> None:
+    """``(* scan_en *)`` on a top-level **input** port must reach the
+    netname too (issue #44). ``scan_mode_port_names`` reads it off the
+    port's netname exactly as the ``user_*`` helpers read ``cdc_sync``
+    off a flop's, so the two frontends have to agree: Yosys preserves
+    the declaration attribute on the input wire, and
+    ``_collect_port`` forwards the ``PortSymbol`` attributes onto the
+    internal variable's netname to match. Without this the DFT
+    recognition would work under ``analyze`` and silently do nothing
+    under ``lint --frontend slang``."""
+    src = """module m (
+    input  logic func_clk, scan_clk, d,
+    (* scan_en *) input logic scan_en,
+    output logic q
+);
+    logic clk;
+    assign clk = scan_en ? scan_clk : func_clk;
+    always_ff @(posedge clk) q <= d;
+endmodule
+"""
+    module = _elaborate_full(tmp_path, src)
+    assert "scan_en" in module.netnames["scan_en"].attributes
+    assert scan_mode_port_names(module) == {"scan_en"}
 
 
 def test_comb_cells_carry_src_attribute(tmp_path: Path) -> None:
