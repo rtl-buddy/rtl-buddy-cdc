@@ -668,10 +668,52 @@ _INFERRED_CLOCK_FANOUT_THRESHOLD = 4
 _INFERRED_CLOCK_SINK_SAMPLE = 5
 
 
+def _declared_clock_bits(
+    module: Module,
+    clock_for_port: Callable[[str], str | None] | None,
+    bits: set[Bit],
+) -> set[Bit]:
+    """Subset of ``bits`` that lies on a net the SDC already names a clock.
+
+    ``create_generated_clock`` targets reach us through ``pin_clocks`` →
+    :func:`_build_bit_to_clock`, but a plain ``create_clock [get_pins
+    <net>]`` on an internal pin lands its target in ``Clock.ports``,
+    reachable only through :meth:`~rtl_buddy_cdc.sdc.ClockSpec.clock_for_port`
+    — the same lookup the ``clock_identity`` combine predicate in
+    :func:`assign_domains` uses. Both forms *declare* the net, so the
+    inferred-clock advisory has to consult both or it re-reports a clock
+    the user already wrote down (#270).
+
+    Only the caller's candidate ``bits`` are considered, so the netname
+    scan stays a single cheap pass and ``clock_for_port`` is asked about
+    a handful of nets rather than every wire in the netlist.
+
+    Netnames carry Yosys' flattened ``.`` separator while SDC pin paths
+    use ``/``; both spellings are tried so a hierarchical pin target
+    matches. The ``<unconstrained>`` sentinel is not a clock identity
+    (see ``clock_identity``) and never counts as declared.
+    """
+    out: set[Bit] = set()
+    if clock_for_port is None or not bits:
+        return out
+    for nn in module.netnames.values():
+        hit = bits.intersection(b for b in nn.bits if isinstance(b, int))
+        if not hit:
+            continue
+        named = clock_for_port(nn.name)
+        if named is None:
+            named = clock_for_port(nn.name.replace(".", "/"))
+        if named is None or named == _UNKNOWN_BOUNDARY_CLOCK:
+            continue
+        out |= hit
+    return out
+
+
 def find_inferred_clock_candidates(
     module: Module,
     pin_clocks: dict[str, str] | None = None,
     *,
+    clock_for_port: Callable[[str], str | None] | None = None,
     threshold: int = _INFERRED_CLOCK_FANOUT_THRESHOLD,
 ) -> list[InferredClockCandidate]:
     """Report internal nets that *look like* undeclared generated clocks.
@@ -682,9 +724,11 @@ def find_inferred_clock_candidates(
     2. is produced by a flop ``Q`` or by a clock-gate / ICG / latch
        output (the same cell families :func:`trace_clock_root` treats as
        clock-network nodes), and
-    3. is **not** already a declared clock — neither a top-level input
-       port nor a ``create_generated_clock`` target (``pin_clocks`` →
-       ``bit_to_clock``).
+    3. is **not** already a declared clock — not a top-level input
+       port, not a ``create_generated_clock`` target (``pin_clocks`` →
+       ``bit_to_clock``), and not the target of a plain ``create_clock
+       [get_pins <net>]`` on an internal pin (``clock_for_port`` →
+       :func:`_declared_clock_bits`, #270).
 
     The intent is to point the user at a forwarded/divided clock they
     forgot to declare with ``create_generated_clock``, so its downstream
@@ -707,14 +751,28 @@ def find_inferred_clock_candidates(
         if isinstance(f.clk, int):
             clk_sinks[f.clk].append(f.cell.name)
 
+    # Nets that clear the fanout floor and carry no generated-clock
+    # identity are the only ones we need an SDC clock-name lookup for.
+    declared_bits = _declared_clock_bits(
+        module,
+        clock_for_port,
+        {
+            b
+            for b, s in clk_sinks.items()
+            if len(s) >= threshold and b not in bit_to_clock
+        },
+    )
+
     out: list[InferredClockCandidate] = []
     for bit, sinks in clk_sinks.items():
         if len(sinks) < threshold:
             continue
         # Already a named clock — not "forgotten". A top-level input port
         # IS the declared clock root; a generated-clock pin is declared
-        # via SDC. Either way there is nothing for the user to add.
-        if bit in bit_to_clock:
+        # via SDC; and a plain ``create_clock`` aimed at an internal pin
+        # declares the net just as firmly (#270). Either way there is
+        # nothing for the user to add.
+        if bit in bit_to_clock or bit in declared_bits:
             continue
         port = module.port_of_bit(bit)
         if port is not None and port.direction == "input":
