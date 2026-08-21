@@ -9,6 +9,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Compositional per-module boundary analysis** (#261) — *minor:
+  additive data-model and CLI surface, no existing field renamed or
+  retyped.* Boundary abstraction (#253 / #256 / #257) scales by collapsing
+  a subtree to its port boundary, and #259 closed the *silent* half of
+  what that costs by **declining** the shapes it could not check —
+  multi-clock blocks, and single-clock blocks with ≥2 incoming crossings.
+  Sound, but it declined precisely the dense-CDC integration blocks
+  abstraction is most valuable on, and it left
+  `PortBoundary.synchronised` inert, so every abstracted single-bit input
+  fired CDC-001 no matter how well the IP synchronised it.
+
+  The new `rtl_buddy_cdc.compositional` module analyses each boundary
+  **module once, on its own internals** — the ordinary pipeline
+  (`assign_domains` → `find_crossings` → the rule pack), keyed and cached
+  per `(module type, clock-pin → root mapping)` — and lifts the result
+  into the summary instead of erasing it.
+
+  It needs the internals, which a `--blackbox` stub does not have (Yosys
+  discards the body). The new **`lint --greybox MODULE`** keeps them: a
+  plain `setattr -mod -set blackbox 1 <module>` between `proc` and
+  `flatten`, so the module still stands as a boundary cell but carries its
+  cells. It needs no yosys-slang plugin, unlike `--blackbox`. A zero-cell
+  blackbox takes the pre-#261 path unchanged — the entire existing fixture
+  suite is untouched proof.
+
+  What that buys:
+
+  - **`synchronised` goes live, proven.** A width-1 input port whose bit
+    has exactly one reader — a 1-bit flop's `D` in a known domain — and is
+    not also an output bit gets its chain measured. The *depth* (not just a
+    boolean) is published to the rule pack, so CDC-001 / CDC-002 / CDC-003
+    / CDC-005 behave at the boundary as they do flat: quiet at depth ≥ 2,
+    and `--sync-depth 3` still fires CDC-002 on a 2-deep internal chain. A
+    `USER_SYNC_ATTRS` tag on the first stage is honoured as the explicit
+    promise. Tie-offs, comb bypasses, extra loads, multi-bit ports and
+    feed-throughs all defeat the proof — `synchronised=True` is the only
+    lever in this model that can make the tool under-report, so it is set
+    only when proven.
+  - **Findings inside a block are reported.** Once per module type, with
+    the instances they cover named in the message and `cell_name`
+    re-anchored on a parent instance so they resolve to a source location
+    and are waivable by boundary instance. Two instances of one IP yield
+    one finding, not two — the analyse-once contract, visible.
+  - **Internal reconvergence is re-raised at the boundary.** The
+    reconvergence gate (#259 FIX 3) now stands down per instance for an
+    analysed module; CDC-005 fires with the recombination point named.
+  - **Multi-clock blocks are summarised per port**, each stamped with the
+    domain that really captures or launches it, so the star-collapse
+    becomes per-domain instead of one hub. The `multi_clock_blackbox`
+    fixture that #259 had to decline now reports the same CDC-004 the flat
+    run does.
+  - **A silent drop `--blackbox` could not see is now caught.** A flop
+    clocked from a module pin no classifier recognises resolves internally
+    to a name that is a declared clock nowhere, so `are_async` filters its
+    crossings away. Pin inspection read such a module as *single-clock* and
+    abstracted it with no diagnostic at all. It is now declined loudly.
+
+  Three cases still decline, each with its own `CDC-BBX` wording: an
+  internal flop that lands on no parent clock root (above), an input
+  captured in two internal domains, and a multi-clock module with no
+  internal registers. Three rules are excluded from the internal pass
+  because their predicate is literally "a top-level port of the design" —
+  CDC-006, CDC-011, RDC-008 — and their subject matter is reported by the
+  parent at the boundary port instead.
+
+  Data model (all additive, all defaulted): `PortBoundary.sync_depth` /
+  `.user_synchronised`; `BoundarySummary.internal_analysed` /
+  `.reconvergent_inputs`; `CompositionStats.analysed_modules` / `.lifted` /
+  `.ambiguous_input_modules` / `.unresolved_internal_modules`. The
+  downstream JSON contract (`summary.violations` / `.suppressed` /
+  `.crossings`) is untouched, and no new runtime dependency. `domain
+  .filter_async` is the async-crossing predicate lifted out of `cli` so the
+  per-module pass and the top-level run cannot disagree; `cli._filter_async`
+  is now a thin alias.
+
+  New fixtures `bbx_input_sync`, `bbx_input_sync_broken`,
+  `bbx_shared_internal_violation`, `bbx_residual_declines`, each shipping
+  three netlists from one source (`.flat.json` / `.grey.json` / `.json`),
+  plus `.grey.json` companions for `multi_clock_blackbox`,
+  `reconvergence_two_inputs`, `safe_single_input`,
+  `single_clock_leaf_abstract`, `shared_subtree_compose` and
+  `clock_output_blackbox` — the last of which pins that the #273
+  clock-output decline survives compositional analysis unchanged, because
+  analysing a module's body says nothing about the clock network it
+  forwards to its parent.
+
+  See `wiki/raw/articles/rtl-buddy-cdc-architecture.md` §4.8 / §4.9 / §7.4
+  for the model, the proof obligations, and the parity relation the
+  abstracted run guarantees against a flat one.
+
 - **In-RTL pragma scanner** (`rtl_buddy_cdc.pragma`, #41). A
   suppression can be written next to the RTL it applies to instead of
   in an external waiver file whose regexes chase synthesis-generated

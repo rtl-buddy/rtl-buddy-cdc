@@ -27,7 +27,7 @@ caches results. The file I/O that loads the blackbox siblings stays in
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from rtl_buddy_cdc.abstract import (
     _bit_consumers,
@@ -38,10 +38,65 @@ from rtl_buddy_cdc.abstract import (
     summarise_subtree,
     summarise_sync_primitive,
 )
+from rtl_buddy_cdc.compositional import ModuleAnalysis, analyse_module
 from rtl_buddy_cdc.domain import Crossing
 from rtl_buddy_cdc.netlist import BoundarySummary, Module
 from rtl_buddy_cdc.primitives import is_sync_primitive, normalise_type
+from rtl_buddy_cdc.rules import Violation
 from rtl_buddy_cdc.sdc import ClockSpec
+
+# How many instance names a lifted internal finding names before it
+# elides the rest. The point of "analyse once" is one finding per module
+# type, not one per instance; naming a handful of instances keeps the
+# message actionable on a 50-instance mesh without becoming the wall of
+# text the per-instance form would be.
+_LIFT_INSTANCE_SAMPLE = 4
+
+
+@dataclass(frozen=True)
+class LiftedAnalysis:
+    """One boundary module's internal findings, ready to lift (#261).
+
+    Produced once per ``(module type, clock context)`` — the same key the
+    summary cache uses — so a block instantiated N times is analysed and
+    reported **once**. ``instances`` names the parent cells the analysis
+    covers, which is what the lifted message carries in place of the
+    per-instance repetition.
+    """
+
+    module: str
+    instances: tuple[str, ...]
+    analysis: ModuleAnalysis
+
+    def lifted_violations(self) -> list[Violation]:
+        """The internal findings re-stamped for the parent's report.
+
+        Each keeps its own rule id, severity and crossing; the message
+        gains a prefix naming the module and the instances it stands for,
+        and ``cell_name`` is re-anchored on the first instance so the
+        finding resolves to a source location in the *parent* and is
+        waivable by boundary instance (``waive CDC-001 u_afifo``) — the
+        internal cell name is not addressable from up here.
+        """
+        if not self.instances:
+            return []
+        shown = list(self.instances[:_LIFT_INSTANCE_SAMPLE])
+        if len(self.instances) > _LIFT_INSTANCE_SAMPLE:
+            shown.append(f"+{len(self.instances) - _LIFT_INSTANCE_SAMPLE} more")
+        where = ", ".join(shown)
+        noun = "instance" if len(self.instances) == 1 else "instances"
+        return [
+            replace(
+                v,
+                message=(
+                    f"[inside `{self.module}` — analysed once, "
+                    f"{len(self.instances)} {noun}: {where}] {v.message}"
+                ),
+                cell_name=self.instances[0],
+                instance_path=(),
+            )
+            for v in self.analysis.violations
+        ]
 
 
 @dataclass(frozen=True)
@@ -80,6 +135,21 @@ class CompositionStats:
     boundary_modules: frozenset[str] = field(default_factory=frozenset)
     primitive_modules: frozenset[str] = field(default_factory=frozenset)
     clock_output_ports: frozenset[tuple[str, str]] = field(default_factory=frozenset)
+    # (#261) Module types whose own internals were analysed compositionally
+    # (a *greybox*: blackbox-attributed but still carrying its cells), and
+    # the per-``(type, clock context)`` records the CLI lifts into the
+    # report. ``ambiguous_input_modules`` records the third decline
+    # flavour: a multi-clock module with an input captured in two internal
+    # domains, which one virtual sink cannot represent.
+    analysed_modules: frozenset[str] = field(default_factory=frozenset)
+    lifted: tuple[LiftedAnalysis, ...] = ()
+    ambiguous_input_modules: frozenset[str] = field(default_factory=frozenset)
+    # (#261) Module types declined because an internal flop could not be
+    # placed on any of the parent's clock roots — a clock arriving on a
+    # pin no classifier recognises. Pin inspection alone reads such a
+    # module as single-clock and abstracts its internal crossing away
+    # silently; the compositional pass is the only thing that can see it.
+    unresolved_internal_modules: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def shared_subtree_reused(self) -> bool:
@@ -97,6 +167,17 @@ class CompositionStats:
             sorted(p for (m, p) in self.clock_output_ports if m == module_type)
         )
 
+    def lifted_violations(self) -> list[Violation]:
+        """Every module-internal finding, re-stamped for the parent (#261)."""
+        out: list[Violation] = []
+        for entry in self.lifted:
+            out.extend(entry.lifted_violations())
+        return out
+
+    def internal_crossings(self) -> int:
+        """Async crossings found *inside* analysed boundary modules."""
+        return sum(e.analysis.crossings for e in self.lifted)
+
 
 def compose_boundaries(
     top: Module,
@@ -104,6 +185,7 @@ def compose_boundaries(
     spec: ClockSpec,
     *,
     max_depth: int = 16,
+    required_depth: int = 2,
     sync_primitives: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, BoundarySummary], CompositionStats]:
     """Summarise every distinct ``(module, clock context)`` once and compose.
@@ -128,14 +210,33 @@ def compose_boundaries(
     legacy hand-built callers. ``stats.boundary_modules`` carries the
     distinct module types abstracted (for CDC-008's boundary exemption).
 
-    Two decline flavours feed ``stats.declined_modules``: a candidate that
-    is **not provably single-clock**, and (#273) a candidate whose
-    **output drives a clock** — clock generation / forwarding that
-    blackboxing would silently elide. The second is decided per module
-    type in a pre-pass (any qualifying instance declines the type) and
-    recorded in ``stats.clock_output_ports`` so the CLI can name the
-    offending port; both land on the same ``CDC-BBX`` report path and are
-    waived identically.
+    Decline flavours feed ``stats.declined_modules``: a candidate that is
+    **not provably single-clock** (and whose internals are unavailable),
+    (#273) a candidate whose **output drives a clock** — clock generation
+    / forwarding that blackboxing would silently elide — and (#261) a
+    multi-clock candidate with an **ambiguous input port** even though its
+    internals were analysed. The clock-output flavour is decided per
+    module type in a pre-pass (any qualifying instance declines the type)
+    and recorded in ``stats.clock_output_ports`` so the CLI can name the
+    offending port; all flavours land on the same ``CDC-BBX`` report path
+    and are waived identically.
+
+    **Compositional analysis (#261).** When a boundary module carries its
+    own cells — a *greybox*, produced by marking it ``blackbox`` while
+    keeping its body (``lint --greybox``) — it is run through the ordinary
+    pipeline **once per ``(module type, clock context)``**, on its own
+    internals, by :func:`~rtl_buddy_cdc.compositional.analyse_module`. The
+    result is folded into the boundary summary (per-port synchroniser
+    proofs, per-port domains, internal reconvergence) and its internal
+    findings are collected in ``stats.lifted`` for the CLI to report once,
+    attributed to the instances they cover. That is what retires the #259
+    reconvergence gate and the multi-clock decline for such a module.
+
+    The cache key is the ``(module type, clock-PIN -> root mapping)`` pair
+    rather than the bare root set. Two instances of one dual-clock module
+    wired src/dest in opposite directions share a root *set* but need
+    opposite per-port domains; keying on the mapping is a strict
+    refinement, so identical instances still hit the cache.
 
     Pure: no I/O, no mutation of ``top`` or ``blackboxes``.
 
@@ -159,12 +260,18 @@ def compose_boundaries(
     # re-summarise. Keying on the resolved clock context (not just the
     # type) is what makes one module instantiated under two domains
     # correct while still hitting the cache for identical instances.
-    seen: dict[tuple[str, frozenset[str]], BoundarySummary | None] = {}
+    Key = tuple[str, tuple[tuple[str, str | None], ...]]
+    seen: dict[Key, BoundarySummary | None] = {}
+    analyses: dict[Key, ModuleAnalysis | None] = {}
+    lifted_instances: dict[Key, list[str]] = {}
     instances = 0
     cache_hits = 0
     declined_modules: set[str] = set()
     boundary_modules: set[str] = set()
     primitive_modules: set[str] = set()
+    analysed_modules: set[str] = set()
+    ambiguous_input_modules: set[str] = set()
+    unresolved_internal_modules: set[str] = set()
 
     # Clock-output decline (#273), decided per MODULE before anything is
     # summarised: a candidate whose output drives a clock generates or
@@ -233,29 +340,78 @@ def compose_boundaries(
             # Destination clock unidentifiable — fall through to the
             # generic path so the instance is declined (and reported)
             # rather than silently vouched for.
-        # Clock CONTEXT is the full frozenset of clock roots the instance
-        # carries (FIX 1) — not a single root, so a dual-clock IP keys
-        # distinctly from a single-clock one and identical instances still
-        # hit the cache under the same root set.
-        context = _instance_clocks(
+        # Clock CONTEXT is the instance's clock-PIN -> root MAPPING (FIX 1
+        # + #261) — not a single root, so a dual-clock IP keys distinctly
+        # from a single-clock one, two instances of one module wired in
+        # opposite directions key distinctly from each other, and
+        # identical instances still hit the cache.
+        ic = _instance_clocks(
             top, cell, sub, spec=spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
-        ).roots
-        cache_key = (cell.type, context)
+        )
+        cache_key: Key = (cell.type, ic.pin_roots)
         if cache_key in seen:
             # Identical subtree in an identical clock context: reuse the
-            # already-computed (or already-declined) summary.
+            # already-computed (or already-declined) summary AND its
+            # already-computed internal analysis — the analyse-once win.
             cache_hits += 1
             summary = seen[cache_key]
         else:
+            # Compositional per-module pass (#261). Returns ``None`` for a
+            # stub blackbox (zero cells), in which case ``summarise_subtree``
+            # behaves exactly as it did before this change.
+            analyses[cache_key] = analyse_module(
+                sub,
+                ic.pin_root_map(),
+                spec,
+                max_depth=max_depth,
+                required_depth=required_depth,
+                sync_primitives=sync_primitives,
+            )
             summary = summarise_subtree(
-                top, cell, sub, spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
+                top,
+                cell,
+                sub,
+                spec,
+                pin_clocks=spec.pin_clocks,
+                max_depth=max_depth,
+                analysis=analyses[cache_key],
             )
             seen[cache_key] = summary
+        analysis = analyses.get(cache_key)
         if summary is None:
             declined_modules.add(cell.type)
+            if analysis is None:
+                pass  # stub blackbox: the pre-#261 decline flavours apply
+            elif analysis.resolved:
+                # Internals were analysable but a port could not be placed
+                # in ONE domain — the #261 ambiguous-capture decline.
+                ambiguous_input_modules.add(cell.type)
+            else:
+                # An internal flop is clocked from something the parent
+                # never handed in. Recorded separately so the CDC-BBX
+                # message can point at the real cause.
+                unresolved_internal_modules.add(cell.type)
         else:
             out[inst_name] = summary
             boundary_modules.add(cell.type)
+            if analysis is not None:
+                analysed_modules.add(cell.type)
+                lifted_instances.setdefault(cache_key, []).append(inst_name)
+
+    # Lifted internal findings, one record per ``(module type, clock
+    # context)`` — the analyse-once contract made visible in the report.
+    lifted: list[LiftedAnalysis] = []
+    for key in sorted(lifted_instances):
+        analysis = analyses.get(key)
+        if analysis is None or not analysis.violations:
+            continue
+        lifted.append(
+            LiftedAnalysis(
+                module=key[0],
+                instances=tuple(sorted(lifted_instances[key])),
+                analysis=analysis,
+            )
+        )
 
     stats = CompositionStats(
         instances=instances,
@@ -266,11 +422,18 @@ def compose_boundaries(
         boundary_modules=frozenset(boundary_modules),
         primitive_modules=frozenset(primitive_modules),
         clock_output_ports=frozenset(clock_out_pairs),
+        analysed_modules=frozenset(analysed_modules),
+        lifted=tuple(lifted),
+        ambiguous_input_modules=frozenset(ambiguous_input_modules),
+        unresolved_internal_modules=frozenset(unresolved_internal_modules),
     )
     return out, stats
 
 
-def reconvergence_unsafe_instances(crossings: list[Crossing]) -> set[str]:
+def reconvergence_unsafe_instances(
+    crossings: list[Crossing],
+    boundaries: dict[str, BoundarySummary] | None = None,
+) -> set[str]:
     """Instances with foreign-domain crossings into >=2 DISTINCT input ports.
 
     FIX 3 (soundness audit of #259). A single-clock block that *is*
@@ -287,12 +450,29 @@ def reconvergence_unsafe_instances(crossings: list[Crossing]) -> set[str]:
     A single multi-bit bus on ONE port counts as 1 port (safe — the
     multi-bit rules cover it).
 
-    Pure: reads only the crossing list.
+    **Retired per instance by compositional analysis (#261).** When
+    ``boundaries`` is supplied, an instance whose summary carries
+    ``internal_analysed`` is exempt: its module's internals HAVE been
+    analysed, the internal reconvergence is recorded in the summary, and
+    CDC-005 re-raises it at the boundary
+    (:func:`~rtl_buddy_cdc.rules._boundary_reconvergence`). The gate exists
+    because the collapse severed a fact; once the fact is back, declining
+    would only destroy coverage. An instance with no analysis (a stub
+    blackbox) keeps the conservative #259 behaviour.
+
+    Pure: reads only the crossing list and the boundary map.
     """
+    analysed = {
+        inst
+        for inst, summary in (boundaries or {}).items()
+        if summary.internal_analysed
+    }
     ports_by_inst: dict[str, set[str]] = {}
     for c in crossings:
         if c.dst_boundary is None:
             continue
         inst, port = c.dst_boundary
+        if inst in analysed:
+            continue
         ports_by_inst.setdefault(inst, set()).add(port)
     return {inst for inst, ports in ports_by_inst.items() if len(ports) >= 2}

@@ -59,6 +59,7 @@ flowchart LR
 ## Files
 
 - `safe_single_input.flat.json`
+- `safe_single_input.grey.json`
 - `safe_single_input.json`
 - `safe_single_input.sdc`
 - `safe_single_input.sv`

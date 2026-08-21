@@ -34,6 +34,7 @@ flowchart LR
 ## Files
 
 - `clock_output_blackbox.flat.json`
+- `clock_output_blackbox.grey.json`
 - `clock_output_blackbox.json`
 - `clock_output_blackbox.sdc`
 - `clock_output_blackbox.sv`

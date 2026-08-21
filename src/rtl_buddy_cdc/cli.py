@@ -23,6 +23,7 @@ from rtl_buddy_cdc.abstract import instance_clock_pins
 from rtl_buddy_cdc.domain import (
     Crossing,
     assign_domains,
+    filter_async as domain_filter_async,
     find_crossings,
     find_inferred_clock_candidates,
 )
@@ -427,6 +428,18 @@ def lint(
         "`analyze` path needs no flag — a netlist already containing "
         "blackbox boundary modules loads transparently. See issue #255.",
     ),
+    greybox: list[str] = typer.Option(
+        [],
+        "--greybox",
+        help="Treat MODULE as a CDC boundary cell but KEEP its internals: "
+        "the subtree is analysed ONCE on its own body (reconvergence, "
+        "synchroniser depth, gray coding, internal clock-as-data) and those "
+        "facts are lifted into the boundary, instead of being traded away "
+        "the way --blackbox trades them. Repeatable. Needs no plugin (it is "
+        "a plain `setattr -mod -set blackbox 1` before `flatten`). Prefer "
+        "this over --blackbox whenever you have the module's sources. "
+        "See issue #261.",
+    ),
     waivers_path: Path | None = typer.Option(
         None,
         "--waivers",
@@ -502,6 +515,7 @@ def lint(
             yosys_plugin=yosys_plugin,
             single_unit=single_unit,
             blackbox=list(blackbox),
+            greybox=list(greybox),
         )
     except SlangFrontendUnavailable as e:
         typer.echo(f"error: {e}", err=True)
@@ -793,6 +807,7 @@ def _analyze_module_and_report(
             blackboxes,
             spec,
             max_depth=clock_trace_depth,
+            required_depth=sync_depth,
             sync_primitives=sync_primitives,
         )
         crossings = find_crossings(
@@ -811,7 +826,7 @@ def _analyze_module_and_report(
         # at the boundary. Conservative policy: REFUSE to abstract such a
         # block — drop it from ``boundaries`` (so it becomes opaque, no
         # boundary crossings emitted for it) and RE-RUN find_crossings.
-        unsafe = reconvergence_unsafe_instances(crossings)
+        unsafe = reconvergence_unsafe_instances(crossings, boundaries)
         # Coverage findings for blackboxes the analyzer cannot soundly
         # abstract — emitted as ``error`` Violations (waivable) so an
         # unanalysed boundary fails the run rather than passing with only a
@@ -878,6 +893,32 @@ def _analyze_module_and_report(
                         f"would be elided; flatten it or analyse standalone "
                         f"(waive {BBOX_RULE_ID} if intentionally out of scope here)."
                     )
+                elif cell.type in comp_stats.unresolved_internal_modules:
+                    # #261: pin inspection said "single-clock, safe"; the
+                    # internals say a flop is clocked from something the
+                    # parent never resolved. Abstracting it would file its
+                    # crossings under a clock name nothing is async to, so
+                    # they would vanish. Loud decline instead.
+                    reason = (
+                        "left opaque — its internals contain flop(s) clocked from "
+                        "a pin the analyzer could not resolve to a declared clock, "
+                        "so the crossings they take part in cannot be analysed on "
+                        "either side. Declare the clock (create_clock) or flatten it "
+                        f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                    )
+                elif cell.type in comp_stats.ambiguous_input_modules:
+                    # #261 residual: the internals WERE analysed, but an
+                    # input port is captured in two internal clock domains
+                    # and one virtual sink cannot stand for both. Picking
+                    # either would drop the other's crossing, so the block
+                    # stays opaque and says exactly why.
+                    reason = (
+                        "left opaque — its internals were analysed but an input "
+                        "port is captured in more than one internal clock domain, "
+                        "which a single boundary sink cannot represent. Flatten it "
+                        "or split the port "
+                        f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                    )
                 else:
                     reason = (
                         "left opaque — not provably single-clock; internal "
@@ -910,6 +951,27 @@ def _analyze_module_and_report(
                     pin_clocks=spec.pin_clocks,
                     max_depth=clock_trace_depth,
                 )
+        # #261: the facts the compositional per-module pass proved about
+        # each surviving boundary, projected onto the synthetic virtual
+        # sinks the crossing walk created. ``boundary_sync_depth`` gives
+        # CDC-001 / CDC-002 / CDC-003 / CDC-005 the chain the IP really
+        # has (a virtual sink has no ``Q``, so the structural walk can only
+        # ever answer 1); ``boundary_user_syncs`` marks a sink whose first
+        # internal stage the user tagged, honoured exactly as the flat
+        # rules honour ``(* cdc_sync *)``; ``boundary_reconvergence``
+        # carries the internal recombination CDC-005 re-raises.
+        boundary_sync_depth: dict[str, int] = {}
+        boundary_user_syncs: set[str] = set()
+        boundary_reconvergence: dict[str, frozenset[frozenset[str]]] = {}
+        for inst_name, summary in boundaries.items():
+            if summary.reconvergent_inputs:
+                boundary_reconvergence[inst_name] = summary.reconvergent_inputs
+            for port_name, pb in summary.input_ports.items():
+                sink = f"{inst_name}.{port_name}"
+                if pb.sync_depth is not None:
+                    boundary_sync_depth[sink] = pb.sync_depth
+                if pb.user_synchronised:
+                    boundary_user_syncs.add(sink)
         async_crossings = _filter_async(crossings, spec)
         if not no_findings:
             violations = run_all_rules(
@@ -923,9 +985,18 @@ def _analyze_module_and_report(
                 boundary_modules=comp_stats.boundary_modules,
                 blackbox_modules=frozenset(blackboxes or {}),
                 boundary_clock_pins=boundary_clock_pins,
+                boundary_sync_depth=boundary_sync_depth,
+                boundary_reconvergence=boundary_reconvergence,
+                boundary_user_syncs=frozenset(boundary_user_syncs),
                 max_depth=clock_trace_depth,
                 sync_primitives=sync_primitives,
             )
+            # Findings from INSIDE an analysed boundary module (#261),
+            # lifted once per module type with the instances they cover
+            # named. This is the coverage the abstraction used to trade
+            # away: without it a reconvergence / short sync chain / gray
+            # violation inside the block simply did not exist.
+            violations = comp_stats.lifted_violations() + violations
             # Blackbox-boundary coverage findings lead the list so an
             # unanalysed boundary is the first thing reported; they are
             # ordinary ``error`` Violations from here on (waivable,
@@ -1183,22 +1254,10 @@ def _filter_async(
 ) -> list[Crossing]:
     """Keep only crossings the rule pack should see.
 
-    A crossing is kept iff:
-      - its endpoints resolve to different clocks (so generated
-        clocks fold back into their masters before comparison), and
-      - the resolved roots aren't in different exclusive groups
-        (logically/physically-exclusive clocks never coexist at
-        runtime, so the path is unreachable), and
-      - the resolved roots are declared asynchronous via
-        ``set_clock_groups -asynchronous`` or ``set_false_path
-        -from/-to``.
+    Thin alias for :func:`rtl_buddy_cdc.domain.filter_async`, which is
+    where the predicate now lives (#261) so the compositional per-module
+    pass filters a *subtree's* crossings with exactly the same rule the
+    top-level run uses — two answers to "is this crossing async?" is how
+    an abstracted run and a flat run start to disagree.
     """
-    out: list[Crossing] = []
-    for c in crossings:
-        a = spec.clock_for_port(c.src_clock) or c.src_clock
-        b = spec.clock_for_port(c.dst_clock) or c.dst_clock
-        if spec.is_unreachable_crossing(a, b):
-            continue
-        if spec.are_async(a, b):
-            out.append(c)
-    return out
+    return domain_filter_async(crossings, spec)

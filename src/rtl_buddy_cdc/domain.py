@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from rtl_buddy_cdc.flops import (
     Flop,
@@ -22,6 +22,9 @@ from rtl_buddy_cdc.flops import (
     is_latch_cell,
 )
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module
+
+if TYPE_CHECKING:
+    from rtl_buddy_cdc.sdc import ClockSpec
 
 
 class _CrossingGroup(TypedDict):
@@ -262,7 +265,7 @@ def _boundary_sink_flops(
         summary = _boundary_for(boundaries, inst_name, cell.type)
         if summary is None or not summary.input_ports:
             continue
-        for port_name in summary.input_ports:
+        for port_name, pb in summary.input_ports.items():
             conn = cell.connections.get(port_name, ())
             d_bits = tuple(b for b in conn if isinstance(b, int))
             if not d_bits:
@@ -274,7 +277,20 @@ def _boundary_sink_flops(
                 connections={"D": d_bits},
             )
             sink_flop = Flop(cell=sink_cell, clk=_BOUNDARY_SINK_CLK, d=d_bits, q=())
-            sink_domains.append(FlopDomain(flop=sink_flop, clock=summary.clock))
+            # PER-PORT capture domain (#261). For a single-clock summary
+            # this is ``BoundarySummary.clock`` on every port, exactly as
+            # before. For a MULTI-clock block the compositional pass
+            # resolves each input to the domain that really captures it
+            # (an async FIFO's ``wdata`` on ``wr_clk``, ``rd_en`` on
+            # ``rd_clk``), so the star-collapse becomes per-domain rather
+            # than one hub — which is what lets such a block be summarised
+            # at all instead of declined.
+            sink_domains.append(
+                FlopDomain(
+                    flop=sink_flop,
+                    clock=pb.src_clock if pb.src_clock is not None else summary.clock,
+                )
+            )
             lookup[sink_name] = (inst_name, port_name)
     return sink_domains, lookup
 
@@ -1349,6 +1365,33 @@ _OUTPUT_PORTS_BY_TYPE: dict[str, frozenset[str]] = {
 }
 
 _DEFAULT_OUTPUT_PORTS: frozenset[str] = frozenset({"Y"})
+
+
+def filter_async(crossings: list[Crossing], spec: "ClockSpec") -> list[Crossing]:
+    """Keep only the crossings the rule pack should see.
+
+    A crossing survives iff its endpoints resolve to *different* clocks
+    (so a generated clock folds back into its master first), the resolved
+    roots are not in different exclusive groups (logically / physically
+    exclusive clocks never coexist, so the path is unreachable), and the
+    roots are declared asynchronous via ``set_clock_groups -asynchronous``
+    or ``set_false_path -from/-to``.
+
+    Lives here rather than in ``cli.py`` because the compositional
+    per-module pass (#261) must filter a *subtree's* crossings with
+    exactly the same predicate the top-level run uses — two answers to
+    "is this crossing async?" is how an abstracted run and a flat run
+    start to disagree. ``cli._filter_async`` is a thin alias.
+    """
+    out: list[Crossing] = []
+    for c in crossings:
+        a = spec.clock_for_port(c.src_clock) or c.src_clock
+        b = spec.clock_for_port(c.dst_clock) or c.dst_clock
+        if spec.is_unreachable_crossing(a, b):
+            continue
+        if spec.are_async(a, b):
+            out.append(c)
+    return out
 
 
 def _cell_outputs(cell):

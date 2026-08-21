@@ -29,12 +29,16 @@ that loads the blackbox siblings and attaches the summaries lives in
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from rtl_buddy_cdc.domain import _bit_drivers, trace_clock_root
 from rtl_buddy_cdc.flops import flop_clk_pin, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, PortBoundary
 from rtl_buddy_cdc.primitives import clock_pin_role, port_domain
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL as _UNCONSTRAINED, ClockSpec
+
+if TYPE_CHECKING:
+    from rtl_buddy_cdc.compositional import ModuleAnalysis
 
 # Yosys cell-port names a blackbox instance may use to carry a clock.
 # A summarised subtree is described by its *data* boundary; the clock
@@ -114,6 +118,18 @@ class _InstanceClocks:
 
     roots: frozenset[str]
     clock_pins: frozenset[str]
+    # (#261) The pin -> root MAPPING, sorted, with ``None`` for a clock
+    # pin whose driver did not resolve. ``roots`` alone cannot serve as
+    # the compositional cache key: two instances of a dual-clock module
+    # wired src/dest in opposite directions carry the same root *set* but
+    # need opposite per-port domains — the same collision §4.10 records
+    # for the sync-primitive path. Keying on the mapping is a strict
+    # refinement, so identical instances still share one analysis.
+    pin_roots: tuple[tuple[str, str | None], ...] = ()
+
+    def pin_root_map(self) -> dict[str, str | None]:
+        """The clock pin -> parent root mapping as a dict."""
+        return dict(self.pin_roots)
 
 
 def _looks_like_clock_name(port: str) -> bool:
@@ -199,6 +215,7 @@ def _instance_clocks(
     bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
     roots: set[str] = set()
     clock_pins: set[str] = set()
+    pin_roots: dict[str, str | None] = {}
 
     if sub is not None:
         candidate_ports = [
@@ -224,6 +241,7 @@ def _instance_clocks(
                 bit_to_clock=bit_to_clock,
             )
             clock_pins.add(pin)
+            pin_roots[pin] = root
             if root is not None:
                 roots.add(root)
         elif _looks_like_clock_name(pin):
@@ -247,8 +265,13 @@ def _instance_clocks(
             )
             if root is not None and _is_known_clock(root, spec):
                 clock_pins.add(pin)
+                pin_roots[pin] = root
                 roots.add(root)
-    return _InstanceClocks(roots=frozenset(roots), clock_pins=frozenset(clock_pins))
+    return _InstanceClocks(
+        roots=frozenset(roots),
+        clock_pins=frozenset(clock_pins),
+        pin_roots=tuple(sorted(pin_roots.items())),
+    )
 
 
 def _instance_clock(
@@ -283,27 +306,52 @@ def summarise_subtree(
     *,
     pin_clocks: dict[str, str] | None = None,
     max_depth: int = 16,
+    analysis: "ModuleAnalysis | None" = None,
 ) -> BoundarySummary | None:
-    """Summarise a blackboxed single-clock subtree to its port boundary.
+    """Summarise a blackboxed subtree to its port boundary.
 
     ``parent`` is the (flattened) top module, ``instance`` the ordinary
     cell whose ``type`` is the blackbox module name, and ``sub`` the
-    blackbox sibling :class:`Module` (zero cells, real name). ``spec``
-    is the parsed SDC used to confirm the subtree really is
-    single-clock.
+    blackbox sibling :class:`Module`. ``spec`` is the parsed SDC.
 
-    Returns a :class:`BoundarySummary` keyed by output/inout port name,
-    or ``None`` when the subtree is *not* provably single-clock (the
-    caller then leaves the instance to be analysed by the normal flat
-    walk — never abstracted away).
+    Returns a :class:`BoundarySummary` keyed by port name, or ``None``
+    when the subtree cannot be soundly abstracted (the caller then leaves
+    the instance opaque and reports it as a ``CDC-BBX`` coverage finding
+    — never silently dropped).
 
-    Each output/inout port is summarised at ``src_clock`` = the
-    subtree's single domain with ``synchronised=False``: the subtree
-    retimes internally (single domain, no internal crossing) but we do
-    not assume it synchronises data *leaving* it, so a downstream sink
-    in a different domain is still flagged as a crossing the parent
-    must check. ``src_clock=None`` (clock pin that didn't resolve) is a
-    legitimate conservative unconstrained source.
+    **Without ``analysis`` (a stub blackbox: zero cells).** Unchanged
+    from #256/#257/#259. The subtree must be provably single-clock or it
+    is declined; every output/inout port is summarised at ``src_clock`` =
+    that single domain with ``synchronised=False`` (we do not assume the
+    IP synchronises data leaving it), and every non-clock input/inout
+    port becomes a virtual sink captured in the same domain.
+
+    **With ``analysis`` (a greybox: the module kept its cells, #261).**
+    The module's internals have been run through the ordinary pipeline by
+    :func:`rtl_buddy_cdc.compositional.analyse_module`, so the facts the
+    star-collapse used to erase are available and get lifted:
+
+    - Every port carries its proven ``sync_depth`` / ``synchronised``
+      bit, so the boundary rules see the chain the IP really has.
+    - ``reconvergent_inputs`` travels with the summary, which is what
+      lets the #259 reconvergence gate stand down for this instance.
+    - A **multi-clock** module is no longer declined outright: each port
+      is stamped with the domain that actually captures / launches it, so
+      the collapse becomes per-domain instead of a single hub. The single
+      -clock case deliberately keeps its whole-block domain for every
+      port — identical to the pre-#261 result, so nothing regresses.
+
+    Three sub-cases still decline, because no sound summary exists:
+
+    1. any internal flop whose clock domain did not resolve
+       (:attr:`~rtl_buddy_cdc.compositional.ModuleAnalysis.resolved`) —
+       the pass cannot see the crossings that flop takes part in, so
+       claiming coverage would be the exact silent drop #253/#259 closed;
+    2. a multi-clock module with an **ambiguous input port** — one
+       captured in two internal domains cannot be expressed by a single
+       virtual sink, and picking either domain would drop the other's
+       crossing;
+    3. a multi-clock module with **no resolvable clock roots at all**.
 
     ``max_depth`` is forwarded to :func:`_instance_clocks` (default 16,
     surfaced as ``--clock-trace-depth``). It must match the budget the
@@ -317,58 +365,156 @@ def summarise_subtree(
     )
     # The subtree's clock set: ALL distinct roots driving the instance's
     # clock pins (FIX 1). A dual-clock IP (e.g. ``wr_clk`` / ``rd_clk``)
-    # therefore presents >=2 roots and is declined below — its internal
-    # clkA->clkB crossing is no longer silently abstracted away. The
-    # empty set is a genuinely combinational boundary.
-    if not is_single_clock_subtree(set(ic.roots), spec):
+    # therefore presents >=2 roots. Without internals that is a decline —
+    # its internal clkA->clkB crossing would otherwise be silently
+    # abstracted away. The empty set is a genuinely combinational boundary.
+    single_clock = is_single_clock_subtree(set(ic.roots), spec)
+    if analysis is None:
+        if not single_clock:
+            return None
+        return _summarise_single_clock(sub, ic, None)
+    if not analysis.resolved:
+        # Internals present but not fully domain-resolved: refuse to vouch.
         return None
+    if single_clock:
+        return _summarise_single_clock(sub, ic, analysis)
+    return _summarise_multi_clock(sub, ic, analysis)
+
+
+def _summarise_single_clock(
+    sub: Module,
+    ic: _InstanceClocks,
+    analysis: "ModuleAnalysis | None",
+) -> BoundarySummary:
+    """The classic star-collapse onto one domain (#256/#257).
+
+    Every port is stamped with the subtree's single clock — including
+    ports the compositional pass could not attribute individually, which
+    is deliberate: with one internal domain there is nothing else they
+    could be, and keeping the whole-block answer makes the greybox result
+    bit-identical to the stub-blackbox one apart from the added
+    ``sync_depth`` / ``synchronised`` / reconvergence facts.
+    """
     # The single capture clock is the sole root, or None when the set is
     # empty (combinational) — never a "first one wins" pick.
     clk = next(iter(ic.roots)) if ic.roots else None
-
     # Result-preserving by construction (P3/#257): the boundary summary
     # seeds output-side virtual *sources* (``ports``) AND input-side
     # virtual *sinks* (``input_ports``, captured in the boundary's own
     # ``clock`` domain). A foreign-domain signal the parent drives into
     # a data input no longer vanishes — ``find_crossings`` re-creates the
     # crossing the flattened subtree would have reported at its first
-    # internal flop. So we abstract the single-clock subtree even when a
-    # foreign-domain input enters it; the P2 over-conservative refusal
-    # (``_instance_inputs_same_domain``) is retired.
-    src_clock = clk  # may be None => conservative unconstrained source
+    # internal flop.
     ports: dict[str, PortBoundary] = {}
     input_ports: dict[str, PortBoundary] = {}
     for port in sub.ports.values():
+        facts = analysis.ports.get(port.name) if analysis is not None else None
         if port.direction in ("output", "inout"):
             ports[port.name] = PortBoundary(
                 port=port.name,
-                src_clock=src_clock,
-                synchronised=False,
+                src_clock=clk,
+                synchronised=facts.synchronised if facts is not None else False,
                 width=len(port.bits),
+                sync_depth=facts.sync_depth if facts is not None else None,
+                user_synchronised=(
+                    facts.user_synchronised if facts is not None else False
+                ),
             )
         if port.direction in ("input", "inout") and port.name not in ic.clock_pins:
-            # The sink domain for data entering the boundary is the
-            # subtree's own clock (what its first internal flop samples
-            # on). ``src_clock`` here names that capture domain. Clock
-            # pins are excluded by the *traced* determination (FIX 1),
-            # not just the name allow-list — so a single-clock block
-            # whose clock pin is e.g. ``wr_clk`` does not get a
-            # clock-as-data sink, while a genuine data input named
-            # ``clk_foo`` that does not trace to a clock still seeds.
-            # They carry distribution into the subtree, not data, and
-            # must never become a virtual sink (that would re-introduce
-            # the CDC-008 clock-as-data shape).
+            # Clock pins are excluded by the *traced* determination (FIX
+            # 1), not just the name allow-list: they carry distribution
+            # into the subtree, not data, and must never become a virtual
+            # sink (that would re-introduce the CDC-008 clock-as-data
+            # shape).
             input_ports[port.name] = PortBoundary(
                 port=port.name,
-                src_clock=src_clock,
-                synchronised=False,
+                src_clock=clk,
+                synchronised=facts.synchronised if facts is not None else False,
                 width=len(port.bits),
+                sync_depth=facts.sync_depth if facts is not None else None,
+                user_synchronised=(
+                    facts.user_synchronised if facts is not None else False
+                ),
             )
     return BoundarySummary(
         module=sub.name,
         ports=ports,
         clock=clk,
         input_ports=input_ports,
+        internal_analysed=analysis is not None,
+        reconvergent_inputs=(
+            analysis.reconvergent_inputs if analysis is not None else frozenset()
+        ),
+    )
+
+
+def _summarise_multi_clock(
+    sub: Module,
+    ic: _InstanceClocks,
+    analysis: "ModuleAnalysis",
+) -> BoundarySummary | None:
+    """Per-port summary of a MULTI-clock module whose internals were analysed.
+
+    The gate #259 could not lift without this: a dual-clock IP carries a
+    real internal crossing, and with the internals opaque there was no
+    honest way to place its ports in a domain. Now each port is stamped
+    with the domain that genuinely captures (input) or launches (output)
+    it, so the parent's boundary walk is exact on both sides while the
+    internal crossing is analysed once, on the module itself.
+
+    Declines (``None``) when the module has no resolvable clock roots at
+    all, or when an input port is captured in **two** internal domains —
+    one virtual sink cannot stand for two capture domains, and choosing
+    either would drop the other's crossing.
+    """
+    if not analysis.clock_roots:
+        return None
+    ports: dict[str, PortBoundary] = {}
+    input_ports: dict[str, PortBoundary] = {}
+    for port in sub.ports.values():
+        if port.name in ic.clock_pins:
+            continue
+        # ``analyse_module`` describes every port except the traced clock
+        # pins, which are exactly what the loop above skips.
+        facts = analysis.ports[port.name]
+        if port.direction in ("output", "inout"):
+            # ``facts.clock`` None (comb feed-through, or launched from
+            # several domains) becomes the ``<unconstrained>`` source that
+            # crosses to every known-domain sink — the documented
+            # conservative direction.
+            ports[port.name] = PortBoundary(
+                port=port.name,
+                src_clock=facts.clock,
+                synchronised=facts.synchronised,
+                width=len(port.bits),
+                sync_depth=facts.sync_depth,
+                user_synchronised=facts.user_synchronised,
+            )
+        if port.direction in ("input", "inout"):
+            if facts.ambiguous:
+                return None
+            if facts.clock is None:
+                # Nothing sequential captures this input, so there is no
+                # crossing INTO the block here. Whatever it feeds leaves
+                # through an output, which is seeded as its own source
+                # (unconstrained when it is a comb feed-through), so the
+                # path is still covered.
+                continue
+            input_ports[port.name] = PortBoundary(
+                port=port.name,
+                src_clock=facts.clock,
+                synchronised=facts.synchronised,
+                width=len(port.bits),
+                sync_depth=facts.sync_depth,
+                user_synchronised=facts.user_synchronised,
+            )
+    return BoundarySummary(
+        module=sub.name,
+        ports=ports,
+        clock=None,
+        input_ports=input_ports,
+        internal_analysed=True,
+        reconvergent_inputs=analysis.reconvergent_inputs,
     )
 
 

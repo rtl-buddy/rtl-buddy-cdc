@@ -35,6 +35,7 @@ def elaborate(
     plugin_path: str | None = None,
     single_unit: bool = False,
     blackbox: list[str] | None = None,
+    greybox: list[str] | None = None,
 ) -> Module:
     """Run yosys to produce a flattened netlist, returning the top module.
 
@@ -50,6 +51,7 @@ def elaborate(
         plugin_path=plugin_path,
         single_unit=single_unit,
         blackbox=blackbox,
+        greybox=greybox,
     )
     return module
 
@@ -63,6 +65,7 @@ def elaborate_with_blackboxes(
     plugin_path: str | None = None,
     single_unit: bool = False,
     blackbox: list[str] | None = None,
+    greybox: list[str] | None = None,
 ) -> tuple[Module, dict[str, Module]]:
     """Run yosys to produce a flattened netlist JSON, then load it.
 
@@ -90,6 +93,23 @@ def elaborate_with_blackboxes(
     ``--blackboxed-module`` is a ``read_slang`` option, so blackboxing
     requires the slang plugin path; requesting it without a plugin is an
     error.
+
+    ``greybox``, if set, names modules to keep as CDC boundary cells
+    **with their internals intact** (#261). Implemented as
+    ``setattr -mod -set blackbox 1 <module>`` between ``proc`` and
+    ``flatten``: the attribute makes ``flatten`` leave the module standing
+    (so the parent keeps an ordinary instance cell and ``load_with_black
+    boxes`` picks it up as a boundary sibling) while its cells survive, so
+    :mod:`rtl_buddy_cdc.compositional` can analyse the module ONCE on its
+    own internals and lift reconvergence / sync-depth / gray facts back
+    into the boundary. This is the difference between a boundary that
+    merely scales and one that scales *without* trading away coverage.
+
+    Unlike ``--blackbox`` this is a plain Yosys pass, so it needs no
+    plugin and works with the built-in ``read_verilog`` frontend. Naming
+    the same module in both is contradictory — the ``read_slang`` stub
+    would win and there would be no internals to analyse — and is
+    rejected.
     """
     yosys = yosys_bin or shutil.which("yosys")
     if yosys is None or not Path(yosys).exists():
@@ -101,6 +121,14 @@ def elaborate_with_blackboxes(
         # where they think it is.
         raise YosysError(f"yosys plugin not found: {Path(plugin_path).resolve()}")
 
+    overlap = sorted(set(blackbox or ()) & set(greybox or ()))
+    if overlap:
+        raise YosysError(
+            "--blackbox and --greybox name the same module(s): "
+            f"{', '.join(overlap)}. --blackbox discards the body (nothing "
+            "left to analyse); --greybox keeps it so the subtree can be "
+            "analysed once on its own internals. Pick one."
+        )
     if blackbox and plugin_path is None:
         raise YosysError(
             "--blackbox requires the yosys-slang plugin "
@@ -140,10 +168,17 @@ def elaborate_with_blackboxes(
                 f"--allow-use-before-declare "
                 f"{bb}{srcs}"
             )
+        # ``setattr -mod -set blackbox 1`` must land AFTER ``proc`` (the
+        # module still needs its processes lowered to cells — those cells
+        # are the whole point) and BEFORE ``flatten``, which is the pass
+        # that honours the attribute by leaving the module standing.
+        grey = "".join(
+            f"setattr -mod -set blackbox 1 {shlex.quote(m)}; " for m in (greybox or ())
+        )
         script = (
             f"{read_cmd}; "
             f"hierarchy -top {shlex.quote(top)}; "
-            f"proc; flatten; opt_clean; "
+            f"proc; {grey}flatten; opt_clean; "
             f"write_json {shlex.quote(str(tmp_json))}"
         )
         proc = subprocess.run(

@@ -139,6 +139,26 @@ class _RuleContext:
     # ``blackbox_modules`` whole-instance exemption (e.g. legacy callers
     # that don't supply the map).
     boundary_clock_pins: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Proven synchroniser depth behind a *boundary* virtual sink (#261).
+    # Keyed by the synthetic sink's cell name (``<instance>.<port>``), the
+    # value is the chain depth the compositional per-module pass measured
+    # INSIDE the abstracted block. A virtual sink has no ``Q``, so
+    # ``_sync_chain_depth`` can only ever answer 1 for it — which is why an
+    # abstracted single-bit input used to over-report CDC-001 unconditionally
+    # (§4.9's "presently inert ``synchronised``"). With the internal depth
+    # published here, CDC-001 / CDC-002 / CDC-005 behave at the boundary
+    # exactly as they would on the flattened design. Absent entry = unknown =
+    # today's conservative depth-1 answer.
+    boundary_sync_depth: dict[str, int] = field(default_factory=dict)
+    # Input-port groups that RECONVERGE inside an abstracted block (#261),
+    # keyed by instance name. Each member is a set of the block's input port
+    # names whose captured values recombine internally. CDC-005 re-raises at
+    # the boundary when two crossings from the SAME source flop enter two
+    # ports of one recorded group — the reconvergence the star-collapse
+    # severs and #259 had to decline over.
+    boundary_reconvergence: dict[str, frozenset[frozenset[str]]] = field(
+        default_factory=dict
+    )
     # Clock-trace hop budget this context was built with (``--clock-trace-depth``).
     # Rules that need to re-walk the clock network themselves — CDC-023's
     # combine report — must use the SAME budget as ``domains`` above, or the
@@ -154,6 +174,10 @@ def _build_context(
     boundary_modules: frozenset[str] = frozenset(),
     blackbox_modules: frozenset[str] = frozenset(),
     boundary_clock_pins: dict[str, frozenset[str]] | None = None,
+    boundary_sync_depth: dict[str, int] | None = None,
+    boundary_reconvergence: dict[str, frozenset[frozenset[str]]] | None = None,
+    boundary_user_syncs: frozenset[str] = frozenset(),
+    clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
@@ -170,7 +194,9 @@ def _build_context(
     the crossings list at any depth. See issue #263.
     """
     flops = tuple(find_flops(module))
-    flop_domains = assign_domains(module, max_depth=max_depth)
+    flop_domains = assign_domains(
+        module, clock_for_port=clock_for_port, max_depth=max_depth
+    )
     domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
 
     bit_drivers: dict[Bit, tuple[str, str, int]] = {}
@@ -220,7 +246,7 @@ def _build_context(
         bit_drivers=bit_drivers,
         bit_consumers=bit_consumers,
         reader_counts=reader_counts,
-        user_syncs=frozenset(user_sync_flop_names(module)),
+        user_syncs=frozenset(user_sync_flop_names(module)) | boundary_user_syncs,
         user_grays=frozenset(user_gray_flop_names(module)),
         user_statics=frozenset(user_static_flop_names(module)),
         user_handshakes=frozenset(user_handshake_flop_names(module)),
@@ -235,6 +261,8 @@ def _build_context(
         boundary_modules=boundary_modules,
         blackbox_modules=blackbox_modules,
         boundary_clock_pins=boundary_clock_pins or {},
+        boundary_sync_depth=boundary_sync_depth or {},
+        boundary_reconvergence=boundary_reconvergence or {},
         max_depth=max_depth,
     )
 
@@ -916,6 +944,43 @@ def _sync_chain_depth(
     return depth
 
 
+def _effective_sync_chain_depth(
+    module: Module,
+    dst_flop: Flop,
+    dst_clock: str,
+    ctx: _RuleContext,
+) -> int:
+    """Synchroniser depth at ``dst_flop``, boundary sinks included (#261).
+
+    For an ordinary flop this is plain :func:`_sync_chain_depth`. For the
+    **virtual sink** a summarised blackbox input pin becomes
+    (``domain._boundary_sink_flops``) the structural walk is blind: the
+    synthetic flop has an empty ``Q``, so the chain can never extend and
+    the answer is always 1 — which is why an abstracted single-bit input
+    used to fire CDC-001 unconditionally even when the IP synchronises it
+    properly (§4.9's over-report).
+
+    When the compositional pass (:mod:`rtl_buddy_cdc.compositional`) has
+    *proven* a chain inside the block, its depth is published in
+    ``ctx.boundary_sync_depth`` and returned here, so CDC-001 goes quiet
+    exactly where the flattened design would be quiet and CDC-002 still
+    fires when the proven depth is below the site requirement. Absent
+    entry (a stub blackbox, or a port whose proof failed) falls back to
+    the structural answer — the conservative default stands.
+    """
+    proven = ctx.boundary_sync_depth.get(dst_flop.cell.name)
+    if proven is not None:
+        return proven
+    return _sync_chain_depth(
+        module,
+        dst_flop,
+        dst_clock,
+        ctx.domains,
+        ctx.reader_counts,
+        d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+    )
+
+
 def _sync_chain_flops(
     module: Module,
     head: Flop,
@@ -1038,14 +1103,7 @@ def check_cdc_001(
             continue  # (* cdc_handshake *) — single capture under dst_valid is intended (#247)
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
             continue  # source is (* cdc_static *) — held constant, no metastability
-        depth = _sync_chain_depth(
-            module,
-            c.dst_flop,
-            c.dst_clock,
-            ctx.domains,
-            ctx.reader_counts,
-            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
-        )
+        depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
         if depth < 2:
             # Defer to CDC-014 when a follow-on flop *is* present but
             # behind a comb cell — the message "no second-stage" would
@@ -1104,14 +1162,7 @@ def check_cdc_002(
             continue
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
             continue  # source is (* cdc_static *) — held constant, no metastability
-        depth = _sync_chain_depth(
-            module,
-            c.dst_flop,
-            c.dst_clock,
-            ctx.domains,
-            ctx.reader_counts,
-            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
-        )
+        depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
         if 2 <= depth < required_depth:
             violations.append(
                 Violation(
@@ -1168,14 +1219,7 @@ def check_cdc_003(
             continue
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
             continue  # source is (* cdc_static *) — held constant, no metastability
-        depth = _sync_chain_depth(
-            module,
-            c.dst_flop,
-            c.dst_clock,
-            ctx.domains,
-            ctx.reader_counts,
-            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
-        )
+        depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
         if depth < 2:
             # CDC-001 covers this crossing already; don't double-fire.
             continue
@@ -1564,14 +1608,7 @@ def check_cdc_005(
             # out to multiple sync chains; port sources don't have the
             # metastability-resolution behaviour the rule is testing.
             continue
-        depth = _sync_chain_depth(
-            module,
-            c.dst_flop,
-            c.dst_clock,
-            ctx.domains,
-            ctx.reader_counts,
-            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
-        )
+        depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
         if depth < 2:
             continue
         grouped[(c.src_flop.cell.name, c.dst_clock)].append(c)
@@ -1608,10 +1645,19 @@ def check_cdc_005(
             )
             for cell_name in reached - chain_internal:
                 appears_in[cell_name] += 1
-        if not any(count >= 2 for count in appears_in.values()):
+        boundary = _boundary_reconvergence(group, ctx)
+        if boundary is None and not any(count >= 2 for count in appears_in.values()):
             continue
 
         dst_names = sorted(c.dst_flop.cell.name for c in group)
+        where = ""
+        if boundary is not None:
+            inst, ports = boundary
+            where = (
+                f" — the recombination is INSIDE abstracted boundary "
+                f"`{inst}` (ports {', '.join(ports)}), lifted from its "
+                f"per-module analysis"
+            )
         violations.append(
             Violation(
                 rule_id="CDC-005",
@@ -1622,13 +1668,54 @@ def check_cdc_005(
                     f"chains in domain {dst_clk} (dst flops: "
                     f"{', '.join(dst_names)}); independent metastability "
                     f"resolution can produce mismatched synchronized "
-                    f"values when these outputs recombine"
+                    f"values when these outputs recombine{where}"
                 ),
                 crossing=group[0],
                 cell_name=src_name,
             )
         )
     return violations
+
+
+def _boundary_reconvergence(
+    group: list[Crossing],
+    ctx: _RuleContext,
+) -> tuple[str, tuple[str, ...]] | None:
+    """Reconvergence *inside* an abstracted boundary, lifted (#261).
+
+    CDC-005's structural filter walks forward from each chain terminal to
+    find a cell that observes both synchronised values. At a boundary the
+    walk dead-ends: the virtual sink standing in for the block's input
+    pin has an empty ``Q`` and the subtree's internal graph is severed by
+    the star-collapse. That blind spot is precisely why #259 had to
+    *decline* a single-clock block with ≥2 incoming crossings.
+
+    The compositional pass fills it in: it records, per module, the input
+    ports whose captured values recombine internally, and
+    ``compose_boundaries`` publishes them per instance in
+    ``ctx.boundary_reconvergence``. Here we ask whether ≥2 crossings of
+    this group (already established as coming from one source flop into
+    one destination domain, each behind a ≥2-deep chain) enter two ports
+    of one recorded group. That is the same predicate the flat rule
+    applies, evaluated on the fact the boundary hid.
+
+    Returns ``(instance, ports)`` for the report, or ``None``.
+    """
+    if not ctx.boundary_reconvergence:
+        return None
+    by_instance: dict[str, set[str]] = defaultdict(set)
+    for c in group:
+        if c.dst_boundary is not None:
+            by_instance[c.dst_boundary[0]].add(c.dst_boundary[1])
+    for inst in sorted(by_instance):
+        entered = by_instance[inst]
+        if len(entered) < 2:
+            continue
+        for recorded in ctx.boundary_reconvergence.get(inst, frozenset()):
+            hit = entered & set(recorded)
+            if len(hit) >= 2:
+                return inst, tuple(sorted(hit))
+    return None
 
 
 def check_cdc_006(
@@ -4905,6 +4992,9 @@ def run_all(
     boundary_modules: frozenset[str] = frozenset(),
     blackbox_modules: frozenset[str] = frozenset(),
     boundary_clock_pins: dict[str, frozenset[str]] | None = None,
+    boundary_sync_depth: dict[str, int] | None = None,
+    boundary_reconvergence: dict[str, frozenset[frozenset[str]]] | None = None,
+    boundary_user_syncs: frozenset[str] = frozenset(),
     max_depth: int = 16,
     sync_primitives: frozenset[str] = frozenset(),
 ) -> list[Violation]:
@@ -4921,6 +5011,9 @@ def run_all(
         boundary_modules=boundary_modules,
         blackbox_modules=blackbox_modules,
         boundary_clock_pins=boundary_clock_pins,
+        boundary_sync_depth=boundary_sync_depth,
+        boundary_reconvergence=boundary_reconvergence,
+        boundary_user_syncs=boundary_user_syncs,
         max_depth=max_depth,
     )
     out: list[Violation] = []

@@ -1,0 +1,221 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:46.1-61.10"
+      },
+      "ports": {
+        "clk_x": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_d": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "din": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "dout": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+        "$flatten\\u_sync.$procdff$6": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:42.5-42.42"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 6 ],
+            "Q": [ 5 ]
+          }
+        },
+        "$flatten\\u_sync.$procdff$7": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:40.5-40.39"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 7 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$flatten\\u_sync.$procdff$8": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:39.5-39.43"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 8 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procdff$5": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:54.5-54.45"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 8 ]
+          }
+        },
+        "u_sync": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:56.15-60.6",
+            "module": "ctrl_sync",
+            "module_src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:30.1-44.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        }
+      },
+      "netnames": {
+        "clk_d": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:48.17-48.22"
+          }
+        },
+        "clk_x": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:47.17-47.22"
+          }
+        },
+        "din": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:49.17-49.20"
+          }
+        },
+        "dout": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:50.17-50.21"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:52.9-52.14"
+          }
+        },
+        "u_sync.ack_out": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "hdlname": "u_sync ack_out",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:33.17-33.24"
+          }
+        },
+        "u_sync.clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_sync clk",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:31.17-31.20"
+          }
+        },
+        "u_sync.req_in": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "hdlname": "u_sync req_in",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:32.17-32.23"
+          }
+        },
+        "u_sync.s0": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "hdlname": "u_sync s0",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:35.9-35.11"
+          }
+        },
+        "u_sync.s1": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "hdlname": "u_sync s1",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:36.9-36.11"
+          }
+        },
+        "u_sync.use_q": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "hdlname": "u_sync use_q",
+            "src": "tests/fixtures/bbx_input_sync/bbx_input_sync.sv:37.9-37.14"
+          }
+        }
+      }
+    }
+  }
+}
