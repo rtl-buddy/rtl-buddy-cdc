@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **In-RTL pragma scanner** (`rtl_buddy_cdc.pragma`, #41). A
+  suppression can be written next to the RTL it applies to instead of
+  in an external waiver file whose regexes chase synthesis-generated
+  cell names:
+
+  ```systemverilog
+  // rbcdc: disable-rule CDC-001
+  // rbcdc: disable-rule CDC-001,CDC-002  hand-reviewed handshake
+  /* rbcdc: disable-rule CDC-005 library cell */
+  ```
+
+  `rbcdc:` is this tool's magic-comment namespace (the org-wide
+  convention gives each rtl-buddy tool one — `rbsch:`, `rbxeno:`, …).
+  It is the only accepted spelling; there is no SV-attribute form.
+
+  `pragma.scan(sources)` reads the sources as **text** — never via
+  Yosys or slang — and returns ordinary `waivers.Waiver` records, one
+  per (pragma × rule id), scoped to the file's basename with the free
+  text after the rule list as the reason. `Waiver` gains an `origin`
+  field: `None` for a waiver-file entry (so `source_line` is a line in
+  that file), the source path for a pragma (so `source_line` is the
+  line of the pragma in the RTL).
+
+  This release is the **scanner only** — the records are not yet
+  applied to a run. Wiring them into `lint` lands with #42,
+  block-scoped `enable-rule` with #43.
+
 - **`--blackbox` now refuses a module that drives a clock output**
   (`CDC-BBX`, #273). The boundary-soundness check declined a candidate
   it could not prove single-clock, but happily *accepted* a single-clock

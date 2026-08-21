@@ -54,7 +54,13 @@ class Waiver:
     rule_pattern: str  # exact rule id, a legacy alias, or "*"
     regex: re.Pattern[str]
     reason: str
-    source_line: int  # 1-based line in the waiver file (for diagnostics)
+    source_line: int  # 1-based line in the file below (for diagnostics)
+    # Where the waiver was written. ``None`` for a waiver-file entry
+    # (``source_line`` is then a line in that waiver file). A path
+    # means the waiver came from an in-RTL ``// rbcdc:`` pragma in that
+    # source file, and ``source_line`` is the line of the pragma —
+    # see :mod:`rtl_buddy_cdc.pragma`.
+    origin: str | None = None
 
 
 def parse(text: str) -> list[Waiver]:

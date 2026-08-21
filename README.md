@@ -267,6 +267,22 @@ Format: `waive <RULE-ID|*> <regex> [reason ...]`
 
 The regex is matched against the offending cell name, the canonical `"src_flop -> dst_flop"` text (when there's a crossing), and the violation message; a hit on any one suppresses. The first matching waiver wins. Suppressed findings are still reported (with the matching reason and waiver-line number) but don't drive the exit code, so a fully-waived run returns 0.
 
+## In-RTL pragmas
+
+A suppression can also be written next to the RTL it applies to, as a magic comment in the `rbcdc:` namespace (each rtl-buddy tool owns one — `rbsch:`, `rbxeno:`, …; there is no SV-attribute form and no alternative spelling):
+
+```systemverilog
+// rbcdc: disable-rule CDC-001
+// rbcdc: disable-rule CDC-001,CDC-002  hand-reviewed handshake
+/* rbcdc: disable-rule CDC-005 library cell */
+```
+
+Grammar: `// rbcdc: disable-rule <RULE-ID>[,<RULE-ID>…] [reason …]`, one pragma per line, in a `//` or `/* … */` comment. Each rule id in the list becomes its own waiver, scoped to the file the pragma is written in, with the free text after the rule list as the reason.
+
+Sources are scanned as **text** — never through Yosys or slang — so a pragma costs nothing and needs no frontend.
+
+> **This release ships the scanner only** (`rtl_buddy_cdc.pragma.scan`): pragmas are parsed into waiver records but not yet applied to a run. Wiring them into `lint` lands with the follow-on (issue #42), block-scoped `enable-rule` with issue #43.
+
 ## SV attributes
 
 Mark a flop as a user-vetted synchronizer first stage by attaching an attribute to the wire/reg it drives:
@@ -351,6 +367,7 @@ src/rtl_buddy_cdc/
   rules.py      # CDC-001..-008 + RULES registry
   primitives.py # Sanctioned CDC macro registry (xpm_cdc_*) + depth params
   waivers.py    # Waiver file parser + apply()
+  pragma.py     # In-RTL `// rbcdc:` pragma scanner
   reporter.py   # text / JSON / SARIF formatters
 tests/
   fixtures/
@@ -399,7 +416,7 @@ Not yet:
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
-- [ ] In-RTL pragma comments (`// rtl-buddy-cdc disable-rule …`, in-file block suppression) for inline waiving without an external file
+- [ ] In-RTL pragma comments (`// rbcdc: disable-rule …`, in-file block suppression) for inline waiving without an external file — scanner landed (see [In-RTL pragmas](#in-rtl-pragmas)); application and block scoping pending
 - [ ] Instance-scoped waivers (`waive CDC-001 inst:u_block_a/.*`) — natural follow-on to hierarchical reporting now that `instance_path` is on every violation
 - [ ] Glitch detection on data path through async muxes / clock-gate enables
 
