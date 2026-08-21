@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CDC-023 — clock net driven by a combine of two declared clocks**
+  (#269). A clock gate (`$and` / `$or` / `$xor` …) or a clock-path
+  transparent latch (`$dlatch` / `$_DLATCH_*`) whose legs carry two or
+  more *distinct declared clocks* mixes clock domains combinationally:
+  the net glitches, runs at no declared frequency, and strands every
+  flop behind it. The clock-root tracer has **declined** on this shape
+  since #263 — which removed the silent-mislabel hazard but left the
+  flops in the generic `domain_unknown` tally with no cause attached, so
+  a genuine two-clock combine looked exactly like a clock tree deeper
+  than `--clock-trace-depth`. CDC-023 names the cause: the combining
+  **cell**, the combined **net**, and the two **clocks**, so it can be
+  fixed or waived instead of hunted for in the under-resolution list.
+
+  The finding is emitted *by* the decline rather than re-derived from
+  it. `domain._pick_combining_root` gained an `on_decline` callback
+  invoked at the single line that returns `None`; `trace_clock_root`
+  threads a matching `on_combine` recorder; and the new
+  `domain.find_clock_combines` runs the ordinary per-flop clock-root
+  walk with that recorder attached, returning one `ClockCombine` record
+  per combining node. The rule therefore fires **iff** the tracer
+  declined — one predicate, one traversal, no second implementation to
+  drift out of step. The declared-clock predicate itself moved out of
+  `assign_domains` into `domain._clock_identity_fn` so both callers
+  share one copy, which is what makes the #267 hardening apply to the
+  rule for free: a plain enable port is not a declared clock, and nor is
+  the `<unconstrained>` sentinel
+  `sdc.synthesize_unconstrained_inputs` stamps on untyped input ports,
+  so a normal ICG never fires. A clock **mux** never fires either — a
+  mux *selects* one clock rather than combining them.
+
+  Severity `warning` (`--strict` → error): combining two clocks is
+  nearly always a bug, but the shape also covers deliberate,
+  characterised test/debug clock chopping, and a new rule id shouldn't
+  turn a previously-clean run into a hard error the day it lands.
+  Waivable by rule id like any other rule.
+
+  No schema change — an additive rule id, reported through the normal
+  `Violation` path (text / JSON / SARIF). The existing
+  `clock_combine_gate` / `clock_combine_latch` /
+  `clock_combine_generated` fixtures now fire CDC-023; `icg_port_enable`
+  stays clean, and the new `tests/test_cdc_023_clock_combine.py` loads
+  every fixture through `synthesize_unconstrained_inputs` so the
+  sentinel path is really exercised. Designs that combine two declared
+  clocks and previously reported clean (bar an unexplained
+  `domain_unknown` count) will now report a CDC-023 `warning`.
+
 ### Fixed
 
 - **CDC-011 now sees an untyped sync reset on a dedicated `SRST` pin**

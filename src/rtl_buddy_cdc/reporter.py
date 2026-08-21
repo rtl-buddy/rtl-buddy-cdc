@@ -78,6 +78,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "CDC-016": "Opposite-edge synchroniser (halves MTBF)",
     "CDC-017": "Transparent latch in CDC path",
     "CDC-022": "CDC primitive with insufficient DEST_SYNC_FF depth",
+    "CDC-023": "Clock net driven by a combine of two declared clocks",
 }
 
 

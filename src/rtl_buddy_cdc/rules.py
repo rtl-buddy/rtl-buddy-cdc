@@ -13,7 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
-from rtl_buddy_cdc.domain import Crossing, assign_domains
+from rtl_buddy_cdc.domain import Crossing, assign_domains, find_clock_combines
 from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell, is_latch_cell
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.primitives import (
@@ -139,6 +139,11 @@ class _RuleContext:
     # ``blackbox_modules`` whole-instance exemption (e.g. legacy callers
     # that don't supply the map).
     boundary_clock_pins: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Clock-trace hop budget this context was built with (``--clock-trace-depth``).
+    # Rules that need to re-walk the clock network themselves — CDC-023's
+    # combine report — must use the SAME budget as ``domains`` above, or the
+    # two views of the clock network could disagree at a non-default depth.
+    max_depth: int = 16
 
 
 def _build_context(
@@ -230,6 +235,7 @@ def _build_context(
         boundary_modules=boundary_modules,
         blackbox_modules=blackbox_modules,
         boundary_clock_pins=boundary_clock_pins or {},
+        max_depth=max_depth,
     )
 
 
@@ -4692,6 +4698,100 @@ def check_cdc_022(
     return violations
 
 
+# How many sink-flop cell names a CDC-023 message quotes inline.
+_CDC_023_SINK_SAMPLE = 3
+
+
+def check_cdc_023(
+    module: Module,
+    crossings: list[Crossing],  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-023 — CLK net driven by a combine of two declared clocks.
+
+    A clock gate (``$and`` / ``$or`` …) or a clock-path transparent latch
+    (``$dlatch`` / ``$_DLATCH_*``) whose legs carry **two or more
+    distinct declared clocks** mixes clock domains combinationally. The
+    resulting net toggles on both clocks, so it glitches, runs at no
+    declared frequency, and gives every flop behind it an ambiguous
+    domain.
+
+    Issue #263 made the clock-root tracer *decline* on exactly this
+    shape — better than silently asserting one leg, but the flop then
+    just joined the generic ``domain_unknown`` tally with no cause
+    attached. CDC-023 (issue #269) is that decline, named: it reports
+    the combining **cell**, the combined **net**, and the two **clocks**
+    so the user can fix or waive it instead of hunting through the
+    under-resolution list.
+
+    Findings come from :func:`~rtl_buddy_cdc.domain.find_clock_combines`,
+    which attaches a recorder to the ordinary clock-root walk and
+    reports whatever ``_pick_combining_root`` declined on. The rule
+    therefore fires **iff** the tracer declined — one predicate, one
+    traversal, no second implementation to drift out of step. In
+    particular it inherits the ``clock_identity`` rules for free: a
+    plain enable port is not a declared clock, and neither is the
+    ``<unconstrained>`` sentinel that
+    ``sdc.synthesize_unconstrained_inputs`` stamps on untyped input
+    ports, so a normal ICG (clock + untyped enable port) is *not* a
+    combine and never fires here. A **mux** never fires either — it
+    selects one clock rather than combining them.
+
+    Severity ``warning`` (``--strict`` → error), the deliberate choice
+    for a new waivable diagnostic. Combining two clocks is nearly always
+    a bug, but the shape also covers deliberate, characterised
+    test/debug clock chopping and non-glitch-critical mixes, and a new
+    rule id that turns a previously-clean run into a hard `error` on
+    landing is the wrong default. Sites that disagree get `error`
+    with ``--strict``.
+
+    Skipped when no SDC was supplied: with no declared clocks there are
+    no clock identities to combine.
+    """
+    if clock_spec is None:
+        return []
+    max_depth = ctx.max_depth if ctx is not None else 16
+    violations: list[Violation] = []
+    for combine in find_clock_combines(
+        module,
+        clock_spec.pin_clocks,
+        clock_for_port=clock_spec.clock_for_port,
+        max_depth=max_depth,
+    ):
+        shown = combine.sinks[:_CDC_023_SINK_SAMPLE]
+        sample = ", ".join(f"`{name}`" for name in shown)
+        extra = len(combine.sinks) - len(shown)
+        if extra > 0:
+            sample += f", +{extra} more"
+        clocks = ", ".join(combine.clocks)
+        violations.append(
+            Violation(
+                rule_id="CDC-023",
+                severity="warning",
+                message=(
+                    f"CLK net `{combine.net}` driven by combine of "
+                    f"{{{clocks}}} at `{combine.cell}` "
+                    f"(`{combine.cell_type}`) — two distinct declared clocks "
+                    f"are mixed combinationally onto one clock net. The net "
+                    f"toggles on both, so it glitches and runs at no declared "
+                    f"frequency; the clock-root tracer declines to assign a "
+                    f"domain through it, leaving the "
+                    f"{len(combine.sinks)} flop(s) it reaches "
+                    f"({sample}) domain-unknown and their crossings "
+                    f"unchecked. Gate ONE clock and use the other only as a "
+                    f"synchronised enable, or select between them with a "
+                    f"glitchless clock mux (a mux selects and is not "
+                    f"reported here). Waive CDC-023 if the combine is "
+                    f"intentional and characterised."
+                ),
+                cell_name=combine.cell,
+            )
+        )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -4722,6 +4822,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-020": check_cdc_020,
     "CDC-021": check_cdc_021,
     "CDC-022": check_cdc_022,
+    "CDC-023": check_cdc_023,
 }
 
 

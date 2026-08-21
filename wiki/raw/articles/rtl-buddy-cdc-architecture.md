@@ -768,10 +768,10 @@ Cell-type categories the walker recognizes:
 | Category | Yosys cell types | Behavior |
 |---|---|---|
 | Buffer / inverter | `$not`, `$logic_not`, `$buf`, `$pos`, `$reduce_bool`, `$_BUF_`, `$_NOT_` | Transparent: trace the single `A` input |
-| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline (see below) |
-| Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline |
+| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline and are reported as CDC-023 (see below) |
+| Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline, and never produces a CDC-023 finding |
 | FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root |
-| Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
+| Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline and are reported as CDC-023 (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
 
 The walker maintains a per-call `seen` set keyed on bit ID and a
 `max_depth` counter (default 16), so cycles in the clock network
@@ -809,8 +809,25 @@ correct there. Two legs that map to the *same* declared clock (the
 identity, not a combine, and resolve normally. The decline only ever
 turns a previously *mislabelled* flop into a loud `domain_unknown`; it
 never drops a crossing carried by the design's other, unambiguous flops.
-A dedicated rule that *flags* the combine (rather than only declining to
-classify it) is left to future work.
+
+**The decline is now also a finding (CDC-023, issue #269).** Declining
+removed the mislabel hazard but said nothing about *why* the flop was
+unresolved. `_pick_combining_root` therefore takes an optional
+`on_decline` callback, invoked at the single line that returns `None`,
+and `trace_clock_root` threads a matching `on_combine` recorder
+(`domain.CombineSink`) down the walk. `domain.find_clock_combines` runs
+the ordinary per-flop clock-root walk with that recorder attached and
+returns one `ClockCombine` per distinct combining node — net, cell,
+cell type, the declared clocks that met, and the flops reached. CDC-023
+(§8.19) renders those records. Because the report is *emitted by the
+decline site itself*, "the rule fired" and "the tracer declined" are
+one event, not two predicates that have to be kept in agreement.
+
+The declared-clock predicate lives in `domain._clock_identity_fn`,
+hoisted out of `assign_domains` for the same reason: one function
+serves both the tracer and the reporter, so the `<unconstrained>`
+sentinel exclusion (and every future refinement) applies to both by
+construction.
 
 The budget is configurable. `assign_domains(module, ...,
 max_depth=N)` and `find_crossings(module, ..., max_depth=N)` forward
@@ -1840,6 +1857,89 @@ rule id, severity, and message text under either lowering. The
 pair is the same source built with and without `opt_dff`, and
 `tests/test_bad_untyped_sync_reset_srst.py` compares the two findings
 sets directly.
+
+### 8.19 CDC-023 — clock net driven by a combine of two declared clocks
+
+Issue #263 made `trace_clock_root` **decline** when a clock gate or a
+clock-path transparent latch combines two distinct declared clocks
+(§5). That was a soundness fix: better a loud `domain_unknown` than a
+silently mislabelled flop. But the decline is silent *about the cause*
+— the flop just joins the generic under-resolution tally, and the user
+has no way to tell "this block's clock tree is deeper than
+`--clock-trace-depth`" apart from "someone ANDed two clocks together".
+The second is a real design smell — a combinationally mixed clock
+glitches, runs at no declared frequency, and every crossing behind it
+goes unchecked — and it deserves a name.
+
+**Structure: the finding is emitted by the decline, not re-derived
+from it.** The obvious implementation is a rule that re-walks the
+clock network looking for combining cells. That was rejected: it means
+a *second* predicate for "is this a real declared clock, or just an
+enable port", and the moment the two drift the rule either cries wolf
+on every ICG or goes quiet on a real combine. The #267 hardening
+already showed how subtle that predicate is — the `<unconstrained>`
+sentinel that `synthesize_unconstrained_inputs` stamps on untyped input
+ports must not count as a clock, or every port-enabled ICG wrongly
+declines.
+
+So instead:
+
+- `_pick_combining_root` takes an `on_decline` callback, invoked at the
+  one line that returns `None`;
+- `trace_clock_root` / `_trace` thread an `on_combine` recorder
+  (`domain.CombineSink`) that receives `(cell, cell_type, driven_bit,
+  clocks)`;
+- `domain.find_clock_combines` runs the ordinary per-flop walk — same
+  `max_depth`, same drivers, same `_clock_identity_fn` predicate
+  `assign_domains` uses — with the recorder attached, dedupes events per
+  `(cell, driven bit)`, and returns `ClockCombine` records;
+- `check_cdc_023` renders those records and nothing else.
+
+The recorder observes the walk; it never changes its outcome. The
+predicate itself was hoisted out of `assign_domains` into
+`_clock_identity_fn` so there is literally one copy. Net effect: the
+rule fires **iff** the tracer declined, by construction rather than by
+two implementations agreeing, and the mux exclusion, the same-clock
+(#166) exclusion, and the sentinel exclusion are all inherited for
+free.
+
+The cost is one extra clock-root pass over the flop list. It is skipped
+outright when fewer than two clock identities are declared (no SDC, or
+a single-clock design), which is the case where an extra walk would buy
+nothing.
+
+**Reporting.** One finding per combining node, not per stranded flop:
+the node is what the user edits. The message names the combined net,
+the declared clocks that met, and the cell, then a bounded sample of
+the flops the node clocks (the count is always exact). `cell_name` is
+the combining cell, so the JSON/SARIF source location points at the
+gate and a waiver regex can match it.
+
+**Severity is `warning`** (`--strict` → error). Combining two clocks is
+nearly always a bug, but the shape also covers deliberate, characterised
+test/debug clock chopping, and a new rule id that turns a
+previously-clean run into a hard `error` the day it lands is the wrong
+default for a diagnostic whose escape hatch is a waiver. Sites that
+disagree get `error` via `--strict`.
+
+**Note the one asymmetry.** A declined node does not *always* strand its
+sinks: a decline on one leg of an upstream **mux** still lets the mux
+resolve through its other leg. The combining node is a real smell
+either way, which is why the report keys on the node rather than on
+the unresolved flop — and why CDC-023's count and
+`summary.domain_unknown` are related but not equal.
+
+CDC-023 is a **new rule id**, added under the same discipline as
+CDC-022: ids are added, never renamed or reused. 022 was the previous
+maximum; no retired id was recycled.
+
+Fixtures: `clock_combine_gate` (`$and` of two `create_clock` ports),
+`clock_combine_latch` (`$dlatch` with `D`=clkA, `EN`=clkB), and
+`clock_combine_generated` (a `create_generated_clock` target combined
+with a real clock) fire; `icg_port_enable` — the #263 regression guard
+— must stay silent, and `tests/test_cdc_023_clock_combine.py` loads
+every fixture through `synthesize_unconstrained_inputs` so the sentinel
+case is actually exercised.
 
 ## 9. Waivers
 
