@@ -30,7 +30,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from rtl_buddy_cdc.abstract import (
+    _bit_consumers,
+    _clock_sink_bits,
     _instance_clocks,
+    blackbox_clock_pins_by_module,
+    clock_driving_output_ports,
     summarise_subtree,
     summarise_sync_primitive,
 )
@@ -61,6 +65,11 @@ class CompositionStats:
     recognised as sanctioned CDC synchroniser macros (the ``xpm_cdc_*``
     family plus any ``--sync-primitive`` registrations) — summarised as
     synchronisers rather than as single-clock subtrees.
+    ``clock_output_ports`` (#273) records the *why* for the clock-output
+    decline flavour: ``(module type, output port)`` pairs for candidates
+    refused because an output of theirs drives a clock. Every module type
+    named here is also in ``declined_modules``; the CLI reads the pair set
+    to name the offending port in the ``CDC-BBX`` message.
     """
 
     instances: int = 0
@@ -70,6 +79,7 @@ class CompositionStats:
     declined_modules: frozenset[str] = field(default_factory=frozenset)
     boundary_modules: frozenset[str] = field(default_factory=frozenset)
     primitive_modules: frozenset[str] = field(default_factory=frozenset)
+    clock_output_ports: frozenset[tuple[str, str]] = field(default_factory=frozenset)
 
     @property
     def shared_subtree_reused(self) -> bool:
@@ -77,6 +87,15 @@ class CompositionStats:
         instantiated more than once and its summary served from cache
         rather than being recomputed."""
         return self.cache_hits > 0
+
+    def clock_output_ports_of(self, module_type: str) -> tuple[str, ...]:
+        """The offending output ports of ``module_type``, sorted.
+
+        Empty when the type was not declined for driving a clock output.
+        """
+        return tuple(
+            sorted(p for (m, p) in self.clock_output_ports if m == module_type)
+        )
 
 
 def compose_boundaries(
@@ -109,6 +128,15 @@ def compose_boundaries(
     legacy hand-built callers. ``stats.boundary_modules`` carries the
     distinct module types abstracted (for CDC-008's boundary exemption).
 
+    Two decline flavours feed ``stats.declined_modules``: a candidate that
+    is **not provably single-clock**, and (#273) a candidate whose
+    **output drives a clock** — clock generation / forwarding that
+    blackboxing would silently elide. The second is decided per module
+    type in a pre-pass (any qualifying instance declines the type) and
+    recorded in ``stats.clock_output_ports`` so the CLI can name the
+    offending port; both land on the same ``CDC-BBX`` report path and are
+    waived identically.
+
     Pure: no I/O, no mutation of ``top`` or ``blackboxes``.
 
     ``max_depth`` is the clock-trace hop budget threaded to
@@ -138,11 +166,55 @@ def compose_boundaries(
     boundary_modules: set[str] = set()
     primitive_modules: set[str] = set()
 
+    # Clock-output decline (#273), decided per MODULE before anything is
+    # summarised: a candidate whose output drives a clock generates or
+    # forwards that clock, and blackboxing it would elide the clock
+    # network. The verdict is module-level because *any* instance
+    # qualifying is enough — a clock-forwarding tile whose top instance
+    # leaves ``clk_out`` unconnected is the same module, and abstracting
+    # it there would be just as unsound. The per-parent maps are built
+    # once and shared across instances.
+    clock_out_pairs: set[tuple[str, str]] = set()
+    clock_out_modules: set[str] = set()
+    clock_pins_by_module = blackbox_clock_pins_by_module(
+        top, blackboxes, spec=spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
+    )
+    sink_bits = _clock_sink_bits(
+        top, clock_pins_by_module, spec=spec, pin_clocks=spec.pin_clocks
+    )
+    consumers = _bit_consumers(top)
+    for cell in top.cells.values():
+        sub = blackboxes.get(cell.type)
+        if sub is None:
+            continue
+        offenders = clock_driving_output_ports(
+            top,
+            cell,
+            sub,
+            blackboxes=blackboxes,
+            spec=spec,
+            pin_clocks=spec.pin_clocks,
+            max_depth=max_depth,
+            clock_pins_by_module=clock_pins_by_module,
+            sink_bits=sink_bits,
+            consumers=consumers,
+        )
+        if offenders:
+            clock_out_modules.add(cell.type)
+            clock_out_pairs.update((cell.type, p) for p in offenders)
+
     for inst_name, cell in top.cells.items():
         sub = blackboxes.get(cell.type)
         if sub is None:
             continue
         instances += 1
+        if cell.type in clock_out_modules:
+            # Declined ahead of the primitive path too: a sanctioned
+            # synchroniser that also forwards a clock would elide the
+            # clock network exactly the same way, and the user's
+            # ``--sync-primitive`` promise is about the data crossing.
+            declined_modules.add(cell.type)
+            continue
         if is_sync_primitive(cell.type, sync_primitives):
             # Recognised CDC macro (#275): summarised as a synchroniser,
             # never declined as "not provably single-clock". Deliberately
@@ -193,6 +265,7 @@ def compose_boundaries(
         declined_modules=frozenset(declined_modules),
         boundary_modules=frozenset(boundary_modules),
         primitive_modules=frozenset(primitive_modules),
+        clock_output_ports=frozenset(clock_out_pairs),
     )
     return out, stats
 

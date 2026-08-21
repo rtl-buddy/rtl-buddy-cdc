@@ -816,18 +816,34 @@ def _analyze_module_and_report(
         # are unanalysed and it is absent from ``boundaries``. Emit one
         # ``error`` per instance so it is waivable by cell name and carries a
         # source location, instead of a silent drop.
+        #
+        # Two decline flavours share this path. The clock-output flavour
+        # (#273) names the offending output port and says what would be
+        # elided — a module that generates or forwards a clock cannot be
+        # blackboxed without the clock network vanishing with it. Same rule
+        # id, same severity, same waiver: ``waive CDC-BBX <instance-regex>``.
         for inst, cell in module.cells.items():
             if cell.type in comp_stats.declined_modules:
+                clk_out = comp_stats.clock_output_ports_of(cell.type)
+                if clk_out:
+                    noun = "a clock output" if len(clk_out) == 1 else "clock outputs"
+                    named = ", ".join(f"`{p}`" for p in clk_out)
+                    reason = (
+                        f"drives {noun} {named} — clock generation/forwarding "
+                        f"would be elided; flatten it or analyse standalone "
+                        f"(waive {BBOX_RULE_ID} if intentionally out of scope here)."
+                    )
+                else:
+                    reason = (
+                        "left opaque — not provably single-clock; internal "
+                        "crossings not analysed. Flatten it or analyse standalone "
+                        f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                    )
                 bb_violations.append(
                     Violation(
                         rule_id=BBOX_RULE_ID,
                         severity="error",
-                        message=(
-                            f"blackbox `{inst}` (`{cell.type}`) left opaque — not "
-                            f"provably single-clock; internal crossings not analysed. "
-                            f"Flatten it or analyse standalone "
-                            f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
-                        ),
+                        message=f"blackbox `{inst}` (`{cell.type}`) {reason}",
                         cell_name=inst,
                     )
                 )
