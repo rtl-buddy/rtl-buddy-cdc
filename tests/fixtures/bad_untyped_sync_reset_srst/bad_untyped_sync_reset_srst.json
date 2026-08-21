@@ -1,0 +1,147 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_untyped_sync_reset_srst": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "bad_untyped_sync_reset_srst.sv:30.1-49.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "srst": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "dctl": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "qr": {
+          "direction": "output",
+          "bits": [ 5 ]
+        },
+        "qd": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$auto$ff.cc:337:slice$9": {
+          "hide_name": 1,
+          "type": "$sdff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_untyped_sync_reset_srst.sv:40.5-43.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 7 ],
+            "Q": [ 5 ],
+            "SRST": [ 3 ]
+          }
+        },
+        "$not$bad_untyped_sync_reset_srst.sv:42$2": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_untyped_sync_reset_srst.sv:42.25-42.28"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 7 ]
+          }
+        },
+        "$procdff$7": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_untyped_sync_reset_srst.sv:47.5-47.41"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 6 ]
+          }
+        }
+      },
+      "netnames": {
+        "$not$bad_untyped_sync_reset_srst.sv:42$2_Y": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "bad_untyped_sync_reset_srst.sv:42.25-42.28"
+          }
+        },
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "bad_untyped_sync_reset_srst.sv:31.18-31.21"
+          }
+        },
+        "dctl": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "bad_untyped_sync_reset_srst.sv:33.18-33.22"
+          }
+        },
+        "qd": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "bad_untyped_sync_reset_srst.sv:35.18-35.20"
+          }
+        },
+        "qr": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "bad_untyped_sync_reset_srst.sv:34.18-34.20"
+          }
+        },
+        "srst": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "bad_untyped_sync_reset_srst.sv:32.18-32.22"
+          }
+        }
+      }
+    }
+  }
+}

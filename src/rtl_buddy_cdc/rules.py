@@ -3148,21 +3148,85 @@ def check_rdc_008(
     return violations
 
 
+def _unconstrained_srst_captures(
+    module: Module,
+    clock_spec: ClockSpec,
+    ctx: _RuleContext,
+) -> dict[str, set[tuple[str, str]]]:
+    """Untyped input ports that reach a flop's **synchronous reset** pin.
+
+    The crossing model is D-pin-scoped: :func:`find_crossings` seeds
+    and terminates its walk on flop ``D`` pins only, so a port that
+    lands on a dedicated ``SRST`` pin produces no ``Crossing`` at all.
+    Whether a sync reset lowers into a ``$dff`` D-cone (a reset mux,
+    reached by the port walk) or into a ``$sdff`` ``SRST`` pin (not
+    reached) is a synthesis-pass / coding-style detail — see issue
+    rtl-buddy-cdc#272. This helper closes that gap by walking the
+    ``SRST`` pins directly so CDC-011 reports the same finding either
+    way.
+
+    Returns ``{port_name: {(dst_clock, dst_flop_cell_name), ...}}`` for
+    every top-level input port carrying :data:`UNCONSTRAINED_SENTINEL`
+    that reaches an ``SRST`` pin, directly or through combinational
+    logic. Empty when
+    :func:`~rtl_buddy_cdc.sdc.synthesize_unconstrained_inputs` hasn't
+    stamped the sentinel. The caller skips this walk entirely when no
+    SDC was supplied — there is no "untyped" verdict to make without
+    one.
+
+    Scoped to **synchronous** resets on purpose. An async reset pin
+    (``ARST`` / ``CLR`` / ``ALOAD``) is legitimately untimed — a
+    ``set_input_delay -clock`` on it would be meaningless advice, and
+    the RDC family (RDC-001 / RDC-006 / RDC-008) already owns the
+    async-reset failure modes. A sync reset, by contrast, is sampled
+    on the destination clock edge exactly like any data input, so the
+    missing SDC typing is the same methodology gap CDC-011 exists to
+    report.
+    """
+    unconstrained = {
+        port
+        for port, clk in clock_spec.port_clock.items()
+        if clk == UNCONSTRAINED_SENTINEL
+    }
+    if not unconstrained:
+        return {}
+
+    out: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for f in ctx.flops:
+        srst_bits = f.cell.connections.get("SRST", ())
+        if not srst_bits:
+            continue
+        dst_clk = ctx.domains.get(f.cell.name)
+        if dst_clk is None:
+            continue
+        for port in _backward_port_fanin(module, srst_bits, ctx.bit_drivers):
+            if port in unconstrained:
+                out[port].add((dst_clk, f.cell.name))
+    return out
+
+
 def check_cdc_011(
-    module: Module,  # noqa: ARG001
+    module: Module,
     crossings: list[Crossing],
-    clock_spec: ClockSpec | None = None,  # noqa: ARG001
+    clock_spec: ClockSpec | None = None,
     *,
-    ctx: _RuleContext | None = None,  # noqa: ARG001
+    ctx: _RuleContext | None = None,
 ) -> list[Violation]:
     """CDC-011 — Unconstrained primary input captured by clocked logic.
 
     Fires on top-level input ports that the SDC didn't type via
     ``set_input_delay -clock <name>`` but that physically reach a
-    flop's ``D`` pin. ``sdc.synthesize_unconstrained_inputs`` assigns
-    :data:`UNCONSTRAINED_SENTINEL` as ``port_clock`` for any such
-    port; :func:`find_crossings` then walks them and emits
+    flop's ``D`` pin — or its synchronous-reset (``SRST``) pin. For
+    the ``D``-pin case, ``sdc.synthesize_unconstrained_inputs``
+    assigns :data:`UNCONSTRAINED_SENTINEL` as ``port_clock`` for any
+    such port; :func:`find_crossings` then walks them and emits
     port-sourced crossings whose ``src_clock`` carries the sentinel.
+    The ``SRST`` case is picked up by
+    :func:`_unconstrained_srst_captures`, because crossings only ever
+    sink on ``D`` pins (issue rtl-buddy-cdc#272); both sets of
+    destinations are merged per port before severity is decided, so a
+    port captured on a ``D`` pin in one domain and an ``SRST`` pin in
+    another still collapses to one finding.
 
     Severity escalation by shape:
 
@@ -3183,22 +3247,31 @@ def check_cdc_011(
     flops in two domains collapses to a single error rather than a
     fixture-per-flop flood.
     """
-    by_port: dict[str, list[Crossing]] = defaultdict(list)
+    # {port: {(dst_clock, dst_flop_cell_name), ...}} — the union of the
+    # D-pin destinations the crossing walk found and the SRST-pin
+    # destinations it structurally cannot see (#272).
+    by_port: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for c in crossings:
         if c.src_port is None:
             continue
         if c.src_clock != UNCONSTRAINED_SENTINEL:
             continue
-        by_port[c.src_port].append(c)
+        by_port[c.src_port].add((c.dst_clock, c.dst_flop.cell.name))
+
+    if clock_spec is not None:
+        if ctx is None:
+            ctx = _build_context(module, clock_spec)
+        for port, dsts in _unconstrained_srst_captures(module, clock_spec, ctx).items():
+            by_port[port] |= dsts
 
     violations: list[Violation] = []
     for port in sorted(by_port):
-        cs = by_port[port]
-        dst_clocks = sorted({c.dst_clock for c in cs})
+        dsts = by_port[port]
+        dst_clocks = sorted({clk for clk, _cell in dsts})
         # Representative cell for source-location reporting: pick the
         # alphabetically-first destination flop so the reporter has
         # something concrete to anchor on.
-        repr_cell = sorted(c.dst_flop.cell.name for c in cs)[0]
+        repr_cell = sorted(cell for _clk, cell in dsts)[0]
         if len(dst_clocks) > 1:
             violations.append(
                 Violation(

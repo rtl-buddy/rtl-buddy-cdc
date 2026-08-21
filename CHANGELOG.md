@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CDC-011 now sees an untyped sync reset on a dedicated `SRST` pin**
+  (#272). Whether a missing `set_input_delay -clock` on a *synchronous*
+  reset got reported depended on a synthesis-pass detail. The crossing
+  model is `D`-pin-scoped — `domain.find_crossings` seeds and terminates
+  its walk on flop `D` pins — and CDC-011 consumes port-sourced
+  crossings. So when the lowering folded the reset into a `$dff` D-cone
+  (a reset mux), CDC-011 fired; when `opt_dff` folded the same reset
+  into a `$sdff` `SRST` pin, there was no crossing to consume and the
+  port vanished from the report entirely. RDC-003 didn't cover the gap
+  either: it keys on the reset's *source domain* versus the consumer
+  clock, and an untyped port has no named source domain.
+
+  `check_cdc_011` now supplements the crossing-derived destinations with
+  a direct `SRST`-pin walk (`_backward_port_fanin` from every `SRST`
+  connection), merging both destination sets per port before severity is
+  decided. Same rule id, same severity, byte-identical message under
+  either lowering — the new `bad_untyped_sync_reset_srst` /
+  `bad_untyped_sync_reset_mux` fixture pair pins that parity, and
+  `good_typed_sync_reset` pins the textbook fix (type the reset) as
+  silent.
+
+  Deliberately scoped to **synchronous** resets. An async reset pin
+  (`ARST` / `CLR` / `ALOAD`) is legitimately untimed, so
+  `set_input_delay -clock` would be meaningless advice there, and the
+  RDC family (RDC-001 / RDC-006 / RDC-008) already owns the async-reset
+  failure modes.
+
+  No schema change: this adds findings under an existing rule id.
+  Designs with an untyped sync-reset port that previously reported clean
+  will now report a CDC-011 `warning` (or `error` if the port also
+  reaches a second clock domain).
+
 ## [0.4.0] — 2026-08-18
 
 ### Added

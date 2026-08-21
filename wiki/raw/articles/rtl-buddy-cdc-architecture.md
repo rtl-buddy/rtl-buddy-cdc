@@ -1033,14 +1033,29 @@ records with `width = 1`.
   is "comb logic on the way out" (CDC-006-class) and the
   responsibility shifts to the consumer of the port; we leave
   output-side checking to that layer.
-- **Untyped-port crossings.** Ports without `set_input_delay -clock`
-  are not emitted as port-sourced `Crossing` records. The legacy
-  CDC-006 path still fires on them (via `_backward_fanin` walking
-  back from synchronizer first stages), so coverage is preserved —
-  we just don't promote them, since without a typed clock the
-  "is this async?" question has no SDC-grounded answer.
+- **Untyped-port crossings, unless the sentinel was synthesized.**
+  The walk only visits ports present in `port_clock`. The CLI calls
+  `sdc.synthesize_unconstrained_inputs` first, which stamps
+  `UNCONSTRAINED_SENTINEL` on every input port the SDC left untyped —
+  so in the normal pipeline untyped ports *are* walked, and their
+  crossings carry the sentinel as `src_clock` for CDC-011 to consume
+  (CDC-001 / CDC-002 / CDC-006 skip them to avoid double-firing with
+  mismatched fix advice). A caller that skips the synthesis step gets
+  no port-sourced crossings for untyped ports at all.
 - **CLK pins as transit bits.** `_build_bit_consumers` filters out
   clock connections so the data BFS doesn't follow them.
+- **Reset and control pins as crossing *sinks*.** `flop_by_d_bit` is
+  built from `Flop.d`, so the only pin the BFS can terminate on is
+  `D`. A signal arriving on `SRST` / `ARST` / `EN` / a clock-mux `S`
+  never produces a `Crossing`, no matter which domain it came from.
+  This is a real scope boundary, not an oversight — the rules that
+  consume crossings (sync-chain depth, gray coding, bus width,
+  reconvergence) all reason about a *data* path, and a reset pin is
+  not one. Rules that care about those pins walk them directly
+  instead: RDC-001 / RDC-003 from `ARST` / `SRST`, CDC-010 from
+  clock-network control pins, and CDC-011 from `SRST` (§8.18). When
+  adding a rule about a non-`D` pin, walk the pin — do not widen the
+  crossing model.
 - **Same-domain crossings.** Filtered out at record-creation time —
   if `dst_clock == src_clock`, no record is created.
 
@@ -1778,6 +1793,47 @@ CDC-022 is a **new rule id**. The rule-id set is a downstream contract
 `rb cdc` reporting), so ids are added, never renamed — the same
 discipline the CDC-007 → RDC-001 rename had to pay for with a
 legacy-id alias in `waivers.py`.
+
+### 8.18 CDC-011 — the `SRST` supplement (issue #272)
+
+CDC-011 is defined over *ports*, but it was implemented over
+*crossings*, and crossings only sink on `D` pins (§7.3). That mismatch
+made one finding depend on a synthesis-pass detail.
+
+Take an untyped input used as a synchronous reset. If the consumer
+flop also has a real data input, `proc` leaves a `$dff` whose `D` is a
+`$mux` selecting the reset constant — the reset is on a `D` pin, the
+port walk reaches it, CDC-011 fires. If the consumer has no external
+data input (a self-toggling counter, say), or if `opt_dff` runs, Yosys
+folds the same reset into a dedicated `$sdff` `SRST` pin — no `D`-pin
+arrival, no crossing, no CDC-011. RDC-003 did not cover the gap
+either: it compares the reset's *source domain* against the consumer
+clock, and an untyped port's source domain is the
+`<unconstrained>` sentinel, not a named clock.
+
+The fix keeps the rule's port-level semantics and drops the crossing
+list as the sole source of destinations. `_unconstrained_srst_captures`
+walks every flop's `SRST` connection backward with
+`_backward_port_fanin`, collecting `{port: {(dst_clock, dst_flop)}}`
+for ports carrying the sentinel; `check_cdc_011` unions that with the
+crossing-derived destinations **before** deciding severity. Unioning
+first is what keeps the existing multi-domain escalation honest: a
+port captured on a `D` pin in one domain and an `SRST` pin in another
+is still one `error`, not two findings.
+
+Scope is synchronous resets only. A sync reset is sampled on the
+destination clock edge exactly like a data input, so "declare
+`set_input_delay -clock`" is correct advice for it. An async reset pin
+(`ARST` / `CLR` / `ALOAD`) is legitimately untimed — the same advice
+there would be wrong — and RDC-001 / RDC-006 / RDC-008 already own the
+async-reset failure modes.
+
+The invariant to preserve: the same RTL and SDC must yield the same
+rule id, severity, and message text under either lowering. The
+`bad_untyped_sync_reset_srst` / `bad_untyped_sync_reset_mux` fixture
+pair is the same source built with and without `opt_dff`, and
+`tests/test_bad_untyped_sync_reset_srst.py` compares the two findings
+sets directly.
 
 ## 9. Waivers
 
