@@ -239,7 +239,7 @@ rtl-buddy-cdc is a flop-based analyzer — the BFS walker traces nets between `$
 4. **Find crossings** — BFS the combinational fanout from each flop's `Q` bits; record every flop→flop path that lands across domains. Group by `(src_flop, dst_flop)` so multi-bit buses and reconvergent fanout collapse to one record with `width` and `min_hops` (`domain.find_crossings`).
 5. **Parse SDC** — extract clocks and async groups. Filter the structural crossings to those in async-grouped pairs.
 6. **Apply rules** — each rule is a small function in `rules.py` registered in the `RULES` dict; new rules are a one-line addition.
-7. **Apply waivers** — split violations into "kept" and "suppressed by waiver" (`waivers.apply`).
+7. **Apply waivers** — split violations into "kept" and "suppressed by waiver" (`waivers.apply`), from the `--waivers` file plus the in-RTL `// rbcdc:` pragmas scanned out of the sources on the `lint` path.
 8. **Report** — dispatch to the chosen formatter (`reporter.render_text` / `render_json` / `render_sarif`).
 
 ## Output formats
@@ -281,7 +281,20 @@ Grammar: `// rbcdc: disable-rule <RULE-ID>[,<RULE-ID>…] [reason …]`, one pra
 
 Sources are scanned as **text** — never through Yosys or slang — so a pragma costs nothing and needs no frontend.
 
-> **This release ships the scanner only** (`rtl_buddy_cdc.pragma.scan`): pragmas are parsed into waiver records but not yet applied to a run. Wiring them into `lint` lands with the follow-on (issue #42), block-scoped `enable-rule` with issue #43.
+A pragma is applied on the **`lint`** path only — that's the one that starts from SystemVerilog sources. `analyze` consumes an already-elaborated netlist and has no sources to scan, so it honours `--waivers` and nothing else. Pragmas are tried before the waiver file, so an inline suppression wins over a broad file regex.
+
+Matching is by **source location**: a pragma suppresses findings the analyzer attributes to the file the pragma is written in. It is never matched against cell names or message text (that's the waiver file's job), and a finding whose source location can't be resolved is never waived by a pragma.
+
+Suppressed findings are reported exactly like waiver-file ones, with the pragma's own location instead of a waiver-file line:
+
+```text
+Suppressed by waivers (1)
+  CDC-001  hand-reviewed: q_out is quasi-static  (pragma rtl/dut.sv:26)
+```
+
+In `--format json` the `suppressed[].waiver` object gains an `origin` key: `null` for a waiver-file entry (so `source_line` is a line in the `--waivers` file), the source path for a pragma (so `source_line` is the line of the pragma in the RTL).
+
+> Block scoping (`// rbcdc: enable-rule CDC-001` to close a range) lands with issue #43; today a pragma covers its whole file.
 
 ## SV attributes
 
@@ -416,7 +429,7 @@ Not yet:
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
-- [ ] In-RTL pragma comments (`// rbcdc: disable-rule …`, in-file block suppression) for inline waiving without an external file — scanner landed (see [In-RTL pragmas](#in-rtl-pragmas)); application and block scoping pending
+- [ ] In-RTL pragma comments (`// rbcdc: disable-rule …`, in-file block suppression) for inline waiving without an external file — file-scoped pragmas land (see [In-RTL pragmas](#in-rtl-pragmas)); block scoping pending
 - [ ] Instance-scoped waivers (`waive CDC-001 inst:u_block_a/.*`) — natural follow-on to hierarchical reporting now that `instance_path` is on every violation
 - [ ] Glitch detection on data path through async muxes / clock-gate enables
 

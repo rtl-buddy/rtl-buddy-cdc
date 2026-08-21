@@ -27,11 +27,18 @@ survives or is moved into a ``suppressed`` list along with the
 matching waiver. They are not silent — the report keeps a tally and
 calls out the reason. This matches the common ``.swl`` waiver-file
 workflow at a much smaller surface.
+
+A second producer feeds the same path: an in-RTL ``// rbcdc:`` pragma
+(see :mod:`rtl_buddy_cdc.pragma`). Such a waiver carries an ``origin``
+— the source file it was written in — and is matched against the
+violation's *source location* instead of the three strings above,
+because its scope is the file, not a name pattern.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,13 +136,25 @@ def _candidates(v: Violation) -> tuple[str, ...]:
 
 
 def apply(
-    violations: list[Violation], waivers: list[Waiver]
+    violations: list[Violation],
+    waivers: list[Waiver],
+    *,
+    source_file: Callable[[Violation], str | None] | None = None,
 ) -> tuple[list[Violation], list[SuppressedViolation]]:
     """Split violations into (still-active, suppressed-by-a-waiver).
 
     The first matching waiver wins, mirroring user expectation that
     waiver files are read top-to-bottom and the more-specific rule is
-    listed first."""
+    listed first.
+
+    ``source_file`` resolves a violation's source file (the analyzer
+    keeps it on the offending cell, so only the caller holding the
+    ``Module`` can do this). It is consulted for **pragma** waivers
+    only — one written in the RTL is scoped to its file, so it matches
+    the source path and nothing else, never the cell name or the
+    message. Without a resolver (or a violation whose location is
+    unknown) a pragma waiver simply doesn't match: no location, no
+    file-scoped suppression."""
     if not waivers:
         return list(violations), []
     kept: list[Violation] = []
@@ -143,10 +162,16 @@ def apply(
     for v in violations:
         match: Waiver | None = None
         cands = _candidates(v)
+        src: str | None = source_file(v) if source_file is not None else None
         for w in waivers:
             if w.rule_pattern != "*" and not _rule_pattern_matches(
                 w.rule_pattern, v.rule_id
             ):
+                continue
+            if w.origin is not None:
+                if src is not None and w.regex.search(src):
+                    match = w
+                    break
                 continue
             if any(w.regex.search(c) for c in cands):
                 match = w
