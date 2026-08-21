@@ -13,7 +13,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
-from rtl_buddy_cdc.domain import Crossing, assign_domains, find_clock_combines
+from rtl_buddy_cdc.domain import (
+    Crossing,
+    assign_domains,
+    find_clock_combines,
+    find_scan_mode_flops,
+)
 from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell, is_latch_cell
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.primitives import (
@@ -561,6 +566,59 @@ def scan_mode_port_names(module: Module) -> set[str]:
         if SCAN_MODE_ATTRS & {a.lower() for a in nn.attributes}:
             out.add(nn_name)
     return out
+
+
+def scan_mode_clock_select_flops(
+    module: Module,
+    *,
+    pin_clocks: dict[str, str] | None = None,
+    clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
+) -> set[str]:
+    """Cell names of flops whose ``CLK`` network is steered by a
+    scan-mode port (issue #45).
+
+    The DFT shape this names is the scan clock mux —
+    ``$mux(S=scan_en, A=func_clk, B=scan_clk)`` in front of a flop's
+    ``CLK`` — plus its clock-gate variant, where a ``test_mode`` pin
+    forces an ICG's enable. Both are found by
+    :func:`~rtl_buddy_cdc.domain.find_scan_mode_flops`, which attaches a
+    recorder to the *same* clock-root walk that assigns the flop's
+    domain, rather than re-deriving the clock network here.
+
+    This function supplies that walk's ``is_scan_control`` predicate:
+    backward-walk a cell's control bits through combinational logic to
+    the top-level input ports they come from, and answer yes when any
+    of them is tagged with a :data:`SCAN_MODE_ATTRS` attribute. Going
+    through :func:`_backward_fanin` rather than testing the control bit
+    directly is what lets ``!scan_en`` or ``scan_en | test_mode`` count
+    — a scan-enable rarely reaches the mux unmodified.
+
+    Returns an empty set immediately when the design declares no
+    scan-mode port at all, which is the overwhelmingly common case and
+    skips the walk entirely.
+    """
+    ports = scan_mode_port_names(module)
+    if not ports:
+        return set()
+    drivers: dict[Bit, tuple[str, str, int]] = {}
+    for cell in module.cells.values():
+        for out_port in _OUTPUT_PINS:
+            for idx, b in enumerate(cell.connections.get(out_port, ())):
+                if isinstance(b, int):
+                    drivers[b] = (cell.name, out_port, idx)
+
+    def is_scan_control(control_bits: tuple[Bit, ...]) -> bool:
+        _flops, reached_ports = _backward_fanin(module, control_bits, drivers)
+        return bool(ports & reached_ports)
+
+    return find_scan_mode_flops(
+        module,
+        is_scan_control=is_scan_control,
+        pin_clocks=pin_clocks,
+        clock_for_port=clock_for_port,
+        max_depth=max_depth,
+    )
 
 
 # Reset-port polarity declaration (issue #107). Attach to a top-level
@@ -5052,7 +5110,23 @@ def run_all(
     boundary_user_syncs: frozenset[str] = frozenset(),
     max_depth: int = 16,
     sync_primitives: frozenset[str] = frozenset(),
+    ignore_scan_mode: bool = False,
 ) -> list[Violation]:
+    # DFT scan-mode suppression (#45), opt-in via ``--ignore-scan-mode``.
+    # Filtering here — once, on the shared crossing list — rather than in
+    # each rule is what keeps the promise checkable: EVERY rule that
+    # consumes crossings honours it identically, and no rule can drift
+    # into honouring it differently. Rules that walk the clock network
+    # instead of the crossing list (CDC-010, CDC-023) are deliberately
+    # untouched: a scan mux is a real clock-network structure, and
+    # "don't flag the data crossings behind my scan mux" is not the same
+    # claim as "the mux itself is fine".
+    #
+    # Default is OFF: without the flag the behaviour is unchanged, which
+    # is the conservative side to fail on — a DFT structure that is
+    # genuinely live in mission mode is a real hazard.
+    if ignore_scan_mode:
+        crossings = [c for c in crossings if not c.scan_mode]
     # Build the cached structural views once and thread them through
     # every rule. See :class:`_RuleContext` for the motivation —
     # before this change, ``assign_domains`` / ``find_flops`` /

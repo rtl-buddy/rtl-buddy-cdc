@@ -107,6 +107,15 @@ class AnalysisResult:
     # report (separate tally) but never drive the exit code — the
     # "carried over" tally is auto-derived waivers, not new findings.
     baseline_carryover: list[Violation] = field(default_factory=list)
+    # Crossings the rule pack skipped because ``--ignore-scan-mode`` was
+    # passed and their destination flop is clocked through a DFT scan
+    # structure (#45). A tally, not a list: the crossings themselves are
+    # still in ``crossings`` / ``async_crossings`` (tagged
+    # ``scan_mode``), and the findings they would have produced were
+    # never generated, so there is nothing richer to show. Zero when the
+    # flag is off — which is what keeps the suppression visible rather
+    # than silent.
+    scan_mode_suppressed: int = 0
 
 
 # --- text -------------------------------------------------------------------
@@ -276,12 +285,26 @@ def _render_design_summary(
                 f"{cand.fanout} CLK pins [{sinks}{more}]{s.reset}\n"
             )
 
+    # Scan-mode suppression tally (issue #45). Only non-zero when
+    # ``--ignore-scan-mode`` was passed, and always printed when it is —
+    # a suppression the reader cannot see is indistinguishable from a
+    # clean design.
+    if result.scan_mode_suppressed:
+        n = result.scan_mode_suppressed
+        out.write(
+            f"  {s.cyan}ⓘ {n} async crossing{'s' if n != 1 else ''} "
+            f"suppressed by --ignore-scan-mode (destination flop clocked "
+            f"through a scan-mode structure){s.reset}\n"
+        )
+
     if verbose and result.crossings:
         out.write(f"\n{s.dim}  Crossings:{s.reset}\n")
         for c in result.crossings:
             tag = ""
             if c.is_port_sourced:
                 tag = f" {s.dim}(port-sourced){s.reset}"
+            if c.scan_mode:
+                tag += f" {s.dim}(scan-mode){s.reset}"
             out.write(
                 f"    {c.src_clock} → {c.dst_clock}  "
                 f"{c.src_name} → {c.dst_flop.name}  "
@@ -456,6 +479,9 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             "violations": len(result.violations),
             "suppressed": len(result.suppressed),
             "baseline_carryover": len(result.baseline_carryover),
+            # Additive (#45): how many async crossings the rule pack
+            # skipped under ``--ignore-scan-mode``. 0 without the flag.
+            "scan_mode_suppressed": result.scan_mode_suppressed,
             # Coverage diagnostic (issue #263): how many flops the clock-
             # root tracer left unresolved. These are EXCLUDED from CDC
             # analysis, so a non-zero value means the report does not
@@ -558,6 +584,10 @@ def _crossing_to_dict(c: Crossing) -> dict:
         "width": c.width,
         "min_hops": c.min_hops,
     }
+    # Additive (#45). Emitted unconditionally, flag or no flag, so the
+    # tag is auditable even on a run that suppresses nothing.
+    if c.scan_mode:
+        out["scan_mode"] = True
     if c.src_flop is not None:
         out["src_flop"] = c.src_flop.cell.name
     if c.src_port is not None:

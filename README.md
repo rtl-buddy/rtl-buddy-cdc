@@ -4,7 +4,7 @@ Python-based open-source CDC (Clock Domain Crossing) linting tool for RTL design
 
 ## Status
 
-Usable on IP-block-sized designs. Thirty rules implemented (CDC-001 through CDC-006, CDC-008 through CDC-023 (excl. CDC-007), plus the RDC family RDC-001 through RDC-008 — RDC-001 is the reset-crossing rule formerly known as CDC-007), recognition of the Xilinx **XPM CDC** macro family (`xpm_cdc_*`) as synchronisers with `--sync-primitive` for site-local macros, three output formats (text / JSON / SARIF), waiver-file suppression, in-RTL `// rbcdc:` pragma suppression (file- and block-scoped), `(* cdc_sync *)` / `(* cdc_gray *)` / `(* cdc_static *)` / `(* cdc_handshake *)` / `(* reset_sync *)` / `(* reset_polarity *)` / `(* glitchless_clock_mux *)` SV attributes for user-vetted synchronizers, gray-coded buses, runtime-constant source flops, four-phase req/ack handshake primitives, reset-synchroniser stages, reset-port polarity declarations, and glitchless clock-mux selects, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule, plus a template-driven fuzz corpus (`tests/fuzz/`) and an opt-in behavioural simulation oracle (`tests/sim/`).
+Usable on IP-block-sized designs. Thirty rules implemented (CDC-001 through CDC-006, CDC-008 through CDC-023 (excl. CDC-007), plus the RDC family RDC-001 through RDC-008 — RDC-001 is the reset-crossing rule formerly known as CDC-007), recognition of the Xilinx **XPM CDC** macro family (`xpm_cdc_*`) as synchronisers with `--sync-primitive` for site-local macros, three output formats (text / JSON / SARIF), waiver-file suppression, in-RTL `// rbcdc:` pragma suppression (file- and block-scoped), `(* cdc_sync *)` / `(* cdc_gray *)` / `(* cdc_static *)` / `(* cdc_handshake *)` / `(* reset_sync *)` / `(* reset_polarity *)` / `(* glitchless_clock_mux *)` / `(* scan_en *)` SV attributes for user-vetted synchronizers, gray-coded buses, runtime-constant source flops, four-phase req/ack handshake primitives, reset-synchroniser stages, reset-port polarity declarations, glitchless clock-mux selects, and DFT scan-mode ports (opt-in suppression via `--ignore-scan-mode`), structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule, plus a template-driven fuzz corpus (`tests/fuzz/`) and an opt-in behavioural simulation oracle (`tests/sim/`).
 
 Known gaps and roadmap items are tracked at the end of this README.
 
@@ -103,6 +103,7 @@ Primary mode (`analyze`):
 | `--cdc-018-depth-threshold N` | optional | Minimum sync-chain depth at which CDC-018 (cascaded synchroniser) fires. Defaults to **4** — chains of depth 2 or 3 stay silent (the textbook 2FF sync, plus a 3-stage chain common in high-MTBF designs). Raise to 5 if 4-stage chains are intentional in your design. Must be ≥ 2. |
 | `--cdc-010-no-heuristic` | optional | Disable CDC-010's pin-name heuristic fallback for tech-mapped cells. By default an input pin named `E` / `EN` / `CE` / `GATE` / `SE` (case-insensitive) on a cell type outside the explicit map is treated as a control pin. Pass this flag when a library's pin naming conflicts (e.g. a vendor that uses `EN` for something other than enable) and you'd rather take the false negative than a false positive. The explicit map covering Yosys primitives and `simplemap` / `abc` gate-level cells is unaffected. |
 | `--clock-trace-depth N` | optional | Maximum hop budget when tracing a flop's `CLK` net back to its top-level clock port — buffers, clock gates, muxes and divider flops each cost a hop. Defaults to **16**. A deep clock tree (a long divider / buffer / ICG chain) can exceed it and leave its downstream flops domain-unknown (visible as `summary.domain_unknown`); raise it (e.g. 40) to resolve them without a code change. Monotone: a larger budget only ever resolves **more** flops, never fewer, so the default leaves results identical. Must be ≥ 1. (rtl-buddy-cdc#263) |
+| `--ignore-scan-mode` | optional | Skip crossings whose **destination** flop is clocked through a DFT scan structure — a clock mux or clock gate steered by a top-level port tagged `(* scan_en *)` / `(* scan_mode *)` / `(* test_mode *)` / `(* dft_scan_en *)`. Off by default: without it such crossings are analysed exactly as before, only *tagged* (`scan_mode` on the JSON crossing record). Suppressed crossings are counted in `summary.scan_mode_suppressed` and on a report line — never dropped silently. CDC-010 / CDC-023, which walk the clock network rather than the crossing list, still fire: the flag excuses the data paths behind a scan mux, not the mux itself. See [Scan-mode / DFT suppression](#scan-mode--dft-suppression). (rtl-buddy-cdc#45) |
 | `--project-root DIR` | optional | Base directory for resolving **relative** path-bearing args (`--emit-domain-map`, `--emit-reset-domain-map`, and `--yosys-plugin` in `lint`). Precedence: this flag, else the directory of `--sdc`, else the current working directory. Set it to a stable root so those paths stay correct regardless of where the tool is launched — a driver running the tool from a nested artefact dir no longer has to hand-rebase every relative path. Absolute path args are unaffected. (rtl-buddy-cdc#245) |
 
 Standalone wrapper (`lint`):
@@ -390,6 +391,15 @@ Reset-port polarity declaration (on an input port):
 (* reset_polarity = "high" *) input logic rst;     // active-high reset port
 ```
 
+DFT / scan-mode declaration (on an input port):
+
+```sv
+(* scan_en *)     input logic scan_en;    // scan-shift enable
+(* scan_mode *)   input logic scan_mode;  // alias
+(* test_mode *)   input logic test_mode;  // alias
+(* dft_scan_en *) input logic dft_scan_en;// alias
+```
+
 `cdc_sync` / aliases mark a flop as a vetted synchronizer first stage — skipped by CDC-001, -002, -003, and -006. CDC-004 (bus crossings) and CDC-005 (reconvergence) still fire — those failure modes don't depend on individual sync-shape correctness.
 
 `cdc_gray` / `gray_code` mark a source bus as gray-coded so CDC-004 accepts it as a safe multi-bit crossing without needing the structural detector to find the canonical XOR-shift shape.
@@ -404,7 +414,43 @@ Reset-port polarity declaration (on an input port):
 
 `glitchless_clock_mux` / `glitchless_mux` / `glitchfree_clock_mux` mark a clock-mux select wire as user-vouched glitchless. CDC-010 normally proposes "synchronise the select onto one of the gated clocks" as the fix — but that would actually break a correctly-built glitchless mux (cross-coupled-latch envelope or a foundry library cell) by introducing a single-clock dependency that defeats the other-clock-aware gating. The attribute is the user's explicit "trust me, the surrounding mux topology handles the safe handoff" promise; CDC-010 stays silent on the marked select.
 
-Yosys preserves SV attributes on the netname rather than the cell, so the analyzer maps tagged bits back to the originating flop's `Q` pin (or, for `reset_polarity`, to the input port itself).
+`scan_en` / `scan_mode` / `test_mode` / `dft_scan_en` declare a top-level input port to be the DFT test-mode control. See [Scan-mode / DFT suppression](#scan-mode--dft-suppression) below — unlike every other attribute here, this one changes nothing on its own; it only takes effect under `--ignore-scan-mode`.
+
+Yosys preserves SV attributes on the netname rather than the cell, so the analyzer maps tagged bits back to the originating flop's `Q` pin (or, for `reset_polarity` / the scan-mode attributes, to the input port itself). Attribute **names** are matched case-insensitively for `cdc_sync` and the scan-mode set, so `(* ASYNC_REG = "TRUE" *)` and `(* SCAN_EN *)` are recognised as written.
+
+### Scan-mode / DFT suppression
+
+A DFT insertion flow wedges a clock mux in front of a flop's `CLK` so the scan chain can shift on a dedicated tester clock:
+
+```sv
+(* scan_en *) input logic scan_en;
+...
+assign muxed_clk = scan_en ? scan_clk : func_clk;
+always_ff @(posedge muxed_clk) dst_q <= src_q;
+```
+
+Structurally that mixes two asynchronous clocks onto one net. The analyzer resolves the muxed net to one leg, and every data path landing on `dst_q` from the *other* leg's domain reads as an ordinary unsynchronized crossing — CDC-001 and friends fire on paths that are never exercised in the same mode. Structurally this shape is indistinguishable from a genuine runtime clock select, which *would* be a real hazard, so the analyzer cannot tell them apart on its own.
+
+The attribute supplies the missing fact: which pin is the test-mode control. `--ignore-scan-mode` then skips the crossings behind it.
+
+| | without `--ignore-scan-mode` (default) | with `--ignore-scan-mode` |
+|---|---|---|
+| crossing found | yes | yes |
+| crossing tagged `scan_mode` | yes | yes |
+| rules see the crossing | yes | no |
+| findings | as before | not generated |
+| `summary.scan_mode_suppressed` | `0` | count of skipped async crossings |
+| text report | unchanged | extra tally line |
+
+Three deliberate boundaries:
+
+- **The flag is opt-in.** A DFT structure that is genuinely live in mission mode is a real hazard, so the default stays conservative and behaves exactly as it did before the flag existed.
+- **Tag, don't drop.** The crossing is always emitted and always counted in `summary.crossings`. Only the rule pass skips it, and only under the flag. Nothing disappears from the design view.
+- **Only the crossings, not the mux.** Rules that walk the clock network rather than the crossing list — CDC-010 (async control on a clock-network cell) and CDC-023 (two declared clocks combining) — are untouched by the flag. "Don't flag the data paths behind my scan mux" is not the same claim as "the mux itself is fine".
+
+Detection is keyed on the **destination**: a crossing is tagged when the destination flop's `CLK` fanin passes through a mux or gate whose control traces back — through inverters and combinational logic — to a scan-tagged input port. The fact is recorded by the ordinary clock-root walk as it resolves the flop's domain, not by a second traversal, so it cannot drift from the analyzer's own view of the clock network.
+
+Fixtures: `tests/fixtures/good_scan_mode_ignored` (all-scan design, clean under the flag) and `tests/fixtures/bad_scan_mode_functional_crossing` (same scan mux plus a functional crossing that must survive it).
 
 ## Integration with rtl-buddy
 

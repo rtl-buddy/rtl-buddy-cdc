@@ -227,7 +227,10 @@ SV `(* attr = "value" *)` annotations the user attached. Yosys
 preserves attributes on the netname rather than the cell that drives
 the bits, so the rule pack maps from a tagged netname's bits back to
 the upstream flop (see `user_sync_flop_names` and
-`user_gray_flop_names` in `rules.py`).
+`user_gray_flop_names` in `rules.py`). Two attribute families are
+*port*-scoped instead — `reset_polarity` (§8, RDC-002) and the
+scan-mode set (§8.20) — because what they declare is a property of the
+external pin, not of a producing flop.
 
 ### 4.2 Flop recognition
 
@@ -265,6 +268,7 @@ class Crossing:
     src_port: str | None = None  # set for typed-port-to-register
     src_boundary: tuple[str, str] | None = None  # (instance, port): abstracted-subtree output
     dst_boundary: tuple[str, str] | None = None  # (instance, port): data entering a boundary input
+    scan_mode: bool = False      # #45: dst flop clocked through a DFT scan structure
 ```
 
 Three design choices matter here:
@@ -1451,6 +1455,8 @@ free functions in `rules.py`:
 | `_clock_input_domains_for(module, cell, ctx, clock_spec, control_ports)` | CDC-010 | Set of clock-domain names that drive a clock-network cell's *non-control* inputs. Walks each non-control input backward through combinational cells; records the domain of any flop's Q reached (via `ctx.domains`) and the SDC clock name of any top-level clock port reached directly. Empty set means none of the inputs trace to a classifiable clock — the rule then stays silent (false-negative-biased) |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |
+| `scan_mode_port_names(module)` | §8.20 scan filter | Return the names of top-level **input ports** annotated with one of `SCAN_MODE_ATTRS` (`scan_en` / `scan_mode` / `test_mode` / `dft_scan_en`, matched case-insensitively). Port-scoped, not flop-scoped |
+| `scan_mode_clock_select_flops(module, ...)` | §8.20 scan filter | Return cell names of flops whose `CLK` network is steered by a scan-mode port. Supplies the `is_scan_control` predicate to `domain.find_scan_mode_flops`, which reads the fact off the ordinary clock-root walk rather than re-deriving the clock network |
 | `user_static_flop_names(module)` | CDC-001..-004 | Return cell names of source-side flops the user has annotated `(* cdc_static *)` — runtime-constant config/mode registers; suppresses CDC-001..-004 on crossings sourced from the tagged flop |
 | `is_ff_cell(cell_type)` (in `flops.py`) | every rule + `find_flops` | Predicate "is this Yosys cell type a flip-flop?" — true for higher-level `$dff*` families AND for gate-level cells whose type starts with one of the `GATE_LEVEL_FF_PREFIXES` (`$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`, `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`). The two families have different pin name conventions (CLK vs C); use `flop_clk_pin(cell)` to extract the clock portably. Replaces direct `cell.type in FF_CELL_TYPES` checks across the codebase to make rules work uniformly on pre-`abc` and post-`abc` netlists |
 | `flop_clk_pin(cell)` (in `flops.py`) | `find_flops` + `domain.trace_clock_root` | Return the clock-pin connection (tuple of `Bit`s) for a flop cell, portably across families. Higher-level cells use the ``CLK`` pin; gate-level cells use ``C`` |
@@ -2178,6 +2184,86 @@ with a real clock) fire; `icg_port_enable` — the #263 regression guard
 every fixture through `synthesize_unconstrained_inputs` so the sentinel
 case is actually exercised.
 
+### 8.20 DFT scan-mode suppression (`--ignore-scan-mode`, issue #45)
+
+Not a rule — a **cross-rule crossing filter**, and the only one in the
+pack. A DFT insertion flow wedges a clock mux in front of a flop's
+`CLK` so the scan chain can shift on a dedicated tester clock:
+`$mux(S=scan_en, A=func_clk, B=scan_clk)`. Structurally that mixes two
+asynchronous clocks onto one net; the tracer resolves the muxed net to
+one leg, and every data path landing there from the other leg's domain
+reads as an ordinary unsynchronized crossing. Structurally the shape is
+indistinguishable from a genuine runtime clock select, which *would* be
+a real hazard, so the analyzer cannot separate them on its own.
+
+The missing fact is external: which pin is the test-mode control.
+`SCAN_MODE_ATTRS` (`scan_en` / `scan_mode` / `test_mode` /
+`dft_scan_en`, matched case-insensitively) names it, and
+`rules.scan_mode_port_names(module)` reports the top-level **input
+ports** carrying it. Ports only, mirroring
+`user_reset_polarity_overrides`: a scan-enable is by definition an
+external test pin, and an internal net with the attribute conveys
+nothing actionable (issue #44 shipped this half on its own).
+
+**Detection rides the existing walk.** `domain.trace_clock_root` grows
+a second observer alongside the #269 `on_combine` recorder:
+`ClockControlSink`, invoked from the mux / gate / latch clauses of
+`_trace` at the moment the walk resolves *through* one of them, with
+the bits of the inputs that steer the selection rather than carry the
+clock — a `$mux`'s `S`, and a gate's or latch's non-clock legs.
+`domain.find_scan_mode_flops` attaches it to the ordinary per-flop
+clock-root walk (same construction as `find_clock_combines`) and
+returns the flops whose walk hit a control input satisfying an
+**injected** `is_scan_control` predicate. The predicate is injected
+because the attribute vocabulary belongs to `rules`, which imports
+`domain` and not the reverse;
+`rules.scan_mode_clock_select_flops` supplies the real one
+(`_backward_fanin` from the control bits to the top-level input ports,
+tested against the tagged set, so `!scan_en` and `scan_en | test_mode`
+both count). Both recorders observe; neither changes the walk's
+outcome. The point is the same as #269's: the fact is read off the walk
+that already resolves the clock, so "this flop is clocked through a
+scan mux" cannot drift from the tracer's own view of the clock network.
+
+**Tag, don't drop.** `Crossing` gains an additive
+`scan_mode: bool = False`, stamped by `find_crossings` from the
+`scan_mode_flops` set at all three emission sites (flop-, port-, and
+boundary-sourced) — keyed on the **destination**, since the scan
+structure is in the destination's clock network. The set never adds,
+drops or reshapes a crossing: a run that passes it and a run that does
+not produce the same crossings in the same order.
+
+**Suppression is one line, in one place.** `run_all(...,
+ignore_scan_mode=True)` filters the shared crossing list before
+dispatch. Filtering there rather than per-rule is what makes the
+promise checkable — every rule that consumes crossings honours it
+identically and none can drift. Default is **off**: a DFT structure
+that is genuinely live in mission mode is a real hazard, so the
+conservative side is "behave exactly as before the flag existed".
+
+**Two things the flag deliberately does not do.** It does not touch
+CDC-010 or CDC-023, which walk the clock network rather than the
+crossing list — "don't flag the data paths behind my scan mux" is not
+the same claim as "the mux itself is fine". And it does not reach the
+compositional per-module pass (§ boundary composition), which runs its
+own `run_all` on a greybox body; a scan mux inside an abstracted
+module still fires there. Both are conservative gaps, not silent ones.
+
+**Nothing is silent.** `AnalysisResult.scan_mode_suppressed` carries
+the tally (counted on the same `async_crossings` list the rule pack is
+about to filter, so the two Ns are equal by construction), rendered as
+a design-summary line in text and as `summary.scan_mode_suppressed` in
+JSON — additive, and `0` without the flag. The per-crossing
+`scan_mode` tag is emitted in the JSON crossing record and in the
+`--verbose` crossing listing **unconditionally**, flag or no flag, so
+a run that suppresses nothing is still auditable.
+
+Fixtures: `good_scan_mode_ignored` (all-scan design: CDC-001 without
+the flag, clean with it) and `bad_scan_mode_functional_crossing` (the
+same scan mux plus an ordinary functional crossing that must survive
+the flag — a tool that cleared that design would be hiding a real bug
+behind a DFT annotation).
+
 ## 9. Waivers
 
 `waivers.py` implements the smallest waiver-file format that scales
@@ -2405,7 +2491,10 @@ churn:
   is the rule's own choice.
 - **New SV attributes.** Define a frozenset (next to `USER_SYNC_ATTRS`
   / `USER_GRAY_ATTRS`) and a `user_<x>_flop_names(module)` helper;
-  consult it in the rules that should honor the annotation.
+  consult it in the rules that should honor the annotation. For an
+  attribute that declares something about an external *pin* rather than
+  a producing flop, follow `user_reset_polarity_overrides` /
+  `scan_mode_port_names` and filter to top-level ports instead.
 - **New SDC commands.** Add a handler in `sdc.py` and extend
   `ClockSpec` if a new piece of state is needed. The SDC plan
   (§6.3 + the Phase-1 plan in the project docs) is the reference for
@@ -2417,6 +2506,13 @@ churn:
 - **New clock-network shapes.** Add the cell-type set to one of the
   category constants in `domain.py` (`_BUFFER_TYPES`, `_GATE_TYPES`,
   `_MUX_TYPES`) — the walker is data-driven from those.
+- **New facts about the clock network.** Add an observer to
+  `trace_clock_root` rather than a second traversal: `CombineSink`
+  (#269, §8.19) and `ClockControlSink` (#45, §8.20) are the pattern.
+  Record at the site the walk already visits, keep the callback purely
+  observational, and build the consumer on top of the recorded events —
+  that is what stops a derived fact from drifting away from the
+  tracer's own behaviour.
 - **New elaboration frontends.** Add a submodule under `frontends/`
   exposing `elaborate(sources, top, **kw) -> Module`, register it in
   the `Frontend` enum in `frontend.py`, and dispatch in

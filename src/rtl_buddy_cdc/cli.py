@@ -61,6 +61,7 @@ from rtl_buddy_cdc.reset_hints import (
 from rtl_buddy_cdc.rules import (
     Violation,
     run_all as run_all_rules,
+    scan_mode_clock_select_flops,
     user_reset_polarity_overrides,
     user_reset_sync_flop_names,
 )
@@ -122,6 +123,21 @@ _CLOCK_TRACE_DEPTH_OPT = typer.Option(
     "(see the `domain_unknown` count); raise it (e.g. 40) to resolve "
     "them. Raising only ever resolves MORE flops — it never drops a "
     "crossing — so the default leaves results identical. See issue #263.",
+)
+_IGNORE_SCAN_MODE_OPT = typer.Option(
+    False,
+    "--ignore-scan-mode",
+    help="Skip crossings whose destination flop is clocked through a "
+    "DFT scan structure — a clock mux or clock gate steered by a "
+    "top-level port tagged `(* scan_en *)` / `(* scan_mode *)` / "
+    "`(* test_mode *)` / `(* dft_scan_en *)`. Off by default: without "
+    "the flag such crossings are analysed exactly as today, only "
+    "tagged (`scan_mode` in the JSON crossing records). Suppressed "
+    "crossings are counted in `summary.scan_mode_suppressed` and on a "
+    "report line, never dropped silently. Rules that walk the clock "
+    "network rather than the crossing list (CDC-010, CDC-023) still "
+    "fire — the flag excuses the data paths behind a scan mux, not the "
+    "mux itself. See issue #45.",
 )
 _SYNC_PRIMITIVE_OPT = typer.Option(
     [],
@@ -312,6 +328,7 @@ def analyze(
     sync_depth: int = _SYNC_DEPTH_OPT,
     sync_primitive: list[str] = _SYNC_PRIMITIVE_OPT,
     clock_trace_depth: int = _CLOCK_TRACE_DEPTH_OPT,
+    ignore_scan_mode: bool = _IGNORE_SCAN_MODE_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
     strict: bool = _STRICT_OPT,
@@ -354,6 +371,7 @@ def analyze(
         cdc_018_depth_threshold=cdc_018_depth_threshold,
         clock_trace_depth=clock_trace_depth,
         sync_primitives=frozenset(sync_primitive),
+        ignore_scan_mode=ignore_scan_mode,
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -455,6 +473,7 @@ def lint(
     sync_depth: int = _SYNC_DEPTH_OPT,
     sync_primitive: list[str] = _SYNC_PRIMITIVE_OPT,
     clock_trace_depth: int = _CLOCK_TRACE_DEPTH_OPT,
+    ignore_scan_mode: bool = _IGNORE_SCAN_MODE_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
     strict: bool = _STRICT_OPT,
@@ -558,6 +577,7 @@ def lint(
         clock_trace_depth=clock_trace_depth,
         blackboxes=blackboxes or None,
         sync_primitives=frozenset(sync_primitive),
+        ignore_scan_mode=ignore_scan_mode,
         extra_waivers=pragma_mod.scan(sources),
     )
     if code != 0:
@@ -689,6 +709,7 @@ def _analyze_and_report(
     cdc_018_depth_threshold: int = 4,
     clock_trace_depth: int = 16,
     sync_primitives: frozenset[str] = frozenset(),
+    ignore_scan_mode: bool = False,
 ) -> int:
     """Load a Yosys JSON netlist and run the shared analyze+report path."""
     module, blackboxes = netlist.load_with_blackboxes(netlist_path)
@@ -712,6 +733,7 @@ def _analyze_and_report(
         clock_trace_depth=clock_trace_depth,
         blackboxes=blackboxes,
         sync_primitives=sync_primitives,
+        ignore_scan_mode=ignore_scan_mode,
     )
 
 
@@ -736,6 +758,7 @@ def _analyze_module_and_report(
     clock_trace_depth: int = 16,
     blackboxes: dict[str, netlist.Module] | None = None,
     sync_primitives: frozenset[str] = frozenset(),
+    ignore_scan_mode: bool = False,
     extra_waivers: list[waivers_mod.Waiver] | None = None,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
@@ -771,6 +794,7 @@ def _analyze_module_and_report(
     spec: sdc_mod.ClockSpec | None = None
     async_crossings: list[Crossing] = []
     violations: list[Violation] = []
+    scan_mode_suppressed = 0
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
         # Synthesize sentinel entries for input ports the SDC didn't
@@ -810,6 +834,20 @@ def _analyze_module_and_report(
             required_depth=sync_depth,
             sync_primitives=sync_primitives,
         )
+        # DFT scan structures in the clock network (#45). Computed off
+        # the same clock-root walk that assigned the domains above, and
+        # returns immediately when the design carries no scan-mode
+        # attribute — which is every design that hasn't opted in. The
+        # result only ever *tags* crossings; suppression is a separate,
+        # explicit decision below.
+        scan_mode_flops = frozenset(
+            scan_mode_clock_select_flops(
+                module,
+                pin_clocks=spec.pin_clocks,
+                clock_for_port=spec.clock_for_port,
+                max_depth=clock_trace_depth,
+            )
+        )
         crossings = find_crossings(
             module,
             port_clock=spec.port_clock,
@@ -817,6 +855,7 @@ def _analyze_module_and_report(
             clock_for_port=spec.clock_for_port,
             boundaries=boundaries,
             max_depth=clock_trace_depth,
+            scan_mode_flops=scan_mode_flops,
         )
         # FIX 3 (reconvergence gate): a single-clock block that IS
         # abstracted but has >=2 distinct foreign-domain crossings entering
@@ -870,6 +909,7 @@ def _analyze_module_and_report(
                 clock_for_port=spec.clock_for_port,
                 boundaries=boundaries,
                 max_depth=clock_trace_depth,
+                scan_mode_flops=scan_mode_flops,
             )
         # FIX 2 (now an error): every declined/opaque blackbox (multi-clock /
         # unresolved per FIX 1) is a coverage gap — its zero-cell internals
@@ -973,6 +1013,11 @@ def _analyze_module_and_report(
                 if pb.user_synchronised:
                     boundary_user_syncs.add(sink)
         async_crossings = _filter_async(crossings, spec)
+        # The tally the reporter prints. Counted on the SAME list the
+        # rule pack is about to filter, so "N suppressed" and "N fewer
+        # crossings checked" are the same N by construction.
+        if ignore_scan_mode:
+            scan_mode_suppressed = sum(1 for c in async_crossings if c.scan_mode)
         if not no_findings:
             violations = run_all_rules(
                 module,
@@ -990,6 +1035,7 @@ def _analyze_module_and_report(
                 boundary_user_syncs=frozenset(boundary_user_syncs),
                 max_depth=clock_trace_depth,
                 sync_primitives=sync_primitives,
+                ignore_scan_mode=ignore_scan_mode,
             )
             # Findings from INSIDE an analysed boundary module (#261),
             # lifted once per module type with the instances they cover
@@ -1096,6 +1142,7 @@ def _analyze_module_and_report(
         suppressed=list(suppressed),
         baseline_carryover=list(baseline_carryover),
         inferred_clock_candidates=inferred_clock_candidates,
+        scan_mode_suppressed=scan_mode_suppressed,
     )
 
     # Domain-map emission runs *before* the normal report so a write
