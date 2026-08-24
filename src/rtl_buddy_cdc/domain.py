@@ -73,6 +73,37 @@ class FlopDomain:
 
 
 @dataclass(frozen=True)
+class ClockCombine:
+    """A clock-network node where >=2 distinct DECLARED clocks combine.
+
+    Recorded at the exact moment :func:`_pick_combining_root` *declines*
+    (issue #269): a gate (``$and`` / ``$or`` …) or a clock-path
+    transparent latch (``$dlatch`` / ``$_DLATCH_*``) whose legs resolve
+    to two or more distinct declared clocks. The downstream clock net
+    physically toggles on both, so the tracer refuses to assert either
+    leg and every flop behind it is left domain-unknown (#263).
+
+    A **mux** is deliberately not a combine — it *selects* one of its
+    clock inputs — so it never reaches the decline site and never
+    produces one of these records.
+
+    ``net`` is the combined output net's name (the driven CLK net),
+    ``cell`` / ``cell_type`` the combining cell, ``clocks`` the sorted,
+    canonical declared-clock names that met there, and ``sinks`` the
+    sorted flop cell names whose ``CLK`` trace reached this node.
+
+    Pure data. The record is what CDC-023 reports; producing it never
+    changes a domain or a crossing.
+    """
+
+    net: str
+    cell: str
+    cell_type: str
+    clocks: tuple[str, ...]
+    sinks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class InferredClockCandidate:
     """An undeclared internal net used as a clock by many flops (P3/#263).
 
@@ -295,6 +326,14 @@ _LANE_ALIGNED_TYPES: frozenset[str] = frozenset(
 )
 
 
+# Callback signature for the clock-combining decline recorder
+# (``(cell_name, cell_type, driven_bit, declared_clocks)``). Invoked at
+# the ONE site that declines — :func:`_pick_combining_root` — so a
+# consumer's "this is a combine" can never drift from the tracer's
+# "I declined here". See :func:`find_clock_combines` and issue #269.
+CombineSink = Callable[[str, str, Bit, frozenset[str]], None]
+
+
 def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str]]:
     """Map each net bit to the ``(cell_name, output_port)`` that drives it.
 
@@ -320,6 +359,7 @@ def trace_clock_root(
     *,
     allow_divider: bool = True,
     clock_identity: Callable[[str], str | None] | None = None,
+    on_combine: CombineSink | None = None,
 ) -> str | None:
     """Resolve a CLK net bit to the top-level port that ultimately drives it.
 
@@ -346,6 +386,12 @@ def trace_clock_root(
     input port. This is what models SoC clock-forwarding chains where
     each block declares its forwarded clock at an internal pin.
 
+    ``on_combine`` is an optional recorder invoked once per
+    clock-combining **decline** (see :data:`CombineSink`). It observes
+    the walk; it never changes its outcome. :func:`find_clock_combines`
+    uses it to build the CDC-023 findings from the tracer's own decline
+    events rather than re-deriving them.
+
     Returns ``None`` when no candidate root resolves within
     ``max_depth`` cells; the caller treats that as "domain unknown".
     """
@@ -361,12 +407,14 @@ def trace_clock_root(
         bit_to_clock or {},
         allow_divider=allow_divider,
         clock_identity=clock_identity,
+        on_combine=on_combine,
     )
 
 
 def _pick_combining_root(
     roots: list[str],
     clock_identity: Callable[[str], str | None] | None,
+    on_decline: Callable[[frozenset[str]], None] | None = None,
 ) -> str | None:
     """Choose the single clock root of a combining cell, or decline.
 
@@ -390,6 +438,12 @@ def _pick_combining_root(
     context) the behaviour is unconditionally first-leg-wins, unchanged.
     Two legs that map to the *same* clock (e.g. ``ck0_a`` / ``ck0_b`` of
     one ``create_clock``) are one identity, not a combine — see #166.
+
+    ``on_decline`` (issue #269) is called with the set of declared clock
+    names that met here, at the *one* line that declines. CDC-023's
+    findings are built from those calls, which is what makes
+    "the rule fired" and "the tracer declined" the same event by
+    construction rather than by two predicates agreeing.
     """
     distinct = list(dict.fromkeys(roots))
     if not distinct:
@@ -399,7 +453,10 @@ def _pick_combining_root(
     ids = [(r, clock_identity(r)) for r in distinct]
     real = {cid for (_, cid) in ids if cid is not None}
     if len(real) >= 2:
-        return None  # genuine clock-combining node — decline loudly
+        # Genuine clock-combining node — decline loudly.
+        if on_decline is not None:
+            on_decline(frozenset(real))
+        return None
     if real:
         for r, cid in ids:
             if cid is not None:
@@ -417,6 +474,7 @@ def _trace(
     *,
     allow_divider: bool = True,
     clock_identity: Callable[[str], str | None] | None = None,
+    on_combine: CombineSink | None = None,
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
@@ -449,7 +507,13 @@ def _trace(
             bit_to_clock,
             allow_divider=allow_divider,
             clock_identity=clock_identity,
+            on_combine=on_combine,
         )
+
+    def _record(clocks: frozenset[str]) -> None:
+        """Forward this cell's decline to the recorder, if any."""
+        if on_combine is not None:
+            on_combine(cell.name, ctype, bit, clocks)
 
     # Transparent through single-input cells.
     if ctype in _BUFFER_TYPES:
@@ -464,6 +528,7 @@ def _trace(
                 bit_to_clock,
                 allow_divider=allow_divider,
                 clock_identity=clock_identity,
+                on_combine=on_combine,
             )
         return None
 
@@ -482,7 +547,7 @@ def _trace(
                 r = _leg(in_bits[0])
                 if r is not None:
                     roots.append(r)
-        return _pick_combining_root(roots, clock_identity)
+        return _pick_combining_root(roots, clock_identity, _record)
 
     # Clock mux — return whichever side resolves. A mux *selects* one of
     # its clock inputs (it does not combine them), so first-resolves-wins
@@ -516,6 +581,7 @@ def _trace(
                 bit_to_clock,
                 allow_divider=allow_divider,
                 clock_identity=clock_identity,
+                on_combine=on_combine,
             )
 
     # Clock-path transparent latch — a latch-based ICG (or any clock
@@ -544,7 +610,7 @@ def _trace(
                 r = _leg(in_bits[0])
                 if r is not None:
                     roots.append(r)
-        return _pick_combining_root(roots, clock_identity)
+        return _pick_combining_root(roots, clock_identity, _record)
 
     return None
 
@@ -576,6 +642,51 @@ def _build_bit_to_clock(
     return out
 
 
+def _clock_identity_fn(
+    clock_for_port: Callable[[str], str | None] | None,
+    generated_clocks: set[str],
+) -> Callable[[str], str | None]:
+    """Build the declared-clock predicate the combine-decline rule uses.
+
+    Returns a callable mapping a raw trace root to its canonical
+    declared-clock name, or ``None`` when the root is not a declared
+    clock at all.
+
+    A leg is a *declared clock* if the SDC maps its port into a named
+    clock (``clock_for_port``) or it is a ``create_generated_clock``
+    target. Non-clock legs (a plain enable port, an undeclared internal
+    net) return ``None`` so they never count toward a clock-combining
+    decline. Used by the gate / latch clauses of :func:`_trace` to tell
+    a real two-clock combine apart from the common clock + enable-port
+    ICG (#263).
+
+    Extracted to module scope (#269) so :func:`assign_domains` and
+    :func:`find_clock_combines` share **one** predicate: the rule that
+    reports a combine and the tracer that declines on it cannot disagree
+    about what counts as a declared clock.
+    """
+
+    def clock_identity(root: str) -> str | None:
+        if clock_for_port is not None:
+            named = clock_for_port(root)
+            # The synthesized ``<unconstrained>`` sentinel — stamped on
+            # every *untyped* input port by
+            # ``synthesize_unconstrained_inputs`` before ``assign_domains``
+            # on the CLI path — is NOT a real clock identity. It must never
+            # count as a competing clock, or a normal ICG whose enable comes
+            # from an untyped input port (clk + enable-port) would be misread
+            # as a two-clock combine and wrongly decline, silently dropping
+            # that flop's crossings. Mirrors the SDC sentinel; see
+            # ``_UNKNOWN_BOUNDARY_CLOCK``.
+            if named is not None and named != _UNKNOWN_BOUNDARY_CLOCK:
+                return named
+        if root in generated_clocks:
+            return root
+        return None
+
+    return clock_identity
+
+
 def assign_domains(
     module: Module,
     pin_clocks: dict[str, str] | None = None,
@@ -604,35 +715,7 @@ def assign_domains(
     """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
-    generated_clocks = set(bit_to_clock.values())
-
-    def clock_identity(root: str) -> str | None:
-        """Canonical declared-clock name for a raw trace root, else None.
-
-        A leg is a *declared clock* if the SDC maps its port into a
-        named clock (``clock_for_port``) or it is a
-        ``create_generated_clock`` target. Non-clock legs (a plain enable
-        port, an undeclared internal net) return None so they never count
-        toward a clock-combining decline. Used by the gate / latch
-        clauses to tell a real two-clock combine apart from the common
-        clock + enable-port ICG (#263).
-        """
-        if clock_for_port is not None:
-            named = clock_for_port(root)
-            # The synthesized ``<unconstrained>`` sentinel — stamped on
-            # every *untyped* input port by
-            # ``synthesize_unconstrained_inputs`` before ``assign_domains``
-            # on the CLI path — is NOT a real clock identity. It must never
-            # count as a competing clock, or a normal ICG whose enable comes
-            # from an untyped input port (clk + enable-port) would be misread
-            # as a two-clock combine and wrongly decline, silently dropping
-            # that flop's crossings. Mirrors the SDC sentinel; see
-            # ``_UNKNOWN_BOUNDARY_CLOCK``.
-            if named is not None and named != _UNKNOWN_BOUNDARY_CLOCK:
-                return named
-        if root in generated_clocks:
-            return root
-        return None
+    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
 
     out: list[FlopDomain] = []
     for f in find_flops(module):
@@ -806,6 +889,122 @@ def find_inferred_clock_candidates(
         )
     # Stable order: widest fanout first, then driver name.
     out.sort(key=lambda c: (-c.fanout, c.driver))
+    return out
+
+
+# How many sink-flop cell names a CDC-023 finding quotes inline. The
+# full list stays on ``ClockCombine.sinks``; the message names a few so
+# a wide clock bank doesn't produce an unreadable line.
+_CLOCK_COMBINE_SINK_SAMPLE = 3
+
+
+def _bit_net_names(module: Module) -> dict[Bit, str]:
+    """Map each net bit to a human-readable net name.
+
+    Yosys emits both user-written names and auto-generated ``$...``
+    names for the same bit; the user-written one is what a designer can
+    search for, so it wins when both exist.
+    """
+    out: dict[Bit, str] = {}
+    for nn in module.netnames.values():
+        auto = nn.name.startswith("$")
+        for b in nn.bits:
+            if not isinstance(b, int):
+                continue
+            prev = out.get(b)
+            if prev is None or (prev.startswith("$") and not auto):
+                out[b] = nn.name
+    return out
+
+
+def find_clock_combines(
+    module: Module,
+    pin_clocks: dict[str, str] | None = None,
+    *,
+    clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
+) -> list[ClockCombine]:
+    """Report every clock-network node the tracer *declined* on (#269).
+
+    Runs the ordinary per-flop clock-root walk — same
+    :func:`trace_clock_root`, same ``max_depth``, same
+    :func:`_clock_identity_fn` predicate :func:`assign_domains` uses —
+    with a recorder attached, and returns one :class:`ClockCombine` per
+    distinct combining node reached.
+
+    The findings therefore come from the tracer's own decline events
+    rather than from a second, independent walk: a node appears here
+    **iff** :func:`_pick_combining_root` declined on it, which is what
+    keeps CDC-023 and the #263 decline from drifting apart as either
+    side evolves.
+
+    Events are deduplicated per ``(cell, driven bit)`` — the same gate is
+    visited once per flop behind it, and possibly more than once per flop
+    when the clock network reconverges — with the declared-clock sets
+    unioned and the reaching flops collected as ``sinks``.
+
+    Note that a declined node does not *always* leave its sinks
+    domain-unknown: a decline on one leg of an upstream **mux** still
+    lets the mux resolve through its other leg. The combining node is a
+    real design smell either way, which is why the report is keyed on
+    the node rather than on the unresolved flop.
+
+    Returns ``[]`` when fewer than two clocks are declared — with at most
+    one clock identity in play no combine is possible, so the walk is
+    skipped entirely.
+    """
+    bit_to_clock = _build_bit_to_clock(module, pin_clocks)
+    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+    ports = [p.name for p in module.ports.values() if p.direction == "input"]
+    declared = {c for c in (clock_identity(p) for p in ports) if c is not None}
+    declared |= set(bit_to_clock.values())
+    if len(declared) < 2:
+        return []
+
+    drivers = _bit_drivers(module)
+    clocks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
+    sinks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
+    types_at: dict[tuple[str, Bit], str] = {}
+
+    for f in find_flops(module):
+        sink_name = f.cell.name
+
+        def record(
+            cell: str,
+            cell_type: str,
+            bit: Bit,
+            clocks: frozenset[str],
+            _sink: str = sink_name,
+        ) -> None:
+            key = (cell, bit)
+            clocks_at[key] |= clocks
+            sinks_at[key].add(_sink)
+            types_at[key] = cell_type
+
+        trace_clock_root(
+            module,
+            f.clk,
+            drivers,
+            max_depth=max_depth,
+            bit_to_clock=bit_to_clock,
+            clock_identity=clock_identity,
+            on_combine=record,
+        )
+
+    net_names = _bit_net_names(module)
+    out = [
+        ClockCombine(
+            net=net_names.get(bit, f"{cell}.Y"),
+            cell=cell,
+            cell_type=types_at[(cell, bit)],
+            clocks=tuple(sorted(clocks)),
+            sinks=tuple(sorted(sinks_at[(cell, bit)])),
+        )
+        for (cell, bit), clocks in clocks_at.items()
+    ]
+    # Stable order: net name, then cell — the report must not depend on
+    # netlist dict ordering.
+    out.sort(key=lambda c: (c.net, c.cell))
     return out
 
 
