@@ -212,6 +212,13 @@ GOOD_FIXTURES = [
     # silent just like the separate-flop good_2ff_sync. One async
     # crossing (src_q → the packed register's first stage).
     ("good_packed_shift_sync", 1),
+    # CDC-011 (#272) positive shape: the untyped synchronous reset of
+    # bad_untyped_sync_reset_srst, typed via `set_input_delay -clock
+    # clk`. Both `srst` (an `$sdff` SRST pin) and `dctl` (a `D` pin)
+    # carry a real clock instead of the `<unconstrained>` sentinel, so
+    # neither the D-pin crossing walk nor the SRST walk added in #272
+    # can produce a finding. Single-clock — zero async crossings.
+    ("good_typed_sync_reset", 0),
 ]
 
 
