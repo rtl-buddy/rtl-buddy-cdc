@@ -198,6 +198,25 @@ Expression shapes lower to the Yosys cell zoo (binary →
 `$reduce_*`; conditional → `$mux`; element- and range-select →
 bit subsets; concat and replication → pure LSB-first bit-tuple
 aliasing, no cell emitted to match Yosys post-`opt_clean`).
+
+Cell **pin order is part of that parity contract**, not just cell
+type. Yosys' `$mux` is `Y = S ? B : A`: pin `A` is the `S=0` leg and
+pin `B` the `S=1` leg, so `s ? a : b` lowers to `$mux(A=b, B=a, S=s)`
+— the ternary's *false* branch on `A`. Source order is not pin order.
+The rule pack reads mux legs **positionally** (§7's clock-mux clause
+returns the first of `A`, `B` that resolves; CDC-012's gating
+detection and `_is_gated_bus_crossing` inspect the data legs), so a
+frontend that emits the legs the other way round inverts the select
+polarity and silently changes findings rather than failing loudly.
+Issue #289 was exactly that: the slang frontend's
+`ConditionalExpression` lowering preserved source order, and a
+`--frontend slang` run over a DFT clock mux resolved the flop to the
+*other* clock leg and reported no crossing where the Yosys build
+reported one. The three statement-level emitters (`always_comb`
+`if`/`else`, `always_comb` `case`, and the `always_ff`
+hold-feedback mux built by `_build_hold_mux`) already followed the
+convention and were unaffected.
+
 Every emitted cell carries an `attributes["src"]` string formatted
 as Yosys' `"file:line.col-line.col"` convention, so the JSON /
 SARIF reporters surface clickable source locations without a

@@ -27,11 +27,13 @@ annotation.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 from pathlib import Path
 
 import click
+import pytest
 import typer.main
 from typer.testing import CliRunner
 
@@ -330,3 +332,105 @@ def test_flag_is_exposed_on_both_commands() -> None:
         assert command is not None, name
         decls = {decl for p in command.params for decl in p.opts}
         assert "--ignore-scan-mode" in decls, name
+
+
+# --- slang-frontend parity (issue #289) ------------------------------------
+#
+# This fixture is the sharpest end-to-end probe for the ``$mux`` A/B pin
+# convention. Its whole point is a clock mux — ``scan_en ? scan_clk :
+# func_clk`` — and ``trace_clock_root`` resolves such a mux by returning
+# the *first* leg (``A``, then ``B``) that resolves to a clock. Emit the
+# legs swapped and the destination flop lands in ``scan_clk``, the same
+# domain as its source: no crossing, no CDC-001, a silent false negative
+# with a PASS report. Before #289 that is exactly what
+# ``lint --frontend slang`` produced here while the Yosys build reported
+# 1× CDC-001.
+
+PYSLANG_INSTALLED = importlib.util.find_spec("pyslang") is not None
+
+pyslang_only = pytest.mark.skipif(
+    not PYSLANG_INSTALLED,
+    reason="pyslang not installed — slang-frontend parity is gated on it",
+)
+
+
+def _cli_json(
+    tmp_path: Path, argv: list[str], name: str = "report"
+) -> tuple[int, dict]:
+    """Run the CLI with JSON output into ``tmp_path`` and return
+    ``(exit_code, report)``."""
+    out = tmp_path / f"{name}.json"
+    result = runner.invoke(app, [*argv, "--format", "json", "--output", str(out)])
+    assert out.exists(), result.output
+    return result.exit_code, json.loads(out.read_text())
+
+
+def _rule_ids(report: dict) -> list[str]:
+    return sorted(v["rule_id"] for v in report["violations"])
+
+
+@pyslang_only
+def test_slang_lint_matches_the_committed_yosys_netlist(tmp_path: Path) -> None:
+    """``lint --frontend slang`` on the ``.sv`` must reach the same
+    verdict as ``analyze`` on the committed Yosys ``.json`` — 1×
+    CDC-001, exit 1 — and the same one crossing."""
+    json_path, sdc_path = _paths(GOOD)
+    sv_path = json_path.with_suffix(".sv")
+
+    yosys_code, yosys_report = _cli_json(
+        tmp_path,
+        ["analyze", "--netlist", str(json_path), "--sdc", str(sdc_path)],
+        name="yosys",
+    )
+    slang_code, slang_report = _cli_json(
+        tmp_path,
+        [
+            "lint",
+            "--frontend",
+            "slang",
+            "--top",
+            GOOD,
+            "--sdc",
+            str(sdc_path),
+            str(sv_path),
+        ],
+        name="slang",
+    )
+
+    assert _rule_ids(yosys_report) == ["CDC-001"], yosys_report
+    assert _rule_ids(slang_report) == _rule_ids(yosys_report), (
+        "slang frontend disagrees with the committed Yosys netlist; "
+        f"slang={_rule_ids(slang_report)} yosys={_rule_ids(yosys_report)}"
+    )
+    assert (
+        slang_report["summary"]["crossings"] == (yosys_report["summary"]["crossings"])
+    ), (slang_report["summary"], yosys_report["summary"])
+    assert slang_code == yosys_code == 1
+
+
+@pyslang_only
+def test_slang_lint_is_clean_with_the_flag(tmp_path: Path) -> None:
+    """The other half of the fixture's contract on the slang path: the
+    crossing is found, tagged, and then suppressed by the flag — not
+    absent. A frontend that never found it would also exit 0 here, which
+    is why the previous test pins the without-flag finding."""
+    json_path, sdc_path = _paths(GOOD)
+    sv_path = json_path.with_suffix(".sv")
+    code, report = _cli_json(
+        tmp_path,
+        [
+            "lint",
+            "--frontend",
+            "slang",
+            "--ignore-scan-mode",
+            "--top",
+            GOOD,
+            "--sdc",
+            str(sdc_path),
+            str(sv_path),
+        ],
+    )
+    assert code == 0, report
+    assert report["violations"] == []
+    assert report["summary"]["crossings"] == 1
+    assert report["summary"]["scan_mode_suppressed"] == 1

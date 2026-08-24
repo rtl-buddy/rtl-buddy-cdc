@@ -83,7 +83,10 @@ What currently works
   / :meth:`_lower_unary` / :meth:`_lower_conditional`. Pyslang
   expression operators round-trip to the Yosys cell zoo
   (``$and``/``$or``/``$xor``/``$mux``/…), so the rule pack walks
-  the comb cone correctly.
+  the comb cone correctly. Pin *order* is part of that contract:
+  Yosys' ``$mux`` is ``Y = S ? B : A``, so a ternary's FALSE branch
+  goes on ``A`` and its TRUE branch on ``B`` — see
+  :meth:`_lower_conditional` and issue #289.
 - ``always_comb`` procedural ``if`` / ``case`` selection — see
   :meth:`_walk_conditional_statement` and
   :meth:`_walk_case_statement`. Each LHS written across multiple
@@ -2286,17 +2289,25 @@ class _ModuleBuilder:
         if not conds:
             return None
         sel_bits = self._bits_of_expression(conds[0].expr)
-        a_bits = self._bits_of_expression(expr.left)
-        b_bits = self._bits_of_expression(expr.right)
-        if sel_bits is None or a_bits is None or b_bits is None:
+        # pyslang names the branches from source order: ``left`` is the
+        # TRUE branch of ``s ? left : right``, ``right`` the FALSE one.
+        true_bits = self._bits_of_expression(expr.left)
+        false_bits = self._bits_of_expression(expr.right)
+        if sel_bits is None or true_bits is None or false_bits is None:
             return None
-        width = self._expr_width(expr) or max(len(a_bits), len(b_bits))
-        # Yosys ``$mux`` selects between A (sel=0) and B (sel=1); same
-        # convention we use here. The S pin takes the (single-bit)
+        width = self._expr_width(expr) or max(len(true_bits), len(false_bits))
+        # Yosys ``$mux`` is ``Y = S ? B : A`` — ``A`` is the S=0 leg and
+        # ``B`` the S=1 leg. Source order is therefore NOT the pin order:
+        # the ternary's FALSE branch goes on ``A`` and its TRUE branch on
+        # ``B``. Emitting them the other way round leaves the legs
+        # swapped relative to the Yosys frontend, and every positional
+        # consumer (``trace_clock_root``'s clock-mux clause, CDC-012's
+        # gating detection, ``_is_gated_bus_crossing``) then reads the
+        # wrong leg — see issue #289. The S pin takes the (single-bit)
         # selector.
         return self._emit_comb_cell(
             cell_type="$mux",
-            inputs={"A": a_bits, "B": b_bits, "S": sel_bits[:1]},
+            inputs={"A": false_bits, "B": true_bits, "S": sel_bits[:1]},
             output_width=width,
             src_node=expr,
         )
