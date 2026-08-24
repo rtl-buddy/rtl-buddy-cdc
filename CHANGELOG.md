@@ -32,9 +32,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that file), the source path for a pragma (so `source_line` is the
   line of the pragma in the RTL).
 
-  This release is the **scanner only** — the records are not yet
-  applied to a run. Wiring them into `lint` lands with #42,
-  block-scoped `enable-rule` with #43.
+  Pragmas are applied on the **`lint`** path (the one that starts from
+  sources): `lint` scans its sources and prepends the results to
+  whatever `--waivers` produced, so an inline suppression wins over a
+  broad file regex. `analyze` is unchanged — it consumes an
+  already-elaborated netlist and has no sources to scan, which its
+  `--help` now says explicitly.
+
+  A pragma matches by **source location**, not by name: it suppresses
+  findings the analyzer attributes to the file the pragma lives in,
+  and is never tried against a cell name or message text. A finding
+  whose location can't be resolved is never waived by a pragma.
+  `waivers.apply` grew a keyword-only `source_file` resolver for this
+  (the location lives on the offending cell, so only the CLI — which
+  holds the `Module` — can supply it).
+
+  Reporting distinguishes the two producers. Text:
+
+  ```text
+  Suppressed by waivers (1)
+    CDC-001  hand-reviewed: q_out is quasi-static  (pragma rtl/dut.sv:26)
+  ```
+
+  JSON `suppressed[].waiver` gains an **`origin`** key — `null` for a
+  waiver-file entry (so `source_line` is a line in the `--waivers`
+  file), the source path for a pragma (so `source_line` is the line of
+  the pragma). Purely additive: a consumer reading the pre-existing
+  fields is unaffected, and `summary.violations` /
+  `summary.suppressed` / `summary.crossings` are untouched.
+
+  Fixture `pragma_waived_single_ff` is the end-to-end case: a CDC-001
+  crossing waived in place, `lint` exits 0 with the finding on the
+  suppressed list, `analyze` over the same committed netlist still
+  exits 1.
+
+  Block-scoped `enable-rule` lands with #43; today a pragma covers its
+  whole file.
 
 - **`--blackbox` now refuses a module that drives a clock output**
   (`CDC-BBX`, #273). The boundary-soundness check declined a candidate

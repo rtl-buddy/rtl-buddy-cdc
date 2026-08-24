@@ -24,7 +24,7 @@ from rtl_buddy_cdc.domain import Crossing, FlopDomain, InferredClockCandidate
 from rtl_buddy_cdc.netlist import Module
 from rtl_buddy_cdc.rules import Violation
 from rtl_buddy_cdc.sdc import ClockSpec
-from rtl_buddy_cdc.waivers import SuppressedViolation
+from rtl_buddy_cdc.waivers import SuppressedViolation, Waiver
 
 TOOL_NAME = "rtl-buddy-cdc"
 TOOL_VERSION = "0.4.0"
@@ -380,6 +380,18 @@ def _wrap_message(text: str) -> list[str]:
     ) or [""]
 
 
+def _waiver_provenance(w: Waiver) -> str:
+    """Where the waiver was written, for the human report.
+
+    A waiver-file entry only has a line number (the file is the one the
+    user passed to ``--waivers``). An in-RTL pragma has an ``origin``,
+    so it renders as a source location — ``src.sv:42`` — which is both
+    clickable and unambiguous against the waiver-file form."""
+    if w.origin is None:
+        return f"waiver line {w.source_line}"
+    return f"pragma {w.origin}:{w.source_line}"
+
+
 def _render_suppressed(result: AnalysisResult, out: IO[str], s: _Style) -> None:
     if not result.suppressed:
         return
@@ -389,7 +401,7 @@ def _render_suppressed(result: AnalysisResult, out: IO[str], s: _Style) -> None:
         reason = sup.waiver.reason or "(no reason given)"
         out.write(
             f"  {s.dim}{rule_id}{s.reset}  {reason}  "
-            f"{s.dim}(waiver line {sup.waiver.source_line}){s.reset}\n"
+            f"{s.dim}({_waiver_provenance(sup.waiver)}){s.reset}\n"
         )
 
 
@@ -478,7 +490,12 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
                     "rule_pattern": s.waiver.rule_pattern,
                     "regex": s.waiver.regex.pattern,
                     "reason": s.waiver.reason,
+                    # ``source_line`` is a line in ``origin`` when that
+                    # is set (an in-RTL pragma), else in the --waivers
+                    # file. ``origin`` is the added key, so a consumer
+                    # that ignores it keeps reading the old shape.
                     "source_line": s.waiver.source_line,
+                    "origin": s.waiver.origin,
                 },
             }
             for s in result.suppressed

@@ -92,7 +92,7 @@ swappable so the rule pack doesn't depend on a specific toolchain.
         └──────────────────────────────────┘
                         ▼
    ─── cdc.waivers ──▶ ┌──────────────────────────────────┐
-                       │ waivers.apply       (8)          │  partition into kept / suppressed
+   ─── // rbcdc: ────▶ │ waivers.apply       (8)          │  partition into kept / suppressed
                        └──────────────────────────────────┘
                         ▼
         ┌──────────────────────────────────┐
@@ -123,6 +123,7 @@ without one the tool prints the structural summary and exits 0.
 | `sdc.py` | Parse the CDC-relevant SDC subset | `ClockSpec`, `Clock` |
 | `rules.py` | The CDC-001..-008 rule pack | `Violation`, `RULES`, `run_all` |
 | `waivers.py` | Per-violation suppression with regex | `Waiver`, `SuppressedViolation` |
+| `pragma.py` | Scan in-RTL `// rbcdc:` pragmas into `Waiver`s | `scan` |
 | `reporter.py` | Format an `AnalysisResult` as text / JSON / SARIF | `AnalysisResult`, `render_text`, `render_json`, `render_sarif` |
 | `cli.py` | Typer entry points; orchestrates the pipeline | `analyze`, `lint`, `version` |
 
@@ -2025,7 +2026,45 @@ smaller surface — no scope qualifiers, no severity overrides, no
 expiry dates. Add those when a real project asks for them, not
 preemptively.
 
-### 9.1 Baseline filtering (`--baseline`)
+### 9.1 In-RTL pragmas (`pragma.py`)
+
+A second producer feeds the same `Waiver` list: a magic comment in the
+source, in this tool's `rbcdc:` namespace (org-wide convention — one
+prefix per rtl-buddy tool; there is no SV-attribute form).
+
+```systemverilog
+// rbcdc: disable-rule CDC-001,CDC-002  hand-reviewed handshake
+/* rbcdc: disable-rule CDC-005 library cell */
+```
+
+`pragma.scan(sources)` reads the files as **text**. It never goes
+through Yosys or slang: the scan is frontend-independent, costs
+nothing, and is unaffected by an elaboration failure. Each
+(pragma × rule id) becomes one `Waiver` whose `regex` is the file's
+escaped basename, whose `source_line` is the pragma's line, and whose
+new `origin` field holds the source path.
+
+`origin` is what distinguishes the two producers, in both matching and
+reporting:
+
+- **Matching.** `waivers.apply` takes a `source_file` resolver (the
+  CLI supplies one — it needs the `Module`, since the location lives on
+  the offending cell's `src` attribute). A waiver with an `origin` is
+  matched against that path *only*: its scope is a file, not a name
+  pattern, so it is never tried against `cell_name` or `message`. A
+  violation with no resolvable location is never waived by a pragma.
+- **Reporting.** The text report prints `(pragma <file>:<line>)`
+  instead of `(waiver line N)`, and the JSON `suppressed[].waiver`
+  object carries `origin` (null for a waiver-file entry) alongside
+  `source_line`. `origin` is an added key — a consumer reading the
+  pre-existing fields is unaffected.
+
+Only `lint` scans: `analyze` starts from an elaborated netlist and has
+no sources. Pragmas are prepended to the `--waivers` list, so
+first-match-wins gives an inline suppression precedence over a broad
+file regex.
+
+### 9.2 Baseline filtering (`--baseline`)
 
 `--baseline FILE.json` is auto-derived waivers. The flag points at a
 prior JSON report (the same shape `render_json` emits); findings

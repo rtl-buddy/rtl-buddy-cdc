@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from rtl_buddy_cdc import netlist, sdc as sdc_mod, waivers as waivers_mod
 from rtl_buddy_cdc.cli import _analyze_and_report, OutputFormat  # noqa: PLC2701
 from rtl_buddy_cdc.domain import find_crossings
-from rtl_buddy_cdc.rules import run_all as run_all_rules
+from rtl_buddy_cdc.rules import Violation, run_all as run_all_rules
 
 FIX_DIR = Path(__file__).parent / "fixtures" / "bad_single_ff_sync"
 JSON_PATH = FIX_DIR / "bad_single_ff_sync.json"
@@ -208,3 +209,86 @@ def test_cli_no_waiver_still_fails(tmp_path: Path) -> None:
     out = tmp_path / "report.txt"
     code = _analyze_and_report(JSON_PATH, SDC_PATH, None, OutputFormat.text, out)
     assert code == 1
+
+
+# --- pragma-origin waivers (issue #42) --------------------------------------
+#
+# A waiver carrying an ``origin`` came from an in-RTL ``// rbcdc:``
+# pragma. Its scope is the file it was written in, so ``apply`` matches
+# it against the violation's source location and nothing else — never
+# the cell name or the message, which is what an ordinary waiver-file
+# regex targets.
+
+
+def _pragma_waiver(rule: str = "CDC-001", file: str = "dut.sv") -> waivers_mod.Waiver:
+    return waivers_mod.Waiver(
+        rule_pattern=rule,
+        regex=re.compile(re.escape(file)),
+        reason="in-RTL pragma",
+        source_line=12,
+        origin=f"rtl/{file}",
+    )
+
+
+def _violation(rule: str = "CDC-001", cell: str = "$procdff$9") -> Violation:
+    return Violation(
+        rule_id=rule,
+        severity="error",
+        message="unsynchronized control crossing",
+        cell_name=cell,
+    )
+
+
+def test_pragma_waiver_matches_on_the_source_file() -> None:
+    v = _violation()
+    kept, suppressed = waivers_mod.apply(
+        [v],
+        [_pragma_waiver()],
+        source_file=lambda _v: "rtl/dut.sv",
+    )
+    assert kept == []
+    assert suppressed[0].waiver.origin == "rtl/dut.sv"
+
+
+def test_pragma_waiver_ignores_a_different_file() -> None:
+    kept, suppressed = waivers_mod.apply(
+        [_violation()],
+        [_pragma_waiver()],
+        source_file=lambda _v: "rtl/other.sv",
+    )
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+def test_pragma_waiver_needs_a_resolvable_location() -> None:
+    """No location, no file-scoped suppression — the finding stands
+    rather than being waived on a guess. Covers both an absent
+    resolver (the ``analyze`` path) and an unlocatable cell."""
+    for resolver in (None, lambda _v: None):
+        kept, suppressed = waivers_mod.apply(
+            [_violation()], [_pragma_waiver()], source_file=resolver
+        )
+        assert suppressed == []
+        assert len(kept) == 1
+
+
+def test_pragma_waiver_never_matches_the_cell_name_or_message() -> None:
+    """The file-scope regex is not a name pattern: a cell that happens
+    to contain the basename doesn't get waived when its own source file
+    is elsewhere."""
+    v = _violation(cell="u_dut.sv_wrapper")
+    kept, suppressed = waivers_mod.apply(
+        [v], [_pragma_waiver()], source_file=lambda _v: "rtl/elsewhere.sv"
+    )
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+def test_pragma_waiver_still_honours_the_rule_id() -> None:
+    kept, suppressed = waivers_mod.apply(
+        [_violation(rule="CDC-004")],
+        [_pragma_waiver(rule="CDC-001")],
+        source_file=lambda _v: "rtl/dut.sv",
+    )
+    assert suppressed == []
+    assert len(kept) == 1

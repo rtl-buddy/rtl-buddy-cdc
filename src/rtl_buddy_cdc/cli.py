@@ -13,6 +13,7 @@ import typer
 
 from rtl_buddy_cdc import (
     netlist,
+    pragma as pragma_mod,
     render as render_mod,
     reporter,
     sdc as sdc_mod,
@@ -38,7 +39,12 @@ from rtl_buddy_cdc.frontend import (
 )
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 from rtl_buddy_cdc.frontends.yosys import YosysError
-from rtl_buddy_cdc.reporter import TOOL_VERSION, AnalysisResult, _instance_path
+from rtl_buddy_cdc.reporter import (
+    TOOL_VERSION,
+    AnalysisResult,
+    _instance_path,
+    _source_location,
+)
 from rtl_buddy_cdc.reset_domain import (
     assign_reset_domains,
     find_reset_crossings,
@@ -297,7 +303,8 @@ def analyze(
         readable=True,
         help="Optional waiver file (one `waive <rule|*> <regex> [reason]` "
         "per line). Suppressed violations are still reported but don't "
-        "drive the exit code.",
+        "drive the exit code. In-RTL `// rbcdc:` pragmas are not read "
+        "here — this path has no SV sources to scan; see `lint`.",
     ),
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
@@ -316,7 +323,14 @@ def analyze(
     cdc_018_depth_threshold: int = _CDC_018_DEPTH_THRESHOLD_OPT,
     project_root: Path | None = _PROJECT_ROOT_OPT,
 ) -> None:
-    """Analyze a flattened netlist for CDC issues (primary entry point)."""
+    """Analyze a flattened netlist for CDC issues (primary entry point).
+
+    In-RTL ``// rbcdc: disable-rule …`` pragmas are NOT read on this
+    path: it starts from an already-elaborated netlist and has no
+    access to the SystemVerilog sources they live in. Use ``lint``
+    (which elaborates from sources, and scans them) if you want inline
+    pragmas honoured; ``--waivers`` works on both paths.
+    """
     base = _resolution_base(project_root, sdc_path)
     emit_domain_map = _anchor(emit_domain_map, base)
     emit_reset_domain_map = _anchor(emit_reset_domain_map, base)
@@ -419,7 +433,9 @@ def lint(
         "-w",
         exists=True,
         readable=True,
-        help="Optional waiver file (see `analyze --help`).",
+        help="Optional waiver file (see `analyze --help`). Applied on "
+        "top of the in-RTL `// rbcdc: disable-rule ...` pragmas scanned "
+        "from the sources, which take precedence.",
     ),
     fmt: OutputFormat = _FORMAT_OPT,
     output_path: Path | None = _OUTPUT_OPT,
@@ -506,6 +522,8 @@ def lint(
     ):
         typer.echo(f"netlist JSON kept at: {keep_json}")
 
+    # In-RTL pragmas are read from the sources as text — the scan is
+    # independent of the frontend that just elaborated them.
     code = _analyze_module_and_report(
         module,
         sdc_path,
@@ -526,6 +544,7 @@ def lint(
         clock_trace_depth=clock_trace_depth,
         blackboxes=blackboxes or None,
         sync_primitives=frozenset(sync_primitive),
+        extra_waivers=pragma_mod.scan(sources),
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -616,6 +635,21 @@ def version() -> None:
 # --- shared analysis path ---------------------------------------------------
 
 
+def _violation_source_file(module: netlist.Module, v: Violation) -> str | None:
+    """The source file the analyzer attributes ``v`` to, or ``None``
+    when the offending cell carries no ``src`` attribute.
+
+    Resolved here, at the CLI boundary, for the same reason
+    ``instance_path`` is: it needs the ``Module``, and the rule pack
+    and the waiver matcher both stay free of it. Feeds the file scope
+    of an in-RTL pragma waiver (see :mod:`rtl_buddy_cdc.pragma`)."""
+    loc = _source_location(module, v.cell_name)
+    if loc is None:
+        return None
+    file = loc.get("file")
+    return file if isinstance(file, str) else None
+
+
 def _analyze_and_report(
     netlist_path: Path,
     sdc_path: Path | None,
@@ -683,6 +717,7 @@ def _analyze_module_and_report(
     clock_trace_depth: int = 16,
     blackboxes: dict[str, netlist.Module] | None = None,
     sync_primitives: frozenset[str] = frozenset(),
+    extra_waivers: list[waivers_mod.Waiver] | None = None,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
@@ -690,6 +725,11 @@ def _analyze_module_and_report(
     least one *unsuppressed* rule violation. Waived findings (and
     baseline-carried findings) are still reported but don't fail the
     run.
+
+    ``extra_waivers`` are waivers produced outside the ``--waivers``
+    file — today the in-RTL ``// rbcdc:`` pragmas the ``lint`` path
+    scans out of its sources. They are tried before the file's, so a
+    pragma written next to the RTL wins over a broad file regex.
 
     ``--no-findings`` is only meaningful alongside ``--emit-domain-map``:
     rule evaluation is skipped, the normal report is suppressed, and
@@ -890,10 +930,21 @@ def _analyze_module_and_report(
         domains = assign_domains(module, max_depth=clock_trace_depth)
         crossings = find_crossings(module, max_depth=clock_trace_depth)
 
+    # In-RTL pragma waivers lead the list so a suppression written next
+    # to the RTL wins over a broad waiver-file regex (first match wins).
+    # ``extra_waivers`` is only ever non-empty on the ``lint`` path —
+    # ``analyze`` starts from an elaborated netlist and has no sources
+    # to scan.
     suppressed: list[SuppressedViolation] = []
+    waivers = list(extra_waivers or [])
     if waivers_path is not None:
-        waivers = waivers_mod.parse_file(waivers_path)
-        violations, suppressed = waivers_mod.apply(violations, waivers)
+        waivers.extend(waivers_mod.parse_file(waivers_path))
+    if waivers:
+        violations, suppressed = waivers_mod.apply(
+            violations,
+            waivers,
+            source_file=lambda v: _violation_source_file(module, v),
+        )
 
     # --baseline filter: partition findings against a prior JSON report.
     # Carryover entries stay in the report (separate tally) but never
