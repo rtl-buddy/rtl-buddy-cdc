@@ -1,0 +1,531 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_scan_mode_functional_crossing": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "bad_scan_mode_functional_crossing.sv:23.1-60.10"
+      },
+      "ports": {
+        "func_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "scan_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "other_clk": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "scan_en": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 7 ]
+        },
+        "e_in": {
+          "direction": "input",
+          "bits": [ 8 ]
+        },
+        "dst_q": {
+          "direction": "output",
+          "bits": [ 9 ]
+        },
+        "func_q": {
+          "direction": "output",
+          "bits": [ 10 ]
+        }
+      },
+      "cells": {
+        "$auto$proc_dff.cc:220:proc_dff$10": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 11 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$15": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 12 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$20": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$25": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$logic_not$bad_scan_mode_functional_crossing.sv:38$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:38.13-38.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 15 ]
+          }
+        },
+        "$logic_not$bad_scan_mode_functional_crossing.sv:45$5": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:45.13-45.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 16 ]
+          }
+        },
+        "$logic_not$bad_scan_mode_functional_crossing.sv:53$7": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:53.13-53.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 17 ]
+          }
+        },
+        "$logic_not$bad_scan_mode_functional_crossing.sv:57$9": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:57.13-57.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5 ],
+            "Y": [ 18 ]
+          }
+        },
+        "$procdff$14": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_scan_mode_functional_crossing.sv:56.5-58.39"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 2 ],
+            "D": [ 19 ],
+            "Q": [ 10 ]
+          }
+        },
+        "$procdff$19": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_scan_mode_functional_crossing.sv:52.5-54.37"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 4 ],
+            "D": [ 8 ],
+            "Q": [ 19 ]
+          }
+        },
+        "$procdff$24": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_scan_mode_functional_crossing.sv:44.5-46.36"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 20 ],
+            "D": [ 21 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$procdff$29": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "bad_scan_mode_functional_crossing.sv:37.5-39.35"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 3 ],
+            "D": [ 7 ],
+            "Q": [ 21 ]
+          }
+        },
+        "$ternary$bad_scan_mode_functional_crossing.sv:42$3": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:42.24-42.53"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 2 ],
+            "B": [ 3 ],
+            "S": [ 6 ],
+            "Y": [ 20 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\dst_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:44.5-46.36"
+          }
+        },
+        "$0\\func_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:56.5-58.39"
+          }
+        },
+        "$0\\other_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:52.5-54.37"
+          }
+        },
+        "$0\\src_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:37.5-39.35"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$11": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$16": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$21": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$26": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$13": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$18": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$23": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$28": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$logic_not$bad_scan_mode_functional_crossing.sv:38$2_Y": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:38.13-38.19"
+          }
+        },
+        "$logic_not$bad_scan_mode_functional_crossing.sv:45$5_Y": {
+          "hide_name": 1,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:45.13-45.19"
+          }
+        },
+        "$logic_not$bad_scan_mode_functional_crossing.sv:53$7_Y": {
+          "hide_name": 1,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:53.13-53.19"
+          }
+        },
+        "$logic_not$bad_scan_mode_functional_crossing.sv:57$9_Y": {
+          "hide_name": 1,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:57.13-57.19"
+          }
+        },
+        "$ternary$bad_scan_mode_functional_crossing.sv:42$3_Y": {
+          "hide_name": 1,
+          "bits": [ 20 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:42.24-42.53"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:29.18-29.22"
+          }
+        },
+        "dst_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:31.18-31.23"
+          }
+        },
+        "e_in": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:30.18-30.22"
+          }
+        },
+        "func_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:24.18-24.26"
+          }
+        },
+        "func_q": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:32.18-32.24"
+          }
+        },
+        "muxed_clk": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:41.11-41.20"
+          }
+        },
+        "other_clk": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:26.18-26.27"
+          }
+        },
+        "other_q": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:51.11-51.18"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:27.18-27.23"
+          }
+        },
+        "scan_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:25.18-25.26"
+          }
+        },
+        "scan_en": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "scan_en": "00000000000000000000000000000001",
+            "src": "bad_scan_mode_functional_crossing.sv:28.31-28.38"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "bad_scan_mode_functional_crossing.sv:36.11-36.16"
+          }
+        }
+      }
+    }
+  }
+}

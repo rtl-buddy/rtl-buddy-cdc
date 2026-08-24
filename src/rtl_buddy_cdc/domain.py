@@ -166,6 +166,15 @@ class Crossing:
     foreign domain (P3). Setting them does not change the public JSON
     contract — they are additive optional fields on the single
     ``Crossing`` type, never a forked one.
+
+    ``scan_mode`` (issue #45) marks a crossing whose **destination**
+    flop is clocked through a DFT scan structure — a clock mux or clock
+    gate whose control traces back to a top-level port the user tagged
+    with one of ``rules.SCAN_MODE_ATTRS``. It is a *tag*, never a drop:
+    the crossing is emitted, counted and reported exactly as before,
+    and only an explicit ``--ignore-scan-mode`` makes the rule pack
+    skip it. Stamped from :func:`find_scan_mode_flops`, which reads the
+    fact off the ordinary clock-root walk rather than re-deriving it.
     """
 
     src_clock: str
@@ -177,6 +186,7 @@ class Crossing:
     src_port: str | None = None
     src_boundary: tuple[str, str] | None = None
     dst_boundary: tuple[str, str] | None = None
+    scan_mode: bool = False
 
     @property
     def src_name(self) -> str:
@@ -350,6 +360,22 @@ _LANE_ALIGNED_TYPES: frozenset[str] = frozenset(
 CombineSink = Callable[[str, str, Bit, frozenset[str]], None]
 
 
+# Callback signature for the clock-network *control* recorder
+# (``(cell_name, cell_type, control_bits)``). Invoked from the clock
+# mux / gate / latch clauses of :func:`_trace` at the moment the walk
+# resolves *through* one of them, with the bits of the inputs that
+# steer the selection rather than carry the clock: a ``$mux``'s ``S``
+# pin, and a gate's or latch's non-clock (enable) legs.
+#
+# Same philosophy as :data:`CombineSink` (#269): the fact is recorded
+# at the site the walk already visits, so a consumer's "this clock is
+# muxed by X" cannot drift from the tracer's own idea of the clock
+# network. :func:`find_scan_mode_flops` is the only consumer today.
+#
+# Purely observational — it never changes the walk's outcome.
+ClockControlSink = Callable[[str, str, tuple[Bit, ...]], None]
+
+
 def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str]]:
     """Map each net bit to the ``(cell_name, output_port)`` that drives it.
 
@@ -376,6 +402,7 @@ def trace_clock_root(
     allow_divider: bool = True,
     clock_identity: Callable[[str], str | None] | None = None,
     on_combine: CombineSink | None = None,
+    on_clock_control: ClockControlSink | None = None,
 ) -> str | None:
     """Resolve a CLK net bit to the top-level port that ultimately drives it.
 
@@ -408,6 +435,13 @@ def trace_clock_root(
     uses it to build the CDC-023 findings from the tracer's own decline
     events rather than re-deriving them.
 
+    ``on_clock_control`` is the sibling recorder for the *control*
+    inputs of the selection / gating cells the walk resolves through
+    (see :data:`ClockControlSink`): a clock mux's ``S``, a clock gate's
+    or latch's non-clock leg. :func:`find_scan_mode_flops` uses it to
+    spot a DFT scan structure in a flop's clock network (#45). Like
+    ``on_combine`` it observes the walk and never changes its outcome.
+
     Returns ``None`` when no candidate root resolves within
     ``max_depth`` cells; the caller treats that as "domain unknown".
     """
@@ -424,6 +458,7 @@ def trace_clock_root(
         allow_divider=allow_divider,
         clock_identity=clock_identity,
         on_combine=on_combine,
+        on_clock_control=on_clock_control,
     )
 
 
@@ -491,6 +526,7 @@ def _trace(
     allow_divider: bool = True,
     clock_identity: Callable[[str], str | None] | None = None,
     on_combine: CombineSink | None = None,
+    on_clock_control: ClockControlSink | None = None,
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
@@ -524,12 +560,22 @@ def _trace(
             allow_divider=allow_divider,
             clock_identity=clock_identity,
             on_combine=on_combine,
+            on_clock_control=on_clock_control,
         )
 
     def _record(clocks: frozenset[str]) -> None:
         """Forward this cell's decline to the recorder, if any."""
         if on_combine is not None:
             on_combine(cell.name, ctype, bit, clocks)
+
+    def _record_control(control_bits: tuple[Bit, ...]) -> None:
+        """Forward this cell's steering inputs to the recorder, if any.
+
+        Called only once the cell has actually *resolved* — an
+        unresolved leg tells a consumer nothing about the clock that
+        reaches the flop."""
+        if on_clock_control is not None and control_bits:
+            on_clock_control(cell.name, ctype, control_bits)
 
     # Transparent through single-input cells.
     if ctype in _BUFFER_TYPES:
@@ -545,6 +591,7 @@ def _trace(
                 allow_divider=allow_divider,
                 clock_identity=clock_identity,
                 on_combine=on_combine,
+                on_clock_control=on_clock_control,
             )
         return None
 
@@ -557,13 +604,21 @@ def _trace(
     # under-resolved rather than silently asserting one leg (#263).
     if ctype in _GATE_TYPES:
         roots: list[str] = []
+        legs: list[tuple[Bit, str | None]] = []
         for in_port in ("A", "B"):
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
                 r = _leg(in_bits[0])
+                legs.append((in_bits[0], r))
                 if r is not None:
                     roots.append(r)
-        return _pick_combining_root(roots, clock_identity, _record)
+        picked = _pick_combining_root(roots, clock_identity, _record)
+        if picked is not None:
+            # Every leg that is NOT the clock the gate resolved to is,
+            # by the ICG reading this clause already takes, an enable —
+            # i.e. a control input. Report those bits.
+            _record_control(tuple(b for b, r in legs if r != picked))
+        return picked
 
     # Clock mux — return whichever side resolves. A mux *selects* one of
     # its clock inputs (it does not combine them), so first-resolves-wins
@@ -575,6 +630,10 @@ def _trace(
             if in_bits:
                 root = _leg(in_bits[0])
                 if root is not None:
+                    # The select steers which leg reaches the flop; it
+                    # is the one input of a clock mux that is not a
+                    # clock. This is where a DFT scan mux is seen (#45).
+                    _record_control(tuple(cell.connections.get("S", ())))
                     return root
         return None
 
@@ -598,6 +657,7 @@ def _trace(
                 allow_divider=allow_divider,
                 clock_identity=clock_identity,
                 on_combine=on_combine,
+                on_clock_control=on_clock_control,
             )
 
     # Clock-path transparent latch — a latch-based ICG (or any clock
@@ -620,13 +680,18 @@ def _trace(
     # resolve to a clock and be misread as a clock net.
     if allow_divider and is_latch_cell(ctype) and out_port == "Q":
         roots = []
+        legs = []
         for in_port in ("D", "EN", "E"):
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
                 r = _leg(in_bits[0])
+                legs.append((in_bits[0], r))
                 if r is not None:
                     roots.append(r)
-        return _pick_combining_root(roots, clock_identity, _record)
+        picked = _pick_combining_root(roots, clock_identity, _record)
+        if picked is not None:
+            _record_control(tuple(b for b, r in legs if r != picked))
+        return picked
 
     return None
 
@@ -1024,6 +1089,79 @@ def find_clock_combines(
     return out
 
 
+def find_scan_mode_flops(
+    module: Module,
+    *,
+    is_scan_control: Callable[[tuple[Bit, ...]], bool],
+    pin_clocks: dict[str, str] | None = None,
+    clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
+) -> set[str]:
+    """Cell names of flops clocked through a DFT scan structure (#45).
+
+    Runs the ordinary per-flop clock-root walk — same
+    :func:`trace_clock_root`, same ``max_depth``, same
+    :func:`_clock_identity_fn` predicate :func:`assign_domains` uses —
+    with the :data:`ClockControlSink` recorder attached, and returns the
+    flops whose walk passed through a selection / gating cell whose
+    control inputs satisfy ``is_scan_control``.
+
+    The predicate is **injected** rather than implemented here: what
+    counts as a scan control is an SV-attribute question owned by
+    ``rules.SCAN_MODE_ATTRS``, and ``rules`` imports ``domain``, not the
+    other way round. :func:`rtl_buddy_cdc.rules.scan_mode_clock_select_flops`
+    supplies the real one (backward-walk the control bits to the
+    top-level input ports and test them against the tagged set); tests
+    supply trivial ones. It is called with the raw control bits of one
+    cell and answers yes/no.
+
+    Same construction as :func:`find_clock_combines` (#269), for the
+    same reason: the fact is read off the walk that already resolves
+    the clock, so "this flop is clocked through a scan mux" and "the
+    tracer walked a mux to get here" cannot drift apart. A second,
+    independent traversal is exactly what this avoids.
+
+    Report-only in the same sense the combine report is: the returned
+    names are stamped onto :attr:`Crossing.scan_mode` and change no
+    domain, no crossing, and — absent ``--ignore-scan-mode`` — no
+    finding.
+
+    Caveat, deliberately on the conservative side of the tag: the
+    recorder fires while a leg is being *explored*, so a cell an
+    enclosing gate later declines on can still be recorded. That can
+    only ever mark MORE crossings as scan-related, never fewer, and the
+    tag alone suppresses nothing.
+    """
+    drivers = _bit_drivers(module)
+    bit_to_clock = _build_bit_to_clock(module, pin_clocks)
+    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+
+    out: set[str] = set()
+    for f in find_flops(module):
+        hits: list[tuple[Bit, ...]] = []
+
+        def record(
+            _cell: str,
+            _cell_type: str,
+            control_bits: tuple[Bit, ...],
+            _sink: list[tuple[Bit, ...]] = hits,
+        ) -> None:
+            _sink.append(control_bits)
+
+        trace_clock_root(
+            module,
+            f.clk,
+            drivers,
+            max_depth=max_depth,
+            bit_to_clock=bit_to_clock,
+            clock_identity=clock_identity,
+            on_clock_control=record,
+        )
+        if any(is_scan_control(bits) for bits in hits):
+            out.add(f.cell.name)
+    return out
+
+
 def _build_bit_consumers(
     module: Module,
 ) -> dict[Bit, list[tuple[str, str, int]]]:
@@ -1052,6 +1190,7 @@ def find_crossings(
     clock_for_port: Callable[[str], str | None] | None = None,
     boundaries: dict[str, "BoundarySummary"] | None = None,
     max_depth: int = 16,
+    scan_mode_flops: frozenset[str] = frozenset(),
 ) -> list[Crossing]:
     """Find every fanout path whose endpoints are in different domains.
 
@@ -1084,6 +1223,13 @@ def find_crossings(
     ``--clock-trace-depth``. Raising it only resolves more flops; the
     crossing walk's own ``max_hops`` data-fanout budget is unrelated
     and unchanged. See issue #263.
+
+    ``scan_mode_flops`` (issue #45, typically from
+    :func:`find_scan_mode_flops`) names the flops clocked through a DFT
+    scan structure. Every emitted crossing landing on one is stamped
+    ``scan_mode=True``. Tagging only — the set never adds, drops or
+    reshapes a crossing, so a run that passes it and a run that does
+    not produce the same crossings in the same order.
     """
     domains = {
         fd.flop.cell.name: fd
@@ -1194,6 +1340,7 @@ def find_crossings(
             min_hops=g["min_hops"],
             width=len(g["bits"]),
             dst_boundary=_dst_boundary_of(g["dst_flop"]),
+            scan_mode=g["dst_flop"].cell.name in scan_mode_flops,
         )
         for g in grouped.values()
     ]
@@ -1264,6 +1411,7 @@ def find_crossings(
                     width=len(pg["bits"]),
                     src_port=pg["port"],
                     dst_boundary=_dst_boundary_of(pg["dst_flop"]),
+                    scan_mode=pg["dst_flop"].cell.name in scan_mode_flops,
                 )
             )
 
@@ -1349,6 +1497,7 @@ def find_crossings(
                     width=len(bg["bits"]),
                     src_boundary=(bg["instance"], bg["boundary_port"]),
                     dst_boundary=_dst_boundary_of(bg["dst_flop"]),
+                    scan_mode=bg["dst_flop"].cell.name in scan_mode_flops,
                 )
             )
 

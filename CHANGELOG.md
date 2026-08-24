@@ -322,6 +322,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a frontend regression can't silently make the recognition a
   Yosys-only feature.
 
+- **`--ignore-scan-mode`: opt-in DFT scan-path suppression** (#45) —
+  *minor: additive `Crossing` field, additive JSON summary key, new CLI
+  flag; nothing renamed, retyped, or removed.* Wires #44's recognition
+  into the rule pack.
+
+  A crossing is now **tagged** `scan_mode` when its *destination*
+  flop's `CLK` fanin passes through a mux or gate whose control traces
+  back — through inverters and comb logic — to a scan-tagged input
+  port. `--ignore-scan-mode` (on both `analyze` and `lint`) makes the
+  rule pack skip the tagged crossings. **Off by default**: without the
+  flag every fixture's findings are exactly what they were, which is
+  the conservative side to fail on, since a DFT structure that is
+  genuinely live in mission mode is a real hazard.
+
+  Detection rides the walk that already resolves the flop's domain
+  rather than a second traversal. `trace_clock_root` gains
+  `on_clock_control`, a `ClockControlSink` observer invoked from the
+  mux / gate / latch clauses of `_trace` with the bits that *steer* the
+  selection (a `$mux`'s `S`, a gate's or latch's non-clock legs);
+  `domain.find_scan_mode_flops` attaches it and applies an injected
+  `is_scan_control` predicate, which `rules.scan_mode_clock_select_flops`
+  supplies. Same construction and same reason as #269's `on_combine`
+  recorder: "this flop is clocked through a scan mux" and "the tracer
+  walked a mux to get here" are one event, not two predicates that
+  agree today. Purely observational — the walk's outcome is unchanged.
+
+  Tag, don't drop: `Crossing.scan_mode` is additive and defaults False,
+  the crossing is still emitted and still counted in
+  `summary.crossings`, and only `run_all`'s single pre-dispatch filter
+  skips it. Filtering once on the shared list rather than per-rule is
+  what makes the promise checkable — every crossing-consuming rule
+  honours it identically.
+
+  Nothing is silent. `summary.scan_mode_suppressed` (new, `0` without
+  the flag) counts the skipped async crossings, the text report prints
+  a matching tally line, and the per-crossing `scan_mode` tag appears
+  in the JSON crossing records and the `--verbose` listing
+  unconditionally — so even a run that suppresses nothing is auditable.
+
+  Two deliberate non-goals, conservative rather than silent: CDC-010
+  and CDC-023 walk the clock network rather than the crossing list and
+  are untouched by the flag (excusing the data paths behind a scan mux
+  is not the same claim as blessing the mux), and the compositional
+  per-module pass (#261) runs its own `run_all`, so a scan mux inside
+  an abstracted module still fires.
+
+  New fixtures `good_scan_mode_ignored` (all-scan: CDC-001 without the
+  flag, clean with it) and `bad_scan_mode_functional_crossing` (the
+  same mux plus an ordinary functional crossing that must survive the
+  flag). Downstream `rtl_buddy` needs no change — the flag is opt-in
+  and the three contract keys are untouched.
+
 ### Fixed
 
 - **CDC-011 now sees an untyped sync reset on a dedicated `SRST` pin**
