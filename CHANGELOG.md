@@ -41,6 +41,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   will now report a CDC-011 `warning` (or `error` if the port also
   reaches a second clock domain).
 
+- **The inferred-clock advisory no longer re-reports a clock declared on
+  an internal pin** (#270). `domain.find_inferred_clock_candidates`
+  excludes nets that are already declared clocks, but it only knew two
+  declaration forms: a top-level input port, and a
+  `create_generated_clock` target (`ClockSpec.pin_clocks`). A plain
+  `create_clock [get_pins <net>]` on an internal net is a third — the
+  parser files its target in `Clock.ports`, readable only through
+  `ClockSpec.clock_for_port` — so a divided or forwarded clock the user
+  *had* declared that way could still surface as an
+  `inferred_clock_candidates` entry telling them to declare it.
+
+  The exclusion now also consults `clock_for_port` (via the new
+  `domain._declared_clock_bits`), the same declared-clock lookup the
+  `clock_identity` combine predicate in `assign_domains` uses. The
+  lookup is asked only about nets that already clear the fanout floor,
+  and the `<unconstrained>` sentinel is never treated as a declaration.
+  New fixture `declared_pin_clock` pins the case alongside the existing
+  `inferred_fwd_clock` (undeclared → reported) and `inferred_gate_clock`
+  (gate-driven → reported).
+
+  Advisory-only, as the whole detector is: it changes no domain,
+  crossing, or violation, and `summary.*` counts are untouched. Affected
+  runs simply lose a false-positive advisory line.
+
 ## [0.4.0] — 2026-08-18
 
 ### Added

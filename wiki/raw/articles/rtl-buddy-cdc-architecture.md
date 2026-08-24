@@ -414,8 +414,14 @@ reports each net bit that
 1. drives at least a threshold (default 4) flop `CLK` pins,
 2. is produced by a flop `Q` or a clock-gate / ICG / latch output (the
    same clock-network cell families `trace_clock_root` walks), and
-3. is **not** already a declared clock — neither a top-level input port
-   nor a `create_generated_clock` target (`pin_clocks`).
+3. is **not** already a declared clock. Three declaration forms count:
+   a top-level input port, a `create_generated_clock` target
+   (`pin_clocks` → `_build_bit_to_clock`), and a plain `create_clock`
+   aimed at an internal pin (`[get_pins <net>]`), whose target lands in
+   `Clock.ports` and is read back through `ClockSpec.clock_for_port` —
+   the same lookup `assign_domains`' `clock_identity` predicate uses.
+   Consulting only the first two re-reported a clock the user had
+   already declared (#270); `domain._declared_clock_bits` closes that.
 
 The report is surfaced as:
 

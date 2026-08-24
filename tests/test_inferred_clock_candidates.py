@@ -19,6 +19,11 @@ The toggle flop is flagged as a candidate; the bank flops still resolve
 to ``clk_a`` via the divider trace (a real trace, not the heuristic). It
 also carries a genuine ``clk_a -> clk_b`` async crossing as a parity
 anchor.
+
+Two companion fixtures cover the other branches: ``inferred_gate_clock``
+(driver is a clock gate rather than a flop Q) and ``declared_pin_clock``
+(the same divider, but declared with a plain ``create_clock [get_pins
+...]`` — declared, so NOT a candidate; issue #270).
 """
 
 from __future__ import annotations
@@ -259,3 +264,63 @@ def test_gate_driven_candidate_renders_in_json_and_text(tmp_path: Path) -> None:
     _analyze_and_report(GATE_JSON, GATE_SDC, None, OutputFormat.text, tout)
     text = tout.read_text()
     assert "ⓘ" in text or "inferred" in text.lower()
+
+
+# --- clock declared on an internal pin with plain create_clock (#270) -------
+PIN_DIR = Path(__file__).parent / "fixtures" / "declared_pin_clock"
+PIN_JSON = PIN_DIR / "declared_pin_clock.json"
+PIN_SDC = PIN_DIR / "declared_pin_clock.sdc"
+
+
+def test_create_clock_on_internal_pin_is_not_flagged() -> None:
+    """A divided net declared with a plain ``create_clock [get_pins ...]``
+    is already declared and must not be reported (#270).
+
+    The target of a plain ``create_clock`` lands in ``Clock.ports`` — read
+    back through ``clock_for_port`` — not in ``pin_clocks``, which only
+    ``create_generated_clock`` populates. The check is non-vacuous: the
+    same netlist WITHOUT the ``clock_for_port`` lookup still yields the
+    candidate, so the fixture really does clear the fanout floor."""
+    if not PIN_JSON.exists():
+        pytest.skip(f"fixture not built: {PIN_JSON}")
+    module = netlist.load(PIN_JSON)
+    spec = sdc_mod.parse_file(PIN_SDC)
+    # The SDC declares the net via create_clock, so pin_clocks is empty —
+    # the pre-#270 exclusion set could never have seen this declaration.
+    assert spec.pin_clocks == {}
+    blind = find_inferred_clock_candidates(module, pin_clocks=spec.pin_clocks)
+    assert len(blind) == 1, blind
+    aware = find_inferred_clock_candidates(
+        module, pin_clocks=spec.pin_clocks, clock_for_port=spec.clock_for_port
+    )
+    assert aware == []
+
+
+def test_declared_pin_clock_reports_no_candidate_end_to_end(tmp_path: Path) -> None:
+    """The full analyze path emits an empty candidate list and no advisory
+    line for the declared-pin fixture, while still reporting the fixture's
+    genuine clk_a -> clk_b crossing (the advisory changed nothing)."""
+    if not PIN_JSON.exists():
+        pytest.skip(f"fixture not built: {PIN_JSON}")
+    out = tmp_path / "report.json"
+    _analyze_and_report(PIN_JSON, PIN_SDC, None, OutputFormat.json, out)
+    payload = json.loads(out.read_text())
+    assert payload["inferred_clock_candidates"] == []
+    assert payload["summary"]["crossings"] >= 1
+    tout = tmp_path / "report.txt"
+    _analyze_and_report(PIN_JSON, PIN_SDC, None, OutputFormat.text, tout, color=False)
+    assert "undeclared internal clock candidate" not in tout.read_text()
+
+
+def test_undeclared_pin_clock_still_flagged_with_clock_for_port() -> None:
+    """Guard against over-suppression: passing ``clock_for_port`` must not
+    silence a genuinely undeclared net. ``inferred_fwd_clock``'s SDC names
+    only the two input ports, so its divider stays a candidate."""
+    _skip_if_missing()
+    module = netlist.load(JSON)
+    spec = sdc_mod.parse_file(SDC)
+    cands = find_inferred_clock_candidates(
+        module, pin_clocks=spec.pin_clocks, clock_for_port=spec.clock_for_port
+    )
+    assert len(cands) == 1, cands
+    assert cands[0].driver_kind == "flop"

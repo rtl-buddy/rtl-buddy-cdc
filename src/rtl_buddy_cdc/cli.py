@@ -930,13 +930,17 @@ def _analyze_module_and_report(
 
     # Advisory inferred-clock candidates (P3/#263): internal nets that
     # fan out to many flop CLK pins but carry no declared clock identity.
-    # Computed from the netlist + SDC pin map only — it never reads
+    # Computed from the netlist + SDC clock map only — it never reads
     # ``domains`` / ``crossings`` and never feeds back into them, so it
-    # cannot change any classification. Honour ``pin_clocks`` so a net the
-    # user already declared with ``create_generated_clock`` is not
-    # re-flagged.
+    # cannot change any classification. Both declaration forms are
+    # honoured so a net the user already wrote down is not re-flagged:
+    # ``pin_clocks`` (``create_generated_clock`` on a pin) and
+    # ``clock_for_port`` (a plain ``create_clock`` naming an internal
+    # pin, #270).
     inferred_clock_candidates = find_inferred_clock_candidates(
-        module, pin_clocks=spec.pin_clocks if spec is not None else None
+        module,
+        pin_clocks=spec.pin_clocks if spec is not None else None,
+        clock_for_port=spec.clock_for_port if spec is not None else None,
     )
 
     result = AnalysisResult(
