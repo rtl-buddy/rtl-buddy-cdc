@@ -1,0 +1,268 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "clkfwd_tile": {
+      "attributes": {
+        "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:30.8",
+        "blackbox": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "clk_in": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_out": {
+          "direction": "output",
+          "bits": [ 3 ]
+        },
+        "d": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "q": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+      },
+      "netnames": {
+        "clk_in": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:31.17"
+          }
+        },
+        "clk_out": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:32.17"
+          }
+        },
+        "d": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:33.17"
+          }
+        },
+        "q": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:34.17"
+          }
+        }
+      }
+    },
+    "datapath_core": {
+      "attributes": {
+        "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:47.8",
+        "blackbox": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "d": {
+          "direction": "input",
+          "bits": [ 3, 4, 5, 6 ]
+        },
+        "q": {
+          "direction": "output",
+          "bits": [ 7, 8, 9, 10 ]
+        }
+      },
+      "cells": {
+      },
+      "netnames": {
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:48.23"
+          }
+        },
+        "d": {
+          "hide_name": 0,
+          "bits": [ 3, 4, 5, 6 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:49.23"
+          }
+        },
+        "q": {
+          "hide_name": 0,
+          "bits": [ 7, 8, 9, 10 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:50.23"
+          }
+        }
+      }
+    },
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:57.8"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "d": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "din": {
+          "direction": "input",
+          "bits": [ 4, 5, 6, 7 ]
+        },
+        "q0": {
+          "direction": "output",
+          "bits": [ 8 ]
+        },
+        "q1": {
+          "direction": "output",
+          "bits": [ 9 ]
+        },
+        "dout": {
+          "direction": "output",
+          "bits": [ 10, 11, 12, 13 ]
+        }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "clkfwd_tile",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u0",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:69.17"
+          },
+          "port_directions": {
+            "clk_in": "input",
+            "clk_out": "output",
+            "d": "input",
+            "q": "output"
+          },
+          "connections": {
+            "clk_in": [ 2 ],
+            "clk_out": [ 14 ],
+            "d": [ 3 ],
+            "q": [ 8 ]
+          }
+        },
+        "u1": {
+          "hide_name": 0,
+          "type": "clkfwd_tile",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u1",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:75.17"
+          },
+          "port_directions": {
+            "clk_in": "input",
+            "d": "input",
+            "q": "output"
+          },
+          "connections": {
+            "clk_in": [ 14 ],
+            "d": [ 8 ],
+            "q": [ 9 ]
+          }
+        },
+        "u_core": {
+          "hide_name": 0,
+          "type": "datapath_core",
+          "parameters": {
+          },
+          "attributes": {
+            "hdlname": "u_core",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:84.19"
+          },
+          "port_directions": {
+            "clk": "input",
+            "d": "input",
+            "q": "output"
+          },
+          "connections": {
+            "clk": [ 2 ],
+            "d": [ 4, 5, 6, 7 ],
+            "q": [ 10, 11, 12, 13 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "clk",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:58.23"
+          }
+        },
+        "clk1": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "hdlname": "clk1",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:65.10"
+          }
+        },
+        "d": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "d",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:59.23"
+          }
+        },
+        "din": {
+          "hide_name": 0,
+          "bits": [ 4, 5, 6, 7 ],
+          "attributes": {
+            "hdlname": "din",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:60.23"
+          }
+        },
+        "dout": {
+          "hide_name": 0,
+          "bits": [ 10, 11, 12, 13 ],
+          "attributes": {
+            "hdlname": "dout",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:63.23"
+          }
+        },
+        "q0": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "hdlname": "q0",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:61.23"
+          }
+        },
+        "q0i": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "hdlname": "q0i",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:66.10"
+          }
+        },
+        "q1": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "hdlname": "q1",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:62.23"
+          }
+        }
+      }
+    }
+  }
+}

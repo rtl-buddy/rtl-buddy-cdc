@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--blackbox` now refuses a module that drives a clock output**
+  (`CDC-BBX`, #273). The boundary-soundness check declined a candidate
+  it could not prove single-clock, but happily *accepted* a single-clock
+  module with a **clock output port** — one that generates or forwards a
+  clock consumed elsewhere. Blackboxing it silently elided the clock
+  generation/forwarding network: the forwarded clock left an opaque
+  boundary output, its downstream consumers went domain-unknown (or
+  vanished outright when they were abstracted too), and the still-visible
+  muxes / ICGs / buffers feeding the boundary lost their
+  clock-distribution status, so CDC-008 ("clock used as data")
+  false-fired on them. A hierarchical clock-forwarding mesh was the worst
+  case: blackbox the tile and the whole clock sub-network disappeared
+  with no diagnostic.
+
+  Such a candidate is now **declined**, exactly like a
+  not-provably-single-clock one — same `CDC-BBX` id, same `error`
+  severity, same report path, same waiver
+  (`waive CDC-BBX <instance-regex>`). Only the message differs, and it
+  names the offending port:
+
+  ```text
+  blackbox `u0` (`clkfwd_tile`) drives a clock output `clk_out` — clock
+  generation/forwarding would be elided; flatten it or analyse standalone
+  (waive CDC-BBX if intentionally out of scope here).
+  ```
+
+  `abstract.clock_driving_output_ports` is the (pure) detector: an output
+  bit "drives a clock" when it reaches — directly, or through a
+  `--clock-trace-depth`-bounded forward walk over ordinary combinational
+  cells — a flop `CLK` / `C` pin, an SDC-declared clock net
+  (`create_clock` port or `create_generated_clock` internal-pin target),
+  or a **clock input pin of another blackbox / boundary instance**. That
+  last sink kind reads `abstract.blackbox_clock_pins_by_module`, the
+  union of a module type's per-instance traced clock pins, because on a
+  forwarding mesh the downstream tile's `clk_in` is driven by an opaque
+  boundary output and cannot be traced to a declared clock on its own —
+  the upstream instance of the same type is what proves the pin is a
+  clock pin. No pin-name guessing is involved. The walk stops at flops (a
+  `D` pin is a data sink) and at other boundaries.
+
+  The verdict is **per module type** — any qualifying instance declines
+  the type, so a tile whose top instance leaves `clk_out` unconnected is
+  declined too — and is decided in a `compose_boundaries` pre-pass ahead
+  of the `--sync-primitive` / XPM path, whose promise is about the *data*
+  crossing. `CompositionStats` gained `clock_output_ports` (the
+  `(module type, output port)` pairs) and `clock_output_ports_of()`.
+  A module whose outputs carry only data — the common case — is never
+  declined by this check; the new `clock_output_blackbox` fixture pins
+  both directions in one netlist (two declined clock-forwarding tiles, an
+  accepted data-only core).
+
+  No schema change. Effect on existing runs: a design that blackboxes a
+  clock-generating or clock-forwarding module and previously reported
+  clean now reports a `CDC-BBX` error per instance of it — blackbox one
+  level deeper (the clock-output-free datapath core) or waive it.
+
 - **CDC-023 — clock net driven by a combine of two declared clocks**
   (#269). A clock gate (`$and` / `$or` / `$xor` …) or a clock-path
   transparent latch (`$dlatch` / `$_DLATCH_*`) whose legs carry two or

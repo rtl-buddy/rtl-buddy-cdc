@@ -585,9 +585,9 @@ Precision characterisation:
   synchronous); such a subtree is walked flat. Abstraction applies only
   where there is provably no internal crossing to lose.
 
-**Three soundness guards close the silent false-negatives the #259 audit
-found.** All three err toward *declining* abstraction — the conservative
-direction for a CDC checker.
+**Four soundness guards close the silent false-negatives the #259 audit
+found, plus the clock-output hole #273 found.** All of them err toward
+*declining* abstraction — the conservative direction for a CDC checker.
 
 - **Traced multi-clock decline (`abstract._instance_clocks`).** The
   subtree's clock SET is determined from *all* of the blackbox module's
@@ -609,6 +609,53 @@ direction for a CDC checker.
   its summary cache on the **frozenset of clock roots**, so a dual-clock
   instance keys distinctly while identical instances still hit the cache.
 
+- **Clock-output decline (`abstract.clock_driving_output_ports`, issue
+  #273).** Being provably single-clock is not enough: a candidate whose
+  **output port drives a clock** *generates or forwards* a clock consumed
+  elsewhere, and blackboxing it elides that clock generation/forwarding
+  network. The forwarded clock then leaves an opaque boundary output —
+  downstream consumers go domain-unknown, or vanish entirely when they
+  are abstracted too — and the still-visible muxes / ICGs / buffers
+  feeding the boundary lose their clock-distribution status, so CDC-008
+  ("clock used as data") false-fires on them (its `_clock_network_cells`
+  exemption is seeded only from *surviving* flop `CLK` pins). Such a
+  candidate is declined.
+
+  An output bit "drives a clock" when it reaches, directly or through a
+  bounded forward walk over ordinary combinational cells, one of three
+  sink kinds: a flop `CLK` / `C` pin, an **SDC-declared clock net**
+  (a `create_clock` port — input or output, forwarding off-chip counts —
+  or a `create_generated_clock` internal-pin target), or a **clock input
+  pin of another blackbox / boundary instance**. That third kind is taken
+  from `blackbox_clock_pins_by_module` — the *union* of each module
+  type's per-instance traced clock pins — because on a forwarding mesh
+  the downstream tile's `clk_in` is driven by an opaque boundary output
+  and so does not trace to a declared clock on its own; the upstream
+  instance of the same type is what proves the pin is a clock pin of the
+  module. No pin-name guessing enters here (`_looks_like_clock_name`
+  would misread `dest_ack` — it contains the `ck` hint). The walk stops
+  at flops (a `D` pin is a data sink) and at other blackbox boundaries
+  (opaque, and their clock pins are already a sink kind); its hop budget
+  is the same `--clock-trace-depth` value the tracer uses in the opposite
+  direction.
+
+  The verdict is **per module type**: any qualifying instance declines
+  the type, so a tile whose top-level instance leaves `clk_out`
+  unconnected is declined too (it is the same module, and abstracting it
+  there would be just as unsound). It is decided in a pre-pass in
+  `compose_boundaries`, ahead of the §4.10 primitive path — a sanctioned
+  synchroniser that also forwards a clock would elide the clock network
+  in exactly the same way, and the `--sync-primitive` promise is about
+  the *data* crossing. The offending `(module type, output port)` pairs
+  are recorded in `CompositionStats.clock_output_ports` so the CLI can
+  name the port. A module whose outputs carry only data — the
+  overwhelmingly common case — is never declined by this guard.
+
+  The practical effect is that blackbox granularity becomes
+  self-guiding: on a hierarchical clock-forwarding mesh, an attempt to
+  blackbox the *tile* is declined and the message points one level
+  deeper, at the clock-output-free datapath core.
+
 - **Declined-opaque `CDC-BBX` error (FIX 2).** A declined instance is
   absent from the boundary map; its zero-cell internals are unanalysed —
   a coverage gap. Each declined instance (from
@@ -620,7 +667,11 @@ direction for a CDC checker.
   **waivable** — intentional opacity (a separately signed-off IP) is
   acknowledged with `waive CDC-BBX <instance-regex>`, moving it to the
   suppressed tally. The silent drop becomes a fail-by-default, explicitly
-  acknowledged one. (`CDC-BBX` is emitted by the CLI orchestration, not the
+  acknowledged one. Both decline flavours share this one path and one
+  rule id, so waiving works identically; only the message differs —
+  `… left opaque — not provably single-clock; …` versus `… drives a clock
+  output \`clk_out\` — clock generation/forwarding would be elided; flatten
+  it or analyse standalone …`. (`CDC-BBX` is emitted by the CLI orchestration, not the
   rule pack — it is an analysis-coverage finding, not a structural rule.)
 
 - **Reconvergence-unsafe skip (`hierarchy.reconvergence_unsafe_instances`,
@@ -1134,9 +1185,11 @@ exempts) make the sharing observable and are what the parity tests
 assert against. `cli._summarise_blackboxes` is a thin wrapper that drops
 the stats and hands the per-instance boundary map to `find_crossings`. A
 `(module, context)` the summariser declines (not provably single-clock —
-a genuine multi-clock subtree carrying an internal crossing) is absent
-from the map, so its instances fall through to the normal flat walk over
-whatever internals the netlist actually contains.
+a genuine multi-clock subtree carrying an internal crossing — or, per
+#273, a module whose output drives a clock, recorded in
+`clock_output_ports`) is absent from the map, so its instances fall
+through to the normal flat walk over whatever internals the netlist
+actually contains.
 
 > **Per-instance keying (#257).** The boundary map is keyed by instance
 > path, and summarisation is cached by `(module type, clock context)`.

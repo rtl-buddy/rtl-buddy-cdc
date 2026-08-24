@@ -53,6 +53,11 @@ _CLOCK_PIN_NAMES: frozenset[str] = frozenset({"CLK", "clk", "C", "clock", "clk_i
 # not.
 _CLOCK_NAME_HINTS: tuple[str, ...] = ("clk", "clock", "ck")
 
+# Yosys combinational output pin names. Used by the #273 clock-output
+# forward walk to tell a cell's driven bits from the bits it reads
+# (``Q`` is a flop output, but the walk never enters a flop anyway).
+_COMB_OUTPUT_PINS: frozenset[str] = frozenset({"Y", "Q"})
+
 
 def is_single_clock_subtree(clocks: set[str], spec: ClockSpec) -> bool:
     """True iff ``clocks`` collapses to a single async-safe domain.
@@ -525,3 +530,218 @@ def instance_clock_pins(
     return _instance_clocks(
         parent, instance, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
     ).clock_pins
+
+
+def _bit_consumers(parent: Module) -> dict[Bit, list[tuple[str, str]]]:
+    """Map each net bit to the ``(cell_name, pin)`` sites that read it.
+
+    Unlike :func:`~rtl_buddy_cdc.domain._build_bit_consumers` this keeps
+    ``CLK`` connections: the clock-output walk below is *looking* for a
+    clock pin, so dropping them would blind it to the very sink it must
+    find.
+    """
+    out: dict[Bit, list[tuple[str, str]]] = {}
+    for cell in parent.cells.values():
+        for pin, bits in cell.connections.items():
+            for b in bits:
+                if isinstance(b, int):
+                    out.setdefault(b, []).append((cell.name, pin))
+    return out
+
+
+def blackbox_clock_pins_by_module(
+    parent: Module,
+    blackboxes: dict[str, Module],
+    *,
+    spec: ClockSpec | None = None,
+    pin_clocks: dict[str, str] | None = None,
+    max_depth: int = 16,
+) -> dict[str, frozenset[str]]:
+    """Per blackbox module type, the UNION of its instances' clock pins.
+
+    A clock-forwarding mesh wires one tile's ``clk_out`` into the next
+    tile's ``clk_in``. The *downstream* instance's ``clk_in`` does not
+    trace to a declared clock (its driver is an opaque boundary output),
+    so :func:`_instance_clocks` cannot classify it on its own. But the
+    *upstream* instance of the same module type is driven from a real
+    clock, and that instance proves ``clk_in`` is a clock pin **of the
+    module**. Taking the union across instances is what lets the
+    clock-output walk (:func:`clock_driving_output_ports`) recognise the
+    forwarded clock's sink structurally, without falling back to
+    guessing from the pin's name (which would misread ``dest_ack`` — it
+    contains the ``ck`` hint — as a clock pin). See issue #273.
+    """
+    out: dict[str, set[str]] = {}
+    for cell in parent.cells.values():
+        sub = blackboxes.get(cell.type)
+        if sub is None:
+            continue
+        pins = _instance_clocks(
+            parent, cell, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+        ).clock_pins
+        out.setdefault(cell.type, set()).update(pins)
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+def _clock_sink_bits(
+    parent: Module,
+    clock_pins_by_module: dict[str, frozenset[str]],
+    *,
+    spec: ClockSpec | None,
+    pin_clocks: dict[str, str] | None,
+) -> frozenset[Bit]:
+    """Bits that are *consumed as a clock* somewhere in ``parent``.
+
+    Exactly the three sink kinds issue #273 enumerates, and no name
+    guessing beyond them:
+
+    1. a flop ``CLK`` / ``C`` pin (:func:`~rtl_buddy_cdc.flops.flop_clk_pin`),
+    2. a **clock input pin of a blackbox / boundary instance**, taken from
+       the module-level union in :func:`blackbox_clock_pins_by_module`,
+    3. an **SDC-declared clock net** — a ``create_clock`` port (input or
+       output: forwarding a clock off-chip counts) or a
+       ``create_generated_clock`` internal-pin target (``pin_clocks``).
+    """
+    sinks: set[Bit] = set()
+    for cell in parent.cells.values():
+        if is_ff_cell(cell.type):
+            for b in flop_clk_pin(cell) or ():
+                if isinstance(b, int):
+                    sinks.add(b)
+            continue
+        for pin in clock_pins_by_module.get(cell.type, frozenset()):
+            for b in cell.connections.get(pin, ()):
+                if isinstance(b, int):
+                    sinks.add(b)
+    from rtl_buddy_cdc.domain import _build_bit_to_clock
+
+    sinks.update(_build_bit_to_clock(parent, pin_clocks))
+    if spec is not None:
+        for clk in spec.clocks.values():
+            for port_name in clk.ports:
+                port = parent.ports.get(port_name)
+                if port is None:
+                    continue
+                sinks.update(b for b in port.bits if isinstance(b, int))
+    return frozenset(sinks)
+
+
+def clock_driving_output_ports(
+    parent: Module,
+    instance: Cell,
+    sub: Module,
+    *,
+    blackboxes: dict[str, Module] | None = None,
+    spec: ClockSpec | None = None,
+    pin_clocks: dict[str, str] | None = None,
+    max_depth: int = 16,
+    clock_pins_by_module: dict[str, frozenset[str]] | None = None,
+    sink_bits: frozenset[Bit] | None = None,
+    consumers: dict[Bit, list[tuple[str, str]]] | None = None,
+) -> tuple[str, ...]:
+    """Output ports of ``instance`` that drive a clock (issue #273).
+
+    Blackboxing a module that *generates or forwards* a clock silently
+    elides the clock network: the forwarded clock leaves an opaque
+    boundary output, downstream consumers go domain-unknown (or vanish
+    entirely when they are abstracted too), and CDC-008 loses the
+    clock-distribution status of the cells feeding the boundary. So such
+    a candidate is **declined**, exactly like a not-provably-single-clock
+    one — see :func:`~rtl_buddy_cdc.hierarchy.compose_boundaries`.
+
+    An output bit "drives a clock" when it reaches one of the three
+    :func:`_clock_sink_bits` kinds, directly or through a bounded
+    forward walk over ordinary combinational cells (buffers, inverters,
+    gates, muxes). The walk stops at flops (a flop's ``D`` is a data
+    sink, not clock forwarding — its ``CLK`` is already a sink kind) and
+    at other blackbox boundaries (opaque; we cannot see through them,
+    and their clock pins are a sink kind in their own right). The hop
+    budget is ``max_depth``, the same clock-trace budget the rest of the
+    boundary machinery threads from ``--clock-trace-depth``, so a deep
+    clock-buffer chain resolves here exactly as far as the tracer would
+    resolve it going the other way.
+
+    Returns the offending output port names, sorted, or an empty tuple —
+    the overwhelmingly common case of a module whose outputs carry only
+    data, which must never be declined.
+
+    Pure: reads ``parent`` / ``sub`` / ``spec`` only. The three cached
+    keyword arguments let :func:`compose_boundaries` build the
+    per-parent maps once and reuse them across every instance.
+    """
+    bb = blackboxes or {}
+    if clock_pins_by_module is None:
+        clock_pins_by_module = blackbox_clock_pins_by_module(
+            parent, bb, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+        )
+    if sink_bits is None:
+        sink_bits = _clock_sink_bits(
+            parent, clock_pins_by_module, spec=spec, pin_clocks=pin_clocks
+        )
+    if consumers is None:
+        consumers = _bit_consumers(parent)
+    if not sink_bits:
+        return ()
+
+    own_clock_pins = clock_pins_by_module.get(instance.type, frozenset())
+    offenders: list[str] = []
+    for port in sub.ports.values():
+        if port.direction not in ("output", "inout"):
+            continue
+        if port.name in own_clock_pins:
+            # An ``inout`` that the instance is *driven* on is a clock
+            # pin, not a clock the subtree generates.
+            continue
+        bits = instance.connections.get(port.name)
+        if not bits:
+            continue
+        if _reaches_clock_sink(
+            parent, bits, sink_bits, consumers, bb, max_depth=max_depth
+        ):
+            offenders.append(port.name)
+    return tuple(sorted(offenders))
+
+
+def _reaches_clock_sink(
+    parent: Module,
+    start: tuple[Bit, ...],
+    sink_bits: frozenset[Bit],
+    consumers: dict[Bit, list[tuple[str, str]]],
+    blackboxes: dict[str, Module],
+    *,
+    max_depth: int,
+) -> bool:
+    """Bounded forward walk: does any of ``start`` reach a clock sink?
+
+    Breadth-first over combinational fanout; ``max_depth`` bounds the
+    number of cell hops, mirroring the clock tracer's budget in the
+    opposite direction.
+    """
+    frontier: list[Bit] = [b for b in start if isinstance(b, int)]
+    seen: set[Bit] = set()
+    for _hop in range(max_depth + 1):
+        if not frontier:
+            return False
+        nxt: list[Bit] = []
+        for bit in frontier:
+            if bit in sink_bits:
+                return True
+            if bit in seen:
+                continue
+            seen.add(bit)
+            for cell_name, pin in consumers.get(bit, ()):
+                cell = parent.cells[cell_name]
+                if is_ff_cell(cell.type) or cell.type in blackboxes:
+                    # Flop D / opaque boundary: not clock forwarding.
+                    # (Their clock pins are sink kinds, matched above.)
+                    continue
+                if pin in _COMB_OUTPUT_PINS:
+                    continue
+                for out_pin in _COMB_OUTPUT_PINS:
+                    nxt.extend(
+                        b
+                        for b in cell.connections.get(out_pin, ())
+                        if isinstance(b, int)
+                    )
+        frontier = nxt
+    return False
