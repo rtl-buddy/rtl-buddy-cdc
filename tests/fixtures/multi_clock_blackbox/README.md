@@ -60,6 +60,7 @@ flowchart LR
 ## Files
 
 - `multi_clock_blackbox.flat.json`
+- `multi_clock_blackbox.grey.json`
 - `multi_clock_blackbox.json`
 - `multi_clock_blackbox.sdc`
 - `multi_clock_blackbox.sv`

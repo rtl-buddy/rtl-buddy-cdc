@@ -1,0 +1,415 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "recon": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:23.1-40.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "a_in": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "b_in": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "y_out": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+        "$procdff$11": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:38.5-38.45"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 6 ],
+            "Q": [ 5 ]
+          }
+        },
+        "$procdff$12": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:36.5-36.39"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 7 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$procdff$13": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:35.5-35.41"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procdff$14": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:34.5-34.39"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 9 ],
+            "Q": [ 10 ]
+          }
+        },
+        "$procdff$15": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:33.5-33.41"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 3 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$xor$tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:38$6": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:38.37-38.44"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 10 ],
+            "B": [ 8 ],
+            "Y": [ 6 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\a1[0:0]": {
+          "hide_name": 1,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:33.5-33.41"
+          }
+        },
+        "$0\\a2[0:0]": {
+          "hide_name": 1,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:34.5-34.39"
+          }
+        },
+        "$0\\b1[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:35.5-35.41"
+          }
+        },
+        "$0\\b2[0:0]": {
+          "hide_name": 1,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:36.5-36.39"
+          }
+        },
+        "$0\\y_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:38.5-38.45"
+          }
+        },
+        "$xor$tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:38$6_Y": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:38.37-38.44"
+          }
+        },
+        "a1": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:30.9-30.11"
+          }
+        },
+        "a2": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:30.13-30.15"
+          }
+        },
+        "a_in": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:25.17-25.21"
+          }
+        },
+        "b1": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:31.9-31.11"
+          }
+        },
+        "b2": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:31.13-31.15"
+          }
+        },
+        "b_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:26.17-26.21"
+          }
+        },
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:24.17-24.20"
+          }
+        },
+        "y_out": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:27.17-27.22"
+          }
+        },
+        "y_q": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:32.9-32.12"
+          }
+        }
+      }
+    },
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:42.1-64.10"
+      },
+      "ports": {
+        "clk_x": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_d": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "din": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "dout": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+        "$procdff$10": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:52.5-52.45"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$procdff$9": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:62.5-62.49"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 7 ],
+            "Q": [ 5 ]
+          }
+        },
+        "u_recon": {
+          "hide_name": 0,
+          "type": "recon",
+          "parameters": {
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:55.11-60.6"
+          },
+          "port_directions": {
+            "a_in": "input",
+            "b_in": "input",
+            "clk": "input",
+            "y_out": "output"
+          },
+          "connections": {
+            "a_in": [ 6 ],
+            "b_in": [ 6 ],
+            "clk": [ 3 ],
+            "y_out": [ 7 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk_d": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:44.17-44.22"
+          }
+        },
+        "clk_x": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:43.17-43.22"
+          }
+        },
+        "din": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:45.17-45.20"
+          }
+        },
+        "dout": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:46.17-46.21"
+          }
+        },
+        "dst_q": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:49.9-49.14"
+          }
+        },
+        "recon_y": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:54.10-54.17"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/reconvergence_two_inputs/reconvergence_two_inputs.sv:48.9-48.14"
+          }
+        }
+      }
+    }
+  }
+}

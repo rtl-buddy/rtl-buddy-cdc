@@ -1,0 +1,623 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "feedthru": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:64.1-76.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "sel": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "y": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$and$tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:75$7": {
+          "hide_name": 1,
+          "type": "$and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:75.16-75.24"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "B": [ 7 ],
+            "Y": [ 6 ]
+          }
+        },
+        "$procdff$8": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:74.5-74.41"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 8 ],
+            "Q": [ 7 ]
+          }
+        },
+        "$procdff$9": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:73.5-73.43"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 8 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\qa[0:0]": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:73.5-73.43"
+          }
+        },
+        "$0\\qb[0:0]": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:74.5-74.41"
+          }
+        },
+        "$and$tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:75$7_Y": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:75.16-75.24"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:65.17-65.22"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:66.17-66.22"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:68.17-68.21"
+          }
+        },
+        "qa": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:71.9-71.11"
+          }
+        },
+        "qb": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:72.9-72.11"
+          }
+        },
+        "sel": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:67.17-67.20"
+          }
+        },
+        "y": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:69.17-69.18"
+          }
+        }
+      }
+    },
+    "oddclk": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:34.1-47.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "strobe": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "y": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+        "$procdff$12": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:45.5-45.42"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 6 ],
+            "Q": [ 5 ]
+          }
+        },
+        "$procdff$13": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:42.5-42.43"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 6 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\q0[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:42.5-42.43"
+          }
+        },
+        "$0\\q1[0:0]": {
+          "hide_name": 1,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:45.5-45.42"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:35.17-35.22"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:37.17-37.21"
+          }
+        },
+        "q0": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:40.9-40.11"
+          }
+        },
+        "q1": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:41.9-41.11"
+          }
+        },
+        "strobe": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:36.17-36.23"
+          }
+        },
+        "y": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:38.17-38.18"
+          }
+        }
+      }
+    },
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:78.1-109.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "strobe": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "sel": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "y_odd": {
+          "direction": "output",
+          "bits": [ 7 ]
+        },
+        "y_two_a": {
+          "direction": "output",
+          "bits": [ 8 ]
+        },
+        "y_two_b": {
+          "direction": "output",
+          "bits": [ 9 ]
+        },
+        "y_thru": {
+          "direction": "output",
+          "bits": [ 10 ]
+        }
+      },
+      "cells": {
+        "u_odd": {
+          "hide_name": 0,
+          "type": "oddclk",
+          "parameters": {
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:89.12-94.6"
+          },
+          "port_directions": {
+            "clk_a": "input",
+            "d_in": "input",
+            "strobe": "input",
+            "y": "output"
+          },
+          "connections": {
+            "clk_a": [ 2 ],
+            "d_in": [ 6 ],
+            "strobe": [ 4 ],
+            "y": [ 7 ]
+          }
+        },
+        "u_thru": {
+          "hide_name": 0,
+          "type": "feedthru",
+          "parameters": {
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:102.14-108.6"
+          },
+          "port_directions": {
+            "clk_a": "input",
+            "clk_b": "input",
+            "d_in": "input",
+            "sel": "input",
+            "y": "output"
+          },
+          "connections": {
+            "clk_a": [ 2 ],
+            "clk_b": [ 3 ],
+            "d_in": [ 6 ],
+            "sel": [ 5 ],
+            "y": [ 10 ]
+          }
+        },
+        "u_two": {
+          "hide_name": 0,
+          "type": "twocap",
+          "parameters": {
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:95.12-101.6"
+          },
+          "port_directions": {
+            "clk_a": "input",
+            "clk_b": "input",
+            "d_in": "input",
+            "y_a": "output",
+            "y_b": "output"
+          },
+          "connections": {
+            "clk_a": [ 2 ],
+            "clk_b": [ 3 ],
+            "d_in": [ 6 ],
+            "y_a": [ 8 ],
+            "y_b": [ 9 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:79.17-79.22"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:80.17-80.22"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:83.17-83.21"
+          }
+        },
+        "sel": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:82.17-82.20"
+          }
+        },
+        "strobe": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:81.17-81.23"
+          }
+        },
+        "y_odd": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:84.17-84.22"
+          }
+        },
+        "y_thru": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:87.17-87.23"
+          }
+        },
+        "y_two_a": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:85.17-85.24"
+          }
+        },
+        "y_two_b": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:86.17-86.24"
+          }
+        }
+      }
+    },
+    "twocap": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:49.1-62.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "y_a": {
+          "direction": "output",
+          "bits": [ 5 ]
+        },
+        "y_b": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$procdff$10": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:59.5-59.43"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 4 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$procdff$11": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:58.5-58.43"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 5 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\qa[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:58.5-58.43"
+          }
+        },
+        "$0\\qb[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:59.5-59.43"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:50.17-50.22"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:51.17-51.22"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:52.17-52.21"
+          }
+        },
+        "qa": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:56.9-56.11"
+          }
+        },
+        "qb": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:57.9-57.11"
+          }
+        },
+        "y_a": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:53.17-53.20"
+          }
+        },
+        "y_b": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_residual_declines/bbx_residual_declines.sv:54.17-54.20"
+          }
+        }
+      }
+    }
+  }
+}

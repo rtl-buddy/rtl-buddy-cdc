@@ -58,6 +58,7 @@ flowchart LR
 ## Files
 
 - `single_clock_leaf_abstract.flat.json`
+- `single_clock_leaf_abstract.grey.json`
 - `single_clock_leaf_abstract.json`
 - `single_clock_leaf_abstract.sdc`
 - `single_clock_leaf_abstract.sv`

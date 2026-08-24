@@ -47,19 +47,36 @@ class Netname:
 
 @dataclass(frozen=True)
 class PortBoundary:
-    """CDC summary of one output/inout port of a blackboxed subtree.
+    """CDC summary of one port of a blackboxed subtree.
 
-    Produced by the P2 summariser (not by ``load``). ``synchronised``
-    True means every register→port path inside the subtree passes a
-    recognised synchroniser, so a downstream sink in ``src_clock`` is
-    *not* a crossing. ``src_clock`` None mirrors today's
+    Produced by the P2/P3 summariser (not by ``load``). ``synchronised``
+    True means the port is *proven* to pass a synchroniser: for an output,
+    every register→port path inside the subtree does; for an input, its
+    first internal capturing stage starts a ≥2-flop chain. It is the one
+    field in this model that can make the analyzer **under**-report, so it
+    is only ever set from a proof — the compositional per-module pass
+    (#261, :mod:`rtl_buddy_cdc.compositional`) or a recognised CDC macro
+    (#275) — and defaults False. ``src_clock`` None mirrors today's
     ``<unconstrained>`` async-against-any-sink source.
+
+    ``sync_depth`` (#261) carries *how deep* that proven chain is, so the
+    boundary rules can behave exactly as they would on the flattened
+    design: CDC-001 stays quiet at depth ≥ 2 while CDC-002 still fires
+    when the depth is under a raised ``--sync-depth``. ``None`` means
+    unknown — the conservative pre-#261 answer, where a virtual sink's
+    empty ``Q`` forces a structural depth of 1.
     """
 
     port: str  # output/inout port name (matches Module.ports key)
     src_clock: str | None  # clock domain driving this port; None = unconstrained
-    synchronised: bool  # True iff every register->port path is synchronised
+    synchronised: bool  # True iff the port is PROVEN to pass a synchroniser
     width: int  # number of bits on the port (len(Port.bits))
+    # #261: proven internal synchroniser-chain depth behind this port.
+    sync_depth: int | None = None
+    # #261: the proven first stage carries a ``USER_SYNC_ATTRS`` tag —
+    # the user's explicit promise, honoured the same way the flat rules
+    # honour ``(* cdc_sync *)`` on a destination flop.
+    user_synchronised: bool = False
 
 
 @dataclass(frozen=True)
@@ -95,6 +112,19 @@ class BoundarySummary:
     # output-only summary shape stay valid.
     clock: str | None = None
     input_ports: dict[str, PortBoundary] = field(default_factory=dict)
+    # #261 compositional analysis. ``internal_analysed`` is True when the
+    # module's own internals were run through the ordinary pipeline (a
+    # *greybox*: a blackbox-attributed module that kept its cells), so the
+    # rules its abstraction would otherwise trade away have actually been
+    # evaluated and lifted into the parent's report. It is what licenses
+    # the reconvergence gate (#259 FIX 3) to stand down and what lets a
+    # multi-clock module be summarised per-port instead of declined.
+    #
+    # ``reconvergent_inputs`` names the input-port groups whose captured
+    # values recombine INSIDE the block. CDC-005 re-raises at the boundary
+    # when one parent-side source flop crosses into two ports of a group.
+    internal_analysed: bool = False
+    reconvergent_inputs: frozenset[frozenset[str]] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)

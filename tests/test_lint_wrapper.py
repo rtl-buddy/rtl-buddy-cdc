@@ -93,3 +93,67 @@ def test_lint_keep_json(tmp_path: Path) -> None:
     assert out.exists()
     # write_json output is a JSON object beginning with `{`.
     assert out.read_text().lstrip().startswith("{")
+
+
+def test_lint_greybox_analyses_the_module_body(tmp_path: Path) -> None:
+    """``--greybox`` keeps the named module as a boundary cell *with* its
+    internals (rtl-buddy-cdc#261), so the subtree is analysed once on its
+    own body and its finding is lifted into the parent's report naming
+    every instance it covers. Unlike ``--blackbox`` it needs no
+    yosys-slang plugin — it is a plain ``setattr -mod -set blackbox 1``
+    before ``flatten``."""
+    fix = FIX_ROOT / "bbx_shared_internal_violation"
+    keep = tmp_path / "grey.json"
+    result = runner.invoke(
+        app,
+        [
+            "lint",
+            "--top",
+            "top",
+            "--sdc",
+            str(fix / "bbx_shared_internal_violation.sdc"),
+            "--greybox",
+            "xsync",
+            "--sync-depth",
+            "3",
+            "--keep-json",
+            str(keep),
+            str(fix / "bbx_shared_internal_violation.sv"),
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "[inside `xsync` — analysed once, 2 instances: u_a, u_b]" in result.output
+    assert "CDC-002" in result.output
+    # No coverage gap is reported: the block was analysed, not declined.
+    assert "CDC-BBX" not in result.output
+
+    # The intermediate netlist really is a greybox: blackbox-attributed
+    # (so ``flatten`` left it standing) AND still carrying its cells.
+    import json
+
+    mods = json.loads(keep.read_text())["modules"]
+    assert mods["xsync"]["attributes"]["blackbox"].endswith("1")
+    assert mods["xsync"]["cells"]
+
+
+def test_lint_rejects_the_same_module_as_both_blackbox_and_greybox() -> None:
+    """Contradictory: the ``read_slang`` stub would win and there would be
+    no body left to analyse. Fail loudly rather than silently picking."""
+    fix = FIX_ROOT / "bbx_shared_internal_violation"
+    result = runner.invoke(
+        app,
+        [
+            "lint",
+            "--top",
+            "top",
+            "--sdc",
+            str(fix / "bbx_shared_internal_violation.sdc"),
+            "--greybox",
+            "xsync",
+            "--blackbox",
+            "xsync",
+            str(fix / "bbx_shared_internal_violation.sv"),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "name the same module(s): xsync" in result.output

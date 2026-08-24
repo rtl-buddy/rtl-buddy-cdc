@@ -63,6 +63,7 @@ def elaborate(
     yosys_plugin: str | None = None,
     single_unit: bool = False,
     blackbox: list[str] | None = None,
+    greybox: list[str] | None = None,
 ) -> Module:
     """Elaborate ``sources`` into a flattened :class:`Module`.
 
@@ -72,8 +73,10 @@ def elaborate(
     that don't use them (e.g. ``yosys_bin`` is meaningless for slang).
 
     ``blackbox`` names modules to treat as CDC boundary cells (the P1
-    ``--blackbox`` surface). It is threaded into the Yosys/``read_slang``
-    invocation; the slang (pyslang) frontend does not support it yet.
+    ``--blackbox`` surface) and ``greybox`` names modules to keep as
+    boundary cells *with* their internals (#261). Both are threaded into
+    the Yosys invocation; the slang (pyslang) frontend supports neither
+    yet.
     """
     module, _blackboxes = elaborate_with_blackboxes(
         sources,
@@ -84,6 +87,7 @@ def elaborate(
         yosys_plugin=yosys_plugin,
         single_unit=single_unit,
         blackbox=blackbox,
+        greybox=greybox,
     )
     return module
 
@@ -98,14 +102,16 @@ def elaborate_with_blackboxes(
     yosys_plugin: str | None = None,
     single_unit: bool = False,
     blackbox: list[str] | None = None,
+    greybox: list[str] | None = None,
 ) -> tuple[Module, dict[str, Module]]:
     """Elaborate ``sources`` into a top :class:`Module` plus its blackbox
     sibling modules (keyed by module name).
 
     Same dispatch as :func:`elaborate`, but surfaces the blackbox
-    boundary siblings the Yosys ``--blackbox`` surface produces so the
-    ``lint`` path can auto-abstract them (#257). The slang frontend has
-    no blackbox support yet and returns an empty sibling map.
+    boundary siblings the Yosys ``--blackbox`` / ``--greybox`` surfaces
+    produce so the ``lint`` path can auto-abstract them (#257) and, for a
+    greybox, analyse their internals compositionally (#261). The slang
+    frontend has no blackbox support yet and returns an empty sibling map.
     """
     if frontend is Frontend.auto:
         frontend = resolve_auto()
@@ -120,6 +126,7 @@ def elaborate_with_blackboxes(
             plugin_path=yosys_plugin,
             single_unit=single_unit,
             blackbox=blackbox,
+            greybox=greybox,
         )
     if frontend is Frontend.slang:
         from rtl_buddy_cdc.frontends import slang as slang_fe

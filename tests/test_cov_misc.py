@@ -1005,7 +1005,15 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
     seen: dict[str, object] = {}
 
     def _fake_elaborate(
-        sources, top, *, yosys_bin, keep_json, plugin_path, single_unit, blackbox
+        sources,
+        top,
+        *,
+        yosys_bin,
+        keep_json,
+        plugin_path,
+        single_unit,
+        blackbox,
+        greybox,
     ):
         seen.update(
             sources=sources,
@@ -1015,6 +1023,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
             plugin_path=plugin_path,
             single_unit=single_unit,
             blackbox=blackbox,
+            greybox=greybox,
         )
         return Module(name=top, ports={}, cells={}, netnames={}), {}
 
@@ -1030,6 +1039,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
         yosys_plugin="/opt/slang.so",
         single_unit=True,
         blackbox=["leaf"],
+        greybox=["core"],
     )
     assert module.name == "topmod"
     assert seen["sources"] == [src]
@@ -1038,6 +1048,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
     assert seen["keep_json"] == keep
     # frontend.elaborate maps ``yosys_plugin`` -> ``plugin_path``.
     assert seen["plugin_path"] == "/opt/slang.so"
+    assert seen["greybox"] == ["core"]
     assert seen["single_unit"] is True
     assert seen["blackbox"] == ["leaf"]
 

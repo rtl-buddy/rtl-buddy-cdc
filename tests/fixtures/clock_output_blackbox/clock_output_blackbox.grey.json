@@ -1,0 +1,348 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "clkfwd_tile": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:30.1-45.10"
+      },
+      "ports": {
+        "clk_in": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_out": {
+          "direction": "output",
+          "bits": [ 3 ]
+        },
+        "d": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "q": {
+          "direction": "output",
+          "bits": [ 5 ]
+        }
+      },
+      "cells": {
+        "$procdff$4": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:43.5-43.42"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 5 ]
+          }
+        },
+        "u_buf": {
+          "hide_name": 0,
+          "type": "clk_buf",
+          "parameters": {
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:38.13-41.6"
+          },
+          "connections": {
+            "i": [ 2 ],
+            "o": [ 3 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\q_r[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:43.5-43.42"
+          }
+        },
+        "clk_in": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:31.17-31.23"
+          }
+        },
+        "clk_out": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:32.17-32.24"
+          }
+        },
+        "d": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:33.17-33.18"
+          }
+        },
+        "q": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:34.17-34.18"
+          }
+        },
+        "q_r": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:42.9-42.12"
+          }
+        }
+      }
+    },
+    "datapath_core": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:47.1-55.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "d": {
+          "direction": "input",
+          "bits": [ 3, 4, 5, 6 ]
+        },
+        "q": {
+          "direction": "output",
+          "bits": [ 7, 8, 9, 10 ]
+        }
+      },
+      "cells": {
+        "$procdff$3": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:53.5-53.38"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 3, 4, 5, 6 ],
+            "Q": [ 7, 8, 9, 10 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\s0[3:0]": {
+          "hide_name": 1,
+          "bits": [ 3, 4, 5, 6 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:53.5-53.38"
+          }
+        },
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:48.23-48.26"
+          }
+        },
+        "d": {
+          "hide_name": 0,
+          "bits": [ 3, 4, 5, 6 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:49.23-49.24"
+          }
+        },
+        "q": {
+          "hide_name": 0,
+          "bits": [ 7, 8, 9, 10 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:50.23-50.24"
+          }
+        },
+        "s0": {
+          "hide_name": 0,
+          "bits": [ 7, 8, 9, 10 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:52.15-52.17"
+          }
+        }
+      }
+    },
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:57.1-89.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "d": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "din": {
+          "direction": "input",
+          "bits": [ 4, 5, 6, 7 ]
+        },
+        "q0": {
+          "direction": "output",
+          "bits": [ 8 ]
+        },
+        "q1": {
+          "direction": "output",
+          "bits": [ 9 ]
+        },
+        "dout": {
+          "direction": "output",
+          "bits": [ 10, 11, 12, 13 ]
+        }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "clkfwd_tile",
+          "parameters": {
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:69.17-74.6"
+          },
+          "port_directions": {
+            "clk_in": "input",
+            "clk_out": "output",
+            "d": "input",
+            "q": "output"
+          },
+          "connections": {
+            "clk_in": [ 2 ],
+            "clk_out": [ 14 ],
+            "d": [ 3 ],
+            "q": [ 8 ]
+          }
+        },
+        "u1": {
+          "hide_name": 0,
+          "type": "clkfwd_tile",
+          "parameters": {
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:75.17-80.6"
+          },
+          "port_directions": {
+            "clk_in": "input",
+            "clk_out": "output",
+            "d": "input",
+            "q": "output"
+          },
+          "connections": {
+            "clk_in": [ 14 ],
+            "clk_out": [ ],
+            "d": [ 8 ],
+            "q": [ 9 ]
+          }
+        },
+        "u_core": {
+          "hide_name": 0,
+          "type": "datapath_core",
+          "parameters": {
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:84.19-88.6"
+          },
+          "port_directions": {
+            "clk": "input",
+            "d": "input",
+            "q": "output"
+          },
+          "connections": {
+            "clk": [ 2 ],
+            "d": [ 4, 5, 6, 7 ],
+            "q": [ 10, 11, 12, 13 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:58.23-58.26"
+          }
+        },
+        "clk1": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:65.10-65.14"
+          }
+        },
+        "d": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:59.23-59.24"
+          }
+        },
+        "din": {
+          "hide_name": 0,
+          "bits": [ 4, 5, 6, 7 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:60.23-60.26"
+          }
+        },
+        "dout": {
+          "hide_name": 0,
+          "bits": [ 10, 11, 12, 13 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:63.23-63.27"
+          }
+        },
+        "q0": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:61.23-61.25"
+          }
+        },
+        "q0i": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:66.10-66.13"
+          }
+        },
+        "q1": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/clock_output_blackbox/clock_output_blackbox.sv:62.23-62.25"
+          }
+        }
+      }
+    }
+  }
+}

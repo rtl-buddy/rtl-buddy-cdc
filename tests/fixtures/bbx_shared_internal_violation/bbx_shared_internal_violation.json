@@ -1,0 +1,236 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:43.1-63.10"
+      },
+      "ports": {
+        "clk_s": {
+          "direction": "input",
+          "bits": [
+            2
+          ]
+        },
+        "clk_c": {
+          "direction": "input",
+          "bits": [
+            3
+          ]
+        },
+        "d0": {
+          "direction": "input",
+          "bits": [
+            4
+          ]
+        },
+        "d1": {
+          "direction": "input",
+          "bits": [
+            5
+          ]
+        },
+        "q0": {
+          "direction": "output",
+          "bits": [
+            6
+          ]
+        },
+        "q1": {
+          "direction": "output",
+          "bits": [
+            7
+          ]
+        }
+      },
+      "cells": {
+        "u_a": {
+          "hide_name": 0,
+          "type": "xsync",
+          "parameters": {},
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:51.11-56.6"
+          },
+          "port_directions": {
+            "clk_c": "input",
+            "clk_s": "input",
+            "d_in": "input",
+            "d_out": "output"
+          },
+          "connections": {
+            "clk_c": [
+              3
+            ],
+            "clk_s": [
+              2
+            ],
+            "d_in": [
+              4
+            ],
+            "d_out": [
+              6
+            ]
+          }
+        },
+        "u_b": {
+          "hide_name": 0,
+          "type": "xsync",
+          "parameters": {},
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:57.11-62.6"
+          },
+          "port_directions": {
+            "clk_c": "input",
+            "clk_s": "input",
+            "d_in": "input",
+            "d_out": "output"
+          },
+          "connections": {
+            "clk_c": [
+              3
+            ],
+            "clk_s": [
+              2
+            ],
+            "d_in": [
+              5
+            ],
+            "d_out": [
+              7
+            ]
+          }
+        }
+      },
+      "netnames": {
+        "clk_c": {
+          "hide_name": 0,
+          "bits": [
+            3
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:45.17-45.22"
+          }
+        },
+        "clk_s": {
+          "hide_name": 0,
+          "bits": [
+            2
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:44.17-44.22"
+          }
+        },
+        "d0": {
+          "hide_name": 0,
+          "bits": [
+            4
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:46.17-46.19"
+          }
+        },
+        "d1": {
+          "hide_name": 0,
+          "bits": [
+            5
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:47.17-47.19"
+          }
+        },
+        "q0": {
+          "hide_name": 0,
+          "bits": [
+            6
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:48.17-48.19"
+          }
+        },
+        "q1": {
+          "hide_name": 0,
+          "bits": [
+            7
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:49.17-49.19"
+          }
+        }
+      }
+    },
+    "xsync": {
+      "attributes": {
+        "blackbox": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:26.1-41.10"
+      },
+      "ports": {
+        "clk_s": {
+          "direction": "input",
+          "bits": [
+            2
+          ]
+        },
+        "clk_c": {
+          "direction": "input",
+          "bits": [
+            3
+          ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [
+            4
+          ]
+        },
+        "d_out": {
+          "direction": "output",
+          "bits": [
+            5
+          ]
+        }
+      },
+      "cells": {},
+      "netnames": {
+        "clk_c": {
+          "hide_name": 0,
+          "bits": [
+            3
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:28.17-28.22"
+          }
+        },
+        "clk_s": {
+          "hide_name": 0,
+          "bits": [
+            2
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:27.17-27.22"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [
+            4
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:29.17-29.21"
+          }
+        },
+        "d_out": {
+          "hide_name": 0,
+          "bits": [
+            5
+          ],
+          "attributes": {
+            "src": "tests/fixtures/bbx_shared_internal_violation/bbx_shared_internal_violation.sv:30.17-30.22"
+          }
+        }
+      }
+    }
+  }
+}

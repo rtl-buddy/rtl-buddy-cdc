@@ -40,6 +40,9 @@ src/rtl_buddy_cdc/
 ├── domain.py          # trace_clock_root + find_crossings (BFS) + Crossing
 ├── sdc.py             # SDC parser: Tcl tokenizer + per-command arg-spec table
 ├── rules.py           # CDC-001..-008 + RULES registry + run_all + helpers
+├── abstract.py        # blackbox-boundary detector + summariser (#256/#257/#259)
+├── hierarchy.py       # compose_boundaries: analyse each (module, clock ctx) once
+├── compositional.py   # per-module standalone pass over a GREYBOX body (#261)
 ├── waivers.py         # .swl-style waiver parser + apply()
 └── reporter.py        # AnalysisResult + render_text / render_json / render_sarif
 tests/
