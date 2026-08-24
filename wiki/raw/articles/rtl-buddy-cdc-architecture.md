@@ -123,7 +123,7 @@ without one the tool prints the structural summary and exits 0.
 | `sdc.py` | Parse the CDC-relevant SDC subset | `ClockSpec`, `Clock` |
 | `rules.py` | The CDC-001..-008 rule pack | `Violation`, `RULES`, `run_all` |
 | `waivers.py` | Per-violation suppression with regex | `Waiver`, `SuppressedViolation` |
-| `pragma.py` | Scan in-RTL `// rbcdc:` pragmas into `Waiver`s | `scan` |
+| `pragma.py` | Scan in-RTL `// rbcdc:` pragmas into `Waiver`s | `scan`, `scan_text` |
 | `reporter.py` | Format an `AnalysisResult` as text / JSON / SARIF | `AnalysisResult`, `render_text`, `render_json`, `render_sarif` |
 | `cli.py` | Typer entry points; orchestrates the pipeline | `analyze`, `lint`, `version` |
 
@@ -2037,27 +2037,48 @@ prefix per rtl-buddy tool; there is no SV-attribute form).
 /* rbcdc: disable-rule CDC-005 library cell */
 ```
 
+An `enable-rule` closes the region a `disable-rule` opened, Spyglass
+style:
+
+```systemverilog
+// rbcdc: disable-rule CDC-001 vetted by hand
+always_ff @(posedge dst_clk) q <= src_q;
+// rbcdc: enable-rule CDC-001
+```
+
 `pragma.scan(sources)` reads the files as **text**. It never goes
 through Yosys or slang: the scan is frontend-independent, costs
 nothing, and is unaffected by an elaboration failure. Each
-(pragma × rule id) becomes one `Waiver` whose `regex` is the file's
-escaped basename, whose `source_line` is the pragma's line, and whose
-new `origin` field holds the source path.
+(region × rule id) becomes one `Waiver` whose `regex` is the file's
+escaped basename, whose `source_line` / `start_line` is the
+`disable-rule` line, whose `end_line` is the closing `enable-rule` line
+(`None` = to the end of the file), and whose `origin` holds the source
+path.
+
+Pairing is per rule id, so interleaved blocks for different rules are
+independent. Re-`disable`-ing an open rule ends the running region and
+starts a fresh one; a stray `enable-rule` is ignored.
 
 `origin` is what distinguishes the two producers, in both matching and
 reporting:
 
-- **Matching.** `waivers.apply` takes a `source_file` resolver (the
-  CLI supplies one — it needs the `Module`, since the location lives on
-  the offending cell's `src` attribute). A waiver with an `origin` is
-  matched against that path *only*: its scope is a file, not a name
-  pattern, so it is never tried against `cell_name` or `message`. A
-  violation with no resolvable location is never waived by a pragma.
-- **Reporting.** The text report prints `(pragma <file>:<line>)`
-  instead of `(waiver line N)`, and the JSON `suppressed[].waiver`
-  object carries `origin` (null for a waiver-file entry) alongside
-  `source_line`. `origin` is an added key — a consumer reading the
-  pre-existing fields is unaffected.
+- **Matching.** `waivers.apply` takes a `locate` resolver returning a
+  `SourceRef(file, line)` (the CLI supplies one — it needs the
+  `Module`, since the location lives on the offending cell's `src`
+  attribute). A waiver with an `origin` is matched against that
+  location *only*: file first, then `[start_line, end_line)`. Its
+  scope is a region of a file, not a name pattern, so it is never
+  tried against `cell_name` or `message`. A violation with no
+  resolvable location is never waived by a pragma; one located to a
+  file but not a line falls back to file scope, because a range check
+  it cannot perform should not silently swallow the suppression.
+- **Reporting.** The text report prints `(pragma <file>:<line>)` — or
+  `(pragma <file>:<start>-<end>)` for a closed block, which is what
+  makes a block-scoped waiver visibly narrower than a file-scoped one
+  — instead of `(waiver line N)`. The JSON `suppressed[].waiver`
+  object carries `origin` (null for a waiver-file entry) and
+  `end_line` alongside `source_line`. Both are added keys — a consumer
+  reading the pre-existing fields is unaffected.
 
 Only `lint` scans: `analyze` starts from an elaborated netlist and has
 no sources. Pragmas are prepended to the `--waivers` list, so

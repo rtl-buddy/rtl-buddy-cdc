@@ -4,7 +4,7 @@ Python-based open-source CDC (Clock Domain Crossing) linting tool for RTL design
 
 ## Status
 
-Usable on IP-block-sized designs. Thirty rules implemented (CDC-001 through CDC-006, CDC-008 through CDC-023 (excl. CDC-007), plus the RDC family RDC-001 through RDC-008 — RDC-001 is the reset-crossing rule formerly known as CDC-007), recognition of the Xilinx **XPM CDC** macro family (`xpm_cdc_*`) as synchronisers with `--sync-primitive` for site-local macros, three output formats (text / JSON / SARIF), waiver-file suppression, `(* cdc_sync *)` / `(* cdc_gray *)` / `(* cdc_static *)` / `(* cdc_handshake *)` / `(* reset_sync *)` / `(* reset_polarity *)` / `(* glitchless_clock_mux *)` SV attributes for user-vetted synchronizers, gray-coded buses, runtime-constant source flops, four-phase req/ack handshake primitives, reset-synchroniser stages, reset-port polarity declarations, and glitchless clock-mux selects, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule, plus a template-driven fuzz corpus (`tests/fuzz/`) and an opt-in behavioural simulation oracle (`tests/sim/`).
+Usable on IP-block-sized designs. Thirty rules implemented (CDC-001 through CDC-006, CDC-008 through CDC-023 (excl. CDC-007), plus the RDC family RDC-001 through RDC-008 — RDC-001 is the reset-crossing rule formerly known as CDC-007), recognition of the Xilinx **XPM CDC** macro family (`xpm_cdc_*`) as synchronisers with `--sync-primitive` for site-local macros, three output formats (text / JSON / SARIF), waiver-file suppression, in-RTL `// rbcdc:` pragma suppression (file- and block-scoped), `(* cdc_sync *)` / `(* cdc_gray *)` / `(* cdc_static *)` / `(* cdc_handshake *)` / `(* reset_sync *)` / `(* reset_polarity *)` / `(* glitchless_clock_mux *)` SV attributes for user-vetted synchronizers, gray-coded buses, runtime-constant source flops, four-phase req/ack handshake primitives, reset-synchroniser stages, reset-port polarity declarations, and glitchless clock-mux selects, structural gray-code recognition for CDC-004, and `rb cdc` / `rb cdc-regression` integration in rtl-buddy. Two elaboration frontends at parity on the regression fixture suite — Yosys (default) and slang (opt-in via the `[slang]` extra). Tested against paired *bad / good* RTL fixtures for each rule, plus a template-driven fuzz corpus (`tests/fuzz/`) and an opt-in behavioural simulation oracle (`tests/sim/`).
 
 Known gaps and roadmap items are tracked at the end of this README.
 
@@ -294,7 +294,30 @@ Suppressed by waivers (1)
 
 In `--format json` the `suppressed[].waiver` object gains an `origin` key: `null` for a waiver-file entry (so `source_line` is a line in the `--waivers` file), the source path for a pragma (so `source_line` is the line of the pragma in the RTL).
 
-> Block scoping (`// rbcdc: enable-rule CDC-001` to close a range) lands with issue #43; today a pragma covers its whole file.
+### Block scoping
+
+An `enable-rule` closes the region a `disable-rule` opened:
+
+```systemverilog
+// rbcdc: disable-rule CDC-001 vetted by hand
+logic q;
+always_ff @(posedge dst_clk) q <= src_q;
+// rbcdc: enable-rule CDC-001
+```
+
+The region is **half-open** — `[disable_line, enable_line)` — so the `enable-rule` line itself is outside it, and a finding the analyzer places on a line inside it is suppressed. Rule ids are tracked independently, so blocks for different rules can interleave without interfering. A `disable-rule` that is never closed runs to the end of its file (the file-scoped form above); re-disabling a rule that is already open ends the running region and starts a fresh one; a stray `enable-rule` with nothing open is ignored.
+
+Line scoping needs a line: a finding whose source location names a file but no line falls back to file scope rather than escaping the pragma. In practice both frontends attribute a flop to its `always_ff`, so a block wrapped around the block statement catches it either way.
+
+A closed block renders its range, so a narrow suppression is visible as one:
+
+```text
+Suppressed by waivers (2)
+  CDC-001  vetted by hand              (pragma rtl/dut.sv:37-42)
+  CDC-004  whole file, generated code  (pragma rtl/gen.sv:3)
+```
+
+In `--format json`, `suppressed[].waiver` carries `end_line` alongside `origin` — the exclusive end of the block, or `null` for "to the end of the file" (always `null` for a waiver-file entry, which has no line scope).
 
 ## SV attributes
 
@@ -408,6 +431,7 @@ Implemented:
 - [x] `lint` standalone wrapper (yosys → analyzer)
 - [x] Text / JSON / SARIF reporters with source locations
 - [x] Waiver file suppression
+- [x] **In-RTL pragmas** (#41 / #42 / #43) — `// rbcdc: disable-rule CDC-001[,CDC-002] [reason]` written next to the RTL, scanned as text (no frontend) and applied on the `lint` path alongside `--waivers`. Block-scoped via a closing `// rbcdc: enable-rule`, half-open on `[disable_line, enable_line)`; unclosed runs to end of file. Matched by source location, reported with the pragma's own file:line (and range, when closed). See [In-RTL pragmas](#in-rtl-pragmas).
 - [x] `(* cdc_sync *)`, `(* cdc_gray *)`, and `(* cdc_static *)` SV-attribute support
 - [x] XPM CDC macro recognition (`xpm_cdc_*` family recognised by module name as synchronisers; `--sync-primitive` for site-local macros; CDC-022 checks the `DEST_SYNC_FF` depth parameter; uppercase `(* ASYNC_REG *)` case-fold — rtl-buddy-cdc#275)
 - [x] Gray-coded bus recognition for CDC-004 (canonical `g = b ^ (b >> 1)` structural detection + multi-bit 2FF chain at the destination)
@@ -429,7 +453,6 @@ Not yet:
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
 - [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
-- [ ] In-RTL pragma comments (`// rbcdc: disable-rule …`, in-file block suppression) for inline waiving without an external file — file-scoped pragmas land (see [In-RTL pragmas](#in-rtl-pragmas)); block scoping pending
 - [ ] Instance-scoped waivers (`waive CDC-001 inst:u_block_a/.*`) — natural follow-on to hierarchical reporting now that `instance_path` is on every violation
 - [ ] Glitch detection on data path through async muxes / clock-gate enables
 

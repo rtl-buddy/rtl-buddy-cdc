@@ -244,7 +244,7 @@ def test_pragma_waiver_matches_on_the_source_file() -> None:
     kept, suppressed = waivers_mod.apply(
         [v],
         [_pragma_waiver()],
-        source_file=lambda _v: "rtl/dut.sv",
+        locate=lambda _v: waivers_mod.SourceRef("rtl/dut.sv"),
     )
     assert kept == []
     assert suppressed[0].waiver.origin == "rtl/dut.sv"
@@ -254,7 +254,7 @@ def test_pragma_waiver_ignores_a_different_file() -> None:
     kept, suppressed = waivers_mod.apply(
         [_violation()],
         [_pragma_waiver()],
-        source_file=lambda _v: "rtl/other.sv",
+        locate=lambda _v: waivers_mod.SourceRef("rtl/other.sv"),
     )
     assert suppressed == []
     assert len(kept) == 1
@@ -266,7 +266,7 @@ def test_pragma_waiver_needs_a_resolvable_location() -> None:
     resolver (the ``analyze`` path) and an unlocatable cell."""
     for resolver in (None, lambda _v: None):
         kept, suppressed = waivers_mod.apply(
-            [_violation()], [_pragma_waiver()], source_file=resolver
+            [_violation()], [_pragma_waiver()], locate=resolver
         )
         assert suppressed == []
         assert len(kept) == 1
@@ -278,7 +278,9 @@ def test_pragma_waiver_never_matches_the_cell_name_or_message() -> None:
     is elsewhere."""
     v = _violation(cell="u_dut.sv_wrapper")
     kept, suppressed = waivers_mod.apply(
-        [v], [_pragma_waiver()], source_file=lambda _v: "rtl/elsewhere.sv"
+        [v],
+        [_pragma_waiver()],
+        locate=lambda _v: waivers_mod.SourceRef("rtl/elsewhere.sv"),
     )
     assert suppressed == []
     assert len(kept) == 1
@@ -288,7 +290,52 @@ def test_pragma_waiver_still_honours_the_rule_id() -> None:
     kept, suppressed = waivers_mod.apply(
         [_violation(rule="CDC-004")],
         [_pragma_waiver(rule="CDC-001")],
-        source_file=lambda _v: "rtl/dut.sv",
+        locate=lambda _v: waivers_mod.SourceRef("rtl/dut.sv"),
     )
     assert suppressed == []
     assert len(kept) == 1
+
+
+def _block_waiver(start: int, end: int | None) -> waivers_mod.Waiver:
+    return waivers_mod.Waiver(
+        rule_pattern="CDC-001",
+        regex=re.compile(re.escape("dut.sv")),
+        reason="block-scoped pragma",
+        source_line=start,
+        origin="rtl/dut.sv",
+        start_line=start,
+        end_line=end,
+    )
+
+
+def _at(line: int | None):
+    return lambda _v: waivers_mod.SourceRef("rtl/dut.sv", line)
+
+
+def test_block_scope_is_half_open() -> None:
+    """[start, end): the disable line is inside, the enable line is not."""
+    w = _block_waiver(10, 20)
+    inside = [9, 10, 19, 20, 21]
+    suppressed_at = []
+    for line in inside:
+        kept, sup = waivers_mod.apply([_violation()], [w], locate=_at(line))
+        suppressed_at.append(bool(sup) and not kept)
+    assert suppressed_at == [False, True, True, False, False]
+
+
+def test_open_block_suppresses_to_end_of_file() -> None:
+    w = _block_waiver(10, None)
+    _, before = waivers_mod.apply([_violation()], [w], locate=_at(9))
+    _, after = waivers_mod.apply([_violation()], [w], locate=_at(9_999))
+    assert before == []
+    assert len(after) == 1
+
+
+def test_block_scope_falls_back_to_file_scope_without_a_line() -> None:
+    """A location that names a file but no line can't be range-checked;
+    the pragma degrades to file scope rather than doing nothing."""
+    kept, suppressed = waivers_mod.apply(
+        [_violation()], [_block_waiver(10, 20)], locate=_at(None)
+    )
+    assert kept == []
+    assert len(suppressed) == 1

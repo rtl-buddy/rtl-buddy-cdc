@@ -134,3 +134,112 @@ def test_scan_tolerates_undecodable_bytes(tmp_path: Path) -> None:
     (w,) = pragma.scan([src])
     assert w.rule_pattern == "CDC-001"
     assert w.source_line == 2
+
+
+# --- block scoping (issue #43) ----------------------------------------------
+#
+# A `disable-rule` opens a region an `enable-rule` for the same rule id
+# closes, half-open on [disable_line, enable_line).
+
+
+def test_block_scope_pairs_disable_with_enable(tmp_path: Path) -> None:
+    src = _write(
+        tmp_path,
+        "block.sv",
+        """logic a;
+// rbcdc: disable-rule CDC-001 vetted by hand
+always_ff @(posedge clk) a <= d;
+// rbcdc: enable-rule CDC-001
+logic b;
+""",
+    )
+    (w,) = pragma.scan([src])
+    assert (w.start_line, w.end_line) == (2, 4)
+    assert w.source_line == 2  # the disable line, for the report
+    assert w.reason == "vetted by hand"
+
+
+def test_block_without_enable_runs_to_end_of_file(tmp_path: Path) -> None:
+    src = _write(
+        tmp_path,
+        "eof.sv",
+        "logic a;\n// rbcdc: disable-rule CDC-001\nlogic b;\nlogic c;\n",
+    )
+    (w,) = pragma.scan([src])
+    assert (w.start_line, w.end_line) == (2, None)
+
+
+def test_interleaved_blocks_for_different_rules_are_independent(
+    tmp_path: Path,
+) -> None:
+    src = _write(
+        tmp_path,
+        "nested.sv",
+        """// rbcdc: disable-rule CDC-001 outer
+// rbcdc: disable-rule CDC-004 inner
+logic a;
+// rbcdc: enable-rule CDC-004
+logic b;
+// rbcdc: enable-rule CDC-001
+""",
+    )
+    scopes = {
+        (w.rule_pattern, w.start_line, w.end_line, w.reason) for w in pragma.scan([src])
+    }
+    assert scopes == {
+        ("CDC-001", 1, 6, "outer"),
+        ("CDC-004", 2, 4, "inner"),
+    }
+
+
+def test_multi_rule_block_closes_per_rule(tmp_path: Path) -> None:
+    src = _write(
+        tmp_path,
+        "multiblock.sv",
+        """// rbcdc: disable-rule CDC-001,CDC-002 both
+logic a;
+// rbcdc: enable-rule CDC-002
+logic b;
+""",
+    )
+    scopes = {(w.rule_pattern, w.start_line, w.end_line) for w in pragma.scan([src])}
+    assert scopes == {("CDC-001", 1, None), ("CDC-002", 1, 3)}
+
+
+def test_redisabling_an_open_rule_starts_a_fresh_region(tmp_path: Path) -> None:
+    """The running region ends where the new one begins, so the newer
+    reason applies from there and the two don't overlap."""
+    src = _write(
+        tmp_path,
+        "redisable.sv",
+        """// rbcdc: disable-rule CDC-001 first reason
+logic a;
+// rbcdc: disable-rule CDC-001 second reason
+logic b;
+""",
+    )
+    first, second = pragma.scan([src])
+    assert (first.start_line, first.end_line, first.reason) == (1, 3, "first reason")
+    assert (second.start_line, second.end_line, second.reason) == (
+        3,
+        None,
+        "second reason",
+    )
+
+
+def test_stray_enable_rule_is_ignored(tmp_path: Path) -> None:
+    src = _write(tmp_path, "stray.sv", "// rbcdc: enable-rule CDC-001\nlogic a;\n")
+    assert pragma.scan([src]) == []
+
+
+def test_regions_are_emitted_in_disable_line_order(tmp_path: Path) -> None:
+    src = _write(
+        tmp_path,
+        "order.sv",
+        """// rbcdc: disable-rule CDC-001
+// rbcdc: disable-rule CDC-004
+// rbcdc: enable-rule CDC-004
+// rbcdc: enable-rule CDC-001
+""",
+    )
+    assert [w.start_line for w in pragma.scan([src])] == [1, 2]

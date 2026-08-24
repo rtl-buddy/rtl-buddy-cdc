@@ -32,7 +32,9 @@ A second producer feeds the same path: an in-RTL ``// rbcdc:`` pragma
 (see :mod:`rtl_buddy_cdc.pragma`). Such a waiver carries an ``origin``
 — the source file it was written in — and is matched against the
 violation's *source location* instead of the three strings above,
-because its scope is the file, not a name pattern.
+because its scope is a region of that file, not a name pattern. The
+region is ``[start_line, end_line)``, open-ended to the end of the
+file when no ``enable-rule`` closed it.
 """
 
 from __future__ import annotations
@@ -68,6 +70,14 @@ class Waiver:
     # source file, and ``source_line`` is the line of the pragma —
     # see :mod:`rtl_buddy_cdc.pragma`.
     origin: str | None = None
+    # Line scope, pragmas only. ``[start_line, end_line)`` — half-open,
+    # so the ``enable-rule`` line itself is outside. ``start_line`` is
+    # the ``disable-rule`` line (identical to ``source_line``);
+    # ``end_line`` is ``None`` when no ``enable-rule`` closed the block,
+    # meaning "to the end of the file". Both ``None`` on a waiver-file
+    # entry, which has no line scope at all.
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 def parse(text: str) -> list[Waiver]:
@@ -135,11 +145,40 @@ def _candidates(v: Violation) -> tuple[str, ...]:
     return tuple(parts)
 
 
+@dataclass(frozen=True)
+class SourceRef:
+    """Where the analyzer places a violation: a file, and the line
+    within it when one is known. ``line`` is ``None`` for a location
+    that names a file only."""
+
+    file: str
+    line: int | None = None
+
+
+def _in_line_scope(w: Waiver, line: int | None) -> bool:
+    """Does ``line`` fall inside the pragma's ``[start, end)`` block?
+
+    Two degenerate cases both answer yes, on purpose:
+
+    - ``start_line is None`` — the waiver has no line scope at all
+      (a waiver-file entry, or a pragma record built without one).
+    - ``line is None`` — the violation's location names a file but no
+      line, so there is nothing to compare. Falling back to file scope
+      keeps a pragma working wherever line information is thin instead
+      of silently doing nothing.
+    """
+    if w.start_line is None or line is None:
+        return True
+    if line < w.start_line:
+        return False
+    return w.end_line is None or line < w.end_line
+
+
 def apply(
     violations: list[Violation],
     waivers: list[Waiver],
     *,
-    source_file: Callable[[Violation], str | None] | None = None,
+    locate: Callable[[Violation], SourceRef | None] | None = None,
 ) -> tuple[list[Violation], list[SuppressedViolation]]:
     """Split violations into (still-active, suppressed-by-a-waiver).
 
@@ -147,14 +186,14 @@ def apply(
     waiver files are read top-to-bottom and the more-specific rule is
     listed first.
 
-    ``source_file`` resolves a violation's source file (the analyzer
+    ``locate`` resolves a violation's source location (the analyzer
     keeps it on the offending cell, so only the caller holding the
     ``Module`` can do this). It is consulted for **pragma** waivers
-    only — one written in the RTL is scoped to its file, so it matches
-    the source path and nothing else, never the cell name or the
-    message. Without a resolver (or a violation whose location is
-    unknown) a pragma waiver simply doesn't match: no location, no
-    file-scoped suppression."""
+    only — one written in the RTL is scoped to a region of its file, so
+    it matches the source path plus the line range and nothing else,
+    never the cell name or the message. Without a resolver (or a
+    violation whose location is unknown) a pragma waiver simply doesn't
+    match: no location, no file-scoped suppression."""
     if not waivers:
         return list(violations), []
     kept: list[Violation] = []
@@ -162,14 +201,18 @@ def apply(
     for v in violations:
         match: Waiver | None = None
         cands = _candidates(v)
-        src: str | None = source_file(v) if source_file is not None else None
+        loc: SourceRef | None = locate(v) if locate is not None else None
         for w in waivers:
             if w.rule_pattern != "*" and not _rule_pattern_matches(
                 w.rule_pattern, v.rule_id
             ):
                 continue
             if w.origin is not None:
-                if src is not None and w.regex.search(src):
+                if (
+                    loc is not None
+                    and w.regex.search(loc.file)
+                    and _in_line_scope(w, loc.line)
+                ):
                     match = w
                     break
                 continue

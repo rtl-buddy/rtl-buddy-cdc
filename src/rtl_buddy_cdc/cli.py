@@ -635,19 +635,24 @@ def version() -> None:
 # --- shared analysis path ---------------------------------------------------
 
 
-def _violation_source_file(module: netlist.Module, v: Violation) -> str | None:
-    """The source file the analyzer attributes ``v`` to, or ``None``
-    when the offending cell carries no ``src`` attribute.
+def _violation_source_ref(
+    module: netlist.Module, v: Violation
+) -> waivers_mod.SourceRef | None:
+    """Where the analyzer places ``v``: its source file plus the line
+    within it, or ``None`` when the offending cell carries no ``src``
+    attribute.
 
     Resolved here, at the CLI boundary, for the same reason
     ``instance_path`` is: it needs the ``Module``, and the rule pack
-    and the waiver matcher both stay free of it. Feeds the file scope
-    of an in-RTL pragma waiver (see :mod:`rtl_buddy_cdc.pragma`)."""
+    and the waiver matcher both stay free of it. Feeds the file +
+    line-range scope of an in-RTL pragma waiver (see
+    :mod:`rtl_buddy_cdc.pragma`)."""
     loc = _source_location(module, v.cell_name)
     if loc is None:
         return None
-    file = loc.get("file")
-    return file if isinstance(file, str) else None
+    # ``_source_location`` always populates ``file`` when it returns a
+    # location; ``start_line`` is absent for a bare-path ``src``.
+    return waivers_mod.SourceRef(file=loc["file"], line=loc.get("start_line"))
 
 
 def _analyze_and_report(
@@ -943,7 +948,7 @@ def _analyze_module_and_report(
         violations, suppressed = waivers_mod.apply(
             violations,
             waivers,
-            source_file=lambda v: _violation_source_file(module, v),
+            locate=lambda v: _violation_source_ref(module, v),
         )
 
     # --baseline filter: partition findings against a prior JSON report.
