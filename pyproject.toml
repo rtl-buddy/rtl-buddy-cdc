@@ -1,6 +1,6 @@
 [project]
 name = "rtl-buddy-cdc"
-version = "0.4.0"
+version = "0.5.0"
 description = "CDC (clock domain crossing) linting tool for RTL designs, with pluggable Yosys or slang (pyslang) frontend; integrates with rtl-buddy."
 readme = "README.md"
 license = "BSD-3-Clause"

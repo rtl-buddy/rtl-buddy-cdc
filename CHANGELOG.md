@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-24
+
 ### Added
 
 - **Compositional per-module boundary analysis** (#261) — *minor:
@@ -375,6 +377,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the three contract keys are untouched.
 
 ### Fixed
+
+- **slang frontend emitted `$mux` legs swapped** (#289) — *silent false
+  negatives on the `--frontend slang` path.* Yosys' `$mux` cell is
+  `Y = S ? B : A`: pin `A` is the `S=0` leg and pin `B` the `S=1` leg, so
+  `y = s ? a : b` must lower to `$mux(A=b, B=a, S=s)`. The slang
+  frontend's `ConditionalExpression` lowering preserved *source* order
+  (`A=a, B=b`) instead, leaving both legs swapped and the select polarity
+  inverted relative to the Yosys frontend on the very same RTL.
+
+  Nothing failed loudly, because the rule pack reads mux legs
+  **positionally** and simply believed what it was given:
+  `domain.trace_clock_root`'s clock-mux clause returns the first of
+  `A`, `B` that resolves to a clock, and CDC-012's mux-gating detection
+  and `_is_gated_bus_crossing` inspect the data legs the same way. On a
+  textbook DFT clock mux the result was a **missed finding, reported as
+  a pass**: `lint --frontend slang` over `tests/fixtures/good_scan_mode_ignored/`
+  resolved the destination flop's clock to the *other* leg, put source
+  and destination in one domain, and reported 0 crossings — where the
+  Yosys build of the identical design reports 1× CDC-001.
+
+  The three statement-level `$mux` emitters (`always_comb` `if`/`else`,
+  `always_comb` `case`, and the `always_ff` hold-feedback mux from
+  `_build_hold_mux`) were audited in the same pass and were already
+  correct; they are now pinned by tests. New guards: a cross-frontend
+  `$mux` pin oracle in `tests/test_slang_lowering.py` (gated on `yosys`
+  on `PATH`) and an end-to-end slang-vs-committed-Yosys-netlist parity
+  check on the scan-mode fixture in `tests/test_scan_mode_suppression.py`.
 
 - **CDC-011 now sees an untyped sync reset on a dedicated `SRST` pin**
   (#272). Whether a missing `set_input_delay -clock` on a *synchronous*
@@ -1776,7 +1805,9 @@ shlex-based SDC subset (`create_clock`, `create_generated_clock`,
 through CDC-008 rule pack, `.swl`-style waiver matcher,
 and text / JSON / SARIF reporters.
 
-[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.0...v0.3.1

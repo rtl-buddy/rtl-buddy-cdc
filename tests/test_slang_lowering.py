@@ -24,6 +24,7 @@ part of the same commit.
 from __future__ import annotations
 
 import importlib.util
+import shutil
 from pathlib import Path
 
 import pytest
@@ -512,3 +513,94 @@ endmodule
     assert src_attr.endswith(".sv:5.16-5.21") or src_attr.endswith(".sv:5.17-5.22"), (
         f"unexpected src range: {src_attr!r}"
     )
+
+
+# --- $mux pin convention (issue #289) -------------------------------------
+#
+# Yosys' ``$mux`` cell is ``Y = S ? B : A``: pin ``A`` is the S=0 leg and
+# pin ``B`` is the S=1 leg. For ``s ? a : b`` that means ``A=b`` (the
+# ternary's FALSE branch) and ``B=a`` (its TRUE branch) — source order is
+# NOT pin order. The rule pack reads the legs *positionally*
+# (``trace_clock_root``'s clock-mux clause returns the first leg that
+# resolves, CDC-012's gating detection and ``_is_gated_bus_crossing``
+# inspect the data legs), so a frontend that emits them the other way
+# round inverts the select polarity and silently changes findings.
+
+_TERNARY_SRC = """
+module m (input logic s, a, b, output logic y);
+    assign y = s ? a : b;
+endmodule
+"""
+
+
+def _mux_legs(module) -> dict[str, tuple[str, ...]]:
+    """Resolve the module's single ``$mux`` cell connections back to net
+    names, so the assertion reads in RTL terms and is independent of
+    each frontend's private bit numbering."""
+    names: dict[int, str] = {}
+    for net_name, net in module.netnames.items():
+        for bit in net.bits:
+            names.setdefault(bit, net_name)
+    muxes = [c for c in module.cells.values() if c.type == "$mux"]
+    assert len(muxes) == 1, sorted(c.type for c in module.cells.values())
+    return {
+        pin: tuple(names.get(b, str(b)) for b in bits)
+        for pin, bits in muxes[0].connections.items()
+    }
+
+
+def test_ternary_mux_legs_follow_the_yosys_convention(tmp_path: Path) -> None:
+    """``assign y = s ? a : b`` must lower to ``$mux(A=b, B=a, S=s)``.
+
+    Documented rather than derived: Yosys' own cell semantics are
+    ``Y = S ? B : A``, so the FALSE branch belongs on ``A``. Before #289
+    the slang frontend emitted source order (``A=a, B=b``), which reads
+    as the opposite select polarity to every positional consumer.
+    """
+    module = _elaborate_full(tmp_path, _TERNARY_SRC)
+    legs = _mux_legs(module)
+    assert legs["S"] == ("s",), legs
+    assert legs["A"] == ("b",), f"A must be the S=0 (false) leg; got {legs}"
+    assert legs["B"] == ("a",), f"B must be the S=1 (true) leg; got {legs}"
+
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="yosys not on PATH")
+def test_ternary_mux_legs_match_the_yosys_frontend(tmp_path: Path) -> None:
+    """Cross-frontend oracle for the same module: the two frontends must
+    agree pin-for-pin on the lowered ``$mux``. This is the check that
+    would have caught #289 — the standalone assertion above encodes our
+    reading of the convention, this one pins it to Yosys itself."""
+    sv = tmp_path / "m.sv"
+    sv.write_text(_TERNARY_SRC)
+    slang_legs = _mux_legs(elaborate([sv], "m", frontend=Frontend.slang))
+    yosys_legs = _mux_legs(elaborate([sv], "m", frontend=Frontend.yosys))
+    for pin in ("A", "B", "S", "Y"):
+        assert slang_legs[pin] == yosys_legs[pin], (
+            f"$mux pin {pin} disagrees between frontends: "
+            f"slang={slang_legs} yosys={yosys_legs}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "body"),
+    [
+        ("if_else", "always_comb if (s) y = a; else y = b;"),
+        ("case", "always_comb case (s) 1'b1: y = a; default: y = b; endcase"),
+    ],
+    ids=["if_else", "case"],
+)
+def test_statement_mux_legs_follow_the_yosys_convention(
+    tmp_path: Path, label: str, body: str
+) -> None:
+    """The other two statement-level ``$mux`` emitters — ``always_comb``
+    ``if``/``else`` and ``case`` — were audited alongside #289 and were
+    already correct. Pinned here so they can't drift into the same bug.
+
+    Only ``A`` / ``B`` are asserted: the ``case`` lowering's select is an
+    anonymous ``$eq`` output with no net name, unlike the ``if``'s bare
+    ``s``.
+    """
+    src = f"module m (input logic s, a, b, output logic y);\n    {body}\nendmodule\n"
+    legs = _mux_legs(_elaborate_full(tmp_path, src))
+    assert legs["A"] == ("b",), f"{label}: A must be the S=0 leg; got {legs}"
+    assert legs["B"] == ("a",), f"{label}: B must be the S=1 leg; got {legs}"
