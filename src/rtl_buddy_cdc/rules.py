@@ -508,6 +508,61 @@ def user_glitchless_clock_mux_bits(module: Module) -> set[Bit]:
     return out
 
 
+# DFT / scan-mode declaration (issue #44). Attach to the top-level
+# *input port* that carries the test-mode / scan-enable signal::
+#
+#     (* scan_en *) input logic scan_en,
+#
+# The classic shape it names is the DFT clock mux — ``$mux(S=scan_en,
+# A=func_clk, B=scan_clk)`` — wedged in front of a flop's ``CLK`` so
+# the scan chain can shift on a dedicated tester clock. Structurally
+# that mux mixes two asynchronous clocks into one net, so the
+# crossings behind it read as ordinary CDC failures even though the
+# two modes are mutually exclusive in time and the scan path is never
+# exercised in functional operation.
+#
+# Recognition only in this phase: nothing consults the helper yet, so
+# no fixture's findings move. Issue #45 wires it into the rule pack
+# behind an opt-in ``--ignore-scan-mode`` flag — deliberately opt-in,
+# because a DFT structure that is genuinely live in mission mode is a
+# real hazard and silently dropping it would be unsound.
+#
+# Attribute names are matched **case-insensitively**, following
+# :func:`user_sync_flop_names` (#275): DFT signal names arrive from
+# vendor / insertion-tool flows in every case convention
+# (``SCAN_EN``, ``ScanEn``, ``test_mode``), and a case-sensitive match
+# would silently miss the majority of them.
+SCAN_MODE_ATTRS: frozenset[str] = frozenset(
+    {"scan_en", "scan_mode", "test_mode", "dft_scan_en"}
+)
+
+
+def scan_mode_port_names(module: Module) -> set[str]:
+    """Return the names of top-level **input ports** whose netname
+    carries one of the :data:`SCAN_MODE_ATTRS`.
+
+    Same attribute-on-netname mechanics as the ``user_*`` helpers
+    above — Yosys preserves a declaration attribute on the netname,
+    not on the cell — with the ``user_reset_polarity_overrides``
+    restriction to *ports*: a scan-enable is by definition an external
+    test-mode pin, and an internal net carrying the attribute conveys
+    nothing the rule pack can act on, so it is ignored rather than
+    guessed at.
+
+    Attribute **values** are not consulted; presence is the whole
+    signal (``(* scan_en *)`` and ``(* scan_en = "1" *)`` are the
+    same declaration).
+    """
+    port_names = {p.name for p in module.ports.values() if p.direction == "input"}
+    out: set[str] = set()
+    for nn_name, nn in module.netnames.items():
+        if nn_name not in port_names:
+            continue
+        if SCAN_MODE_ATTRS & {a.lower() for a in nn.attributes}:
+            out.add(nn_name)
+    return out
+
+
 # Reset-port polarity declaration (issue #107). Attach to a top-level
 # reset port to assert "this signal is active-<low|high>" regardless of
 # what Yosys infers from a downstream flop's edge sensitivity. Consumed
