@@ -38,7 +38,10 @@ from rtl_buddy_cdc.frontend import (
     elaborate_with_blackboxes,
     resolve_auto,
 )
-from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
+from rtl_buddy_cdc.frontends.slang import (
+    SlangElaborationError,
+    SlangFrontendUnavailable,
+)
 from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import (
     TOOL_VERSION,
@@ -251,7 +254,7 @@ _PROJECT_ROOT_OPT = typer.Option(
     None,
     "--project-root",
     help="Base directory for resolving *relative* path-bearing args — "
-    "`--yosys-plugin`, `--emit-domain-map`, `--emit-reset-domain-map`. "
+    "`--yosys-plugin`, `--incdir`, `--emit-domain-map`, `--emit-reset-domain-map`. "
     "Precedence: this flag if given, else the directory of `--sdc`, else "
     "the current working directory (the legacy behaviour). Set it to a "
     "stable root (the repo, or the cdc.yaml's directory) so those args "
@@ -292,6 +295,17 @@ def _anchor(path: Path | None, base: Path) -> Path | None:
     if path is None:
         return None
     return path if path.is_absolute() else base / path
+
+
+def _anchor_dir(path: Path, base: Path) -> Path:
+    """:func:`_anchor` for an ``--incdir``, which must also be a directory:
+    a search path that does not exist is a typo the frontend would only
+    report indirectly, as a header it cannot find."""
+    anchored = base / path if not path.is_absolute() else path
+    if not anchored.is_dir():
+        typer.echo(f"error: --incdir is not a directory: {anchored}", err=True)
+        raise typer.Exit(code=2)
+    return anchored
 
 
 @app.command()
@@ -458,6 +472,16 @@ def lint(
         "this over --blackbox whenever you have the module's sources. "
         "See issue #261.",
     ),
+    incdir: list[Path] = typer.Option(
+        [],
+        "--incdir",
+        "-I",
+        help="Directory searched by `include after the including file's own "
+        "directory — the filelist `+incdir+` of the design. Repeatable; "
+        "searched in order. Reaches both frontends: `-I` on read_verilog / "
+        "read_slang, pyslang's include path for --frontend slang. A relative "
+        "directory resolves against --project-root (see that flag).",
+    ),
     waivers_path: Path | None = typer.Option(
         None,
         "--waivers",
@@ -503,6 +527,7 @@ def lint(
         yosys_plugin = str(anchored_plugin) if anchored_plugin is not None else None
     emit_domain_map = _anchor(emit_domain_map, base)
     emit_reset_domain_map = _anchor(emit_reset_domain_map, base)
+    incdirs = [_anchor_dir(d, base) for d in incdir]
 
     # ``auto`` resolves once at the CLI surface so the preamble shows
     # the concrete frontend and downstream tooling parsing stdout
@@ -519,6 +544,8 @@ def lint(
         typer.echo(f"top:      {top}")
         for s in sources:
             typer.echo(f"src:      {s}")
+        for d in incdirs:
+            typer.echo(f"incdir:   {d}")
 
     try:
         # ``_with_blackboxes`` so the lint path auto-abstracts the same
@@ -535,8 +562,9 @@ def lint(
             single_unit=single_unit,
             blackbox=list(blackbox),
             greybox=list(greybox),
+            incdirs=incdirs,
         )
-    except SlangFrontendUnavailable as e:
+    except (SlangFrontendUnavailable, SlangElaborationError) as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(code=2)
     except YosysError as e:

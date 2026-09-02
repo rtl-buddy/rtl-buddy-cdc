@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`lint --incdir DIR` / `-I DIR`** (repeatable) — an `` `include ``
+  search directory, the filelist `+incdir+` of the design. Forwarded as
+  `-I` to `read_verilog` / `read_slang` on the yosys frontend and as
+  pyslang's `additionalIncludePaths` on the slang frontend, so a header
+  that lives outside the including file's directory elaborates on either.
+  Relative directories resolve against `--project-root`; a missing
+  directory is rejected up front (exit 2). Lets `rtl_buddy` forward a
+  filelist's `+incdir+` entries to `rb cdc` (rtl_buddy#519).
+
+### Fixed
+
+- `lint --frontend slang` now exits 2 with the rendered diagnostics when
+  pyslang elaboration fails, matching the yosys frontend, instead of
+  escaping with a traceback (exit 1).
+
 ## [0.5.0] — 2026-08-24
 
 ### Added

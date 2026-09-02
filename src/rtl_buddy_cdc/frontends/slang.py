@@ -176,8 +176,14 @@ def _import_pyslang():
     return pyslang
 
 
-def elaborate(sources: list[Path], top: str) -> Module:
-    """Elaborate ``sources`` via pyslang and produce a :class:`Module`."""
+def elaborate(
+    sources: list[Path], top: str, *, incdirs: list[Path] | None = None
+) -> Module:
+    """Elaborate ``sources`` via pyslang and produce a :class:`Module`.
+
+    ``incdirs`` are searched by `` `include `` after the including file's
+    own directory, like ``read_verilog -I`` / ``read_slang -I`` on the
+    yosys frontend."""
     pyslang = _import_pyslang()
 
     # Relax two defaults that are too strict for a *standalone block*
@@ -196,10 +202,14 @@ def elaborate(sources: list[Path], top: str) -> Module:
     )
     bag = pyslang.Bag()
     bag.compilationOptions = options
+    pp_options = pyslang.PreprocessorOptions()
+    pp_options.additionalIncludePaths = [str(d) for d in (incdirs or ())]
+    bag.preprocessorOptions = pp_options
 
     comp = pyslang.Compilation(bag)
+    source_manager = pyslang.SyntaxTree.getDefaultSourceManager()
     for src in sources:
-        tree = pyslang.SyntaxTree.fromFile(str(src))
+        tree = pyslang.SyntaxTree.fromFile(str(src), source_manager, bag)
         comp.addSyntaxTree(tree)
 
     # Surface fatal parse / elaboration errors — keep going through

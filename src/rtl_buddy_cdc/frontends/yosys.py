@@ -36,6 +36,7 @@ def elaborate(
     single_unit: bool = False,
     blackbox: list[str] | None = None,
     greybox: list[str] | None = None,
+    incdirs: list[Path] | None = None,
 ) -> Module:
     """Run yosys to produce a flattened netlist, returning the top module.
 
@@ -52,6 +53,7 @@ def elaborate(
         single_unit=single_unit,
         blackbox=blackbox,
         greybox=greybox,
+        incdirs=incdirs,
     )
     return module
 
@@ -66,6 +68,7 @@ def elaborate_with_blackboxes(
     single_unit: bool = False,
     blackbox: list[str] | None = None,
     greybox: list[str] | None = None,
+    incdirs: list[Path] | None = None,
 ) -> tuple[Module, dict[str, Module]]:
     """Run yosys to produce a flattened netlist JSON, then load it.
 
@@ -145,8 +148,11 @@ def elaborate_with_blackboxes(
     tmp_json = Path(tempfile.mkstemp(suffix=".json", prefix="rtl-buddy-cdc-")[1])
     try:
         srcs = " ".join(shlex.quote(str(s)) for s in sources)
+        # Both read_verilog and read_slang spell an include directory
+        # ``-I <dir>``, so one string serves either read command.
+        incs = "".join(f"-I {shlex.quote(str(d))} " for d in (incdirs or ()))
         if plugin_path is None:
-            read_cmd = f"read_verilog -sv {srcs}"
+            read_cmd = f"read_verilog -sv {incs}{srcs}"
         else:
             bb = "".join(
                 f"--blackboxed-module {shlex.quote(m)} " for m in (blackbox or ())
@@ -166,7 +172,7 @@ def elaborate_with_blackboxes(
                 f"read_slang --std 1800-2017 --top {shlex.quote(top)} "
                 f"{'--single-unit ' if single_unit else ''}"
                 f"--allow-use-before-declare "
-                f"{bb}{srcs}"
+                f"{incs}{bb}{srcs}"
             )
         # ``setattr -mod -set blackbox 1`` must land AFTER ``proc`` (the
         # module still needs its processes lowered to cells — those cells
