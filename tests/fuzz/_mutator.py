@@ -129,18 +129,20 @@ def iter_mutants(
 ) -> Iterator[MutantCase]:
     """Yield :class:`MutantCase`s derived from a single parent case.
 
-    ``count`` bounds the total mutants per parent across all kinds —
-    same semantics as :meth:`rtl_buddy_xeno.Mutator.generate`'s
-    ``count`` parameter. Sequential scheduling: exhaust each kind in
-    declaration order before moving on. The default 16 is roughly
-    "every available structural site" for today's two implemented
-    operators — short of the rtl-buddy-cdc#221 done-when target of
-    ≥10 per template, which needs the three stubbed xeno operators
-    to land first (xeno#2).
+    ``count`` is a **per-kind** budget: each kind in :data:`_CDC_KINDS`
+    gets its own :meth:`rtl_buddy_xeno.Mutator.generate` call with
+    ``count=count``, so a parent yields at most
+    ``len(_CDC_KINDS) * count`` mutants (kinds are exhausted in
+    declaration order). Per-kind rather than per-parent so one
+    site-rich kind cannot starve the others, and so a kind that
+    raises on its first yield is skipped without poisoning the rest
+    — see the exception handling below. In practice every kind
+    exhausts its sites well under the default 16 on the corpus
+    parents.
 
-    Stubbed operators raise :class:`NotImplementedError` when their
-    kind is reached; we catch and continue so the live operators
-    produce their mutants even while xeno#2 is in progress.
+    A kind that raises :class:`NotImplementedError` (a xeno stub) or
+    an extras/tool-availability error is skipped so the live kinds
+    still produce their mutants.
     """
     if not xeno_available():
         return
@@ -164,9 +166,10 @@ def iter_mutants(
         #   ``CLOCK_POLARITY_SWAP`` / ``ATTRIBUTE_TOGGLE`` operators
         #   that don't need extras still produce mutants.
         # - :class:`rtl_buddy_view.frontend.verible.VeribleUnavailable`
-        #   — verible binary not on PATH. Same skip semantics; on CI
-        #   the binary isn't installed and the structural operators
-        #   silently drop out.
+        #   — verible binary not on PATH. Same skip semantics. The
+        #   fuzz CI job installs a pinned Verible so the six CST
+        #   operators actually run there; a dev box without Verible
+        #   sees only the two regex operators' mutants.
         try:
             for mutant in mutator.generate(kinds=[kind], count=count, seed=seed):
                 case = _wrap_mutant(parent, mutant, index)

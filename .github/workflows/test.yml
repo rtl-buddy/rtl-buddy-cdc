@@ -111,6 +111,8 @@ jobs:
   fuzz-and-sim:
     name: fuzz + sim oracle
     runs-on: ubuntu-latest
+    env:
+      VERIBLE_VERSION: "v0.0-4053-g89d4d98a"
     steps:
       - uses: actions/checkout@v4
 
@@ -125,6 +127,36 @@ jobs:
           sudo apt-get install -y --no-install-recommends yosys iverilog
           yosys -V | head -1
           iverilog -V | head -1
+
+      # Verible is what xeno's six Verible-CST operators
+      # (SYNC_CHAIN_DEPTH_PERTURB, CHAIN_STAGE_INSERT,
+      # COMB_BETWEEN_STAGES, BIT_EXTRACT_PERMUTE, RESET_POLARITY_FLIP,
+      # RESET_FANIN_MERGE) parse with. Without the binary on PATH the
+      # adapter swallows ``VeribleUnavailable`` and those kinds silently
+      # emit nothing — the mutants column then reflects only the two
+      # regex operators (93 mutant cases here vs 209 with Verible on a
+      # dev box, at the xeno 0.2.0 bump). The tag matches the viewer's
+      # vendored pin (rtl_buddy_view/_verible_install.py,
+      # VERIBLE_PINNED_VERSION); rotate them together. Cached per
+      # version so the download is paid once per bump.
+      - name: Cache Verible
+        id: cache-verible
+        uses: actions/cache@v4
+        with:
+          path: vendor/verible
+          key: verible-${{ runner.os }}-${{ env.VERIBLE_VERSION }}
+
+      - name: Install Verible (cache miss only)
+        if: steps.cache-verible.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p vendor/verible
+          url="https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz"
+          curl -sSL "$url" | tar xz -C vendor/verible --strip-components=1
+
+      - name: Add Verible to PATH
+        run: |
+          echo "$(pwd)/vendor/verible/bin" >> "$GITHUB_PATH"
+          "$(pwd)/vendor/verible/bin/verible-verilog-syntax" --version | head -1
 
       - name: Install test + fuzz + slang dependencies
         # The fuzz group pulls in rtl-buddy-xeno (Stage-3 Layer B,
