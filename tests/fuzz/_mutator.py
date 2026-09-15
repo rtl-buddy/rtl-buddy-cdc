@@ -42,12 +42,29 @@ A kind that raises :class:`NotImplementedError` is still treated as
 "operator not yet available" and silently skipped — same shape the
 slang-frontend cache uses for missing optional deps — so a future
 xeno kind can be listed here before it ships.
+
+SDC mutation lives next door
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+xeno is **SV-only** and this adapter passes the parent's SDC through
+untouched — that was the explicit scope decision in
+rtl-buddy-xeno#16. The two rules whose precondition lives in the
+constraints file instead of the RTL (CDC-021, flop CLK on a port with
+no ``create_clock``; CDC-009, pulse-width fast→slow) are therefore
+unreachable from here. They are covered by the consumer-side
+operators in :mod:`tests.fuzz._sdc_mutator`
+(``UNDECLARE_CLOCK_PORT`` / ``CLOCK_PERIOD_SCALE``,
+rtl-buddy-cdc#293), which mutate the SDC text and keep the SV fixed.
+Both families feed the same ``mutants`` column of
+:mod:`tests.fuzz.coverage` and share
+:func:`encode_prediction` below, so a prediction means the same thing
+on either side.
 """
 
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -102,6 +119,28 @@ class MutantCase:
     parent: RenderedCase
     mutant: "Mutant"
     case: RenderedCase
+
+
+def encode_prediction(
+    rules_added: Iterable[str],
+    rules_removed: Iterable[str] = (),
+) -> tuple[tuple[ExpectedFinding, ...], tuple[ExpectedFinding, ...]]:
+    """Encode a prediction's *direction of change* as expected/forbidden.
+
+    The corpus runner's contract is an absolute finding set, but a
+    mutant prediction is a *delta* from the parent — so only the
+    directional invariant is asserted: an added rule fires at least
+    once (``Op.GE 1``), a removed rule stays silent (``Op.ZERO``). The
+    strict per-rule check lives in the differential tests, which
+    consume the parent's finding set at run time.
+
+    Shared with :mod:`tests.fuzz._sdc_mutator` (rtl-buddy-cdc#293) so
+    the SV-side and SDC-side mutant families encode a claim
+    identically.
+    """
+    expected = tuple(ExpectedFinding(rule_id, Op.GE, 1) for rule_id in rules_added)
+    forbidden = tuple(ExpectedFinding(rule_id, Op.ZERO) for rule_id in rules_removed)
+    return expected, forbidden
 
 
 def _kinds(xeno: Any) -> list[Any]:
@@ -203,20 +242,9 @@ def _wrap_mutant(parent: RenderedCase, mutant: "Mutant", index: int) -> Rendered
     mutated_sv = mutant.sv.replace(parent.top, new_top, 1)
     new_case_id = _mutant_case_id(parent, mutant, index)
 
-    # Encode the prediction's *direction of change* as expected /
-    # forbidden assertions. The corpus runner's contract is "absolute
-    # finding set" but xeno predictions are *deltas* from the parent —
-    # so we only assert the directional invariant (added rule fires
-    # at least once; removed rule is silent). The strict per-rule
-    # equality check lives in tests/fuzz/test_mutants.py, which
-    # consumes the parent's finding set at run time.
-    expected_findings = tuple(
-        ExpectedFinding(rule_id, Op.GE, 1)
-        for rule_id in mutant.prediction.cdc_rules_added
-    )
-    forbidden_findings = tuple(
-        ExpectedFinding(rule_id, Op.ZERO)
-        for rule_id in mutant.prediction.cdc_rules_removed
+    expected_findings, forbidden_findings = encode_prediction(
+        mutant.prediction.cdc_rules_added,
+        mutant.prediction.cdc_rules_removed,
     )
 
     return RenderedCase(

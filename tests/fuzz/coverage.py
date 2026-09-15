@@ -9,11 +9,15 @@ in favour of four independent surfaces:
 - ``yosys`` — the canonical analyzer path; the historical surface.
 - ``slang`` — the in-process slang frontend (Layer C); empty when
   pyslang isn't importable.
-- ``mutants`` — xeno-generated mutated SV (Layer B); empty when
-  rtl-buddy-xeno isn't importable. Per-mutant elaboration runs
-  through the Yosys pipeline (mutants are SV-only perturbations
-  of the parent template's source), so the column tracks how
-  many mutant cases fired each rule under the analyzer.
+- ``mutants`` — mutated cases (Layer B), of two families folded
+  into one column: xeno-generated mutated **SV** (empty when
+  rtl-buddy-xeno isn't importable) and the consumer-side mutated
+  **SDC** operators of :mod:`tests.fuzz._sdc_mutator`
+  (``UNDECLARE_CLOCK_PORT`` / ``CLOCK_PERIOD_SCALE``,
+  rtl-buddy-cdc#293, no extra dependency). Both run through the
+  same Yosys pipeline as the parents, so the column tracks how
+  many mutant cases fired each rule under the analyzer; the
+  header line prints the ``sv`` / ``sdc`` split.
 - ``grammar`` — Stage-4 grammar-generated topologies. Each seed
   in :data:`_GRAMMAR_SEEDS` is rendered, elaborated through Yosys,
   and fed to the analyzer; the column reports per-rule fires.
@@ -40,7 +44,8 @@ each surface is its own ratchet:
 - A rule that fires ≥10× in Yosys but 0× in slang is a slang
   parity gap (track in #224).
 - A rule that fires ≥10× in parent cases but 0× in mutants is a
-  mutator-side coverage gap (track in rtl-buddy-xeno#2).
+  mutator-side coverage gap (track in rtl-buddy-xeno#2 for an SV
+  shape, rtl-buddy-cdc#293 for a constraints-file one).
 - A rule whose ``mutants`` column shows fewer fires than the
   rtl-buddy-cdc#221 done-when target (≥10 per template) flags
   insufficient xeno operator coverage for that rule's structural
@@ -67,6 +72,7 @@ from collections import Counter
 from rtl_buddy_cdc.rules import RULES
 
 from ._mutator import iter_mutants, xeno_available
+from ._sdc_mutator import iter_sdc_mutants
 from .grammar import PRODUCTIONS as _GRAMMAR_PRODUCTIONS
 from .grammar import generate as _grammar_generate
 from .runner import collect_cases, run_case, run_case_slang
@@ -101,8 +107,10 @@ def main() -> int:
     case_count = 0
     failed_cases: list[str] = []
     slang_skip_count = 0
-    mutant_total = 0
-    mutant_skip_count = 0
+    sv_mutant_total = 0
+    sv_mutant_skip_count = 0
+    sdc_mutant_total = 0
+    sdc_mutant_skip_count = 0
     grammar_skip_count = 0
 
     # ``canonical`` here mirrors tests/fuzz/test_mutants.py's
@@ -146,17 +154,35 @@ def main() -> int:
     if run_mutants:
         for parent in canonical.values():
             for mc in iter_mutants(parent, count=64, seed=0):  # type: ignore[arg-type]
-                mutant_total += 1
+                sv_mutant_total += 1
                 try:
                     mutant_result = run_case(mc.case)
                 except Exception:
                     # Mutant produced invalid SV (xeno v0.0.1 bug; see
                     # tests/fuzz/test_mutants.py docstring).
-                    mutant_skip_count += 1
+                    sv_mutant_skip_count += 1
                     continue
                 for rule_id, count in mutant_result.fired.items():
                     mutant_rule_fires[rule_id] += count
                     mutant_rule_cases[rule_id] += 1
+
+    # SDC-side mutants (rtl-buddy-cdc#293). Same column, same
+    # canonical-parent set, no extra dependency — the operators are
+    # text rewrites of the parent's constraints. They're what gives
+    # CDC-021 / CDC-009 (preconditions living in the SDC, not the SV)
+    # any mutant coverage at all. A skip here means the mutated SDC
+    # broke the analyzer, since the SV is the parent's.
+    for parent in canonical.values():
+        for sdc_mc in iter_sdc_mutants(parent):  # type: ignore[arg-type]
+            sdc_mutant_total += 1
+            try:
+                sdc_result = run_case(sdc_mc.case)
+            except Exception:
+                sdc_mutant_skip_count += 1
+                continue
+            for rule_id, count in sdc_result.fired.items():
+                mutant_rule_fires[rule_id] += count
+                mutant_rule_cases[rule_id] += 1
 
     # Stage-4 grammar pass (issue #222). Each seed renders a
     # composed grammar case; same Yosys pipeline as the corpus and
@@ -186,14 +212,16 @@ def main() -> int:
         )
     else:
         print("        slang frontend disabled (pyslang not importable)")
-    if run_mutants:
-        print(
-            f"        {mutant_total - mutant_skip_count} cases (mutants); "
-            f"{mutant_skip_count} skipped, "
-            f"{len(canonical)} canonical parents"
-        )
-    else:
-        print("        mutants disabled (rtl-buddy-xeno not importable)")
+    sv_ok = sv_mutant_total - sv_mutant_skip_count
+    sdc_ok = sdc_mutant_total - sdc_mutant_skip_count
+    skipped = sv_mutant_skip_count + sdc_mutant_skip_count
+    mutant_note = "" if run_mutants else " (sv disabled: rtl-buddy-xeno not importable)"
+    print(
+        f"        {sv_ok + sdc_ok} cases "
+        f"(mutants: {sv_ok} sv + {sdc_ok} sdc){mutant_note}; "
+        f"{skipped} skipped, "
+        f"{len(canonical)} canonical parents"
+    )
     print(
         f"        {grammar_total - grammar_skip_count} cases (grammar); "
         f"{grammar_skip_count} skipped, "
@@ -238,7 +266,10 @@ def main() -> int:
             disagree_disp: str = str(per_rule_disagree[rule_id])
         else:
             sf_disp = sc_disp = disagree_disp = "—"
-        if run_mutants:
+        # The column carries both mutant families; the SDC operators
+        # need no optional dependency, so it only goes blank when
+        # *neither* family produced a case.
+        if run_mutants or sdc_mutant_total:
             mf_disp: str = str(mutant_rule_fires[rule_id])
             mc_disp: str = str(mutant_rule_cases[rule_id])
         else:
