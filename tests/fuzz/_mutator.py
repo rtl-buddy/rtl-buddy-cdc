@@ -24,20 +24,24 @@ not exact counts.
 What's actually wired up today
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-xeno v0.0.1 ships two implemented operators in its no-extras install
-path:
+xeno 0.2.0 (PyPI) implements every CDC-side kind this adapter
+enumerates in :data:`_CDC_KINDS`:
 
-- ``CLOCK_POLARITY_SWAP`` — regex token swap; predicts CDC-006.
-- ``ATTRIBUTE_TOGGLE`` — regex attribute stripper; per-attribute
-  predictions (e.g. ``cdc_sync`` → CDC-002/003).
+- ``CLOCK_POLARITY_SWAP`` / ``ATTRIBUTE_TOGGLE`` — parser-free regex
+  rewrites (no extras).
+- ``SYNC_CHAIN_DEPTH_PERTURB`` / ``CHAIN_STAGE_INSERT`` /
+  ``COMB_BETWEEN_STAGES`` / ``BIT_EXTRACT_PERMUTE`` /
+  ``RESET_POLARITY_FLIP`` / ``RESET_FANIN_MERGE`` — Verible-CST
+  operators (the ``[verible]`` extra), some with optional pyslang
+  confidence flagging (``[slang]``).
 
-Three more CDC operators (``SYNC_CHAIN_DEPTH_PERTURB``,
-``BIT_EXTRACT_PERMUTE``, ``RESET_POLARITY_FLIP``) ship as stubs that
-raise :class:`NotImplementedError`. We treat that exception as
-"operator not yet available" and silently skip it — same shape the
-slang-frontend cache uses for missing optional deps. Once those
-operators land in :ref:`rtl-buddy-xeno#2`, the corpus picks them up
-without a code change here.
+The three newest (``CHAIN_STAGE_INSERT``, ``COMB_BETWEEN_STAGES``,
+``RESET_FANIN_MERGE``) were added for the coverage gaps this repo's
+report surfaced in rtl-buddy-cdc#230 (CDC-018 / CDC-014 / RDC-005).
+A kind that raises :class:`NotImplementedError` is still treated as
+"operator not yet available" and silently skipped — same shape the
+slang-frontend cache uses for missing optional deps — so a future
+xeno kind can be listed here before it ships.
 """
 
 from __future__ import annotations
@@ -53,7 +57,8 @@ if TYPE_CHECKING:
     from rtl_buddy_xeno import Mutant
 
 
-# CDC-side mutation kinds (xeno#2 row 1–5). The FPV-side operators
+# CDC-side mutation kinds (xeno#2 rows 1-5 plus the xeno#13 / #14 /
+# #15 operators from the rtl-buddy-cdc#230 gap analysis). The FPV-side operators
 # (ARITH_FLIP, BIT_OP_FLIP, COND_*, ASSIGN_DROP, PORT_BINDING_SWAP)
 # target ``rb mut``'s property-survival oracle, not the CDC rule
 # pack, so they stay out of this adapter's scope.
@@ -61,15 +66,18 @@ _CDC_KINDS: tuple[str, ...] = (
     "CLOCK_POLARITY_SWAP",
     "ATTRIBUTE_TOGGLE",
     "SYNC_CHAIN_DEPTH_PERTURB",
+    "CHAIN_STAGE_INSERT",
+    "COMB_BETWEEN_STAGES",
     "BIT_EXTRACT_PERMUTE",
     "RESET_POLARITY_FLIP",
+    "RESET_FANIN_MERGE",
 )
 
 
 def xeno_available() -> bool:
     """``True`` when :mod:`rtl_buddy_xeno` is importable.
 
-    The fuzz dependency group pins xeno via a GitHub git source. Jobs
+    The fuzz dependency group resolves xeno from PyPI (>=0.2.0). Jobs
     that don't install that group (the matrix ``pytest (with slang)``
     entries) leave xeno absent and the mutant tests skip — same pattern
     :mod:`tests.fuzz.slang_cache` uses.
@@ -121,18 +129,20 @@ def iter_mutants(
 ) -> Iterator[MutantCase]:
     """Yield :class:`MutantCase`s derived from a single parent case.
 
-    ``count`` bounds the total mutants per parent across all kinds —
-    same semantics as :meth:`rtl_buddy_xeno.Mutator.generate`'s
-    ``count`` parameter. Sequential scheduling: exhaust each kind in
-    declaration order before moving on. The default 16 is roughly
-    "every available structural site" for today's two implemented
-    operators — short of the rtl-buddy-cdc#221 done-when target of
-    ≥10 per template, which needs the three stubbed xeno operators
-    to land first (xeno#2).
+    ``count`` is a **per-kind** budget: each kind in :data:`_CDC_KINDS`
+    gets its own :meth:`rtl_buddy_xeno.Mutator.generate` call with
+    ``count=count``, so a parent yields at most
+    ``len(_CDC_KINDS) * count`` mutants (kinds are exhausted in
+    declaration order). Per-kind rather than per-parent so one
+    site-rich kind cannot starve the others, and so a kind that
+    raises on its first yield is skipped without poisoning the rest
+    — see the exception handling below. In practice every kind
+    exhausts its sites well under the default 16 on the corpus
+    parents.
 
-    Stubbed operators raise :class:`NotImplementedError` when their
-    kind is reached; we catch and continue so the live operators
-    produce their mutants even while xeno#2 is in progress.
+    A kind that raises :class:`NotImplementedError` (a xeno stub) or
+    an extras/tool-availability error is skipped so the live kinds
+    still produce their mutants.
     """
     if not xeno_available():
         return
@@ -156,9 +166,10 @@ def iter_mutants(
         #   ``CLOCK_POLARITY_SWAP`` / ``ATTRIBUTE_TOGGLE`` operators
         #   that don't need extras still produce mutants.
         # - :class:`rtl_buddy_view.frontend.verible.VeribleUnavailable`
-        #   — verible binary not on PATH. Same skip semantics; on CI
-        #   the binary isn't installed and the structural operators
-        #   silently drop out.
+        #   — verible binary not on PATH. Same skip semantics. The
+        #   fuzz CI job installs a pinned Verible so the six CST
+        #   operators actually run there; a dev box without Verible
+        #   sees only the two regex operators' mutants.
         try:
             for mutant in mutator.generate(kinds=[kind], count=count, seed=seed):
                 case = _wrap_mutant(parent, mutant, index)

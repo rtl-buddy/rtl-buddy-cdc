@@ -19,8 +19,8 @@ xeno-side fixes landed for criterion 4
 
 The four downstream-discovered xeno bugs that initially landed
 this test xfailing on ~98% of mutants have all been corrected on
-the xeno side and the pin in this repo's ``pyproject.toml`` points
-at the fix commit (see ``[tool.uv.sources]``):
+the xeno side; this repo's ``pyproject.toml`` resolves xeno from PyPI
+at ``>=0.2.0``, which carries all of them:
 
 - ``CLOCK_POLARITY_SWAP`` predicted CDC-006 instead of CDC-016
   (rule-id mis-mapping) — fixed.
