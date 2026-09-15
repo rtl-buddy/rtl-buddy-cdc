@@ -33,8 +33,12 @@ Command spans, not lines
 :func:`split_commands` mirrors :func:`rtl_buddy_cdc.sdc._tokenize`'s
 structure (backslash-newline continuations, ``{...}`` / ``[...]`` /
 ``"..."`` words, ``#`` comments at a word boundary) but keeps the
-byte span of each logical command, then hands the span back to
-``_tokenize`` for the words themselves. A naive ``splitlines()``
+byte span of each logical command **and of every word inside it**,
+then hands the span back to ``_tokenize`` for the words themselves.
+Per-word spans are what lets ``CLOCK_PERIOD_SCALE`` rewrite the real
+``-period`` operand instead of the first ``-period``-looking text in
+the line (a ``-comment "… -period 99"`` or ``{…}`` operand would
+otherwise win). A naive ``splitlines()``
 would corrupt any corpus SDC using a continuation — today's
 templates don't, but the corpus is generated and the grammar pass
 (rtl-buddy-cdc#222) renders SDC programmatically, so the mutator
@@ -43,13 +47,19 @@ must not silently depend on that.
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 
 from rtl_buddy_cdc import sdc as sdc_mod
 
-from ._mutator import encode_prediction
+from ._mutator import (
+    blank_sv_comments_and_strings,
+    encode_prediction,
+    rename_module_decl,
+)
 from .templates.base import RenderedCase
 
 #: Operator ids. Strings rather than an enum so they read the same as
@@ -61,16 +71,12 @@ CLOCK_PERIOD_SCALE = "CLOCK_PERIOD_SCALE"
 #: One each side of the parent value so the operator produces both a
 #: "this clock got much faster" and a "much slower" variant of every
 #: declared clock.
-PERIOD_SCALES: tuple[float, ...] = (0.1, 10.0)
+#: :class:`~decimal.Decimal`, not ``float``, so ``0.000001 * 0.1`` is
+#: exactly ``1E-7`` and the rendered operand never drifts in the last
+#: digits of the diff.
+PERIOD_SCALES: tuple[Decimal, ...] = (Decimal("0.1"), Decimal("10"))
 
 _EDGE_RE = re.compile(r"\b(?:pos|neg)edge\s+([A-Za-z_][A-Za-z0-9_$]*)")
-
-# ``-period`` plus its operand. The gap tolerates a backslash-newline
-# continuation between the flag and the number (``_tokenize`` collapses
-# it to whitespace, so the parser accepts that spelling).
-_PERIOD_RE = re.compile(
-    r"-period(?P<gap>(?:[ \t]|\\\n)+)(?P<num>[^\s\\\]\}]+)",
-)
 
 
 @dataclass(frozen=True)
@@ -114,16 +120,27 @@ class SdcMutantCase:
 
 @dataclass(frozen=True)
 class SdcCommand:
-    """One logical SDC command and the byte span it occupies.
+    """One logical SDC command and the byte spans it occupies.
 
     ``text[start:end]`` is the command including any trailing
     end-of-line comment and the newline that terminates it, so
     ``text[:start] + text[end:]`` deletes it cleanly.
+
+    :attr:`spans` is parallel to :attr:`words`: ``spans[i]`` is the
+    ``(lo, hi)`` byte range of ``words[i]`` **in the whole source
+    text**, so a rewriter can splice one operand without touching a
+    byte of the rest. The span is the word's *source* form, quotes and
+    braces included — ``"10"`` spans three bytes, ``words[i]`` is
+    ``10`` — because that is what has to be replaced. :attr:`spans` is
+    empty when the walk and :func:`rtl_buddy_cdc.sdc._tokenize`
+    disagree on the word count (see :func:`split_commands`); callers
+    must treat that as "no span information" rather than index into it.
     """
 
     words: tuple[str, ...]
     start: int
     end: int
+    spans: tuple[tuple[int, int], ...] = ()
 
     @property
     def name(self) -> str:
@@ -131,54 +148,74 @@ class SdcCommand:
 
 
 def split_commands(text: str) -> list[SdcCommand]:
-    """Split an SDC into logical commands, keeping each one's span.
+    """Split an SDC into logical commands, keeping every byte span.
 
     Structure mirrors :func:`rtl_buddy_cdc.sdc._tokenize` — that
     function is the authority on what a "word" is, and it is called
-    here to produce :attr:`SdcCommand.words` from the span — but it
-    discards offsets, which a text rewriter needs.
+    here to produce :attr:`SdcCommand.words` from the command's span —
+    but it discards offsets, which a text rewriter needs. So the walk
+    below reproduces ``_tokenize``'s word boundaries (continuations,
+    ``{...}`` / ``[...]`` / ``"..."`` words, ``#`` comments) purely to
+    record where each word starts and ends.
+
+    The two are cross-checked: when the walk and ``_tokenize`` disagree
+    on how many words a command has, :attr:`SdcCommand.spans` is left
+    empty rather than handed out misaligned. A span-consuming caller
+    then declines to mutate that command, which is the safe direction.
     """
     out: list[SdcCommand] = []
     n = len(text)
     i = 0
     start: int | None = None
-    at_word_boundary = True
+    word_start: int | None = None
+    spans: list[tuple[int, int]] = []
+
+    def end_word(pos: int) -> None:
+        """Close a bare (unquoted, unbracketed) word ending at ``pos``."""
+        nonlocal word_start
+        if word_start is not None:
+            spans.append((word_start, pos))
+            word_start = None
 
     def flush(end: int) -> None:
         nonlocal start
+        end_word(end)
         if start is None:
+            spans.clear()
             return
         chunk = text[start:end]
         tokenized = sdc_mod._tokenize(chunk)
         words = tuple(tokenized[0]) if tokenized else ()
-        out.append(SdcCommand(words=words, start=start, end=end))
+        aligned = tuple(spans) if len(spans) == len(words) else ()
+        out.append(SdcCommand(words=words, start=start, end=end, spans=aligned))
+        spans.clear()
         start = None
 
     while i < n:
         c = text[i]
 
-        # Line continuation — does not end the command.
+        # Line continuation — ends the word, not the command.
         if c == "\\" and i + 1 < n and text[i + 1] == "\n":
+            end_word(i)
             i += 2
-            at_word_boundary = True
             continue
 
         if c == "\n":
+            end_word(i)
             flush(i + 1)
             i += 1
-            at_word_boundary = True
             continue
 
         if c in " \t\r":
+            end_word(i)
             i += 1
-            at_word_boundary = True
             continue
 
         # ``#`` at a word boundary comments to end-of-line and (per
         # ``_tokenize``) breaks any continuation. The comment is folded
         # into the command's span so deleting the command takes its
         # trailing comment with it instead of orphaning it.
-        if c == "#" and at_word_boundary:
+        if c == "#" and word_start is None:
             j = i
             while j < n and text[j] != "\n":
                 j += 1
@@ -186,21 +223,30 @@ def split_commands(text: str) -> list[SdcCommand]:
                 j += 1
             flush(j)
             i = j
-            at_word_boundary = True
             continue
 
         if start is None:
             start = i
 
-        if c == "{" and at_word_boundary:
-            i = _skip_nested(text, i, "{", "}")
-        elif c == "[" and at_word_boundary:
-            i = _skip_nested(text, i, "[", "]")
-        elif c == '"' and at_word_boundary:
-            i = _skip_quoted(text, i)
+        # ``_tokenize`` only opens a brace / bracket / quoted word when
+        # no bare word is in progress (``not word``); ``a"b"`` is one
+        # bare word, not two. ``word_start is None`` is that condition.
+        if c == "{" and word_start is None:
+            j = _skip_nested(text, i, "{", "}")
+            spans.append((i, j))
+            i = j
+        elif c == "[" and word_start is None:
+            j = _skip_nested(text, i, "[", "]")
+            spans.append((i, j))
+            i = j
+        elif c == '"' and word_start is None:
+            j = _skip_quoted(text, i)
+            spans.append((i, j))
+            i = j
         else:
+            if word_start is None:
+                word_start = i
             i += 1
-        at_word_boundary = False
 
     flush(n)
     return out
@@ -248,6 +294,36 @@ def _command_ports(cmd: SdcCommand) -> list[str]:
     return names
 
 
+def _period_operand_span(cmd: SdcCommand) -> tuple[int, int] | None:
+    """Byte span of the real ``-period`` operand, or ``None``.
+
+    Locating ``-period`` with a regex over the command's source text is
+    wrong: a ``-comment "scaled -period 99"`` operand (or a braced
+    ``{-period 99}``) matches first, and the rewrite then edits the
+    comment while the clock's period stays put. So the flag is found at
+    the *token* level instead.
+
+    :func:`rtl_buddy_cdc.sdc._slice` stays the authority on which word
+    is the operand — it knows ``-comment`` takes one word, and it would
+    read ``-period`` as ``-name``'s operand in ``-name -period 10``
+    (where the command has no period flag at all, and this returns
+    ``None``). Its answer is then matched back to the ``(-period,
+    operand)`` word pair to recover the index, and :attr:`SdcCommand.spans`
+    turns that index into bytes.
+    """
+    spec = sdc_mod.ARG_SPECS.get(cmd.name)
+    if spec is None or len(cmd.spans) != len(cmd.words):
+        return None
+    parsed = sdc_mod._slice(list(cmd.words[1:]), spec)
+    operand = parsed.first("-period")
+    if operand is None:
+        return None
+    for i in range(1, len(cmd.words) - 1):
+        if cmd.words[i] == "-period" and cmd.words[i + 1] == operand:
+            return cmd.spans[i + 1]
+    return None  # pragma: no cover - _slice found it, so the pair exists
+
+
 def _clocked_ports(sdc_text: str) -> frozenset[str]:
     """Port names still covered by a clock declaration in ``sdc_text``.
 
@@ -276,8 +352,16 @@ def _clocked_ports(sdc_text: str) -> frozenset[str]:
 
 
 def _edge_signals(sv: str) -> frozenset[str]:
-    """Identifiers used as a ``posedge`` / ``negedge`` signal in ``sv``."""
-    return frozenset(_EDGE_RE.findall(sv))
+    """Identifiers used as a ``posedge`` / ``negedge`` signal in ``sv``.
+
+    The scan runs over comment- and string-blanked source
+    (:func:`tests.fuzz._mutator.blank_sv_comments_and_strings`). Run on
+    raw text, a line like ``// no flop uses posedge spare_clk`` would
+    make :func:`_predicts_cdc_021` claim CDC-021 for a port nothing
+    actually clocks — a false positive in the *prediction*, which is
+    exactly the thing the differential test is supposed to catch.
+    """
+    return frozenset(_EDGE_RE.findall(blank_sv_comments_and_strings(sv)))
 
 
 def _predicts_cdc_021(port: str, parent_sv: str, mutated_sdc: str) -> bool:
@@ -378,24 +462,25 @@ def iter_clock_period_scale(sdc_text: str) -> Iterator[SdcMutant]:
     for cmd in split_commands(sdc_text):
         if cmd.name != "create_clock":
             continue
-        chunk = sdc_text[cmd.start : cmd.end]
-        match = _PERIOD_RE.search(chunk)
-        if match is None:
+        span = _period_operand_span(cmd)
+        if span is None:
             continue
+        lo, hi = span
+        raw = sdc_text[lo:hi]
         try:
-            period = float(match.group("num"))
-        except ValueError:
+            period = Decimal(raw)
+        except InvalidOperation:
+            # Braced / quoted / expression operands land here and are
+            # left alone — the operand's source bytes are not a number.
             continue
         name = _command_ports(cmd) or [cmd.name]
         for scale in PERIOD_SCALES:
             scaled = _format_period(period * scale)
-            new_chunk = chunk[: match.start("num")] + scaled + chunk[match.end("num") :]
             yield SdcMutant(
-                sdc=sdc_text[: cmd.start] + new_chunk + sdc_text[cmd.end :],
+                sdc=sdc_text[:lo] + scaled + sdc_text[hi:],
                 kind=CLOCK_PERIOD_SCALE,
                 diff_summary=(
-                    f"{', '.join(name)}: -period {match.group('num')} -> {scaled} "
-                    f"(x{scale:g})"
+                    f"{', '.join(name)}: -period {raw} -> {scaled} (x{scale:g})"
                 ),
                 rationale=(
                     f"CDC-009 (unverified): scaling this clock's period by "
@@ -409,16 +494,26 @@ def iter_clock_period_scale(sdc_text: str) -> Iterator[SdcMutant]:
             )
 
 
-def _format_period(value: float) -> str:
+def _format_period(value: Decimal) -> str:
     """Render a scaled period as a plain decimal.
 
-    ``10.0`` × 0.1 → ``"1.0"``, × 10 → ``"100.0"``; ``0.1`` × 0.1 →
-    ``"0.01"``. Fixed-point (never scientific notation) because the SDC
-    parser's ``float()`` is fine with either but a human reading the
-    diff is not.
+    ``10`` × 0.1 → ``"1.0"``, × 10 → ``"100.0"``; ``2.5`` × 0.1 →
+    ``"0.25"``; ``0.000001`` × 0.1 → ``"0.0000001"``.
+
+    :class:`~decimal.Decimal` throughout, with **no precision cap**:
+    the previous ``f"{value:.6f}"`` silently rendered any period below
+    ``5e-7`` as ``"0.000000"`` → ``"0.0"``, i.e. an
+    ``-period 0`` mutant that is a division-by-zero waiting to happen
+    in a ratio rule rather than the "much faster clock" the operator
+    means. ``normalize()`` drops the trailing zeros multiplication
+    introduces and ``format(..., "f")`` keeps the result fixed-point
+    (``normalize()`` alone yields ``1E+2`` for ``100``) — the SDC
+    parser's ``float()`` accepts scientific notation but a human
+    reading the diff should not have to. At least one fractional digit
+    is kept for readability, so an integral result reads ``"100.0"``.
     """
-    text = f"{value:.6f}".rstrip("0")
-    return text + "0" if text.endswith(".") else text
+    text = format(value.normalize(), "f")
+    return f"{text}.0" if "." not in text else text
 
 
 def _sdc_mutant_case_id(parent: RenderedCase, mutant: SdcMutant, index: int) -> str:
@@ -441,14 +536,16 @@ def _wrap_sdc_mutant(
     case is distinguishable in the cache directory and in pytest ids,
     and so the distinctness doesn't silently depend on one line of
     ``content_hash``. ``tests/fuzz/test_sdc_mutants.py`` pins the
-    behaviour end-to-end.
+    behaviour end-to-end. Only the ``module <top>`` declaration is
+    renamed (:func:`tests.fuzz._mutator.rename_module_decl`), so a
+    comment or an earlier identifier holding the top name survives.
     """
     new_top = f"{parent.top}_sdcmut{index}"
     expected, forbidden = encode_prediction(mutant.cdc_rules_added)
     return RenderedCase(
         template_name=f"sdcmut_{parent.template_name}",
         case_id=_sdc_mutant_case_id(parent, mutant, index),
-        sv=parent.sv.replace(parent.top, new_top, 1),
+        sv=rename_module_decl(parent.sv, parent.top, new_top),
         sdc=mutant.sdc,
         top=new_top,
         params={
@@ -472,16 +569,22 @@ def iter_sdc_mutants(parent: RenderedCase, *, seed: int = 0) -> Iterator[SdcMuta
     so there is nothing to randomise. A parent with no ``create_clock``
     (the CDC-021 sentinel template ``gap_g10`` ships an empty SDC by
     design) yields nothing.
+
+    The operator iterators are *chained*, not star-expanded: a caller
+    that stops early (``next(...)``, a ``-k`` filter, a budget) never
+    pays for the mutants it does not look at, and only one mutated SDC
+    is materialised at a time. ``index`` still counts across operators
+    in yield order, so every case keeps its stable id and its distinct
+    ``top``.
     """
     del seed
-    index = 0
-    for mutant in (
-        *iter_undeclare_clock_port(parent.sv, parent.sdc),
-        *iter_clock_period_scale(parent.sdc),
-    ):
+    chained = itertools.chain(
+        iter_undeclare_clock_port(parent.sv, parent.sdc),
+        iter_clock_period_scale(parent.sdc),
+    )
+    for index, mutant in enumerate(chained):
         yield SdcMutantCase(
             parent=parent,
             mutant=mutant,
             case=_wrap_sdc_mutant(parent, mutant, index),
         )
-        index += 1

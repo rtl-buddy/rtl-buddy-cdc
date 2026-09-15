@@ -10,11 +10,24 @@ end-to-end "the analyzer really sees the mutated SDC" check lives in
 
 from __future__ import annotations
 
+from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
 from rtl_buddy_cdc import sdc as sdc_mod
 
+from . import _sdc_mutator
+from ._mutator import (
+    _wrap_mutant,
+    blank_sv_comments_and_strings,
+    rename_module_decl,
+)
 from ._sdc_mutator import (
     CLOCK_PERIOD_SCALE,
     UNDECLARE_CLOCK_PORT,
+    _format_period,
     iter_clock_period_scale,
     iter_sdc_mutants,
     iter_undeclare_clock_port,
@@ -115,6 +128,25 @@ def test_split_commands_folds_trailing_comment_into_the_span() -> None:
     assert cmds[0].name == "create_clock"
     assert text[cmds[0].start : cmds[0].end].endswith("# the fast one\n")
     assert cmds[1].name == "second"
+
+
+def test_split_commands_word_spans_slice_back_to_the_words() -> None:
+    """``spans[i]`` is the source form of ``words[i]``, offset in ``text``."""
+    for text in (_SDC_BRACKET, _SDC_BRACE, _SDC_BARE, _SDC_CONTINUED):
+        for cmd in split_commands(text):
+            assert len(cmd.spans) == len(cmd.words)
+            for word, (lo, hi) in zip(cmd.words, cmd.spans, strict=True):
+                assert cmd.start <= lo < hi <= cmd.end
+                # Quoted words differ (the quotes are stripped from the
+                # word); every other shape is byte-identical.
+                assert text[lo:hi] == word
+
+
+def test_split_commands_spans_a_quoted_word_including_its_quotes() -> None:
+    text = 'create_clock -comment "a b" -period 2.0 [get_ports c]\n'
+    cmd = split_commands(text)[0]
+    lo, hi = cmd.spans[cmd.words.index("a b")]
+    assert text[lo:hi] == '"a b"'
 
 
 def test_split_commands_skips_standalone_comments() -> None:
@@ -237,12 +269,76 @@ def test_period_scale_formats_sub_unit_periods() -> None:
     ]
 
 
+def test_period_scale_ignores_a_period_inside_a_comment_operand() -> None:
+    """A ``-period`` in ``-comment "..."`` is text, not the flag.
+
+    The regex-over-source locator this replaced matched the *first*
+    ``-period`` in the line, rewrote the comment and left the clock's
+    real period untouched — a silent no-op mutant.
+    """
+    text = 'create_clock -comment "scaled -period 99" -period 10 [get_ports c]\n'
+    mutants = list(iter_clock_period_scale(text))
+    assert [m.sdc for m in mutants] == [
+        'create_clock -comment "scaled -period 99" -period 1.0 [get_ports c]\n',
+        'create_clock -comment "scaled -period 99" -period 100.0 [get_ports c]\n',
+    ]
+    for mutant in mutants:
+        assert "99" in mutant.sdc
+        assert sdc_mod.parse(mutant.sdc).clocks["c"].period != 10.0
+
+
+def test_period_scale_ignores_a_period_inside_a_braced_operand() -> None:
+    text = "create_clock -comment {-period 99} -period 10 [get_ports c]\n"
+    mutants = list(iter_clock_period_scale(text))
+    assert [m.sdc for m in mutants] == [
+        "create_clock -comment {-period 99} -period 1.0 [get_ports c]\n",
+        "create_clock -comment {-period 99} -period 100.0 [get_ports c]\n",
+    ]
+
+
+def test_period_scale_skips_a_command_whose_period_is_an_operand_of_another_flag() -> (
+    None
+):
+    """``-name -period 10`` has no ``-period`` flag — ``_slice`` says so."""
+    text = "create_clock -name -period 10 [get_ports c]\n"
+    assert list(iter_clock_period_scale(text)) == []
+
+
 def test_period_scale_handles_a_continued_command() -> None:
     mutants = list(iter_clock_period_scale(_SDC_CONTINUED))
     assert len(mutants) == 4
     assert sdc_mod.parse(mutants[0].sdc).clocks["src_clk"].period == 1.0
     # The continuation backslashes survive untouched.
     assert mutants[0].sdc.count("\\\n") == 2
+
+
+@pytest.mark.parametrize(
+    ("period", "scale", "expected"),
+    [
+        # The bug: ``f"{value:.6f}"`` rendered this as ``"0.0"``.
+        ("0.000001", "0.1", "0.0000001"),
+        ("0.000001", "10", "0.00001"),
+        # Integral results keep one fractional digit, pinned here.
+        ("10", "10", "100.0"),
+        ("10", "0.1", "1.0"),
+        ("2.5", "0.1", "0.25"),
+        ("7.5", "10", "75.0"),
+        ("0.1", "0.1", "0.01"),
+    ],
+)
+def test_format_period_is_exact_fixed_point(
+    period: str, scale: str, expected: str
+) -> None:
+    assert _format_period(Decimal(period) * Decimal(scale)) == expected
+
+
+def test_period_scale_never_renders_a_nonzero_period_as_zero() -> None:
+    """A tiny period scales down, it does not collapse to ``-period 0``."""
+    text = "create_clock -name c -period 0.000001 [get_ports c]\n"
+    mutants = list(iter_clock_period_scale(text))
+    periods = [sdc_mod.parse(m.sdc).clocks["c"].period for m in mutants]
+    assert periods == [1e-07, 1e-05]
+    assert all(p > 0 for p in periods)
 
 
 def test_period_scale_prediction_is_conservative() -> None:
@@ -254,6 +350,144 @@ def test_period_scale_prediction_is_conservative() -> None:
 def test_period_scale_skips_a_command_without_a_period() -> None:
     text = "create_clock -name c [get_ports c]\n"
     assert list(iter_clock_period_scale(text)) == []
+
+
+# ---- comment-blind edge scan ------------------------------------------------
+
+
+_SV_EDGE_IN_COMMENT = """\
+module top (input logic src_clk, input logic dst_clk, output logic q);
+    // no flop uses posedge spare_clk
+    /* nor does this one:
+       always_ff @(posedge spare_clk) q <= 1'b0;
+     */
+    logic a;
+    always_ff @(posedge src_clk) a <= ~a;
+    always_ff @(posedge dst_clk) q <= a;
+endmodule
+"""
+
+
+def test_blank_sv_comments_and_strings_preserves_offsets() -> None:
+    blanked = blank_sv_comments_and_strings(_SV_EDGE_IN_COMMENT)
+    assert len(blanked) == len(_SV_EDGE_IN_COMMENT)
+    assert blanked.count("\n") == _SV_EDGE_IN_COMMENT.count("\n")
+    assert "spare_clk" not in blanked
+    assert "posedge src_clk" in blanked
+
+
+def test_blank_sv_comments_and_strings_handles_strings_and_nesting() -> None:
+    sv = 'initial $display("// not a comment /* either */");\n// real\n'
+    blanked = blank_sv_comments_and_strings(sv)
+    assert "not a comment" not in blanked
+    assert "real" not in blanked
+    assert blanked.startswith("initial $display(")
+
+
+def test_edge_signals_ignores_comments() -> None:
+    signals = _sdc_mutator._edge_signals(_SV_EDGE_IN_COMMENT)
+    assert signals == frozenset({"src_clk", "dst_clk"})
+
+
+def test_undeclare_makes_no_claim_for_a_port_only_named_in_a_comment() -> None:
+    """The CDC-021 false positive the raw-source edge scan produced."""
+    text = "create_clock -name spare_clk -period 10.0 [get_ports spare_clk]\n"
+    mutants = list(iter_undeclare_clock_port(_SV_EDGE_IN_COMMENT, text))
+    assert len(mutants) == 1
+    assert mutants[0].cdc_rules_added == frozenset()
+    assert "unverified" in mutants[0].rationale
+
+
+def test_undeclare_still_claims_for_a_real_edge_outside_comments() -> None:
+    text = "create_clock -name src_clk -period 10.0 [get_ports src_clk]\n"
+    mutants = list(iter_undeclare_clock_port(_SV_EDGE_IN_COMMENT, text))
+    assert mutants[0].cdc_rules_added == frozenset({"CDC-021"})
+
+
+# ---- anchored ``module <top>`` rename ---------------------------------------
+
+
+_SV_TOP_IN_COMMENT = """\
+// top module is chip
+module chip (input logic clk, output logic q);
+    always_ff @(posedge clk) q <= ~q;  // chip output
+endmodule
+"""
+
+
+def test_rename_module_decl_renames_the_declaration_not_a_comment() -> None:
+    renamed = rename_module_decl(_SV_TOP_IN_COMMENT, "chip", "chip_x")
+    assert renamed.startswith("// top module is chip\n")
+    assert "module chip_x (" in renamed
+    assert "// chip output" in renamed
+    assert renamed.count("chip_x") == 1
+
+
+def test_rename_module_decl_falls_back_when_no_declaration_is_found() -> None:
+    """Documented fallback: no ``module <top>`` header → old behaviour."""
+    sv = "// chip was here\nendmodule\n"
+    assert rename_module_decl(sv, "chip", "chip_x") == "// chip_x was here\nendmodule\n"
+
+
+def test_rename_module_decl_does_not_match_a_longer_name() -> None:
+    """``\\b`` on the tail: ``module chip_v2`` is not ``module chip``."""
+    sv = (
+        "module chip_v2 (input logic clk);\nendmodule\n"
+        "module chip (input logic clk);\nendmodule\n"
+    )
+    renamed = rename_module_decl(sv, "chip", "chip_x")
+    assert renamed == sv.replace("module chip (", "module chip_x (")
+    assert "module chip_v2 (" in renamed
+
+
+def test_wrap_sdc_mutant_renames_only_the_declaration() -> None:
+    """Item 4 for the SDC-mutant wrapper."""
+    parent = _parent(
+        "create_clock -name clk -period 10.0 [get_ports clk]\n",
+        sv=_SV_TOP_IN_COMMENT,
+    )
+    parent = RenderedCase(
+        template_name=parent.template_name,
+        case_id=parent.case_id,
+        sv=parent.sv,
+        sdc=parent.sdc,
+        top="chip",
+        params={},
+        expected=(),
+    )
+    case = next(iter(iter_sdc_mutants(parent))).case
+    assert case.sv.startswith("// top module is chip\n")
+    assert "module chip_sdcmut0 (" in case.sv
+    assert "// chip output" in case.sv
+
+
+def test_wrap_mutant_renames_only_the_declaration() -> None:
+    """Item 4 for the SV-mutant wrapper in :mod:`tests.fuzz._mutator`.
+
+    Lives here rather than in :mod:`tests.fuzz.test_mutants` because
+    that module is ``fuzz``-marked and needs Yosys; this asserts a pure
+    text rewrite and shares the fixtures above.
+    """
+    parent = _parent("", sv=_SV_TOP_IN_COMMENT)
+    parent = RenderedCase(
+        template_name=parent.template_name,
+        case_id=parent.case_id,
+        sv=parent.sv,
+        sdc="",
+        top="chip",
+        params={},
+        expected=(),
+    )
+    mutant: Any = SimpleNamespace(
+        sv=_SV_TOP_IN_COMMENT,
+        kind=SimpleNamespace(value="CLOCK_POLARITY_SWAP"),
+        prediction=SimpleNamespace(cdc_rules_added=(), cdc_rules_removed=()),
+    )
+    case = _wrap_mutant(parent, mutant, 0)
+    assert case.top == "chip_mut0"
+    assert case.sv.startswith("// top module is chip\n")
+    assert "module chip_mut0 (" in case.sv
+    assert "// chip output" in case.sv
 
 
 # ---- iter_sdc_mutants wrapping ---------------------------------------------
@@ -305,6 +539,27 @@ def test_iter_sdc_mutants_encodes_a_positive_claim_as_expected() -> None:
     ]
     assert [e.rule_id for e in undeclare[0].case.expected] == ["CDC-021"]
     assert undeclare[0].case.forbidden == ()
+
+
+def test_iter_sdc_mutants_materialises_one_mutant_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The operator iterators are chained, not star-expanded."""
+    pulled: list[str] = []
+    real = _sdc_mutator.iter_undeclare_clock_port
+
+    def spy(parent_sv: str, sdc_text: str):  # type: ignore[no-untyped-def]
+        for mutant in real(parent_sv, sdc_text):
+            pulled.append(mutant.kind)
+            yield mutant
+
+    monkeypatch.setattr(_sdc_mutator, "iter_undeclare_clock_port", spy)
+    cases = iter_sdc_mutants(_parent(_SDC_BRACKET))
+    first = next(cases)
+    assert len(pulled) == 1
+    assert first.case.case_id.endswith("_0")
+    # Indices still run in yield order across both operators.
+    assert [mc.case.params["sdc_mutant_index"] for mc in cases] == [1, 2, 3, 4, 5]
 
 
 def test_iter_sdc_mutants_on_an_empty_sdc_yields_nothing() -> None:
