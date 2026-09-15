@@ -710,7 +710,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.11.0" },
 ]
-fuzz = [{ name = "rtl-buddy-xeno", extras = ["verible", "slang"], git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=6549e36519686fbc27723495c5abb7a20369b5fe" }]
+fuzz = [{ name = "rtl-buddy-xeno", extras = ["verible", "slang"], specifier = ">=0.2.0" }]
 lint = [
     { name = "mypy", specifier = ">=2.1.0" },
     { name = "ruff", specifier = ">=0.11.0" },
@@ -722,28 +722,32 @@ test = [
 ]
 
 [[package]]
-name = "rtl-buddy-view"
-version = "0.2.1"
+name = "rtl-buddy-sch"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema" },
     { name = "typer" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/6a/28d289eb41185e835eae30f9d9c91d92cc89070eba5a126835229f6703fc/rtl_buddy_view-0.2.1-py3-none-any.whl", hash = "sha256:4db09ec7fbb2a0ae42e19c715ac36f62e9e99f8d7fd062007192c6fc506543bb", size = 727285, upload-time = "2026-06-05T06:26:50.418Z" },
+    { url = "https://files.pythonhosted.org/packages/22/85/56c4a2441d230c101a0769d3c203a671b127ca37be6e05060cd8524ddcf0/rtl_buddy_sch-0.10.1-py3-none-any.whl", hash = "sha256:9f54cc01354dad83f8e17cb9e6e95d1947335a6434fe041be5f77f8377d67c4e", size = 1303077, upload-time = "2026-09-12T14:49:00.231Z" },
 ]
 
 [[package]]
 name = "rtl-buddy-xeno"
-version = "0.1.1.dev1+g6549e3651"
-source = { git = "https://github.com/rtl-buddy/rtl-buddy-xeno.git?rev=6549e36519686fbc27723495c5abb7a20369b5fe#6549e36519686fbc27723495c5abb7a20369b5fe" }
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/66/0d5e7caabee91e190d25259355fff6be75042126a22141df400b4eef17e4/rtl_buddy_xeno-0.2.0.tar.gz", hash = "sha256:6acaf371af564c6f26e6679d72a115e7c33f4a3a8639d007a10619e58c2671fa", size = 55175, upload-time = "2026-09-14T14:05:43.769Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/08/8e/2013add093a7346ae3c8f7a5e52b40201c9d45fdb2a111336f2bd9d2654c/rtl_buddy_xeno-0.2.0-py3-none-any.whl", hash = "sha256:5c6a623db3b038cd8596fc831a6daaa355395d58fde3b14f50d2f5f0602caff0", size = 76056, upload-time = "2026-09-14T14:05:42.566Z" },
+]
 
 [package.optional-dependencies]
 slang = [
     { name = "pyslang" },
 ]
 verible = [
-    { name = "rtl-buddy-view" },
+    { name = "rtl-buddy-sch" },
 ]
 
 [[package]]
