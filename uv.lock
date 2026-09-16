@@ -710,7 +710,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.11.0" },
 ]
-fuzz = [{ name = "rtl-buddy-xeno", extras = ["verible", "slang"], specifier = ">=0.2.0" }]
+fuzz = [{ name = "rtl-buddy-xeno", extras = ["verible", "slang"], specifier = ">=0.3.0" }]
 lint = [
     { name = "mypy", specifier = ">=2.1.0" },
     { name = "ruff", specifier = ">=0.11.0" },
@@ -735,11 +735,11 @@ wheels = [
 
 [[package]]
 name = "rtl-buddy-xeno"
-version = "0.2.0"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c0/66/0d5e7caabee91e190d25259355fff6be75042126a22141df400b4eef17e4/rtl_buddy_xeno-0.2.0.tar.gz", hash = "sha256:6acaf371af564c6f26e6679d72a115e7c33f4a3a8639d007a10619e58c2671fa", size = 55175, upload-time = "2026-09-14T14:05:43.769Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/3e/8dd2a44d85038aefb38de6ff7d7bf36722288f15eced67d6ed38caf7da28/rtl_buddy_xeno-0.3.0.tar.gz", hash = "sha256:065cec49844cc86daf9c3f45bcc5d4c7039c26bb442219546b5b3dd456755ca5", size = 59932, upload-time = "2026-09-16T01:16:13.384Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/8e/2013add093a7346ae3c8f7a5e52b40201c9d45fdb2a111336f2bd9d2654c/rtl_buddy_xeno-0.2.0-py3-none-any.whl", hash = "sha256:5c6a623db3b038cd8596fc831a6daaa355395d58fde3b14f50d2f5f0602caff0", size = 76056, upload-time = "2026-09-14T14:05:42.566Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/09/0483b6f983114f7cafed0503a444f08e4b5e9970e97bc9617af030c47212/rtl_buddy_xeno-0.3.0-py3-none-any.whl", hash = "sha256:ccad1bf0e09fe6e0d124a54eb63f33f1b5982ad63259cd7c134a8850a877e853", size = 81028, upload-time = "2026-09-16T01:16:11.81Z" },
 ]
 
 [package.optional-dependencies]
