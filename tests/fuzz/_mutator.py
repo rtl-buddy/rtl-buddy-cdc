@@ -43,6 +43,18 @@ A kind that raises :class:`NotImplementedError` is still treated as
 slang-frontend cache uses for missing optional deps — so a future
 xeno kind can be listed here before it ships.
 
+On top of the first-order pass, :func:`iter_mutants` runs one
+**second-order (compound)** pass: every ``CHAIN_STAGE_INSERT``
+mutant is re-fed to the mutator and the operator is applied a second
+time *to the stage the first pass just inserted*. One insertion on a
+2-deep parent chain yields 3 stages — one short of CDC-018's
+``depth_threshold`` of 4 — so the rule only ever saw mutant coverage
+from parents that already carried a 4-stage chain. The second
+insertion closes that gap. Compounding is deliberately narrow: one
+compound mutant per first-order insertion, same kind, same chain, so
+the mutant count grows additively rather than combinatorially. No
+other kind and no other site is compounded.
+
 SDC mutation lives next door
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -115,11 +127,18 @@ class MutantCase:
     raw :class:`rtl_buddy_xeno.Mutant` (``mutant``) are kept so the
     differential test in :mod:`tests.fuzz.test_mutants` can show the
     user the diff summary and the prediction rationale on failure.
+
+    ``compound`` marks the second-order cases built by
+    :func:`iter_mutants`' compound pass (a ``CHAIN_STAGE_INSERT``
+    re-applied to its own inserted stage). Consumers treat them like
+    any other mutant — the flag exists so the coverage report can
+    show the split and the tests can select them.
     """
 
     parent: RenderedCase
     mutant: "Mutant"
     case: RenderedCase
+    compound: bool = False
 
 
 def encode_prediction(
@@ -234,16 +253,146 @@ def _kinds(xeno: Any) -> list[Any]:
     return [getattr(xeno.MutationKind, name) for name in _CDC_KINDS]
 
 
-def _mutant_case_id(parent: RenderedCase, mutant: "Mutant", index: int) -> str:
+def _mutant_case_id(
+    parent: RenderedCase,
+    mutant: "Mutant",
+    index: int,
+    *,
+    compound: bool = False,
+) -> str:
     """Stable, filesystem-friendly suffix.
 
     Includes the mutant index so two mutants from the same operator
     on the same parent get distinct ids; the kind value gives the
     user something to grep for; the seed lives only on the
-    :class:`Mutant` itself (operator-internal provenance).
+    :class:`Mutant` itself (operator-internal provenance). Compound
+    (second-order) cases carry a trailing ``_x2`` so they're greppable
+    as a family.
     """
     kind_short = mutant.kind.value
-    return f"{parent.case_id}__mut_{kind_short}_{index}"
+    suffix = _COMPOUND_SUFFIX if compound else ""
+    return f"{parent.case_id}__mut_{kind_short}_{index}{suffix}"
+
+
+# ---- second-order (compound) CHAIN_STAGE_INSERT ----------------------------
+
+#: Marker appended to a compound mutant's ``case_id`` / ``top``.
+_COMPOUND_SUFFIX = "_x2"
+
+#: ``CHAIN_STAGE_INSERT``'s ``diff_summary`` shape, e.g.
+#: ``line 14: insert sync stage `sync_meta_xeno_stage_1` after `sync_meta```.
+#: The inserted register's name is what the compound pass re-targets;
+#: xeno names it ``<lhs>_xeno_stage_<n>`` via ``_chain_helpers
+#: .fresh_identifier``, stripping any existing ``_xeno_stage_<digits>``
+#: off the base first — so a second application walks
+#: ``q_xeno_stage_1`` → ``q_xeno_stage_2`` instead of compounding the
+#: suffix, and the two stage names stay distinct.
+_INSERT_SUMMARY_RE = re.compile(
+    r"insert sync stage `(?P<inserted>\w+)` after `(?P<lhs>\w+)`"
+)
+
+
+def _extras_skip(exc: BaseException) -> bool:
+    """``True`` for an extras/tool-availability raise we treat as a skip.
+
+    Matched by exception class *name* so the adapter doesn't import the
+    optional package just to spell the type — see the commentary in
+    :func:`iter_mutants`.
+    """
+    return type(exc).__name__ in {"VeribleUnavailable", "SlangUnavailable"}
+
+
+def _compound_prediction(xeno: Any, first: "Mutant", second: "Mutant") -> Any:
+    """Combine two ``CHAIN_STAGE_INSERT`` predictions into one.
+
+    ``cdc_rules_added`` stays **empty** on purpose. Two insertions do
+    take a 2-deep chain to CDC-018's 4-stage threshold, but neither
+    the operator nor this adapter can verify that the chain in
+    question is a *cross-domain synchroniser* (the rule only counts
+    chains whose head is a crossing's destination flop, with a flop —
+    not a port or a comb expression — on the source side). Claiming
+    CDC-018 here would over-fail the directional check on every
+    reset-tree or comb-sourced chain; the coverage report observes
+    what actually fires instead. ``perturbs_signals`` is a union —
+    both stages' Qs now reach their reader a clock later — and the
+    rationale records the depth claim in prose.
+    """
+    return xeno.Prediction(
+        rationale=(
+            f"{first.prediction.rationale}. Compound pass: the operator was "
+            f"then re-applied to the stage it had just inserted, so this "
+            f"mutant deepens the chain by two stages in total. CDC-018 "
+            f"(cascaded synchroniser) fires when that brings a synchroniser "
+            f"chain up to its >=4-stage threshold; cdc_rules_added stays "
+            f"empty because the harness cannot verify from the rewrite "
+            f"alone that this chain is a cross-domain synchroniser"
+        ),
+        cdc_rules_added=frozenset(),
+        cdc_rules_removed=(
+            first.prediction.cdc_rules_removed | second.prediction.cdc_rules_removed
+        ),
+        perturbs_signals=(
+            first.prediction.perturbs_signals | second.prediction.perturbs_signals
+        ),
+        perturbs_liveness=(
+            first.prediction.perturbs_liveness or second.prediction.perturbs_liveness
+        ),
+    )
+
+
+def compound_chain_insert(
+    xeno: Any,
+    first: "Mutant",
+    *,
+    count: int = 16,
+    seed: int = 0,
+) -> "Mutant | None":
+    """Re-apply ``CHAIN_STAGE_INSERT`` to the stage ``first`` inserted.
+
+    ``None`` when the first mutant's ``diff_summary`` isn't parseable
+    or when the second pass offers no site on the inserted stage (the
+    inserted register is the chain tail with no further reader, say).
+    Otherwise exactly one :class:`rtl_buddy_xeno.Mutant`: same kind,
+    the twice-mutated SV, and a ``diff_summary`` of
+    ``<first> ; then <second>``.
+
+    Site selection is by name, not by position: the second pass
+    shuffles its site order internally, so the only reliable way to
+    pick "the stage we just added" is to match the summary's trailing
+    ``after `<inserted>``` against the register the first pass named.
+    Any other site would be a *different* chain (or a different point
+    on this one), which is the combinatorial blow-up this pass exists
+    to avoid.
+    """
+    match = _INSERT_SUMMARY_RE.search(first.diff_summary)
+    if match is None:
+        return None
+    inserted = match.group("inserted")
+    want = f"after `{inserted}`"
+    kind = xeno.MutationKind.CHAIN_STAGE_INSERT
+    try:
+        candidates = list(
+            xeno.Mutator.from_sv(first.sv).generate(
+                kinds=[kind], count=count, seed=seed
+            )
+        )
+    except (NotImplementedError, ImportError):
+        return None
+    except Exception as exc:  # noqa: BLE001 - extras-gated raises various
+        if _extras_skip(exc):
+            return None
+        raise
+    for second in candidates:
+        if not second.diff_summary.endswith(want):
+            continue
+        return xeno.Mutant(
+            sv=second.sv,
+            diff_summary=f"{first.diff_summary} ; then {second.diff_summary}",
+            seed=second.seed,
+            prediction=_compound_prediction(xeno, first, second),
+            kind=kind,
+        )
+    return None
 
 
 def iter_mutants(
@@ -268,12 +417,29 @@ def iter_mutants(
     A kind that raises :class:`NotImplementedError` (a xeno stub) or
     an extras/tool-availability error is skipped so the live kinds
     still produce their mutants.
+
+    **Compound mutants are extra.** After the per-kind loop, a
+    second-order pass re-applies ``CHAIN_STAGE_INSERT`` to the stage
+    each first-order ``CHAIN_STAGE_INSERT`` mutant inserted — see
+    :func:`compound_chain_insert`. These are *not* drawn from any
+    kind's ``count`` budget: the pass yields **at most one compound
+    mutant per first-order insertion**, so the ceiling rises from
+    ``len(_CDC_KINDS) * count`` to ``len(_CDC_KINDS) * count +
+    <number of first-order insertions>``. They arrive last, after
+    every first-order mutant, and carry ``MutantCase.compound=True``.
+
+    Why it exists: one insertion on a 2-deep chain gives 3 stages,
+    one short of CDC-018's ``depth_threshold`` of 4. The second
+    insertion reaches it, which is the only way most corpus parents
+    can give CDC-018 mutant coverage at all.
     """
     if not xeno_available():
         return
 
     xeno = importlib.import_module("rtl_buddy_xeno")
     mutator = xeno.Mutator.from_sv(parent.sv)
+    insert_kind = xeno.MutationKind.CHAIN_STAGE_INSERT
+    first_order_inserts: list["Mutant"] = []
 
     index = 0
     for kind in _kinds(xeno):
@@ -299,6 +465,8 @@ def iter_mutants(
             for mutant in mutator.generate(kinds=[kind], count=count, seed=seed):
                 case = _wrap_mutant(parent, mutant, index)
                 yield MutantCase(parent=parent, mutant=mutant, case=case)
+                if mutant.kind is insert_kind:
+                    first_order_inserts.append(mutant)
                 index += 1
         except (NotImplementedError, ImportError):
             continue
@@ -307,15 +475,30 @@ def iter_mutants(
             # any future extras-gated "tool missing" exception bubble
             # up here. Match by exception class name so we don't pull
             # in the optional import just to spell the type.
-            if type(exc).__name__ in {
-                "VeribleUnavailable",
-                "SlangUnavailable",
-            }:
+            if _extras_skip(exc):
                 continue
             raise
 
+    # Second-order pass: one compound mutant per first-order insertion.
+    # Runs after the whole first-order loop so a parent's mutant stream
+    # is "every first-order mutant, then its compounds" — stable ids
+    # for ``pytest -k`` and a stable Yosys cache key ordering.
+    for first in first_order_inserts:
+        compound = compound_chain_insert(xeno, first, count=count, seed=seed)
+        if compound is None:
+            continue
+        case = _wrap_mutant(parent, compound, index, compound=True)
+        yield MutantCase(parent=parent, mutant=compound, case=case, compound=True)
+        index += 1
 
-def _wrap_mutant(parent: RenderedCase, mutant: "Mutant", index: int) -> RenderedCase:
+
+def _wrap_mutant(
+    parent: RenderedCase,
+    mutant: "Mutant",
+    index: int,
+    *,
+    compound: bool = False,
+) -> RenderedCase:
     """Build a :class:`RenderedCase` for the analyzer to consume.
 
     The mutated SV body keeps the parent's ``module {top}`` name, so
@@ -323,10 +506,15 @@ def _wrap_mutant(parent: RenderedCase, mutant: "Mutant", index: int) -> Rendered
     the mutant index. Only the ``module <top>`` declaration is
     rewritten — see :func:`rename_module_decl` — so a comment or an
     earlier identifier containing the top name is left alone.
+
+    ``compound`` marks a second-order case: the synthesised ``top``
+    and ``case_id`` both gain an ``_x2`` tail so a compound mutant is
+    identifiable from a cache path, a pytest id or a Yosys log line
+    without consulting ``params``.
     """
-    new_top = f"{parent.top}_mut{index}"
+    new_top = f"{parent.top}_mut{index}" + (_COMPOUND_SUFFIX if compound else "")
     mutated_sv = rename_module_decl(mutant.sv, parent.top, new_top)
-    new_case_id = _mutant_case_id(parent, mutant, index)
+    new_case_id = _mutant_case_id(parent, mutant, index, compound=compound)
 
     expected_findings, forbidden_findings = encode_prediction(
         mutant.prediction.cdc_rules_added,
@@ -343,6 +531,7 @@ def _wrap_mutant(parent: RenderedCase, mutant: "Mutant", index: int) -> Rendered
             **parent.params,
             "mutant_kind": mutant.kind.value,
             "mutant_index": index,
+            "mutant_compound": compound,
             "parent_top": parent.top,
         },
         expected=expected_findings,

@@ -17,7 +17,10 @@ in favour of four independent surfaces:
   rtl-buddy-cdc#293, no extra dependency). Both run through the
   same Yosys pipeline as the parents, so the column tracks how
   many mutant cases fired each rule under the analyzer; the
-  header line prints the ``sv`` / ``sdc`` split.
+  header line prints the ``sv`` / ``sdc`` split, with the
+  second-order ``CHAIN_STAGE_INSERT`` cases (see
+  :func:`tests.fuzz._mutator.compound_chain_insert`) called out in
+  brackets as part of the ``sv`` count.
 - ``grammar`` — Stage-4 grammar-generated topologies. Each seed
   in :data:`_GRAMMAR_SEEDS` is rendered, elaborated through Yosys,
   and fed to the analyzer; the column reports per-rule fires.
@@ -109,6 +112,7 @@ def main() -> int:
     slang_skip_count = 0
     sv_mutant_total = 0
     sv_mutant_skip_count = 0
+    sv_compound_ok = 0
     sdc_mutant_total = 0
     sdc_mutant_skip_count = 0
     grammar_skip_count = 0
@@ -162,6 +166,8 @@ def main() -> int:
                     # tests/fuzz/test_mutants.py docstring).
                     sv_mutant_skip_count += 1
                     continue
+                if mc.compound:
+                    sv_compound_ok += 1
                 for rule_id, count in mutant_result.fired.items():
                     mutant_rule_fires[rule_id] += count
                     mutant_rule_cases[rule_id] += 1
@@ -218,7 +224,8 @@ def main() -> int:
     mutant_note = "" if run_mutants else " (sv disabled: rtl-buddy-xeno not importable)"
     print(
         f"        {sv_ok + sdc_ok} cases "
-        f"(mutants: {sv_ok} sv + {sdc_ok} sdc){mutant_note}; "
+        f"(mutants: {sv_ok} sv [{sv_compound_ok} compound] + {sdc_ok} sdc)"
+        f"{mutant_note}; "
         f"{skipped} skipped, "
         f"{len(canonical)} canonical parents"
     )

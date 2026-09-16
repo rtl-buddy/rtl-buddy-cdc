@@ -14,6 +14,15 @@ For each canonical parent corpus case, generate mutants via the
    (e.g. CDC-001 also firing on a crossing where CDC-016 is now
    active) are routine and not contracted away by the prediction.
 
+The mutant stream includes the second-order ``CHAIN_STAGE_INSERT``
+cases built by :func:`tests.fuzz._mutator.iter_mutants`' compound
+pass — structurally just more :class:`MutantCase`s, so the
+parametrised test above covers them unchanged. The one thing that
+needs its own assertion is *why* they exist, and that's
+:func:`test_compound_chain_insert_lifts_cdc_018` at the bottom of
+this module. Their selection logic is unit-tested without Yosys in
+:mod:`tests.fuzz.test_mutator_compound`.
+
 xeno-side fixes landed for criterion 4
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -150,4 +159,41 @@ def test_mutant_elaborates_and_predicts(mc: MutantCase) -> None:
     pytest.xfail(
         f"mutant prediction did not hold "
         f"(xeno v0.0.1 prediction bug — see PR body):{diag}"
+    )
+
+
+def test_compound_chain_insert_lifts_cdc_018() -> None:
+    """A 2-deep parent chain reaches CDC-018 after *two* insertions.
+
+    The reason the compound pass exists. ``cdc002_short_chain`` is a
+    textbook ``src_q -> sync_meta -> sync_q`` 2FF synchroniser: one
+    ``CHAIN_STAGE_INSERT`` takes it to 3 stages, one short of
+    :data:`rtl_buddy_cdc.rules.CDC_018_DEFAULT_THRESHOLD`; the second
+    insertion on the stage the first one added reaches 4 and the rule
+    fires.
+
+    Note the rule needs more than depth: ``check_cdc_018`` skips any
+    crossing whose ``src_flop`` is ``None``, so a family whose source
+    is a port or a combinational expression (``cdc006_comb_source``)
+    stays silent at depth 4. This test deliberately picks a
+    flop-sourced parent — the depth is what's under test, not the
+    crossing shape.
+    """
+    compound = [
+        mc
+        for mc in _MUTANT_CASES
+        if mc.compound and mc.parent.template_name == "cdc002_short_chain"
+    ]
+    assert compound, (
+        "no compound CHAIN_STAGE_INSERT mutant for cdc002_short_chain — "
+        "the compound pass or the parent's sync-chain shape regressed"
+    )
+    mc = compound[0]
+    result = run_case(mc.case)
+    assert result.fired.get("CDC-018", 0) >= 1, (
+        f"compound mutant did not lift CDC-018\n"
+        f"  case:  {mc.case.case_id}\n"
+        f"  diff:  {mc.mutant.diff_summary}\n"
+        f"  fired: {sorted(result.fired)}\n"
+        f"  sv:\n{mc.case.sv}"
     )
