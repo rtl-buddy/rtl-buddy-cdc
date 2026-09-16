@@ -62,11 +62,14 @@ dev = [
 # Only consumed under @pytest.mark.fuzz inside tests/fuzz/test_mutants.py;
 # the analyzer's runtime closure stays unchanged. xeno's floor is
 # >=3.11 (rtl-buddy-xeno PR #17), matching this project, so the fuzz
-# dep needs no Python marker. Resolved from PyPI: the 0.2.0 floor is
-# the first release carrying the three operators added for the
-# rtl-buddy-cdc#230 coverage gaps (CHAIN_STAGE_INSERT for CDC-018,
-# COMB_BETWEEN_STAGES for CDC-014, RESET_FANIN_MERGE for RDC-005) and
-# the shared-CST-cache shape fix (rtl-buddy-xeno#27).
+# dep needs no Python marker. Resolved from PyPI: 0.2.0 was the first
+# release carrying the three operators added for the rtl-buddy-cdc#230
+# coverage gaps (CHAIN_STAGE_INSERT for CDC-018, COMB_BETWEEN_STAGES for
+# CDC-014, RESET_FANIN_MERGE for RDC-005) and the shared-CST-cache shape
+# fix (rtl-buddy-xeno#27); 0.3.0 is the floor because it is the first
+# release whose chain-stage recogniser accepts the async-reset stage
+# shape this corpus writes for most parents (rtl-buddy-xeno#34) —
+# below it the two insertion operators find almost no sites here.
 fuzz = [
     # ``[verible,slang]`` extras pull in xeno's verible-CST helpers and
     # pyslang elaborator — required for the six structural CDC
@@ -78,7 +81,7 @@ fuzz = [
     # and the ≥10-mutants-per-template target in
     # rtl-buddy-cdc#221 done-when criterion 4 misses on every gap
     # family whose source has few ``posedge``/``negedge`` sites.
-    "rtl-buddy-xeno[verible,slang]>=0.2.0",
+    "rtl-buddy-xeno[verible,slang]>=0.3.0",
 ]
 
 [tool.ruff]
