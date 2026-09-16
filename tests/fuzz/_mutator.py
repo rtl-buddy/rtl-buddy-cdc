@@ -42,12 +42,30 @@ A kind that raises :class:`NotImplementedError` is still treated as
 "operator not yet available" and silently skipped — same shape the
 slang-frontend cache uses for missing optional deps — so a future
 xeno kind can be listed here before it ships.
+
+SDC mutation lives next door
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+xeno is **SV-only** and this adapter passes the parent's SDC through
+untouched — that was the explicit scope decision in
+rtl-buddy-xeno#16. The two rules whose precondition lives in the
+constraints file instead of the RTL (CDC-021, flop CLK on a port with
+no ``create_clock``; CDC-009, pulse-width fast→slow) are therefore
+unreachable from here. They are covered by the consumer-side
+operators in :mod:`tests.fuzz._sdc_mutator`
+(``UNDECLARE_CLOCK_PORT`` / ``CLOCK_PERIOD_SCALE``,
+rtl-buddy-cdc#293), which mutate the SDC text and keep the SV fixed.
+Both families feed the same ``mutants`` column of
+:mod:`tests.fuzz.coverage` and share
+:func:`encode_prediction` below, so a prediction means the same thing
+on either side.
 """
 
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterator
+import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -102,6 +120,113 @@ class MutantCase:
     parent: RenderedCase
     mutant: "Mutant"
     case: RenderedCase
+
+
+def encode_prediction(
+    rules_added: Iterable[str],
+    rules_removed: Iterable[str] = (),
+) -> tuple[tuple[ExpectedFinding, ...], tuple[ExpectedFinding, ...]]:
+    """Encode a prediction's *direction of change* as expected/forbidden.
+
+    The corpus runner's contract is an absolute finding set, but a
+    mutant prediction is a *delta* from the parent — so only the
+    directional invariant is asserted: an added rule fires at least
+    once (``Op.GE 1``), a removed rule stays silent (``Op.ZERO``). The
+    strict per-rule check lives in the differential tests, which
+    consume the parent's finding set at run time.
+
+    Shared with :mod:`tests.fuzz._sdc_mutator` (rtl-buddy-cdc#293) so
+    the SV-side and SDC-side mutant families encode a claim
+    identically.
+    """
+    expected = tuple(ExpectedFinding(rule_id, Op.GE, 1) for rule_id in rules_added)
+    forbidden = tuple(ExpectedFinding(rule_id, Op.ZERO) for rule_id in rules_removed)
+    return expected, forbidden
+
+
+# ---- SystemVerilog lexical helpers (shared with ``_sdc_mutator``) -----------
+
+#: The ``module <top>`` declaration header. ``\s+`` rather than a single
+#: space because :func:`blank_sv_comments_and_strings` turns an
+#: interposed comment into spaces, and ``\b`` on both ends so
+#: ``module chip_v2`` is not matched when renaming ``chip``.
+_MODULE_DECL_TMPL = r"\bmodule\s+{top}\b"
+
+
+def blank_sv_comments_and_strings(sv: str) -> str:
+    """Return ``sv`` with comments and string literals blanked out.
+
+    Same length as the input and newline-preserving, so an offset into
+    the result is an offset into the original source: callers scan the
+    blanked text and splice the real one. Handles ``//`` line comments,
+    ``/* */`` block comments (multi-line included) and ``"..."`` string
+    literals with backslash escapes.
+
+    A character loop rather than a regex: a regex-only stripper has to
+    choose which construct wins when they nest (a ``//`` inside a
+    string, a quote inside a block comment) and gets one of them wrong.
+    Here the first opener encountered simply consumes to its own
+    terminator, which is what a lexer does.
+    """
+    out = list(sv)
+    n = len(sv)
+
+    def blank(lo: int, hi: int) -> None:
+        for k in range(lo, hi):
+            if out[k] != "\n":
+                out[k] = " "
+
+    i = 0
+    while i < n:
+        c = sv[i]
+        if c == "/" and i + 1 < n and sv[i + 1] == "/":
+            j = i
+            while j < n and sv[j] != "\n":
+                j += 1
+            blank(i, j)
+            i = j
+        elif c == "/" and i + 1 < n and sv[i + 1] == "*":
+            j = i + 2
+            while j + 1 < n and not (sv[j] == "*" and sv[j + 1] == "/"):
+                j += 1
+            j = min(j + 2, n)
+            blank(i, j)
+            i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and sv[j] != '"':
+                j += 2 if sv[j] == "\\" and j + 1 < n else 1
+            j = min(j + 1, n)
+            blank(i, j)
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
+def rename_module_decl(sv: str, top: str, new_top: str) -> str:
+    r"""Rename the ``module <top>`` declaration — and only that.
+
+    A plain ``sv.replace(top, new_top, 1)`` renames whichever
+    occurrence comes first in the file, which is the *comment* in
+    sources like ``// top module is chip\nmodule chip (...)``, or an
+    earlier identifier that happens to contain the top name. The
+    declaration is located instead by an anchored ``\bmodule\s+<top>\b``
+    match over the comment-/string-blanked source (offsets are
+    preserved, so the match offset indexes the real text) and only that
+    span is spliced.
+
+    Falls back to the old ``replace(..., 1)`` behaviour when no
+    declaration is found — a mutated body that no longer contains a
+    parseable header still needs *some* distinct top for the Yosys
+    content-hash cache, and the caller has no better answer.
+    """
+    scrubbed = blank_sv_comments_and_strings(sv)
+    match = re.search(_MODULE_DECL_TMPL.format(top=re.escape(top)), scrubbed)
+    if match is None:
+        return sv.replace(top, new_top, 1)
+    start = match.end() - len(top)
+    return sv[:start] + new_top + sv[start + len(top) :]
 
 
 def _kinds(xeno: Any) -> list[Any]:
@@ -195,28 +320,17 @@ def _wrap_mutant(parent: RenderedCase, mutant: "Mutant", index: int) -> Rendered
 
     The mutated SV body keeps the parent's ``module {top}`` name, so
     we synthesise a distinct ``top`` for the cache key by appending
-    the mutant index. The SV is rewritten with that new top in the
-    same byte-position the parent had — preserves any structural
-    hash on the surrounding source.
+    the mutant index. Only the ``module <top>`` declaration is
+    rewritten — see :func:`rename_module_decl` — so a comment or an
+    earlier identifier containing the top name is left alone.
     """
     new_top = f"{parent.top}_mut{index}"
-    mutated_sv = mutant.sv.replace(parent.top, new_top, 1)
+    mutated_sv = rename_module_decl(mutant.sv, parent.top, new_top)
     new_case_id = _mutant_case_id(parent, mutant, index)
 
-    # Encode the prediction's *direction of change* as expected /
-    # forbidden assertions. The corpus runner's contract is "absolute
-    # finding set" but xeno predictions are *deltas* from the parent —
-    # so we only assert the directional invariant (added rule fires
-    # at least once; removed rule is silent). The strict per-rule
-    # equality check lives in tests/fuzz/test_mutants.py, which
-    # consumes the parent's finding set at run time.
-    expected_findings = tuple(
-        ExpectedFinding(rule_id, Op.GE, 1)
-        for rule_id in mutant.prediction.cdc_rules_added
-    )
-    forbidden_findings = tuple(
-        ExpectedFinding(rule_id, Op.ZERO)
-        for rule_id in mutant.prediction.cdc_rules_removed
+    expected_findings, forbidden_findings = encode_prediction(
+        mutant.prediction.cdc_rules_added,
+        mutant.prediction.cdc_rules_removed,
     )
 
     return RenderedCase(
