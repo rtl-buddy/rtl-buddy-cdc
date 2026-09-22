@@ -38,7 +38,8 @@ src/rtl_buddy_cdc/
 ├── netlist.py         # Yosys write_json loader (Module / Cell / Port / Netname)
 ├── flops.py           # FF cell zoo (FF_CELL_TYPES) + Flop dataclass
 ├── domain.py          # trace_clock_root + find_crossings (BFS) + Crossing
-├── sdc.py             # SDC parser: Tcl tokenizer + per-command arg-spec table
+├── sdc.py             # SDC parser: Tcl safe-interp / tokenizer reader + arg-spec table
+├── tcl_tokenizer.py   # stdlib-only Tcl word tokenizer (vendored verbatim by rtl-buddy)
 ├── rules.py           # CDC-001..-008 + RULES registry + run_all + helpers
 ├── abstract.py        # blackbox-boundary detector + summariser (#256/#257/#259)
 ├── hierarchy.py       # compose_boundaries: analyse each (module, clock ctx) once
@@ -174,25 +175,45 @@ pairing is the regression net for false positives.
 
 ## Extending the SDC parser
 
-The parser is intentionally a Tcl-aware tokenizer plus per-command
-arg-spec table, **not** a Tcl interpreter. Don't pull in
-`tkinter.Tcl()` or a third-party Tcl host without first opening an
-issue — the design choice is documented in
-`wiki/raw/articles/rtl-buddy-cdc-architecture.md` §6.
-
 The two-layer shape landed in #144 (after the pointwise fixes
-#140 / #142 made the underlying bug class clear). Layer 1 is
-`_tokenize`: a Tcl-aware word tokenizer where `{...}` braces and
-`[...]` brackets are single tokens with nesting respected. Layer 2
-is `ARG_SPECS`: a per-command table declaring each flag's arity
-(`ZERO` / `ONE` / `GREEDY`); the dispatcher slices the word list
-into a typed `Parsed(flags, tail)` bag the handlers consume directly.
-The #144 issue thread records the rejected `tkinter.Tcl()`
-alternative and the conditions under which we'd switch tracks
-(`$var` expansion, `source` includes, `unknown` / `proc`-driven
-vendor commands). If your work motivates any of those triggers,
-raise it as a new issue referencing the #144 discussion rather than
-growing variable expansion onto the current tokenizer.
+#140 / #142 made the underlying bug class clear). Layer 1 *reads* the
+file into one word list per command; Layer 2 is `ARG_SPECS`: a
+per-command table declaring each flag's arity (`ZERO` / `ONE` /
+`GREEDY`); the dispatcher slices the word list into a typed
+`Parsed(flags, tail)` bag the handlers consume directly.
+
+#298 gave Layer 1 **two interchangeable backends** — the `$var`
+trigger recorded on the #144 thread did fire, via rtl-buddy#641:
+
+- **`tcl`** (preferred, whenever `_tkinter` imports). `tkinter.Tcl()`
+  → `interp create -safe` → an `unknown` handler aliased back into
+  Python. Real evaluation, so `set` / `expr` / `[…]` substitution
+  work. The safe child has no `exec` / `open` / `file` / `socket` /
+  `load` / `source` — a constraints file cannot run or touch
+  anything. Never call `Tk()`; `Tcl()` needs no display. `-safe`
+  bounds capability, not cost, so the child also carries `interp
+  limit` command/time budgets (`TCL_COMMAND_LIMIT`,
+  `TCL_TIME_LIMIT_SECONDS`); keep them armed before *any* eval,
+  bootstrap included, or `while 1 {}` in an SDC hangs the tool
+  where Python cannot interrupt it.
+- **`tokenizer`** (fallback). `tcl_tokenizer._tokenize`, unchanged
+  from #144: `{...}` braces and `[...]` brackets are single opaque
+  tokens with nesting respected.
+
+Both feed the same slicer, handlers and `ClockSpec`, so every
+consumer is backend-agnostic. `sdc.backend()` reports the choice and
+`RB_CDC_SDC_BACKEND` / `parse(..., backend=...)` override it; the
+tests parametrise over both through the `sdc_backend` fixture in
+`tests/conftest.py`.
+
+`tcl_tokenizer.py` is **stdlib-only and imports nothing from this
+package** — rtl-buddy vendors it verbatim at a pinned commit and
+diff-checks it in CI (rtl-buddy#641). Keep the two function bodies
+byte-identical across the two repos; a test asserts the file has no
+package imports. Handler code must not key on collection *shape*
+(`word.startswith("[")`, `"get_pins" in word`) without a
+backend-agnostic fallback: the Tcl reader evaluates `{d_in}` down to
+a bare `d_in`.
 
 When adding a new SDC command:
 

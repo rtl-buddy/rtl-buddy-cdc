@@ -665,6 +665,13 @@ def version() -> None:
     except _md.PackageNotFoundError:
         typer.echo("pyslang: not installed (optional; install with the [slang] extra)")
 
+    # Which SDC reader this interpreter gets (rtl-buddy-cdc#298). The
+    # tokenizer fallback silently ignores $var / expr / command
+    # substitution, so "why did my generated clock not show up" is a
+    # real bug report — print the backend so it is answerable from the
+    # version block alone.
+    typer.echo(f"sdc backend: {sdc_mod.backend_description()}")
+
 
 # --- shared analysis path ---------------------------------------------------
 

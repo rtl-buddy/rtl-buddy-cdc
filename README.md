@@ -226,6 +226,21 @@ The parser is a focused subset — STA-only commands (`set_max_delay`, `set_min_
 - `set_input_delay -clock <c> [get_ports <p>]` / `set_output_delay -clock <c> [get_ports <p>]` — assigns top-level data ports to a clock domain
 - Comments (`#`), backslash line continuation (`\`)
 
+### Reader backends
+
+SDC is Tcl, and the reader has two backends (rtl-buddy-cdc#298). `rtl-buddy-cdc version` prints which one this interpreter gets:
+
+| Backend | When | What it evaluates |
+|---|---|---|
+| `tcl` | whenever `_tkinter` imports (every uv-managed / python-build-standalone interpreter) | Real Tcl in a `tkinter.Tcl()` → `interp create -safe` child: `set` variables, `expr`, `[…]` command substitution, nested collections such as `[get_pins [get_cells u_div]/C]`. |
+| `tokenizer` | fallback, when `_tkinter` is missing (Homebrew python without `python-tk`, EL8 system python without `python3-tkinter`) | A Tcl-aware *word tokenizer* only. `$var`, `expr` and command substitution are **not** evaluated — a clock declared through a variable is invisible. |
+
+Override with `RB_CDC_SDC_BACKEND=tcl|tokenizer`. On the fallback you get one `sdc.tcl_unavailable` warning per run naming the fix, and one `sdc.tokenizer_skipped` warning per file the first time something is dropped.
+
+The Tcl backend is a **safe** interpreter: it has no `exec`, `open`, `file`, `socket`, `load` or `source`, so a constraints file cannot read, write, or run anything. Those commands are reported as unsupported, never executed — including `source`, which cannot pull in a second file (inline the included constraints instead).
+
+It is also **bounded**: the child carries `interp limit` budgets (1,000,000 commands, 30s wall-clock), so a runaway loop or recursion in an SDC cuts the read off and falls back to the tokenizer with a warning instead of hanging the tool.
+
 When the parser sees a CDC-relevant command it can't fully understand (e.g. `set_false_path -through`, `[get_clocks -filter …]`), it accumulates a one-line warning and surfaces them all at the end of the run rather than spamming line-by-line. Truly unknown commands (`set_max_delay`, `set_load`, …) are silently dropped at DEBUG level.
 
 If no SDC is supplied, the tool prints a structural summary and skips all rule checks.

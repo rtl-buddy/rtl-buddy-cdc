@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SDC reader: `tkinter.Tcl()` safe-interp backend, tokenizer as
+  fallback** (#298) — *minor: additive, no existing field renamed or
+  retyped.* `sdc.parse` tokenized SDC with a hand-written Tcl word
+  splitter whose documented out-of-scope list was `$var`, `expr`,
+  `proc`, command substitution and `source`. rtl-buddy#641 gives `rb
+  synth` / `rb cdc check-xdc` a two-tier reader, and the CDC analysis
+  must read the same SDC the same way — otherwise a clock declared
+  through a variable is seen by one tool and missed by the other.
+
+  Layer 1 now has two interchangeable backends behind one interface:
+
+  - **`tcl`** (preferred, whenever `_tkinter` imports — every
+    uv-managed / python-build-standalone interpreter bundles it):
+    `tkinter.Tcl()` → `interp create -safe` → an `unknown` handler
+    aliased back into Python. Real evaluation, so `set` variables,
+    `[expr …]`, `-period {10.0}` and nested collections such as
+    `[get_pins [get_cells u_div]/C]` (→ `u_div/C`) all work.
+    `get_*` / `all_*` collections are recorded, never resolved
+    against the design. The safe child has **no `exec`, `open`,
+    `file`, `socket`, `load` or `source`**, so a constraints file
+    cannot spawn a process or touch the filesystem; those names land
+    in `unknown` with everything else and are reported as
+    unsupported. `source` says so explicitly rather than silently
+    producing a clock-free spec. Line numbers come from `info frame`.
+    The child also carries `interp limit` budgets — 1,000,000 commands
+    and 30s wall-clock — because `-safe` bounds what a constraints file
+    *can do*, not what it *costs*: without them a one-line `while 1 {}`
+    holds the process inside `Tcl_EvalEx` forever, where Python cannot
+    interrupt it. Exceeding either is treated like any other read
+    error (tokenizer re-read plus a `partial_warnings` entry saying the
+    file was cut off part-way).
+  - **`tokenizer`** (fallback, unchanged behaviour): the #144 word
+    tokenizer, moved verbatim to the new stdlib-only
+    `rtl_buddy_cdc.tcl_tokenizer` module so rtl-buddy can vendor that
+    file at a pinned commit and diff-check it in CI.
+    `sdc._tokenize` / `sdc._extract_names` stay importable.
+
+  Both backends feed the same `_slice` / `ARG_SPECS` / handler
+  pipeline, so `ClockSpec` and every downstream consumer
+  (`clock_network`, `domain_map`, `rules`, `reporter`) are untouched.
+  `sdc.backend()` reports the choice, `rtl-buddy-cdc version` prints
+  it, and `RB_CDC_SDC_BACKEND=tcl|tokenizer` / `parse(text,
+  backend=...)` override it. A missing `_tkinter` raises one
+  `sdc.tcl_unavailable` warning per run naming the fix (uv-managed
+  Python, distro `python3-tkinter`, Homebrew `python-tk@X.Y`); the
+  fallback raises one `sdc.tokenizer_skipped` warning per file the
+  first time a `$`-word or unrecognised command is dropped.
+
+### Fixed
+
+- **`set_input_delay` / `set_output_delay` now accept a bare port
+  name as the target** (#298) — the tail heuristic keyed on
+  collection *shape* (`[…]`, `{…}`, `"get_ports" in word`), which the
+  Tcl reader evaluates away (`{d_in}` → `d_in`). The discriminator is
+  now "anything in the tail that isn't a number is a target", which
+  behaves identically on both backends and additionally types
+  `set_input_delay -clock clk 1.5 d_in`, previously ignored.
+
 ## [0.5.0] — 2026-08-24
 
 ### Added

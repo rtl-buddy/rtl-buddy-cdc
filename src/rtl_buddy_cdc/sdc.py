@@ -16,36 +16,88 @@ Supported commands:
 Numeric delays, slack, drive, load — all silently dropped. The parser
 only cares about clock topology and async-partitioning, not timing.
 
-The implementation has two layers (see issue #144 for the design
-discussion). Layer 1 is a Tcl-aware word tokenizer: ``{...}`` braces
-and ``[...]`` brackets are single tokens with nesting respected, ``\\``
-collapses line continuation to a space, ``"..."`` strips quoting, ``#``
-at a word boundary comments to end-of-line. Layer 2 is a per-command
+The implementation has two layers (issue #144 for the original design
+discussion, rtl-buddy-cdc#298 for the reader split). Layer 1 *reads*
+the file into one word list per command; Layer 2 is a per-command
 :data:`ARG_SPECS` table — each command declares its flags with arity
 (:class:`Arity.ZERO` / ``ONE`` / ``GREEDY``); the slicer turns a word
 list into a (flags, tail) bag the handlers consume directly. No
 per-command "walk forward until the next ``-flag``" loops.
 
-This is **not** a Tcl interpreter. The choice is deliberate: real Tcl
-interpreters execute user code, add a non-Python dependency, and
-complicate deployment. The documented unsupported constructs are
-command substitution beyond ``[get_clocks …]`` / ``[get_ports …]`` /
-``[get_pins …]``, ``set`` variables, ``expr``, and ``-filter`` clauses.
-When the parser sees a CDC-relevant command it can't fully understand
-it appends to :attr:`ClockSpec.partial_warnings` so the caller can
-surface a single end-of-parse warning rather than spamming line-by-line.
+Layer 1 has **two interchangeable backends**, selected by
+:func:`backend` (override with the ``backend=`` argument to
+:func:`parse` / :func:`parse_file`, or the ``RB_CDC_SDC_BACKEND``
+environment variable):
+
+``tcl`` (preferred, used whenever ``_tkinter`` imports)
+    ``tkinter.Tcl()`` → ``interp create -safe`` → an ``unknown``
+    handler aliased back into Python. Real Tcl evaluation, so ``set``
+    variables, ``expr``, ``\\`` continuation and nested command
+    substitution all work; ``get_*`` / ``all_*`` collections are
+    recorded, never resolved against the design. The safe interp has
+    no ``exec`` / ``open`` / ``file`` / ``socket`` / ``load`` /
+    ``source``, so a constraints file cannot read, write or run
+    anything — those names land in ``unknown`` with everything else
+    and are reported, not executed.
+
+``tokenizer`` (fallback, when ``_tkinter`` is missing)
+    :func:`rtl_buddy_cdc.tcl_tokenizer._tokenize`, the hand-written
+    Tcl-aware word splitter: ``{...}`` braces and ``[...]`` brackets
+    are single opaque tokens with nesting respected, ``\\`` collapses
+    line continuation to a space, ``"..."`` strips quoting, ``#`` at a
+    word boundary comments to end-of-line. It does **not** evaluate
+    ``$var``, ``expr`` or command substitution, so a clock declared
+    through a variable is invisible to it; the first such drop per
+    file raises a ``sdc.tokenizer_skipped`` warning, and a missing
+    ``_tkinter`` raises one ``sdc.tcl_unavailable`` warning per run
+    naming the fix.
+
+Both backends feed the same slicer, handlers and :class:`ClockSpec`,
+so every downstream consumer is backend-agnostic. When the parser sees
+a CDC-relevant command it can't fully understand it appends to
+:attr:`ClockSpec.partial_warnings` so the caller can surface a single
+end-of-parse warning rather than spamming line-by-line.
 """
 
 from __future__ import annotations
 
 import enum
 import logging
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+# The tokenizer reader lives in its own stdlib-only module so rtl-buddy
+# can vendor it verbatim (rtl-buddy-cdc#298). Re-exported here because
+# every existing caller and test imports ``sdc._tokenize`` /
+# ``sdc._extract_names``.
+from rtl_buddy_cdc.tcl_tokenizer import _extract_names, _tokenize
+
 if TYPE_CHECKING:
     from rtl_buddy_cdc.netlist import Module
+
+__all__ = [
+    "Arity",
+    "ARG_SPECS",
+    "BACKENDS",
+    "BACKEND_ENV_VAR",
+    "Clock",
+    "ClockSpec",
+    "TKINTER_AVAILABLE",
+    "TclReadError",
+    "TclResourceLimitError",
+    "UNCONSTRAINED_SENTINEL",
+    "backend",
+    "backend_description",
+    "parse",
+    "parse_file",
+    "synthesize_unconstrained_inputs",
+    "validate_clock_graph",
+    "_extract_names",
+    "_tokenize",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -224,26 +276,96 @@ class ClockSpec:
 # ---- parser entry points ----------------------------------------------------
 
 
-def parse(text: str) -> ClockSpec:
+def parse(text: str, *, backend: str | None = None) -> ClockSpec:
+    """Parse SDC ``text`` into a :class:`ClockSpec`.
+
+    ``backend`` forces a Layer-1 reader (``"tcl"`` or ``"tokenizer"``);
+    ``None`` (the default) resolves it from ``RB_CDC_SDC_BACKEND`` and
+    then from ``_tkinter`` availability. Asking for ``"tcl"`` without
+    ``_tkinter`` degrades to the tokenizer with a warning rather than
+    raising — see :func:`_resolve_backend`.
+    """
     spec = ClockSpec()
-    for words in _tokenize(text):
+    effective = _resolve_backend(backend)
+    commands: list[_Command] | None = None
+    if effective == "tcl":
+        try:
+            commands = _read_tcl(text)
+        except TclReadError as exc:
+            # A genuine Tcl error (bad syntax, undefined variable, a
+            # command erroring out) or a resource limit aborts the
+            # script part-way, so the capture is incomplete. Discard it
+            # and re-read the whole file with the tokenizer, which
+            # never fails and never loops, and say so.
+            if isinstance(exc, TclResourceLimitError):
+                what = (
+                    f"Tcl interpreter backend hit a resource limit "
+                    f"({_one_line(exc)}) and the file was cut off part-way "
+                    f"— a runaway loop or recursion in the constraints?"
+                )
+            else:
+                what = (
+                    f"Tcl interpreter backend could not evaluate this file "
+                    f"({_one_line(exc)})"
+                )
+            spec.partial_warnings.append(
+                f"{what}; re-read with the word tokenizer, so "
+                f"$var / expr / command substitution were not evaluated"
+            )
+            effective = "tokenizer"
+            commands = None
+    if commands is None:
+        commands = _read_tokenizer(text)
+
+    skip_reported = False
+
+    def note_tokenizer_skip(what: str) -> None:
+        nonlocal skip_reported
+        if effective != "tokenizer" or skip_reported:
+            return
+        skip_reported = True
+        logger.warning(
+            "sdc.tokenizer_skipped: %s. The word-tokenizer backend does not "
+            "evaluate $var, expr or command substitution, so constraints "
+            "expressed through them are invisible to the CDC analysis.%s",
+            what,
+            "" if TKINTER_AVAILABLE else f" {_TKINTER_FIX_HINT}",
+        )
+
+    for command in commands:
+        words = command.words
         if not words:
             continue
         cmd, args = words[0], words[1:]
+        unsupported = _UNSUPPORTED_COMMANDS.get(cmd)
+        if unsupported is not None:
+            target = f" {' '.join(args)!r}" if args else ""
+            spec.partial_warnings.append(
+                f"{cmd}{target}{_at_line(command.line)}: {unsupported}"
+            )
+            continue
         spec_for_cmd = ARG_SPECS.get(cmd)
         if spec_for_cmd is None:
             # Drop noise (set_max_delay, set_load, set_drive, …) at
             # DEBUG level so users can see what was skipped via
             # ``--verbose`` without the report being flooded.
             logger.debug("sdc: ignoring unsupported command %r", cmd)
+            note_tokenizer_skip(f"dropped unrecognised command {cmd!r}")
             continue
+        if any("$" in w for w in words):
+            note_tokenizer_skip(f"{cmd}: kept a literal $-word unevaluated")
         parsed = _slice(args, spec_for_cmd)
         _DISPATCH[cmd](spec, parsed)
     return spec
 
 
-def parse_file(path: str | Path) -> ClockSpec:
-    return parse(Path(path).read_text())
+def parse_file(path: str | Path, *, backend: str | None = None) -> ClockSpec:
+    return parse(Path(path).read_text(), backend=backend)
+
+
+def _one_line(exc: Exception) -> str:
+    """Flatten a multi-line Tcl error message into a single sentence."""
+    return " ".join(str(exc).split())
 
 
 def validate_clock_graph(spec: ClockSpec) -> list[str]:
@@ -382,133 +504,300 @@ def synthesize_unconstrained_inputs(spec: ClockSpec, module: "Module") -> list[s
     return sentinel_ports
 
 
-# ---- Layer 1: Tcl-aware word tokenizer --------------------------------------
+# ---- Layer 1: readers (Tcl safe interp → tokenizer fallback) ----------------
+#
+# Two readers produce the same shape — a list of :class:`_Command`
+# records, one per SDC command, each holding a word list. Everything
+# downstream (:func:`_slice`, :data:`ARG_SPECS`, the handlers,
+# :class:`ClockSpec`) is reader-agnostic.
 
 
-def _tokenize(text: str) -> list[list[str]]:
-    """Tokenize SDC source into a list of word lists, one per command line.
+#: Reader backends :func:`parse` understands.
+BACKENDS = ("tcl", "tokenizer")
 
-    Handles the Tcl-flavoured syntax that SDC actually uses:
+#: Environment override for the reader backend, e.g.
+#: ``RB_CDC_SDC_BACKEND=tokenizer``. An explicit ``backend=`` argument
+#: to :func:`parse` / :func:`parse_file` wins over the variable.
+BACKEND_ENV_VAR = "RB_CDC_SDC_BACKEND"
 
-    - Whitespace splits words at the top level.
-    - ``{...}`` braces — single word, nested braces respected, content
-      kept literal (we don't substitute inside).
-    - ``[...]`` brackets — single word, nested brackets respected,
-      content kept literal (we treat the bracket span as opaque; the
-      handler peels ``get_ports`` / ``get_pins`` / ``get_clocks``).
-    - ``"..."`` double-quotes — single word; the quotes are stripped
-      and ``\\<c>`` escapes the next character inside.
-    - ``\\<newline>`` line continuation collapses to a single space.
-    - ``#`` at a word boundary starts a comment to end-of-line; the
-      partial command (if any) is flushed, matching the existing
-      "comments break continuation" behaviour.
-    - ``\\n`` ends a logical command.
+# ``tkinter`` itself is imported lazily (it is slow to import and pulls
+# in a Tcl runtime); ``_tkinter`` is the C extension that decides
+# whether ``tkinter`` can work at all, and probing it is cheap. Every
+# uv-managed / python-build-standalone interpreter bundles it; a
+# Homebrew python without ``python-tk``, or an EL8 system python
+# without ``python3-tkinter``, does not.
+try:  # pragma: no cover - availability is environment-dependent
+    import _tkinter as _tkinter_probe
+except ImportError:  # pragma: no cover - availability is environment-dependent
+    _tkinter_probe = None  # type: ignore[assignment]
 
-    Out-of-scope on purpose (see issue #144's "Rejected alternative"
-    section): variable expansion (``$x``), ``expr``, ``proc``, command
-    substitution evaluation, ``source`` includes. If any of these
-    become real requirements, switch to ``tkinter.Tcl()`` rather than
-    grow them onto this tokenizer.
+#: True when ``tkinter.Tcl()`` can be constructed in this interpreter.
+TKINTER_AVAILABLE = _tkinter_probe is not None
+
+_TKINTER_FIX_HINT = (
+    "_tkinter is not importable, so the Tcl safe-interp SDC reader is "
+    "unavailable and the word tokenizer is used instead ($var, expr and "
+    "command substitution are not evaluated). Fix by running under a "
+    "uv-managed Python (`uv python install 3.12`), or install the "
+    "distro package `python3-tkinter` / `python3-tk`, or Homebrew's "
+    "`python-tk@<X.Y>` matching your interpreter."
+)
+
+# Once-per-run latch for the ``sdc.tcl_unavailable`` warning.
+_warned_tcl_unavailable = False
+
+
+def _reset_backend_warnings() -> None:
+    """Re-arm the once-per-run backend warnings (test hook)."""
+    global _warned_tcl_unavailable
+    _warned_tcl_unavailable = False
+
+
+def _warn_tcl_unavailable() -> None:
+    global _warned_tcl_unavailable
+    if _warned_tcl_unavailable:
+        return
+    _warned_tcl_unavailable = True
+    logger.warning("sdc.tcl_unavailable: %s", _TKINTER_FIX_HINT)
+
+
+def _resolve_backend(explicit: str | None = None) -> str:
+    """Pick the reader backend for one parse.
+
+    Precedence: explicit argument → :data:`BACKEND_ENV_VAR` → auto
+    (``"tcl"`` when ``_tkinter`` imports, else ``"tokenizer"``). A
+    request for ``"tcl"`` on an interpreter without ``_tkinter``
+    degrades to the tokenizer with the once-per-run
+    ``sdc.tcl_unavailable`` warning rather than raising — the analysis
+    should still run, just with the documented subset.
     """
-    lines: list[list[str]] = []
-    current: list[str] = []
-    word: list[str] = []
-    i = 0
-    n = len(text)
+    requested = explicit if explicit is not None else os.environ.get(BACKEND_ENV_VAR)
+    if requested is not None and requested.strip():
+        name = requested.strip().lower()
+        if name not in BACKENDS:
+            raise ValueError(
+                f"unknown SDC backend {requested!r}; expected one of "
+                f"{', '.join(BACKENDS)}"
+            )
+    elif TKINTER_AVAILABLE:
+        return "tcl"
+    else:
+        name = "tokenizer"
+    if name == "tcl" and not TKINTER_AVAILABLE:
+        _warn_tcl_unavailable()
+        return "tokenizer"
+    if name == "tokenizer" and not TKINTER_AVAILABLE:
+        _warn_tcl_unavailable()
+    return name
 
-    def flush_word() -> None:
-        if word:
-            current.append("".join(word))
-            word.clear()
 
-    def flush_line() -> None:
-        flush_word()
-        if current:
-            lines.append(current.copy())
-            current.clear()
+def backend() -> str:
+    """Return the reader backend this process will use: ``"tcl"`` or
+    ``"tokenizer"``. Surfaced by ``rtl-buddy-cdc version``."""
+    return _resolve_backend(None)
 
-    while i < n:
-        c = text[i]
 
-        # Line continuation: backslash-newline collapses to whitespace.
-        if c == "\\" and i + 1 < n and text[i + 1] == "\n":
-            flush_word()
-            i += 2
-            continue
+def backend_description() -> str:
+    """One-line human-readable backend summary for ``version`` output."""
+    if backend() == "tcl":
+        return "tcl (tkinter.Tcl() safe interp; $var / expr / [cmd] evaluated)"
+    if TKINTER_AVAILABLE:
+        return f"tokenizer (forced via {BACKEND_ENV_VAR}; $var / expr not evaluated)"
+    return "tokenizer (_tkinter not importable; $var / expr not evaluated)"
 
-        # Newline ends the logical command.
-        if c == "\n":
-            flush_line()
-            i += 1
-            continue
 
-        # Top-level whitespace splits words.
-        if c in " \t\r":
-            flush_word()
-            i += 1
-            continue
+@dataclass(frozen=True)
+class _Command:
+    """One SDC command: its words, plus the source line when known.
 
-        # Comment at word boundary: skip to end-of-line. A comment that
-        # appears between continued lines breaks the continuation,
-        # matching the previous line-based behaviour.
-        if c == "#" and not word:
-            flush_line()
-            while i < n and text[i] != "\n":
-                i += 1
-            continue
+    ``line`` is ``None`` for the tokenizer reader (it tracks no line
+    numbers) and for any Tcl frame that did not report one; every
+    diagnostic that consumes it goes through :func:`_at_line`, which
+    renders ``None`` as an empty suffix.
+    """
 
-        # Brace word — nested braces respected, content kept literal.
-        if c == "{" and not word:
-            depth = 1
-            start = i
-            i += 1
-            while i < n and depth > 0:
-                ch = text[i]
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                i += 1
-            current.append(text[start:i])
-            continue
+    words: list[str]
+    line: int | None = None
 
-        # Bracket word — nested brackets respected, content kept literal.
-        if c == "[" and not word:
-            depth = 1
-            start = i
-            i += 1
-            while i < n and depth > 0:
-                ch = text[i]
-                if ch == "[":
-                    depth += 1
-                elif ch == "]":
-                    depth -= 1
-                i += 1
-            current.append(text[start:i])
-            continue
 
-        # Double-quoted word — strip quotes; backslash escapes the next char.
-        if c == '"' and not word:
-            i += 1
-            buf: list[str] = []
-            while i < n and text[i] != '"':
-                if text[i] == "\\" and i + 1 < n:
-                    buf.append(text[i + 1])
-                    i += 2
-                else:
-                    buf.append(text[i])
-                    i += 1
-            current.append("".join(buf))
-            if i < n:
-                i += 1  # closing quote
-            continue
+def _at_line(line: int | None) -> str:
+    """Render a ``(line N)`` diagnostic suffix, or nothing for ``None``."""
+    return f" (line {line})" if line is not None else ""
 
-        word.append(c)
-        i += 1
 
-    flush_line()
-    return lines
+def _read_tokenizer(text: str) -> list[_Command]:
+    """Fallback reader: the hand-written Tcl word tokenizer."""
+    return [_Command(words=words) for words in _tokenize(text)]
 
+
+class TclReadError(RuntimeError):
+    """The safe Tcl interpreter refused to evaluate the SDC source."""
+
+
+class TclResourceLimitError(TclReadError):
+    """The safe Tcl interpreter was cut off by a resource limit.
+
+    ``interp create -safe`` sandboxes *capability* (no ``exec``, no
+    filesystem) but not *cost*: a constraints file containing
+    ``while 1 {}`` would otherwise spin forever inside
+    ``Tcl_EvalEx`` with no way for Python to interrupt it. The limits
+    set in :func:`_read_tcl` turn that into an ordinary read error,
+    which :func:`parse` degrades to a tokenizer re-read.
+    """
+
+
+#: Maximum commands the safe child may execute for one SDC file.
+#: Generous — the largest real constraints files are a few thousand
+#: commands, and a ``-granularity 1`` counter check is cheap. Note
+#: this does *not* catch ``while 1 {}``: an empty loop body dispatches
+#: no commands at all, which is what the wall-clock limit is for.
+TCL_COMMAND_LIMIT = 1_000_000
+
+#: Wall-clock budget, in seconds, for evaluating one SDC file. Covers
+#: the bootstrap script too (both limits are armed before either runs).
+TCL_TIME_LIMIT_SECONDS = 30
+
+
+# Commands whose *names* are collections in SDC/Tcl ("get_ports",
+# "all_inputs", …). Under the interp reader they are aliased through
+# ``unknown`` and must hand back something ``_extract_names`` peels the
+# same way it peels the tokenizer's opaque ``[get_ports clk]`` word —
+# so we re-wrap the evaluated operands in the canonical bracket form.
+def _is_collection_command(cmd: str) -> bool:
+    return cmd.startswith("get_") or cmd.startswith("all_")
+
+
+_NESTED_COLLECTION_RE = re.compile(r"\[(?:get|all)_[A-Za-z0-9_]*\s*([^][]*)\]")
+
+
+def _strip_collection_wrappers(word: str) -> str:
+    """Collapse nested ``[get_cells u/*]`` wrappers back to bare names.
+
+    ``[get_pins [get_cells u/*]/C]`` evaluates inside-out: ``get_cells``
+    returns ``[get_cells u/*]``, Tcl concatenates ``/C`` onto it, and
+    ``get_pins`` receives ``[get_cells u/*]/C``. Peeling the inner
+    wrapper yields ``u/*/C``, which is what a timer would resolve the
+    nested collection to.
+    """
+    prev = None
+    out = word
+    while prev != out:
+        prev = out
+        out = _NESTED_COLLECTION_RE.sub(r"\1", out)
+    return out
+
+
+# Evaluated inside the safe child before the SDC text. ``puts`` is
+# stubbed out because a safe interp has no stdout channel and vendor
+# SDC files print progress; ``unknown`` catches every command the safe
+# interp does not define — every SDC command, every ``get_*``
+# collection, and the absent-by-construction ``exec`` / ``open`` /
+# ``file`` / ``socket`` / ``source``.
+_TCL_BOOTSTRAP = r"""
+proc puts args {}
+proc unknown args {
+    set rb_line {}
+    catch {
+        set rb_frame [info frame [expr {[info frame] - 1}]]
+        if {[dict exists $rb_frame line]} {
+            set rb_line [dict get $rb_frame line]
+        }
+    }
+    return [rb_cdc_record $rb_line {*}$args]
+}
+"""
+
+
+def _read_tcl(text: str) -> list[_Command]:
+    """Primary reader: evaluate ``text`` in a ``tkinter.Tcl()`` safe interp.
+
+    ``tkinter.Tcl()`` needs no display (never call ``Tk()`` here). The
+    child is created with ``interp create -safe``, so it has no
+    ``exec`` / ``open`` / ``file`` / ``socket`` / ``load`` / ``source``
+    and cannot touch the filesystem or spawn a process; those names
+    fall through to ``unknown`` like any other undefined command and
+    are recorded, never run.
+
+    Raises :class:`TclReadError` when the script does not evaluate
+    (genuine Tcl syntax errors, undefined variables, …); :func:`parse`
+    catches it and re-reads with the tokenizer.
+    """
+    import tkinter
+
+    records: list[_Command] = []
+
+    def record(line: str, *words: str) -> str:
+        if not words:  # pragma: no cover - Tcl never dispatches an empty command
+            return ""
+        cmd, args = words[0], list(words[1:])
+        if _is_collection_command(cmd):
+            inner = " ".join(
+                s for s in (_strip_collection_wrappers(a) for a in args) if s
+            )
+            return f"[{cmd} {inner}]" if inner else f"[{cmd}]"
+        try:
+            lineno: int | None = int(line)
+        except (TypeError, ValueError):
+            lineno = None
+        records.append(_Command(words=[cmd, *args], line=lineno))
+        # Mirror the reference ``unknown`` from issue #298: hand back
+        # the last word so a command used as a nested substitution
+        # still produces something printable.
+        return args[-1] if args else ""
+
+    try:
+        interp = tkinter.Tcl()
+    except Exception as exc:  # pragma: no cover - broken Tcl install
+        raise TclReadError(f"tkinter.Tcl() failed: {exc}") from exc
+    try:
+        interp.createcommand("rb_cdc_record", record)
+        interp.eval("interp create -safe rb_cdc_sdc")
+        # Bound the *cost* of the child, not just its capabilities. The
+        # command counter stops runaway recursion and million-iteration
+        # loops; the wall-clock deadline (an absolute epoch second, per
+        # ``interp limit``'s contract) stops a bare ``while 1 {}``,
+        # whose empty body never ticks the command counter. Exceeding
+        # either raises an ordinary TclError out of the eval below.
+        interp.eval(
+            f"interp limit rb_cdc_sdc command "
+            f"-value {int(TCL_COMMAND_LIMIT)} -granularity 1"
+        )
+        interp.eval(
+            f"interp limit rb_cdc_sdc time -granularity 10 "
+            f"-seconds [expr {{[clock seconds] + {int(TCL_TIME_LIMIT_SECONDS)}}}]"
+        )
+        interp.eval("interp alias rb_cdc_sdc rb_cdc_record {} rb_cdc_record")
+        interp.call("rb_cdc_sdc", "eval", _TCL_BOOTSTRAP)
+        interp.call("rb_cdc_sdc", "eval", text)
+    except tkinter.TclError as exc:
+        if "limit exceeded" in str(exc):
+            raise TclResourceLimitError(str(exc)) from exc
+        raise TclReadError(str(exc)) from exc
+    finally:
+        try:
+            interp.eval("interp delete rb_cdc_sdc")
+            interp.deletecommand("rb_cdc_record")
+        except Exception:  # pragma: no cover - teardown is best-effort
+            pass
+    return records
+
+
+# Commands that can never do what an SDC author expects here: the safe
+# interp does not define them, so they land in ``unknown`` and are
+# recorded rather than executed. The tokenizer drops them just as
+# silently. Either way we say so once, with the line when we have it.
+_UNSUPPORTED_COMMANDS: dict[str, str] = {
+    "source": (
+        "include files are not supported — the reader evaluates a single "
+        "file in a safe Tcl interpreter with no filesystem access; inline "
+        "the included constraints instead"
+    ),
+    "exec": "process execution is not supported and was not executed",
+    "open": "filesystem access is not supported and was not executed",
+    "socket": "network access is not supported and was not executed",
+    "file": "filesystem access is not supported and was not executed",
+    "load": "loading Tcl extensions is not supported and was not executed",
+}
 
 # ---- Layer 2: per-command argument specs ------------------------------------
 
@@ -931,7 +1220,17 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
     ports: list[str] = []
     saw_filter = False
     for word in p.tail:
-        if word.startswith("[") or word.startswith("{") or "get_ports" in word:
+        # The tail mixes the numeric delay value with the port
+        # collection. Collection *shapes* (``[get_ports …]``, ``{a b}``)
+        # only survive the tokenizer reader — the Tcl reader evaluates
+        # ``{d_in}`` down to a bare ``d_in`` — so the discriminator that
+        # works on both is "anything that isn't a number is a target".
+        if (
+            word.startswith("[")
+            or word.startswith("{")
+            or "get_ports" in word
+            or not _looks_numeric(word)
+        ):
             names, sf = _extract_names(word)
             ports.extend(names)
             saw_filter = saw_filter or sf
@@ -973,47 +1272,6 @@ _DISPATCH = {
 # ---- collection-peeling helpers --------------------------------------------
 
 
-def _extract_names(word: str) -> tuple[list[str], bool]:
-    """Peel a single tokenized word into a list of identifier names.
-
-    Accepts the three shapes a port/pin/clock argument can take:
-
-    - ``{ck0 ck1}`` — brace collection, names are whitespace-separated.
-    - ``[get_ports ck0 ck1]`` — bracket form, optional ``get_*`` head
-      stripped, ``-filter`` clauses dropped (returns ``saw_filter=True``
-      so the caller can surface a partial-parse warning).
-    - ``ck0`` — bare identifier.
-
-    Returns ``(names, saw_filter)``.
-    """
-    saw_filter = "-filter" in word
-    cleaned = word
-    for chunk in ("[", "]", "{", "}"):
-        cleaned = cleaned.replace(chunk, " ")
-    parts = cleaned.split()
-    if parts and parts[0] in {"get_ports", "get_pins", "get_clocks"}:
-        parts = parts[1:]
-    if saw_filter:
-        # Filter expressions can contain anything; drop everything
-        # from -filter onwards. Names that appeared before -filter are
-        # still valid, but in practice nothing precedes it and the
-        # list ends up empty.
-        try:
-            cut = parts.index("-filter")
-            parts = parts[:cut]
-        except ValueError:
-            pass
-    cleaned_names: list[str] = []
-    for tok in parts:
-        if tok == "-include_generated_clocks":
-            continue
-        if tok.startswith("-"):
-            # Conservative: skip vendor flags inside a get_* expression.
-            continue
-        cleaned_names.append(tok)
-    return cleaned_names, saw_filter
-
-
 def _strip_get_clocks(token: str) -> str:
     """Reduce ``"[get_clocks foo]"`` / ``"{foo}"`` / ``"foo"`` to ``"foo"``."""
     names, _ = _extract_names(token)
@@ -1024,6 +1282,15 @@ def _extract_clock_list(token: str) -> list[str]:
     """Turn ``"{src_clk dst_clk}"`` / ``"src_clk"`` into a name list."""
     names, _ = _extract_names(token)
     return names
+
+
+def _looks_numeric(word: str) -> bool:
+    """True when ``word`` is a plain number (an SDC delay value)."""
+    try:
+        float(word)
+    except ValueError:
+        return False
+    return True
 
 
 def _safe_int(word: Any, *, default: int) -> int:

@@ -1,7 +1,7 @@
 ---
 title: SDC Parsing
 created: 2026-05-11
-updated: 2026-05-11
+updated: 2026-09-22
 type: concept
 tags: [sdc, eda, parsing, clock-domain, design-decision]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
@@ -10,7 +10,20 @@ confidence: high
 
 # SDC Parsing
 
-`sdc.py` is intentionally **not a Tcl interpreter**. SDC is Tcl syntactically, but the CDC-relevant subset is small enough that a hand-rolled `shlex` tokenizer is the right tool. Real Tcl interpreters (`tkinter.Tcl()`) execute user code, complicate deployment, and add a non-Python dependency.
+SDC is Tcl syntactically. `sdc.py` reads it with one of **two interchangeable Layer-1 backends** (rtl-buddy-cdc#298); both feed the same per-command `ARG_SPECS` slicer, handlers and `ClockSpec`, so every downstream consumer is backend-agnostic.
+
+| Backend | Selected when | Evaluates |
+|---|---|---|
+| `tcl` | `_tkinter` imports (every uv-managed / python-build-standalone interpreter) | `tkinter.Tcl()` → `interp create -safe` → an `unknown` handler aliased back into Python. `set` variables, `expr`, `[…]` command substitution, nested collections (`[get_pins [get_cells u_div]/C]` → `u_div/C`). |
+| `tokenizer` | `_tkinter` missing (Homebrew python without `python-tk`, EL8 system python) | `tcl_tokenizer._tokenize` — a word splitter only. `{...}` and `[...]` are single opaque tokens; `$var` / `expr` / substitution are **not** evaluated. |
+
+`sdc.backend()` reports the choice (printed by `rtl-buddy-cdc version`); `RB_CDC_SDC_BACKEND` or `parse(text, backend=...)` overrides it.
+
+**The Tcl backend is a safe interpreter.** `interp create -safe` gives a child with no `exec`, `open`, `file`, `socket`, `load` or `source`, so an untrusted constraints file can neither spawn a process nor touch the filesystem. Those names fall through to `unknown` like any other undefined command and are reported as unsupported — `source` explicitly so, since it cannot pull in a second file.
+
+`-safe` bounds *capability*, not *cost*, so the child also carries `interp limit` budgets: `TCL_COMMAND_LIMIT` (1,000,000 commands, `-granularity 1`) and `TCL_TIME_LIMIT_SECONDS` (30s wall-clock, expressed as an absolute epoch second per `interp limit`'s contract). The command counter catches runaway recursion and million-iteration loops; the wall-clock deadline catches a bare `while 1 {}`, whose empty body dispatches no commands and so never ticks the counter. Either overrun raises `TclResourceLimitError`, which `parse` handles exactly like any other read error — tokenizer re-read plus a `partial_warnings` entry naming the cut-off.
+
+The original #144 decision was the opposite one ("not a Tcl interpreter"); it was revisited in #298 because rtl-buddy's own SDC reader (rtl-buddy#641) grew the same two-tier shape, and a clock declared through a variable must not be seen by one tool and missed by the other. `tcl_tokenizer.py` is stdlib-only and package-import-free precisely so rtl-buddy can vendor it verbatim as its own fallback.
 
 ## Supported Commands
 
@@ -40,7 +53,8 @@ Plus: `#` comments, `\` line continuation, and permissive flag-skipping for unre
 ## Deliberately Ignored
 
 - **STA-only commands** (`set_max_delay`, `set_min_delay`, `set_load`, `set_drive`, `set_disable_timing`, `set_case_analysis`, …) — silently dropped at `logging.DEBUG` level. Users can point the tool at their existing constraint file without curating a CDC-only subset
-- **Tcl constructs** beyond `[get_clocks …]` / `[get_ports …]` / `[get_pins …]` — no `set` variables, `expr`, `-filter` clauses, or `set_false_path -through`
+- **`-filter` clauses** and `set_false_path -through` — on both backends; these are path/property-specific, not clock-topology facts
+- **`set` variables / `expr` / command substitution** — evaluated by the `tcl` backend, *not* by the `tokenizer` fallback. On the fallback the first drop per file raises a `sdc.tokenizer_skipped` warning, and a missing `_tkinter` raises one `sdc.tcl_unavailable` warning per run naming the fix (uv-managed Python, `python3-tkinter`, or Homebrew `python-tk@X.Y`)
 
 ## Diagnostics Policy
 

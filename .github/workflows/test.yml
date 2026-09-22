@@ -46,7 +46,16 @@ jobs:
         # [hints] pulls in PyYAML so the reset-hints YAML loader
         # (reset_hints.py) is exercised under coverage instead of
         # skipping — the coverage gate below counts those paths.
-        run: uv sync --extra slang --extra hints --group test --python ${{ matrix.python-version }}
+        #
+        # ``--managed-python``: python-build-standalone bundles Tcl/Tk,
+        # so the interpreter has ``_tkinter`` and the primary SDC reader
+        # (the tkinter safe interp, rtl-buddy-cdc#298) is actually
+        # exercised. A runner's system python3 usually lacks it
+        # (``python3-tk`` is a separate distro package), which would
+        # silently reduce this job to the tokenizer fallback — the
+        # backend-parametrised tests in tests/test_sdc_backends.py would
+        # skip their "tcl" half without failing anything.
+        run: uv sync --managed-python --extra slang --extra hints --group test --python ${{ matrix.python-version }}
 
       # Pass `--python` to `uv run` too — without it, uv re-resolves the
       # venv against `.python-version` (3.13), wipes the matrix-specific
@@ -68,7 +77,7 @@ jobs:
       # this job exercises — pyslang elaboration, committed-JSON
       # fixtures, and CliRunner-driven flows.
       - name: Run pytest (with coverage)
-        run: uv run --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=96
+        run: uv run --managed-python --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=96
 
   # Companion job: install WITHOUT the [slang] extra to verify the
   # AGENTS.md "default install stays typer-only" promise. Specifically
