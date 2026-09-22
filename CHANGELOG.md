@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CRLF constraint files lost `\`-continued arguments** on both SDC readers (Tcl sees a backslash-escaped `\r`, the tokenizer likewise). `parse()` now normalises line endings before either backend reads the text (rtl-buddy-cdc#298).
 - **`set_input_delay` / `set_output_delay` now accept a bare port
   name as the target** (#298) — the tail heuristic keyed on
   collection *shape* (`[…]`, `{…}`, `"get_ports" in word`), which the

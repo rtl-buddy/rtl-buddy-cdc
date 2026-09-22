@@ -104,6 +104,15 @@ def test_backslash_continuation_inside_create_clock(sdc_backend) -> None:
     assert spec.clocks["clk"].ports == ("clk",)
 
 
+def test_crlf_continuation_keeps_its_arguments(sdc_backend) -> None:
+    """A Windows-authored file ends a continued line with ``\\\r\n``;
+    before ``parse()`` normalised line endings both backends dropped
+    everything after the backslash."""
+    spec = parse(CONTINUATION_SDC.replace("\n", "\r\n"))
+    assert spec.clocks["clk"].period == 10.0
+    assert spec.clocks["clk"].ports == ("clk",)
+
+
 def test_hash_inside_braces_is_not_a_comment(sdc_backend) -> None:
     """``#`` only starts a comment at a word boundary — inside a braced
     word it is literal, and the continuation to the target survives."""

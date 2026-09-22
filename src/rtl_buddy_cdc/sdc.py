@@ -284,7 +284,14 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
     then from ``_tkinter`` availability. Asking for ``"tcl"`` without
     ``_tkinter`` degrades to the tokenizer with a warning rather than
     raising — see :func:`_resolve_backend`.
+
+    Line endings are normalised first: a Windows-authored file ends a
+    ``\\``-continued line with ``\\\r\n``, which neither backend
+    treats as a continuation (Tcl sees a backslash-escaped ``\r`` and
+    then a newline), so the continued command silently lost its
+    arguments.
     """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     spec = ClockSpec()
     effective = _resolve_backend(backend)
     commands: list[_Command] | None = None
