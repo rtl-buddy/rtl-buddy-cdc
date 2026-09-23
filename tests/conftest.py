@@ -42,10 +42,14 @@ def sdc_backend(request, monkeypatch):
     ``parse()`` call sites. ``"tcl"`` skips on an interpreter without
     ``_tkinter`` (Homebrew python without ``python-tk``, EL8 system
     python) — the backend simply does not exist there.
+
+    ``sdc.tcl_available()`` is a *subprocess probe*, not an import:
+    the Tcl interp runs out of process and this one must never load
+    ``_tkinter`` (rtl-buddy-cdc#298 — it wedges macOS fork+exec).
     """
     from rtl_buddy_cdc import sdc as sdc_mod
 
-    if request.param == "tcl" and not sdc_mod.TKINTER_AVAILABLE:
+    if request.param == "tcl" and not sdc_mod.tcl_available():
         pytest.skip("_tkinter is not importable; the Tcl SDC backend is unavailable")
     monkeypatch.setenv(sdc_mod.BACKEND_ENV_VAR, request.param)
     return request.param

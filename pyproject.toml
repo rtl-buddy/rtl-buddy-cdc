@@ -121,6 +121,18 @@ follow_imports = "skip"
 [tool.coverage.run]
 source = ["src/rtl_buddy_cdc"]
 branch = true
+# The Tcl safe-interp SDC reader runs in a worker *subprocess* by
+# design (#298 — an in-process Tcl notifier thread wedges macOS
+# fork+exec), so its body is only measurable if the children are
+# measured too. ``parallel`` keeps each child's data file from
+# clobbering the parent's; pytest-cov combines them at the end. The
+# children are started by coverage.py's own ``.pth`` hook, armed with
+# ``COVERAGE_PROCESS_START`` by the module-scoped fixture in
+# ``tests/test_sdc_backends.py`` — deliberately scoped to the one
+# module that exercises the worker, because arming it session-wide
+# makes every ``parse()`` in the suite pay a coverage startup (it
+# doubled the `pytest (with slang)` job).
+parallel = true
 
 [tool.coverage.report]
 show_missing = true

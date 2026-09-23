@@ -20,9 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Layer 1 now has two interchangeable backends behind one interface:
 
-  - **`tcl`** (preferred, whenever `_tkinter` imports — every
-    uv-managed / python-build-standalone interpreter bundles it):
-    `tkinter.Tcl()` → `interp create -safe` → an `unknown` handler
+  - **`tcl`** (preferred, whenever the worker probe succeeds —
+    every uv-managed / python-build-standalone interpreter bundles
+    `_tkinter`; the interp runs **out of process**, see *Fixed*
+    below): `tkinter.Tcl()` → `interp create -safe` → an `unknown` handler
     aliased back into Python. Real evaluation, so `set` variables,
     `[expr …]`, `-period {10.0}` and nested collections such as
     `[get_pins [get_cells u_div]/C]` (→ `u_div/C`) all work.
@@ -39,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     holds the process inside `Tcl_EvalEx` forever, where Python cannot
     interrupt it. Exceeding either is treated like any other read
     error (tokenizer re-read plus a `partial_warnings` entry saying the
-    file was cut off part-way).
+    file was cut off part-way). Note the budgets bound the *worker*,
+    not this process.
   - **`tokenizer`** (fallback, unchanged behaviour): the #144 word
     tokenizer, moved verbatim to the new stdlib-only
     `rtl_buddy_cdc.tcl_tokenizer` module so rtl-buddy can vendor that
@@ -51,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`clock_network`, `domain_map`, `rules`, `reporter`) are untouched.
   `sdc.backend()` reports the choice, `rtl-buddy-cdc version` prints
   it, and `RB_CDC_SDC_BACKEND=tcl|tokenizer` / `parse(text,
-  backend=...)` override it. A missing `_tkinter` raises one
+  backend=...)` override it. A worker without `_tkinter` raises one
   `sdc.tcl_unavailable` warning per run naming the fix (uv-managed
   Python, distro `python3-tkinter`, Homebrew `python-tk@X.Y`); the
   fallback raises one `sdc.tokenizer_skipped` warning per file the
@@ -59,6 +61,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Tcl safe interp now runs in a worker process; an in-process
+  Tcl wedges macOS `fork`+`exec`** (#298). Loading `_tkinter` starts
+  Tcl's `NotifierThreadProc`, a native thread that sits in `select()`
+  for the life of the process and is never joined. A later
+  `subprocess.Popen` from a process carrying it is a `fork()` then
+  `exec()`, and in that window CPython's `child_exec` calls
+  `_close_open_fds_maybe_unsafe`; on macOS a `close()` there can enter
+  uninterruptible kernel state and never return, so the child never
+  reaches `exec`, never writes the errpipe, and the parent blocks
+  forever. Reproduced in the sibling rtl-buddy repo (identical reader
+  code) in 1 of 6 full pytest runs on uv-managed CPython 3.12 with Tcl
+  9.0.3 — the orphaned child sat wedged for 9+ hours. `rtl-buddy-cdc`
+  spawns yosys and the slang frontend via `subprocess` *after* it
+  parses the SDC, so this was a hang on the main analysis path.
+
+  The interp moved to `rtl_buddy_cdc.tcl_worker`, run as `python -m
+  rtl_buddy_cdc.tcl_worker` with one JSON request on stdin and one
+  JSON response on stdout; `sdc.py` never imports `_tkinter`, and a
+  test asserts so. Availability is now a cached once-per-process
+  worker probe — `sdc.tcl_available()` / `sdc.tcl_patchlevel()`
+  replace the `sdc.TKINTER_AVAILABLE` flag. Behaviour is otherwise
+  unchanged: same backend names, same `RB_CDC_SDC_BACKEND` override,
+  same `version` output, same `interp limit` budgets, same
+  degrade-to-tokenizer handling. A worker that has to be killed
+  (outer deadline `TCL_TIME_LIMIT_SECONDS` +
+  `TCL_WORKER_TIMEOUT_MARGIN_SECONDS`), exits non-zero or writes
+  non-JSON degrades exactly like a Tcl error.
 - **CRLF constraint files lost `\`-continued arguments** on both SDC readers (Tcl sees a backslash-escaped `\r`, the tokenizer likewise). `parse()` now normalises line endings before either backend reads the text (rtl-buddy-cdc#298).
 - **`set_input_delay` / `set_output_delay` now accept a bare port
   name as the target** (#298) — the tail heuristic keyed on

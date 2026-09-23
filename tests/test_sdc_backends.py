@@ -5,13 +5,17 @@ Layer-1 backends:
 
 ``tcl``
     ``tkinter.Tcl()`` → ``interp create -safe`` → an ``unknown``
-    handler aliased back into Python. Real Tcl evaluation.
+    handler aliased back into Python. Real Tcl evaluation, in a
+    **worker subprocess** (:mod:`rtl_buddy_cdc.tcl_worker`) — this
+    process must never import ``_tkinter``, because the Tcl notifier
+    thread it starts can wedge a later ``subprocess`` fork+exec on
+    macOS forever (rtl-buddy-cdc#298).
 
 ``tokenizer``
     :func:`rtl_buddy_cdc.tcl_tokenizer._tokenize`, the hand-written
-    word splitter, used when ``_tkinter`` is not importable.
+    word splitter, used when the worker has no ``_tkinter``.
 
-Three groups of tests live here:
+Four groups of tests live here:
 
 1. **Parity** — constructs both readers must agree on (``\\``
    continuation, ``#`` inside braces, ``-group`` collections).
@@ -24,35 +28,76 @@ Three groups of tests live here:
    ``exec`` / ``open`` / ``file delete`` / ``source``; the safe interp
    does not define them at all, so they land in ``unknown`` with
    everything else and are reported, never run.
+4. **Worker protocol** — the JSON request/response contract with
+   :mod:`rtl_buddy_cdc.tcl_worker`, and what ``_read_tcl`` does when
+   the worker times out, crashes or writes garbage.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import logging
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from rtl_buddy_cdc import sdc as sdc_mod
+from rtl_buddy_cdc import tcl_worker as worker_mod
 from rtl_buddy_cdc.sdc import (
     BACKEND_ENV_VAR,
     BACKENDS,
-    TKINTER_AVAILABLE,
     TclReadError,
     TclResourceLimitError,
     _at_line,
     _read_tcl,
-    _strip_collection_wrappers,
     backend,
     backend_description,
     parse,
     parse_file,
+    tcl_available,
+    tcl_patchlevel,
 )
+from rtl_buddy_cdc.tcl_worker import _strip_collection_wrappers
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _credit_worker_subprocess_coverage(pytestconfig):
+    """Measure ``rtl_buddy_cdc.tcl_worker`` while this module runs.
+
+    The worker is a subprocess by design (#298), so without this its
+    body reads as dead code and the ``--cov-fail-under`` ratchet would
+    be measuring a lie. coverage.py ships a ``.pth`` that starts a
+    measurement in any Python child whose environment carries
+    ``COVERAGE_PROCESS_START``; pytest-cov does not set it, and
+    ``[tool.coverage.run] parallel = true`` (see ``pyproject.toml``)
+    keeps the children's data files off the parent's.
+
+    Armed here rather than session-wide on purpose: every ``parse()``
+    in the suite spawns a worker, and paying a coverage startup for
+    each one doubled the ``pytest (with slang)`` job. The tests in this
+    module cover the worker completely on their own.
+    """
+    if not getattr(pytestconfig.option, "cov_source", None):
+        yield  # no --cov: nothing to credit
+        return
+    previous = os.environ.get("COVERAGE_PROCESS_START")
+    os.environ["COVERAGE_PROCESS_START"] = str(pytestconfig.rootpath / "pyproject.toml")
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("COVERAGE_PROCESS_START", None)
+        else:
+            os.environ["COVERAGE_PROCESS_START"] = previous
+
 
 needs_tcl = pytest.mark.skipif(
-    not TKINTER_AVAILABLE,
+    not tcl_available(),
     reason="_tkinter is not importable; the Tcl SDC backend is unavailable",
 )
 
@@ -287,7 +332,7 @@ def test_backend_env_var_forces_the_tokenizer(monkeypatch) -> None:
 
 def test_backend_auto_selects_tcl_when_available(monkeypatch) -> None:
     monkeypatch.delenv(BACKEND_ENV_VAR, raising=False)
-    assert backend() == ("tcl" if TKINTER_AVAILABLE else "tokenizer")
+    assert backend() == ("tcl" if tcl_available() else "tokenizer")
 
 
 def test_blank_backend_env_var_falls_through_to_auto(monkeypatch) -> None:
@@ -305,7 +350,11 @@ def test_requesting_tcl_without_tkinter_degrades_and_warns(monkeypatch, caplog) 
     """The fallback is a warning, not an exception — the analysis still
     runs, just with the documented subset."""
     monkeypatch.delenv(BACKEND_ENV_VAR, raising=False)
-    monkeypatch.setattr(sdc_mod, "TKINTER_AVAILABLE", False)
+    # The availability latch is a cached *worker probe* now, not an
+    # ``import _tkinter`` — pin the cache rather than the import.
+    monkeypatch.setattr(
+        sdc_mod, "_TCL_PROBE", sdc_mod._TclProbe(available=False, reason="pinned")
+    )
     monkeypatch.setattr(sdc_mod, "_warned_tcl_unavailable", False)
     with caplog.at_level(logging.WARNING, logger="rtl_buddy_cdc.sdc"):
         assert sdc_mod._resolve_backend("tcl") == "tokenizer"
@@ -320,7 +369,9 @@ def test_requesting_tcl_without_tkinter_degrades_and_warns(monkeypatch, caplog) 
 
 
 def test_reset_backend_warnings_rearms_the_latch(monkeypatch, caplog) -> None:
-    monkeypatch.setattr(sdc_mod, "TKINTER_AVAILABLE", False)
+    monkeypatch.setattr(
+        sdc_mod, "_TCL_PROBE", sdc_mod._TclProbe(available=False, reason="pinned")
+    )
     monkeypatch.setattr(sdc_mod, "_warned_tcl_unavailable", True)
     sdc_mod._reset_backend_warnings()
     with caplog.at_level(logging.WARNING, logger="rtl_buddy_cdc.sdc"):
@@ -475,6 +526,360 @@ def test_filter_clauses_still_warn_under_the_tcl_reader() -> None:
         backend="tcl",
     )
     assert any("filter" in w for w in spec.partial_warnings), spec.partial_warnings
+
+
+# ---- 4. the worker process --------------------------------------------------
+#
+# The Tcl interp runs in ``python -m rtl_buddy_cdc.tcl_worker``, never
+# here. Importing ``_tkinter`` starts Tcl's ``NotifierThreadProc``, a
+# native thread that never retires; on macOS a later ``subprocess``
+# fork+exec from a process carrying it can wedge the forked child
+# inside ``close()`` in uninterruptible kernel state forever, with the
+# parent blocked reading the exec errpipe. rb-cdc spawns yosys and the
+# slang frontend right after parsing an SDC, so that would be a hang on
+# the main analysis path (rtl-buddy-cdc#298).
+
+
+@needs_tcl
+def test_tcl_backend_never_imports_tkinter_into_this_process() -> None:
+    """The whole point of the worker. If this ever fails, rb-cdc has a
+    fork+exec deadlock hazard again — fix the import, do not relax the
+    assertion."""
+    parse(VAR_PERIOD_SDC, backend="tcl")
+    assert "_tkinter" not in sys.modules
+    assert "tkinter" not in sys.modules
+
+
+def test_tcl_worker_module_has_no_module_level_tkinter_import() -> None:
+    """``sdc`` imports ``tcl_worker`` for its pure helpers, so a
+    top-level ``tkinter`` import there would reintroduce the hazard by
+    the back door. It must stay inside ``_evaluate``."""
+    source = Path(worker_mod.__file__).read_text()
+    tree = ast.parse(source)
+    top_level: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            top_level.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            top_level.append(node.module or "")
+    assert not [m for m in top_level if m.split(".")[0] in {"tkinter", "_tkinter"}], (
+        top_level
+    )
+    # Stdlib only — the worker must stay cheap to start.
+    assert not [m for m in top_level if m.split(".")[0] == "rtl_buddy_cdc"], top_level
+
+
+@needs_tcl
+def test_worker_json_protocol_round_trip() -> None:
+    """The documented contract, exercised the way ``sdc`` exercises it:
+    one JSON object in on stdin, one JSON object out on stdout."""
+    request = json.dumps(
+        {
+            "text": "set p 10\ncreate_clock -name clk -period [expr {$p*2}] "
+            "[get_ports clk]\n",
+            "command_limit": 1000,
+            "time_limit_seconds": 5,
+        }
+    )
+    proc = subprocess.run(
+        [sys.executable, "-m", worker_mod.WORKER_MODULE],
+        input=request,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=sdc_mod._worker_env(),
+    )
+    assert proc.returncode == 0, proc.stderr
+    response = json.loads(proc.stdout)
+    assert response["ok"] is True
+    assert response["patchlevel"]
+    assert response["partial_warnings"] == []
+    assert [c["words"] for c in response["commands"]] == [
+        ["create_clock", "-name", "clk", "-period", "20", "[get_ports clk]"]
+    ]
+    assert [c["name"] for c in response["commands"]] == ["create_clock"]
+    assert [c["line"] for c in response["commands"]] == [2]
+
+
+@needs_tcl
+def test_worker_reports_a_resource_limit_as_its_own_kind() -> None:
+    request = json.dumps(
+        {
+            "text": "set i 0\nwhile {$i < 100000} {incr i}\n",
+            "command_limit": 100,
+            "time_limit_seconds": 30,
+        }
+    )
+    proc = subprocess.run(
+        [sys.executable, "-m", worker_mod.WORKER_MODULE],
+        input=request,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=sdc_mod._worker_env(),
+    )
+    response = json.loads(proc.stdout)
+    assert response == {
+        "ok": False,
+        "kind": "resource_limit",
+        "error": response["error"],
+    }
+    assert "limit exceeded" in response["error"]
+
+
+@pytest.mark.parametrize(
+    "request_body",
+    [
+        pytest.param("this is not json", id="not-json"),
+        pytest.param("[]", id="not-an-object"),
+        pytest.param(
+            json.dumps({"command_limit": 10, "time_limit_seconds": 1}), id="no-text"
+        ),
+        pytest.param(
+            json.dumps({"text": 42, "command_limit": 10, "time_limit_seconds": 1}),
+            id="text-not-a-string",
+        ),
+        pytest.param(
+            json.dumps({"text": "", "command_limit": "lots", "time_limit_seconds": 1}),
+            id="limit-not-a-number",
+        ),
+    ],
+)
+def test_worker_rejects_a_malformed_request_with_a_nonzero_exit(request_body) -> None:
+    """A broken request is not a protocol response — the parent reads
+    the exit status and degrades to the tokenizer."""
+    proc = subprocess.run(
+        [sys.executable, "-m", worker_mod.WORKER_MODULE],
+        input=request_body,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=sdc_mod._worker_env(),
+    )
+    assert proc.returncode == 2
+    assert "malformed request" in proc.stderr
+    assert proc.stdout == ""
+
+
+def _stub_worker(tmp_path, monkeypatch, name: str, body: str) -> None:
+    """Point ``_run_worker`` at a throwaway module instead of the real one.
+
+    The availability probe is pinned to "yes" alongside it so these
+    tests exercise the tcl path on an interpreter whose *real* worker
+    has no ``_tkinter`` — they are about the protocol, not about Tcl.
+    """
+    (tmp_path / f"{name}.py").write_text(body)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setattr(sdc_mod, "WORKER_MODULE", name)
+    monkeypatch.setattr(
+        sdc_mod, "_TCL_PROBE", sdc_mod._TclProbe(available=True, patchlevel="9.0")
+    )
+
+
+def test_worker_that_crashes_is_a_read_error(tmp_path, monkeypatch) -> None:
+    _stub_worker(
+        tmp_path,
+        monkeypatch,
+        "rb_cdc_crash_worker",
+        "import sys\nsys.stdin.read()\nsys.stderr.write('boom\\n')\nsys.exit(3)\n",
+    )
+    with pytest.raises(TclReadError, match="exited with status 3"):
+        _read_tcl("create_clock -name clk -period 10 [get_ports clk]\n")
+
+
+def test_worker_that_writes_garbage_is_a_read_error(tmp_path, monkeypatch) -> None:
+    _stub_worker(
+        tmp_path,
+        monkeypatch,
+        "rb_cdc_garbage_worker",
+        "import sys\nsys.stdin.read()\nprint('not json at all')\n",
+    )
+    with pytest.raises(TclReadError, match="not JSON"):
+        _read_tcl("create_clock -name clk -period 10 [get_ports clk]\n")
+
+
+def test_worker_that_writes_a_json_non_object_is_a_read_error(
+    tmp_path, monkeypatch
+) -> None:
+    _stub_worker(
+        tmp_path,
+        monkeypatch,
+        "rb_cdc_list_worker",
+        "import sys\nsys.stdin.read()\nprint('[1, 2]')\n",
+    )
+    with pytest.raises(TclReadError, match="wrote a list"):
+        _read_tcl("create_clock -name clk -period 10 [get_ports clk]\n")
+
+
+def test_worker_response_with_a_malformed_command_is_a_read_error(
+    tmp_path, monkeypatch
+) -> None:
+    """``commands`` entries must carry ``words``; anything else is a
+    protocol break, not a partially usable read."""
+    _stub_worker(
+        tmp_path,
+        monkeypatch,
+        "rb_cdc_bad_command_worker",
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'ok': True, 'patchlevel': '9.0',\n"
+        "                  'commands': [{'name': 'create_clock'}],\n"
+        "                  'partial_warnings': []}))\n",
+    )
+    with pytest.raises(TclReadError, match="malformed response"):
+        _read_tcl("create_clock -name clk -period 10 [get_ports clk]\n")
+
+
+def test_worker_partial_warnings_reach_the_clock_spec(tmp_path, monkeypatch) -> None:
+    """The protocol carries a ``partial_warnings`` list; whatever the
+    worker puts there is merged into ``ClockSpec.partial_warnings``
+    alongside the parser's own diagnostics."""
+    _stub_worker(
+        tmp_path,
+        monkeypatch,
+        "rb_cdc_warning_worker",
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'ok': True, 'patchlevel': '9.0',\n"
+        "                  'commands': [{'name': 'create_clock', 'words':\n"
+        "                      ['create_clock', '-name', 'clk', '-period', '10',\n"
+        "                       '[get_ports clk]'], 'line': 1}],\n"
+        "                  'partial_warnings': ['worker noticed something']}))\n",
+    )
+    spec = parse("create_clock -name clk -period 10 [get_ports clk]\n", backend="tcl")
+    assert spec.clocks["clk"].period == 10.0
+    assert spec.partial_warnings == ["worker noticed something"]
+
+
+def test_worker_error_response_maps_onto_the_read_error(tmp_path, monkeypatch) -> None:
+    _stub_worker(
+        tmp_path,
+        monkeypatch,
+        "rb_cdc_error_worker",
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'ok': False, 'kind': 'tcl_error', 'error': 'nope'}))\n",
+    )
+    with pytest.raises(TclReadError, match="nope") as caught:
+        _read_tcl("create_clock -name clk -period 10 [get_ports clk]\n")
+    assert not isinstance(caught.value, TclResourceLimitError)
+
+
+@needs_tcl
+def test_a_wedged_worker_is_killed_and_treated_as_a_resource_limit(
+    monkeypatch,
+) -> None:
+    """Belt and braces for a worker Tcl's own ``interp limit`` cannot
+    reach. Squeeze the outer deadline to ~1s (the interp's 30s budget
+    then never fires) and feed it ``while 1 {}``."""
+    monkeypatch.setattr(
+        sdc_mod,
+        "TCL_WORKER_TIMEOUT_MARGIN_SECONDS",
+        1 - int(sdc_mod.TCL_TIME_LIMIT_SECONDS),
+    )
+    started = time.monotonic()
+    with pytest.raises(TclResourceLimitError, match="did not answer within"):
+        _read_tcl("while 1 {}\n")
+    elapsed = time.monotonic() - started
+    assert elapsed < 20, f"_read_tcl did not return promptly ({elapsed:.1f}s)"
+
+
+@needs_tcl
+def test_parse_degrades_when_the_worker_has_to_be_killed(monkeypatch) -> None:
+    """Same path through ``parse``: the kill is worded as a resource
+    limit and the tokenizer re-read still recovers what it can see."""
+    monkeypatch.setattr(
+        sdc_mod,
+        "TCL_WORKER_TIMEOUT_MARGIN_SECONDS",
+        1 - int(sdc_mod.TCL_TIME_LIMIT_SECONDS),
+    )
+    spec = parse(
+        "create_clock -name clk -period 10 [get_ports clk]\nwhile 1 {}\n",
+        backend="tcl",
+    )
+    assert spec.clocks["clk"].period == 10.0
+    assert any(
+        "hit a resource limit" in w and "cut off part-way" in w
+        for w in spec.partial_warnings
+    ), spec.partial_warnings
+
+
+def test_worker_env_puts_the_package_on_the_child_path(monkeypatch) -> None:
+    """A ``sys.path`` tweak in this process does not survive into a
+    fresh ``-m`` invocation, so the spawn site pins the package dir."""
+    monkeypatch.setenv("PYTHONPATH", "/somewhere/else")
+    env = sdc_mod._worker_env()
+    package_root = str(Path(sdc_mod.__file__).resolve().parent.parent)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == package_root
+    assert "/somewhere/else" in env["PYTHONPATH"].split(os.pathsep)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    assert sdc_mod._worker_env()["PYTHONPATH"] == package_root
+
+
+def test_worker_detail_is_one_short_line() -> None:
+    assert sdc_mod._worker_detail(None) == ""
+    assert sdc_mod._worker_detail("   ") == ""
+    assert sdc_mod._worker_detail("a\n  b") == "; stderr: a b"
+    assert sdc_mod._worker_detail("x" * 500).endswith("…")
+
+
+# ---- availability probe -----------------------------------------------------
+
+
+def test_the_availability_probe_is_cached_per_process() -> None:
+    """One subprocess per run, not one per ``parse()``."""
+    sdc_mod._reset_tcl_probe()
+    try:
+        first = sdc_mod._probe_tcl()
+        assert sdc_mod._probe_tcl() is first
+        assert tcl_available() is first.available
+    finally:
+        sdc_mod._reset_tcl_probe()
+
+
+@needs_tcl
+def test_the_probe_reports_the_workers_tcl_patchlevel() -> None:
+    level = tcl_patchlevel()
+    assert level is not None
+    assert level.split(".")[0].isdigit(), level
+
+
+def test_an_unstartable_worker_probes_as_unavailable(monkeypatch) -> None:
+    """No ``_tkinter`` anywhere, a broken install, a missing module —
+    all land in the same place: the tokenizer, with a warning."""
+    monkeypatch.setattr(sdc_mod, "WORKER_MODULE", "rb_cdc_no_such_worker_module")
+    monkeypatch.setattr(sdc_mod, "_TCL_PROBE", None)
+    monkeypatch.setattr(sdc_mod, "_warned_tcl_unavailable", False)
+    monkeypatch.delenv(BACKEND_ENV_VAR, raising=False)
+    try:
+        probe = sdc_mod._probe_tcl()
+        assert probe.available is False
+        assert probe.patchlevel is None
+        assert probe.reason
+        assert sdc_mod._resolve_backend(None) == "tokenizer"
+    finally:
+        sdc_mod._reset_tcl_probe()
+
+
+def test_a_worker_that_says_unavailable_probes_as_unavailable(
+    tmp_path, monkeypatch
+) -> None:
+    _stub_worker(
+        tmp_path,
+        monkeypatch,
+        "rb_cdc_unavailable_worker",
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'ok': False, 'kind': 'unavailable',\n"
+        "                  'error': '_tkinter is not importable: nope'}))\n",
+    )
+    monkeypatch.setattr(sdc_mod, "_TCL_PROBE", None)
+    try:
+        probe = sdc_mod._probe_tcl()
+        assert probe.available is False
+        assert "not importable" in (probe.reason or "")
+    finally:
+        sdc_mod._reset_tcl_probe()
 
 
 # ---- vendoring contract -----------------------------------------------------

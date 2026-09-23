@@ -29,7 +29,7 @@ Layer 1 has **two interchangeable backends**, selected by
 :func:`parse` / :func:`parse_file`, or the ``RB_CDC_SDC_BACKEND``
 environment variable):
 
-``tcl`` (preferred, used whenever ``_tkinter`` imports)
+``tcl`` (preferred, used whenever the worker probe succeeds)
     ``tkinter.Tcl()`` → ``interp create -safe`` → an ``unknown``
     handler aliased back into Python. Real Tcl evaluation, so ``set``
     variables, ``expr``, ``\\`` continuation and nested command
@@ -40,7 +40,21 @@ environment variable):
     anything — those names land in ``unknown`` with everything else
     and are reported, not executed.
 
-``tokenizer`` (fallback, when ``_tkinter`` is missing)
+    **The interp runs in a subprocess**
+    (:mod:`rtl_buddy_cdc.tcl_worker`, one per SDC file), and this
+    module never imports ``_tkinter``. That is a correctness
+    requirement, not a preference: loading ``_tkinter`` starts Tcl's
+    ``NotifierThreadProc``, a native thread that never retires, and on
+    macOS a later ``subprocess`` fork+exec from a process carrying it
+    can wedge the forked child inside ``close()`` in uninterruptible
+    kernel state — forever — with the parent blocked reading the exec
+    errpipe. rb-cdc spawns yosys and the slang frontend right after
+    parsing the SDC, so an in-process interp is a live hang hazard on
+    the main analysis path. The worker's docstring holds the sampled
+    stack and the reproduction (rtl-buddy-cdc#298). **Do not move the
+    interp back in-process.**
+
+``tokenizer`` (fallback, when the worker has no ``_tkinter``)
     :func:`rtl_buddy_cdc.tcl_tokenizer._tokenize`, the hand-written
     Tcl-aware word splitter: ``{...}`` braces and ``[...]`` brackets
     are single opaque tokens with nesting respected, ``\\`` collapses
@@ -48,9 +62,9 @@ environment variable):
     word boundary comments to end-of-line. It does **not** evaluate
     ``$var``, ``expr`` or command substitution, so a clock declared
     through a variable is invisible to it; the first such drop per
-    file raises a ``sdc.tokenizer_skipped`` warning, and a missing
-    ``_tkinter`` raises one ``sdc.tcl_unavailable`` warning per run
-    naming the fix.
+    file raises a ``sdc.tokenizer_skipped`` warning, and an
+    unavailable worker raises one ``sdc.tcl_unavailable`` warning per
+    run naming the fix.
 
 Both backends feed the same slicer, handlers and :class:`ClockSpec`,
 so every downstream consumer is backend-agnostic. When the parser sees
@@ -62,9 +76,11 @@ end-of-parse warning rather than spamming line-by-line.
 from __future__ import annotations
 
 import enum
+import json
 import logging
 import os
-import re
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -74,6 +90,13 @@ from typing import Any, TYPE_CHECKING
 # every existing caller and test imports ``sdc._tokenize`` /
 # ``sdc._extract_names``.
 from rtl_buddy_cdc.tcl_tokenizer import _extract_names, _tokenize
+
+# The Tcl safe interp — the recorder, the bootstrap and the collection
+# re-wrapping — runs OUT OF PROCESS, in :mod:`rtl_buddy_cdc.tcl_worker`
+# (see this module's docstring for why). That module imports
+# ``tkinter`` lazily inside its own ``main()``, so naming it here costs
+# nothing and, critically, does not pull ``_tkinter`` into this process.
+from rtl_buddy_cdc.tcl_worker import WORKER_MODULE
 
 if TYPE_CHECKING:
     from rtl_buddy_cdc.netlist import Module
@@ -85,7 +108,6 @@ __all__ = [
     "BACKEND_ENV_VAR",
     "Clock",
     "ClockSpec",
-    "TKINTER_AVAILABLE",
     "TclReadError",
     "TclResourceLimitError",
     "UNCONSTRAINED_SENTINEL",
@@ -94,6 +116,8 @@ __all__ = [
     "parse",
     "parse_file",
     "synthesize_unconstrained_inputs",
+    "tcl_available",
+    "tcl_patchlevel",
     "validate_clock_graph",
     "_extract_names",
     "_tokenize",
@@ -297,7 +321,7 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
     commands: list[_Command] | None = None
     if effective == "tcl":
         try:
-            commands = _read_tcl(text)
+            commands = _read_tcl(text, spec.partial_warnings)
         except TclReadError as exc:
             # A genuine Tcl error (bad syntax, undefined variable, a
             # command erroring out) or a resource limit aborts the
@@ -336,7 +360,7 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             "evaluate $var, expr or command substitution, so constraints "
             "expressed through them are invisible to the CDC analysis.%s",
             what,
-            "" if TKINTER_AVAILABLE else f" {_TKINTER_FIX_HINT}",
+            "" if tcl_available() else f" {_TKINTER_FIX_HINT}",
         )
 
     for command in commands:
@@ -527,19 +551,65 @@ BACKENDS = ("tcl", "tokenizer")
 #: to :func:`parse` / :func:`parse_file` wins over the variable.
 BACKEND_ENV_VAR = "RB_CDC_SDC_BACKEND"
 
-# ``tkinter`` itself is imported lazily (it is slow to import and pulls
-# in a Tcl runtime); ``_tkinter`` is the C extension that decides
-# whether ``tkinter`` can work at all, and probing it is cheap. Every
-# uv-managed / python-build-standalone interpreter bundles it; a
-# Homebrew python without ``python-tk``, or an EL8 system python
-# without ``python3-tkinter``, does not.
-try:  # pragma: no cover - availability is environment-dependent
-    import _tkinter as _tkinter_probe
-except ImportError:  # pragma: no cover - availability is environment-dependent
-    _tkinter_probe = None  # type: ignore[assignment]
+# Availability cannot be decided with ``import _tkinter`` here: this
+# process must never import it (see the module docstring — the Tcl
+# notifier thread wedges a later ``subprocess`` fork+exec on macOS).
+# Instead the worker is probed once per process with an empty request.
+# It answers with its Tcl ``info patchlevel`` when it can build an
+# interp, and ``kind="unavailable"`` when ``_tkinter`` does not import
+# over there. The probe costs one short-lived subprocess per run.
 
-#: True when ``tkinter.Tcl()`` can be constructed in this interpreter.
-TKINTER_AVAILABLE = _tkinter_probe is not None
+
+@dataclass(frozen=True)
+class _TclProbe:
+    """Cached answer to "can this installation run the Tcl reader?"."""
+
+    available: bool
+    patchlevel: str | None = None
+    reason: str | None = None
+
+
+_TCL_PROBE: _TclProbe | None = None
+
+
+def _probe_tcl() -> _TclProbe:
+    """Ask the worker whether it can construct a Tcl interp (cached)."""
+    global _TCL_PROBE
+    if _TCL_PROBE is not None:
+        return _TCL_PROBE
+    try:
+        response = _run_worker("", TCL_COMMAND_LIMIT, TCL_TIME_LIMIT_SECONDS)
+    except TclReadError as exc:
+        _TCL_PROBE = _TclProbe(available=False, reason=_one_line(exc))
+    else:
+        if response.get("ok"):
+            _TCL_PROBE = _TclProbe(
+                available=True,
+                patchlevel=str(response.get("patchlevel") or "") or None,
+            )
+        else:
+            _TCL_PROBE = _TclProbe(
+                available=False,
+                reason=str(response.get("error") or "") or None,
+            )
+    return _TCL_PROBE
+
+
+def tcl_available() -> bool:
+    """True when the out-of-process Tcl safe-interp reader can run."""
+    return _probe_tcl().available
+
+
+def tcl_patchlevel() -> str | None:
+    """The worker's Tcl ``info patchlevel``, or ``None`` when unavailable."""
+    return _probe_tcl().patchlevel
+
+
+def _reset_tcl_probe() -> None:
+    """Drop the cached availability probe (test hook)."""
+    global _TCL_PROBE
+    _TCL_PROBE = None
+
 
 _TKINTER_FIX_HINT = (
     "_tkinter is not importable, so the Tcl safe-interp SDC reader is "
@@ -572,8 +642,8 @@ def _resolve_backend(explicit: str | None = None) -> str:
     """Pick the reader backend for one parse.
 
     Precedence: explicit argument → :data:`BACKEND_ENV_VAR` → auto
-    (``"tcl"`` when ``_tkinter`` imports, else ``"tokenizer"``). A
-    request for ``"tcl"`` on an interpreter without ``_tkinter``
+    (``"tcl"`` when the worker probe succeeds, else ``"tokenizer"``).
+    A request for ``"tcl"`` on an installation without ``_tkinter``
     degrades to the tokenizer with the once-per-run
     ``sdc.tcl_unavailable`` warning rather than raising — the analysis
     should still run, just with the documented subset.
@@ -586,14 +656,14 @@ def _resolve_backend(explicit: str | None = None) -> str:
                 f"unknown SDC backend {requested!r}; expected one of "
                 f"{', '.join(BACKENDS)}"
             )
-    elif TKINTER_AVAILABLE:
+    elif tcl_available():
         return "tcl"
     else:
         name = "tokenizer"
-    if name == "tcl" and not TKINTER_AVAILABLE:
+    if name == "tcl" and not tcl_available():
         _warn_tcl_unavailable()
         return "tokenizer"
-    if name == "tokenizer" and not TKINTER_AVAILABLE:
+    if name == "tokenizer" and not tcl_available():
         _warn_tcl_unavailable()
     return name
 
@@ -608,7 +678,7 @@ def backend_description() -> str:
     """One-line human-readable backend summary for ``version`` output."""
     if backend() == "tcl":
         return "tcl (tkinter.Tcl() safe interp; $var / expr / [cmd] evaluated)"
-    if TKINTER_AVAILABLE:
+    if tcl_available():
         return f"tokenizer (forced via {BACKEND_ENV_VAR}; $var / expr not evaluated)"
     return "tokenizer (_tkinter not importable; $var / expr not evaluated)"
 
@@ -665,128 +735,140 @@ TCL_COMMAND_LIMIT = 1_000_000
 TCL_TIME_LIMIT_SECONDS = 30
 
 
-# Commands whose *names* are collections in SDC/Tcl ("get_ports",
-# "all_inputs", …). Under the interp reader they are aliased through
-# ``unknown`` and must hand back something ``_extract_names`` peels the
-# same way it peels the tokenizer's opaque ``[get_ports clk]`` word —
-# so we re-wrap the evaluated operands in the canonical bracket form.
-def _is_collection_command(cmd: str) -> bool:
-    return cmd.startswith("get_") or cmd.startswith("all_")
+#: Extra wall-clock slack, in seconds, on top of
+#: :data:`TCL_TIME_LIMIT_SECONDS` before the parent gives up on the
+#: worker and kills it. The interp's own ``time`` limit should always
+#: fire first and produce a clean ``resource_limit`` response; this is
+#: the outer deadline for a worker that wedged somewhere Tcl's limit
+#: cannot reach. Blowing it is handled exactly like a resource limit.
+TCL_WORKER_TIMEOUT_MARGIN_SECONDS = 10
 
 
-_NESTED_COLLECTION_RE = re.compile(r"\[(?:get|all)_[A-Za-z0-9_]*\s*([^][]*)\]")
+def _worker_env() -> dict[str, str]:
+    """Environment for the worker: this package must be importable.
 
-
-def _strip_collection_wrappers(word: str) -> str:
-    """Collapse nested ``[get_cells u/*]`` wrappers back to bare names.
-
-    ``[get_pins [get_cells u/*]/C]`` evaluates inside-out: ``get_cells``
-    returns ``[get_cells u/*]``, Tcl concatenates ``/C`` onto it, and
-    ``get_pins`` receives ``[get_cells u/*]/C``. Peeling the inner
-    wrapper yields ``u/*/C``, which is what a timer would resolve the
-    nested collection to.
+    ``sys.executable`` is normally the interpreter that already
+    imports ``rtl_buddy_cdc``, but a ``sys.path`` tweak in the parent
+    (an editable overlay, a ``conftest`` insertion, a zipapp) does not
+    carry over to a fresh ``-m`` invocation, so the directory holding
+    the package is prepended to ``PYTHONPATH``.
     """
-    prev = None
-    out = word
-    while prev != out:
-        prev = out
-        out = _NESTED_COLLECTION_RE.sub(r"\1", out)
-    return out
+    env = dict(os.environ)
+    package_root = str(Path(__file__).resolve().parent.parent)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        f"{package_root}{os.pathsep}{existing}" if existing else package_root
+    )
+    return env
 
 
-# Evaluated inside the safe child before the SDC text. ``puts`` is
-# stubbed out because a safe interp has no stdout channel and vendor
-# SDC files print progress; ``unknown`` catches every command the safe
-# interp does not define — every SDC command, every ``get_*``
-# collection, and the absent-by-construction ``exec`` / ``open`` /
-# ``file`` / ``socket`` / ``source``.
-_TCL_BOOTSTRAP = r"""
-proc puts args {}
-proc unknown args {
-    set rb_line {}
-    catch {
-        set rb_frame [info frame [expr {[info frame] - 1}]]
-        if {[dict exists $rb_frame line]} {
-            set rb_line [dict get $rb_frame line]
+def _worker_detail(stderr: str | None) -> str:
+    """Render the worker's stderr as a short, single-line suffix."""
+    text = " ".join((stderr or "").split())
+    if not text:
+        return ""
+    if len(text) > 200:
+        text = text[:200] + "…"
+    return f"; stderr: {text}"
+
+
+def _run_worker(
+    text: str, command_limit: int, time_limit_seconds: int
+) -> dict[str, Any]:
+    """Run one JSON request through ``python -m rtl_buddy_cdc.tcl_worker``.
+
+    Returns the decoded response object (``ok`` true *or* false — an
+    evaluation failure is a valid response). Raises
+    :class:`TclReadError` when the worker itself misbehaved, and
+    :class:`TclResourceLimitError` when it had to be killed.
+    """
+    request = json.dumps(
+        {
+            "text": text,
+            "command_limit": int(command_limit),
+            "time_limit_seconds": int(time_limit_seconds),
         }
-    }
-    return [rb_cdc_record $rb_line {*}$args]
-}
-"""
+    )
+    timeout = int(time_limit_seconds) + TCL_WORKER_TIMEOUT_MARGIN_SECONDS
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", WORKER_MODULE],
+            input=request,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_worker_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TclResourceLimitError(
+            f"the Tcl worker process did not answer within {timeout}s and was killed"
+        ) from exc
+    except OSError as exc:  # pragma: no cover - the interpreter is right there
+        raise TclReadError(f"could not start the Tcl worker process: {exc}") from exc
+    if proc.returncode != 0:
+        raise TclReadError(
+            f"the Tcl worker process exited with status {proc.returncode}"
+            f"{_worker_detail(proc.stderr)}"
+        )
+    try:
+        response = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise TclReadError(
+            f"the Tcl worker process wrote output that is not JSON ({exc})"
+            f"{_worker_detail(proc.stderr)}"
+        ) from exc
+    if not isinstance(response, dict):
+        raise TclReadError(
+            f"the Tcl worker process wrote a {type(response).__name__}, "
+            f"not a JSON object"
+        )
+    return response
 
 
-def _read_tcl(text: str) -> list[_Command]:
-    """Primary reader: evaluate ``text`` in a ``tkinter.Tcl()`` safe interp.
+def _read_tcl(text: str, warnings: list[str] | None = None) -> list[_Command]:
+    """Primary reader: evaluate ``text`` in a Tcl safe interp.
 
-    ``tkinter.Tcl()`` needs no display (never call ``Tk()`` here). The
-    child is created with ``interp create -safe``, so it has no
-    ``exec`` / ``open`` / ``file`` / ``socket`` / ``load`` / ``source``
-    and cannot touch the filesystem or spawn a process; those names
-    fall through to ``unknown`` like any other undefined command and
-    are recorded, never run.
+    The interp lives in a **separate process** —
+    :mod:`rtl_buddy_cdc.tcl_worker`, spawned per call. That is load
+    bearing, not incidental: importing ``_tkinter`` into *this* process
+    starts a Tcl notifier thread that can wedge a later
+    ``subprocess`` fork+exec on macOS forever, and rb-cdc shells out to
+    yosys / slang right after parsing. The worker's docstring carries
+    the full stack trace and the reproduction; **do not move the interp
+    back in-process**.
+
+    ``warnings``, when given, is extended with any diagnostics the
+    worker reported alongside a successful read.
 
     Raises :class:`TclReadError` when the script does not evaluate
-    (genuine Tcl syntax errors, undefined variables, …); :func:`parse`
-    catches it and re-reads with the tokenizer.
+    (genuine Tcl syntax errors, undefined variables, a worker that
+    crashed or wrote garbage) and :class:`TclResourceLimitError` when
+    a budget was exceeded; :func:`parse` catches both and re-reads with
+    the tokenizer.
     """
-    import tkinter
-
-    records: list[_Command] = []
-
-    def record(line: str, *words: str) -> str:
-        if not words:  # pragma: no cover - Tcl never dispatches an empty command
-            return ""
-        cmd, args = words[0], list(words[1:])
-        if _is_collection_command(cmd):
-            inner = " ".join(
-                s for s in (_strip_collection_wrappers(a) for a in args) if s
+    response = _run_worker(text, TCL_COMMAND_LIMIT, TCL_TIME_LIMIT_SECONDS)
+    if not response.get("ok"):
+        message = str(response.get("error") or "unknown Tcl worker failure")
+        if response.get("kind") == "resource_limit":
+            raise TclResourceLimitError(message)
+        raise TclReadError(message)
+    try:
+        if warnings is not None:
+            warnings.extend(str(w) for w in response.get("partial_warnings") or ())
+        commands = []
+        for entry in response.get("commands") or ():
+            line = entry.get("line")
+            commands.append(
+                _Command(
+                    words=[str(w) for w in entry["words"]],
+                    line=int(line) if isinstance(line, int) else None,
+                )
             )
-            return f"[{cmd} {inner}]" if inner else f"[{cmd}]"
-        try:
-            lineno: int | None = int(line)
-        except (TypeError, ValueError):
-            lineno = None
-        records.append(_Command(words=[cmd, *args], line=lineno))
-        # Mirror the reference ``unknown`` from issue #298: hand back
-        # the last word so a command used as a nested substitution
-        # still produces something printable.
-        return args[-1] if args else ""
-
-    try:
-        interp = tkinter.Tcl()
-    except Exception as exc:  # pragma: no cover - broken Tcl install
-        raise TclReadError(f"tkinter.Tcl() failed: {exc}") from exc
-    try:
-        interp.createcommand("rb_cdc_record", record)
-        interp.eval("interp create -safe rb_cdc_sdc")
-        # Bound the *cost* of the child, not just its capabilities. The
-        # command counter stops runaway recursion and million-iteration
-        # loops; the wall-clock deadline (an absolute epoch second, per
-        # ``interp limit``'s contract) stops a bare ``while 1 {}``,
-        # whose empty body never ticks the command counter. Exceeding
-        # either raises an ordinary TclError out of the eval below.
-        interp.eval(
-            f"interp limit rb_cdc_sdc command "
-            f"-value {int(TCL_COMMAND_LIMIT)} -granularity 1"
-        )
-        interp.eval(
-            f"interp limit rb_cdc_sdc time -granularity 10 "
-            f"-seconds [expr {{[clock seconds] + {int(TCL_TIME_LIMIT_SECONDS)}}}]"
-        )
-        interp.eval("interp alias rb_cdc_sdc rb_cdc_record {} rb_cdc_record")
-        interp.call("rb_cdc_sdc", "eval", _TCL_BOOTSTRAP)
-        interp.call("rb_cdc_sdc", "eval", text)
-    except tkinter.TclError as exc:
-        if "limit exceeded" in str(exc):
-            raise TclResourceLimitError(str(exc)) from exc
-        raise TclReadError(str(exc)) from exc
-    finally:
-        try:
-            interp.eval("interp delete rb_cdc_sdc")
-            interp.deletecommand("rb_cdc_record")
-        except Exception:  # pragma: no cover - teardown is best-effort
-            pass
-    return records
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise TclReadError(
+            f"the Tcl worker process wrote a malformed response ({exc})"
+        ) from exc
+    return commands
 
 
 # Commands that can never do what an SDC author expects here: the safe

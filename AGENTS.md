@@ -185,17 +185,37 @@ per-command table declaring each flag's arity (`ZERO` / `ONE` /
 #298 gave Layer 1 **two interchangeable backends** — the `$var`
 trigger recorded on the #144 thread did fire, via rtl-buddy#641:
 
-- **`tcl`** (preferred, whenever `_tkinter` imports). `tkinter.Tcl()`
-  → `interp create -safe` → an `unknown` handler aliased back into
-  Python. Real evaluation, so `set` / `expr` / `[…]` substitution
-  work. The safe child has no `exec` / `open` / `file` / `socket` /
-  `load` / `source` — a constraints file cannot run or touch
-  anything. Never call `Tk()`; `Tcl()` needs no display. `-safe`
-  bounds capability, not cost, so the child also carries `interp
-  limit` command/time budgets (`TCL_COMMAND_LIMIT`,
+- **`tcl`** (preferred, whenever the worker probe succeeds).
+  `tkinter.Tcl()` → `interp create -safe` → an `unknown` handler
+  aliased back into Python. Real evaluation, so `set` / `expr` /
+  `[…]` substitution work. The safe child has no `exec` / `open` /
+  `file` / `socket` / `load` / `source` — a constraints file cannot
+  run or touch anything. Never call `Tk()`; `Tcl()` needs no display.
+  `-safe` bounds capability, not cost, so the child also carries
+  `interp limit` command/time budgets (`TCL_COMMAND_LIMIT`,
   `TCL_TIME_LIMIT_SECONDS`); keep them armed before *any* eval,
-  bootstrap included, or `while 1 {}` in an SDC hangs the tool
+  bootstrap included, or `while 1 {}` in an SDC hangs the worker
   where Python cannot interrupt it.
+
+  **The interp runs OUT OF PROCESS and must stay there.** It lives in
+  `src/rtl_buddy_cdc/tcl_worker.py`, spawned as `python -m
+  rtl_buddy_cdc.tcl_worker` with one JSON request on stdin and one
+  JSON response on stdout; `sdc.py` never imports `_tkinter`, and a
+  test asserts `_tkinter not in sys.modules` after a tcl-backend
+  parse. Reason: loading `_tkinter` starts Tcl's `NotifierThreadProc`,
+  a native thread that never retires, and on macOS a later
+  `subprocess` fork+exec from a process carrying it can wedge the
+  forked child inside `close()` (`child_exec` →
+  `_close_open_fds_maybe_unsafe`) in uninterruptible kernel state
+  forever, with the parent blocked reading the exec errpipe.
+  Reproduced in rtl-buddy (same reader code) in 1 of 6 full pytest
+  runs on uv-managed 3.12 / Tcl 9.0.3; the orphan sat 9+ hours. rb-cdc
+  spawns yosys and slang via `subprocess` right after parsing the SDC,
+  so this is a hang on the main analysis path. Availability is a
+  cached once-per-process *probe* (`sdc.tcl_available()` /
+  `tcl_patchlevel()`), not an `import _tkinter` latch — monkeypatch
+  `sdc._TCL_PROBE`, not an import. The worker stays stdlib-only and
+  imports `tkinter` lazily inside its own `main()`.
 - **`tokenizer`** (fallback). `tcl_tokenizer._tokenize`, unchanged
   from #144: `{...}` braces and `[...]` brackets are single opaque
   tokens with nesting respected.
