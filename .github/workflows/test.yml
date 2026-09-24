@@ -29,11 +29,25 @@ jobs:
   # tests/test_slang_lowering.py) actually run instead of skipping.
   # Without --extra slang they're ~700 LOC of dead CI weight — see #9.
   pytest:
-    name: pytest (with slang) — py${{ matrix.python-version }}
+    name: pytest (with slang${{ matrix.pyslang && format(' + pyslang {0}', matrix.pyslang) || '' }}) — py${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+        # ``pyslang: ""`` means "whatever uv.lock resolves" (10.0.0).
+        # The ``include`` entry adds ONE extra leg that overrides the
+        # locked wheel with the other end of the ``[slang]`` extra's
+        # range (``>=10,<12``) — pyslang 11 moved the compilation types
+        # into ``pyslang.ast`` and ``SyntaxTree`` into ``pyslang.syntax``
+        # (rtl-buddy-cdc#300), a split the frontend bridges at runtime
+        # and which nothing else in CI would exercise. It is a new
+        # combination, not an override of the 3.13 leg, because the
+        # include object would have to overwrite an original matrix
+        # value.
+        pyslang: [""]
+        include:
+          - python-version: "3.13"
+            pyslang: "11.0.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -76,8 +90,23 @@ jobs:
       # / sim selections skip in this job), so it reflects exactly what
       # this job exercises — pyslang elaboration, committed-JSON
       # fixtures, and CliRunner-driven flows.
+      # Extra matrix leg only (rtl-buddy-cdc#300). Installed on top of
+      # the freshly synced env so the other supported pyslang major is
+      # exercised without a second lockfile. Every `uv run` below must
+      # therefore carry `--no-sync`, or uv would restore the locked
+      # 10.0.0 and silently retest the same wheel twice.
+      - name: Override pyslang (${{ matrix.pyslang }})
+        if: matrix.pyslang != ''
+        run: uv pip install --python .venv/bin/python "pyslang==${{ matrix.pyslang }}"
+
+      # Proof in the log of which pyslang this leg actually ran.
+      - name: Show pyslang version
+        run: >-
+          uv run --managed-python --no-sync --python ${{ matrix.python-version }}
+          python -c "import importlib.metadata as m; print('pyslang', m.version('pyslang'))"
+
       - name: Run pytest (with coverage)
-        run: uv run --managed-python --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=96
+        run: uv run --managed-python --no-sync --python ${{ matrix.python-version }} pytest --cov --cov-report=term-missing --cov-fail-under=96
 
   # Companion job: install WITHOUT the [slang] extra to verify the
   # AGENTS.md "default install stays typer-only" promise. Specifically

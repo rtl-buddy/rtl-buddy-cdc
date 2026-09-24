@@ -124,7 +124,7 @@ Standalone wrapper (`lint`):
 | `--blackbox MODULE` | optional | Treat `MODULE` as a CDC boundary cell: keep it un-flattened (via `read_slang --blackboxed-module`) so a large subtree is analysed at its **port boundary** instead of being elaborated into the design — the #253 scaling path. **Repeatable.** Requires the yosys-slang plugin (`--yosys-plugin` / `RTL_BUDDY_SLANG_PLUGIN`). The pre-elaborated `analyze` path needs no flag — a netlist that already contains blackbox boundary modules loads transparently. See [Blackboxing for scale](#blackboxing-for-scale). |
 | `--greybox MODULE` | optional | Treat `MODULE` as a CDC boundary cell **but keep its internals**: the subtree is analysed **once** on its own body — reconvergence, synchroniser depth, gray coding, internal clock-as-data — and those facts are lifted into the boundary instead of being traded away. **Repeatable.** Needs no plugin (a plain `setattr -mod -set blackbox 1` before `flatten`). Prefer it over `--blackbox` whenever you have the module's sources. See [Compositional boundaries](#compositional-boundaries). |
 
-The slang frontend is an opt-in extra. Install it alongside the package with `pip install 'rtl-buddy-cdc[slang]'` (or `uv add 'rtl-buddy-cdc[slang]'`); the default install stays Yosys-only.
+The slang frontend is an opt-in extra. Install it alongside the package with `pip install 'rtl-buddy-cdc[slang]'` (or `uv add 'rtl-buddy-cdc[slang]'`); the default install stays Yosys-only. The extra declares `pyslang>=10,<12` — both majors are covered by CI. A pyslang outside that range is rejected up front with a one-line message naming the installed version and the supported range, rather than failing partway through elaboration.
 
 ## Blackboxing for scale
 

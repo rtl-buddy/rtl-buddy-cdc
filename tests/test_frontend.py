@@ -13,6 +13,8 @@ isn't tested here — the focus is that:
 
 from __future__ import annotations
 
+import logging
+
 import importlib.util
 import shutil
 from pathlib import Path
@@ -23,6 +25,7 @@ from typer.testing import CliRunner
 from rtl_buddy_cdc import frontend as frontend_mod
 from rtl_buddy_cdc.cli import app
 from rtl_buddy_cdc.frontend import Frontend, elaborate, resolve_auto
+from rtl_buddy_cdc.frontends import slang as slang_fe
 from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
 
 FIX_ROOT = Path(__file__).parent / "fixtures"
@@ -148,7 +151,34 @@ def test_resolve_auto_prefers_slang_when_pyslang_available(monkeypatch) -> None:
         "find_spec",
         lambda name: object() if name == "pyslang" else None,
     )
+    # The version guard imports the real module; stand it in so the
+    # test is independent of whether pyslang is installed.
+    monkeypatch.setattr(slang_fe, "_import_pyslang", lambda: object())
     assert resolve_auto() is Frontend.slang
+
+
+def test_resolve_auto_degrades_to_yosys_on_unsupported_pyslang(
+    monkeypatch, caplog
+) -> None:
+    """An installed-but-unsupported pyslang (rtl-buddy-cdc#300) must not
+    make ``auto`` fail the run: it logs the version message and falls
+    back to yosys. Explicit ``--frontend slang`` keeps the hard error."""
+    monkeypatch.setattr(
+        frontend_mod.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "pyslang" else None,
+    )
+
+    def _reject() -> object:
+        raise slang_fe.SlangFrontendUnavailable(
+            "pyslang 12.0.0 is not supported by the slang frontend"
+        )
+
+    monkeypatch.setattr(slang_fe, "_import_pyslang", _reject)
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy_cdc.frontend"):
+        assert resolve_auto() is Frontend.yosys
+    assert "pyslang 12.0.0 is not supported" in caplog.text
+    assert "using yosys" in caplog.text
 
 
 def test_resolve_auto_falls_back_to_yosys_without_pyslang(monkeypatch) -> None:

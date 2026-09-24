@@ -24,10 +24,13 @@ delegates. The implementations live in :mod:`rtl_buddy_cdc.frontends`.
 from __future__ import annotations
 
 import importlib.util
+import logging
 from enum import Enum
 from pathlib import Path
 
 from rtl_buddy_cdc.netlist import Module
+
+_log = logging.getLogger(__name__)
 
 
 class Frontend(str, Enum):
@@ -44,13 +47,27 @@ class Frontend(str, Enum):
 def resolve_auto() -> Frontend:
     """Resolve ``Frontend.auto`` into a concrete frontend.
 
-    Returns :attr:`Frontend.slang` when pyslang is importable in the
-    current environment (the slang frontend has no subprocess overhead
-    and no Yosys runtime dependency), :attr:`Frontend.yosys` otherwise.
+    Returns :attr:`Frontend.slang` when a *supported* pyslang is
+    importable in the current environment (the slang frontend has no
+    subprocess overhead and no Yosys runtime dependency),
+    :attr:`Frontend.yosys` otherwise. An installed pyslang outside the
+    supported range (rtl-buddy-cdc#300) counts as "not available": auto
+    logs the version message and degrades to yosys rather than failing
+    the run — an explicit ``--frontend slang`` still surfaces the error.
     """
-    if importlib.util.find_spec("pyslang") is not None:
-        return Frontend.slang
-    return Frontend.yosys
+    if importlib.util.find_spec("pyslang") is None:
+        return Frontend.yosys
+    from rtl_buddy_cdc.frontends.slang import (
+        SlangFrontendUnavailable,
+        _import_pyslang,
+    )
+
+    try:
+        _import_pyslang()
+    except SlangFrontendUnavailable as e:
+        _log.warning("frontend auto: slang unavailable (%s); using yosys", e)
+        return Frontend.yosys
+    return Frontend.slang
 
 
 def elaborate(
