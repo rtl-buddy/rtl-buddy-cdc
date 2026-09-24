@@ -19,13 +19,21 @@ dependencies = [
 # without a Yosys subprocess. Default install stays typer-only — see
 # AGENTS.md "Development rules" on runtime dependencies.
 #
-# Version range: pyslang 10.x is the tested envelope (the CI matrix
-# resolves to 10.0.0; uv.lock pins the same). pyslang has had breaking
-# API changes across majors (e.g. the diagnostic engine surface and
-# attribute lookup paths moved before 10) so we cap below the next
-# major. Re-test and widen when bumping. See issue #26.
+# Version range: pyslang 10.x and 11.x are both tested (uv.lock and the
+# default CI matrix resolve to 10.0.0; one extra matrix leg installs
+# 11.0.0 over it — see .github/workflows/test.yml). pyslang has had
+# breaking API changes across majors: 11 split the flat top-level
+# namespace into submodules (``Compilation`` / ``CompilationOptions`` /
+# ``CompilationFlags`` → ``pyslang.ast``, ``SyntaxTree`` →
+# ``pyslang.syntax``), which ``frontends/slang.py`` bridges with
+# ``_pyslang_namespaces``; before 10 the diagnostic engine surface and
+# attribute lookup paths moved. So we cap below the next major and
+# re-test when widening. The same range lives in code as
+# ``frontends.slang.PYSLANG_SUPPORTED_RANGE``, which fails the frontend
+# early on an out-of-range wheel; a test asserts the two agree. See
+# issues #26 and #300.
 slang = [
-    "pyslang>=10,<11",
+    "pyslang>=10,<12",
 ]
 # Opt-in YAML hints loader (issue #129). `--reset-hints FILE.yaml`
 # reads an external file declaring reset-port polarity / synchroniser
@@ -106,7 +114,11 @@ files = ["src/rtl_buddy_cdc"]
 # pyslang ships .pyi stubs but they fail mypy's parser
 # (auto-generated; SyntaxError inside the file). Treat the module as
 # Any to keep the rest of the slang frontend checkable. Re-evaluate
-# after a pyslang release that fixes the stubs.
+# after a pyslang release that fixes the stubs. The ``pyslang.*``
+# override below also covers the 11.x submodules (``pyslang.ast`` /
+# ``pyslang.syntax``) the frontend reaches through
+# ``_pyslang_namespaces`` — those are resolved dynamically via
+# ``getattr``, so nothing extra is needed for #300.
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

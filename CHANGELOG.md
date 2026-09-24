@@ -59,8 +59,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback raises one `sdc.tokenizer_skipped` warning per file the
   first time a `$`-word or unrecognised command is dropped.
 
+### Changed
+
+- **The `[slang]` extra now accepts pyslang 11** (#300). The range
+  widened from `pyslang>=10,<11` to `pyslang>=10,<12`; 10.0.0 stays the
+  locked/default-CI resolution and one extra `pytest (with slang)`
+  matrix leg installs 11.0.0 over it, so both majors are exercised on
+  every PR. pyslang 11 split the flat top-level namespace into
+  submodules — `Compilation` / `CompilationOptions` /
+  `CompilationFlags` moved to `pyslang.ast` and `SyntaxTree` to
+  `pyslang.syntax`, while `Bag` / `DiagnosticEngine` /
+  `TextDiagnosticClient` stayed top-level. `frontends/slang.py` resolves
+  both layouts through `_pyslang_namespaces`, which falls back to the
+  module itself when the submodules are absent (10.x). Elaboration
+  output is byte-identical on both majors: the full suite, the slang
+  elaboration/lowering tests and the cross-frontend differential oracle
+  all pass unchanged under each.
+
 ### Fixed
 
+- **Unsupported pyslang versions now fail early with a one-line
+  message instead of an `AttributeError` mid-elaboration** (#300).
+  With pyslang 11 installed, `lint --frontend slang` died with
+  `AttributeError: module 'pyslang' has no attribute
+  'CompilationOptions'` from inside `elaborate` — a traceback that
+  named neither the installed version nor the supported range. The
+  lazy `_import_pyslang` now checks the imported module's major
+  against `frontends.slang.PYSLANG_SUPPORTED_RANGE` (the single
+  code-side source of truth; a test asserts it matches the `[slang]`
+  extra in `pyproject.toml`) and raises `SlangFrontendUnavailable`,
+  which `cli.py` already renders as `error: …` with exit code 2:
+  `pyslang 12.0.0 is not supported by the slang frontend (supported:
+  >=10,<12); install a supported pyslang (pip install
+  'pyslang>=10,<12') or use --frontend yosys`. The version is read
+  from `pyslang.__version__` when present (11.x) and from the
+  installed distribution metadata otherwise (10.0.0 ships no
+  `__version__`). A version string that is missing *and* unreadable,
+  or that cannot be parsed, logs one warning and proceeds — the guard
+  replaces a confusing traceback with a clear message, it is not
+  licensed to break an otherwise-working install over a cosmetic
+  version string.
 - **The Tcl safe interp now runs in a worker process; an in-process
   Tcl wedges macOS `fork`+`exec`** (#298). Loading `_tkinter` starts
   Tcl's `NotifierThreadProc`, a native thread that sits in `select()`

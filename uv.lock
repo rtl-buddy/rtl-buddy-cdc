@@ -696,7 +696,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pyslang", marker = "extra == 'slang'", specifier = ">=10,<11" },
+    { name = "pyslang", marker = "extra == 'slang'", specifier = ">=10,<12" },
     { name = "pyyaml", marker = "extra == 'hints'", specifier = ">=6.0" },
     { name = "typer", specifier = ">=0.25.1" },
 ]

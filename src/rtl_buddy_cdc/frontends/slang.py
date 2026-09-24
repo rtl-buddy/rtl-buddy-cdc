@@ -12,9 +12,15 @@ internal ``$_BUF_`` primitives in SV source are correctly
 rejected by slang as not being legal SystemVerilog and stay
 Yosys-frontend-only by design.
 
-Tested against ``pyslang>=10,<11`` — that's the range the
-``[slang]`` extra pins (see ``pyproject.toml`` and issue #26).
-Older majors had different ``DiagnosticEngine`` /
+Tested against ``pyslang>=10,<12`` — that's the range the
+``[slang]`` extra pins (see ``pyproject.toml`` and issues #26 /
+#300), mirrored in code by :data:`PYSLANG_SUPPORTED_RANGE`, which
+:func:`_import_pyslang` enforces before any elaboration work
+starts. pyslang 11 split the flat top-level namespace into
+submodules (``Compilation`` / ``CompilationOptions`` /
+``CompilationFlags`` → ``pyslang.ast``; ``SyntaxTree`` →
+``pyslang.syntax``); :func:`_pyslang_namespaces` bridges the two
+layouts. Older majors had different ``DiagnosticEngine`` /
 ``getAttributes`` surfaces; widening the cap means re-running
 the slang test files against the new wheel.
 
@@ -135,10 +141,15 @@ What is NOT yet implemented (next slices)
 
 from __future__ import annotations
 
+import importlib.metadata
+import logging
+import re
 from pathlib import Path
 from typing import Any
 
 from rtl_buddy_cdc.netlist import Bit, Cell, Module, Netname, Port
+
+_log = logging.getLogger(__name__)
 
 _PYSLANG_INSTALL_HINT = (
     "pyslang is required for the slang frontend. Install via:\n"
@@ -146,6 +157,16 @@ _PYSLANG_INSTALL_HINT = (
     "or directly:\n"
     "    pip install pyslang"
 )
+
+# --- supported pyslang range (issue #300) ----------------------------------
+#
+# THE single source of truth in code. ``pyproject.toml``'s ``[slang]``
+# extra declares the same range and
+# ``tests/test_slang_version_guard.py::test_supported_range_matches_pyproject``
+# fails if the two drift apart.
+PYSLANG_MIN_MAJOR = 10
+PYSLANG_MAX_MAJOR_EXCLUSIVE = 12
+PYSLANG_SUPPORTED_RANGE = f">={PYSLANG_MIN_MAJOR},<{PYSLANG_MAX_MAJOR_EXCLUSIVE}"
 
 # Marker for "no prior binding" in ``_emit_for_loop``'s save/restore
 # discipline around ``_loop_bindings``. Using a sentinel (rather than
@@ -164,16 +185,86 @@ class SlangElaborationError(RuntimeError):
     diagnostics, unsupported construct in this slice)."""
 
 
+def _pyslang_version(pyslang: Any) -> str | None:
+    """Best-effort version string for the imported ``pyslang``.
+
+    pyslang 11 exposes ``__version__``; 10.x does **not**, so fall back
+    to the installed distribution metadata. ``None`` when neither the
+    attribute nor the metadata is readable."""
+    raw = getattr(pyslang, "__version__", None)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    try:
+        return importlib.metadata.version("pyslang")
+    except Exception:
+        return None
+
+
+def _check_pyslang_version(pyslang: Any) -> None:
+    """Fail early when the installed pyslang major is outside
+    :data:`PYSLANG_SUPPORTED_RANGE` (issue #300).
+
+    Without this, an out-of-range wheel dies with an ``AttributeError``
+    deep inside elaboration (``module 'pyslang' has no attribute
+    'CompilationOptions'`` on 12+, say) instead of naming the problem.
+
+    **Unreadable / unparseable versions warn and proceed.** The guard
+    exists to replace a confusing traceback with a clear message, not
+    to break an otherwise-working install over a cosmetic version
+    string; an install that really is incompatible still fails, just
+    with the old traceback."""
+    version = _pyslang_version(pyslang)
+    if version is None:
+        _log.warning(
+            "could not determine the installed pyslang version "
+            "(supported: %s) — proceeding",
+            PYSLANG_SUPPORTED_RANGE,
+        )
+        return
+    match = re.match(r"\s*(\d+)", version)
+    if match is None:
+        _log.warning(
+            "could not parse the installed pyslang version %r "
+            "(supported: %s) — proceeding",
+            version,
+            PYSLANG_SUPPORTED_RANGE,
+        )
+        return
+    major = int(match.group(1))
+    if not PYSLANG_MIN_MAJOR <= major < PYSLANG_MAX_MAJOR_EXCLUSIVE:
+        raise SlangFrontendUnavailable(
+            f"pyslang {version} is not supported by the slang frontend "
+            f"(supported: {PYSLANG_SUPPORTED_RANGE}); install a supported "
+            f"pyslang (pip install 'pyslang{PYSLANG_SUPPORTED_RANGE}') "
+            f"or use --frontend yosys"
+        )
+
+
 def _import_pyslang():
     """Lazy import. Raises :class:`SlangFrontendUnavailable` with an
-    install hint if pyslang isn't on the path. Importing here (not at
-    module load) keeps pyslang truly optional — the default install is
-    typer-only per the AGENTS.md runtime-deps policy."""
+    install hint if pyslang isn't on the path, or with a version message
+    if it is out of :data:`PYSLANG_SUPPORTED_RANGE`. Importing here (not
+    at module load) keeps pyslang truly optional — the default install
+    is typer-only per the AGENTS.md runtime-deps policy."""
     try:
         import pyslang  # type: ignore[import-not-found]
     except ImportError as e:
         raise SlangFrontendUnavailable(_PYSLANG_INSTALL_HINT) from e
+    _check_pyslang_version(pyslang)
     return pyslang
+
+
+def _pyslang_namespaces(pyslang: Any) -> tuple[Any, Any]:
+    """Return ``(ast_ns, syntax_ns)`` for the installed pyslang.
+
+    pyslang 11 split the flat top-level namespace into submodules —
+    ``Compilation`` / ``CompilationOptions`` / ``CompilationFlags`` moved
+    to ``pyslang.ast`` and ``SyntaxTree`` to ``pyslang.syntax``, while
+    ``Bag`` / ``DiagnosticEngine`` / ``TextDiagnosticClient`` stayed at
+    the top level. 10.x has everything at the top level and no
+    submodules at all, so falling back to the module itself gives one
+    lookup path that works on both (issue #300)."""
+    return getattr(pyslang, "ast", pyslang), getattr(pyslang, "syntax", pyslang)
 
 
 def elaborate(sources: list[Path], top: str) -> Module:
@@ -188,18 +279,19 @@ def elaborate(sources: list[Path], top: str) -> Module:
     # later in the same module are valid RTL. ``AllowTopLevelIfacePorts``
     # is already on by default in pyslang; set it explicitly so the
     # intent survives a future default change.
-    options = pyslang.CompilationOptions()
+    ast_ns, syntax_ns = _pyslang_namespaces(pyslang)
+    options = ast_ns.CompilationOptions()
     options.flags = (
         options.flags
-        | pyslang.CompilationFlags.AllowTopLevelIfacePorts
-        | pyslang.CompilationFlags.AllowUseBeforeDeclare
+        | ast_ns.CompilationFlags.AllowTopLevelIfacePorts
+        | ast_ns.CompilationFlags.AllowUseBeforeDeclare
     )
     bag = pyslang.Bag()
     bag.compilationOptions = options
 
-    comp = pyslang.Compilation(bag)
+    comp = ast_ns.Compilation(bag)
     for src in sources:
-        tree = pyslang.SyntaxTree.fromFile(str(src))
+        tree = syntax_ns.SyntaxTree.fromFile(str(src))
         comp.addSyntaxTree(tree)
 
     # Surface fatal parse / elaboration errors — keep going through
