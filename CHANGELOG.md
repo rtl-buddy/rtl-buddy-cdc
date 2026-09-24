@@ -98,7 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or that cannot be parsed, logs one warning and proceeds — the guard
   replaces a confusing traceback with a clear message, it is not
   licensed to break an otherwise-working install over a cosmetic
-  version string.
+  version string. `--frontend auto` treats an out-of-range pyslang as
+  "not available": it logs the same message and degrades to yosys
+  instead of failing the run; an explicit `--frontend slang` keeps
+  the hard error.
 - **The Tcl safe interp now runs in a worker process; an in-process
   Tcl wedges macOS `fork`+`exec`** (#298). Loading `_tkinter` starts
   Tcl's `NotifierThreadProc`, a native thread that sits in `select()`
