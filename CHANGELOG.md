@@ -78,6 +78,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Packed shift-register synchroniser with a *synchronous* reset read
+  as depth 1** (#301, follow-up to #264). `q <= {q[0], d}` passed, but
+  `if (rst) q <= '0; else q <= {q[0], d};` fired a false CDC-001
+  "no second-stage flop, chain depth = 1". After `proc` the sync reset
+  leaves a multi-bit `$mux` in front of the flop's `D` — the shift
+  vector on one leg, the constant reset value on the other, the reset
+  on `S` — so `D` is no longer lane-for-lane the flop's own `Q` bits
+  and `_packed_shift_register_depth` returned `None`. The shape is
+  common (two-stage level synchronisers and reset-release
+  synchronisers are routinely written this way), and on a real design
+  it accounted for most of the CDC-001 reports.
+
+  `_packed_shift_register_depth` now looks through a **single `$mux`
+  whose `Y` is exactly the flop's `D` vector and whose other leg is
+  entirely constant**, then runs the existing lane-for-lane test on the
+  data leg. Both polarities are covered — Yosys puts the shift vector
+  on `A` for an active-high reset and on `B` for an active-low one —
+  as is any constant reset value (all-`0`, all-`1`, or a mix including
+  `x`/`z` don't-care lanes: a constant moves no data between lanes).
+  The "exactly one reader" rule is unchanged; behind a reset mux the
+  single reader of a lane's `Q` is the mux input rather than the flop's
+  `D` pin, which `reader_counts` already counts, and every `Y` bit must
+  have exactly one reader so a combinationally-consumed pre-flop value
+  still ends the chain.
+
+  What stays rejected, unchanged: an **enable** mux (the other leg is
+  the flop's own `Q` — `int` bits, not constants), a mux whose other
+  leg is any other live signal, both legs constant, `$pmux` (its `B` is
+  `len(S)` concatenated legs — a priority structure, out of scope),
+  chained muxes (only one level is looked through, so a reset mux
+  feeding an enable mux still reads depth 1), and a mux whose `Y` is
+  not exactly the `D` vector.
+
+  CDC-003 gained the matching exemption: a constant-leg reset mux
+  directly on the destination flop's `D` is part of the flop, not
+  "combinational logic between source flop and synchronizer", so it no
+  longer fires when the source flop's `Q` reaches a bare data-leg lane.
+  This is also frontend parity — the slang frontend already folded the
+  same source into an `$sdff` whose `D` is the shift vector (#86) and
+  was silent, while yosys-flatten reported. New fixture
+  `good_packed_shift_sync_srst` carries both polarities and asserts
+  both frontends agree.
 - **Unsupported pyslang versions now fail early with a one-line
   message instead of an `AttributeError` mid-elaboration** (#300).
   With pyslang 11 installed, `lint --frontend slang` died with

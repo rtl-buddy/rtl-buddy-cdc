@@ -212,6 +212,15 @@ GOOD_FIXTURES = [
     # silent just like the separate-flop good_2ff_sync. One async
     # crossing (src_q → the packed register's first stage).
     ("good_packed_shift_sync", 1),
+    # Same packed idiom with a *synchronous* reset (issue #301): after
+    # `proc` the reset leaves a multi-bit $mux on the flop's D, so D is
+    # no longer lane-for-lane the flop's own Q bits. The recogniser
+    # looks through a mux whose other leg is entirely constant and
+    # applies the lane test to the data leg, so depth is 2 again. Two
+    # synchronisers, one per reset polarity / reset value (active-high
+    # to all-0 with the data on the mux's A leg, active-low to all-1
+    # with the data on B). Two async crossings, one per chain.
+    ("good_packed_shift_sync_srst", 2),
     # CDC-011 (#272) positive shape: the untyped synchronous reset of
     # bad_untyped_sync_reset_srst, typed via `set_input_delay -clock
     # clk`. Both `srst` (an `$sdff` SRST pin) and `dctl` (a `D` pin)
