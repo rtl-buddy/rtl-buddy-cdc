@@ -429,6 +429,7 @@ def _prove_input_synchroniser(
         domains,
         ctx.reader_counts,
         d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        bit_drivers=ctx.bit_drivers,
     )
     return depth, cell_name in ctx.user_syncs
 

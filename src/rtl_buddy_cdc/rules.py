@@ -204,12 +204,7 @@ def _build_context(
     )
     domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
 
-    bit_drivers: dict[Bit, tuple[str, str, int]] = {}
-    for cell in module.cells.values():
-        for port_name in ("Y", "Q"):
-            for idx, b in enumerate(cell.connections.get(port_name, ())):
-                if isinstance(b, int):
-                    bit_drivers[b] = (cell.name, port_name, idx)
+    bit_drivers = _bit_drivers(module)
 
     # Forward index: same shape as ``bit_drivers`` but for *inputs*.
     # CLK is excluded (clock pins are walked separately by the clock-
@@ -878,6 +873,22 @@ def _backward_flop_fanin(
     return flops
 
 
+def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str, int]]:
+    """Map every driven net bit to its ``(cell, output-port, index)``.
+
+    :class:`_RuleContext` caches this per ``run_all``; the standalone
+    helper exists so a rule helper called without a context (a unit
+    test, or the lazy-build path) can still resolve drivers.
+    """
+    drivers: dict[Bit, tuple[str, str, int]] = {}
+    for cell in module.cells.values():
+        for port_name in ("Y", "Q"):
+            for idx, b in enumerate(cell.connections.get(port_name, ())):
+                if isinstance(b, int):
+                    drivers[b] = (cell.name, port_name, idx)
+    return drivers
+
+
 def _bit_reader_count(module: Module) -> dict[Bit, int]:
     """Count every (cell, port-bit) site that reads each net bit.
 
@@ -900,9 +911,93 @@ def _bit_reader_count(module: Module) -> dict[Bit, int]:
     return counts
 
 
+def _constant_leg_reset_mux_data_bits(
+    head: Flop,
+    module: Module,
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int],
+) -> tuple[Bit, ...] | None:
+    """The *data* leg of a synchronous-reset ``$mux`` sitting on ``head``'s
+    ``D`` vector, or ``None`` when ``D`` isn't that shape (issue #301).
+
+    ``always_ff @(posedge clk) if (rst) q <= '0; else q <= {q[0], d};``
+    lowers, after ``proc``, to one multi-bit ``$mux`` in front of the
+    flop: the shift vector on one leg, an all-constant reset value on
+    the other, and the reset on ``S``. (The slang frontend folds the
+    same source into an ``$sdff`` whose ``D`` is already the shift
+    vector, so it never reaches here — see CHANGELOG #86.) The reset
+    only forces every lane to a constant; it carries no data between
+    lanes, so the shift structure behind it is still the whole story
+    for synchroniser depth.
+
+    Returns the bit vector of the non-constant leg so
+    :func:`_packed_shift_register_depth` can run its lane-for-lane test
+    against it. Requirements, all deliberately strict:
+
+    - ``D`` is *exactly* one ``$mux`` cell's ``Y`` vector, lane for lane.
+    - Exactly one of ``A`` / ``B`` is entirely constant. Yosys writes
+      constants as string bits (``"0"`` / ``"1"`` / ``"x"`` / ``"z"``),
+      so both reset polarities are covered: an active-high reset puts
+      the constant on ``B``, an active-low reset on ``A``, and the reset
+      value may be all-zero, all-one or any mix (a ``x``/``z`` lane is
+      a don't-care reset value — still a constant, still no data).
+    - Every ``Y`` bit has exactly one reader. The flop's ``D`` pin is
+      that reader by construction; an extra one means the *pre-flop*
+      mux output is consumed combinationally, which leaks an earlier
+      stage's value out of the chain.
+
+    Everything else is rejected and the caller falls back to its
+    depth-1 verdict — in particular an **enable** mux (the other leg is
+    the flop's own ``Q``, an ``int`` bit, not a constant) and a mux
+    whose other leg is any other live signal. ``$pmux`` is rejected
+    explicitly: its ``B`` is ``len(S)`` concatenated legs of ``WIDTH``
+    bits, i.e. a priority structure (several reset sources, or a
+    reset/enable nest), which is out of scope here. So are chained
+    muxes — only a single mux level is looked through, so a reset mux
+    feeding an enable mux still reads as depth 1.
+    """
+    if not head.d:
+        return None
+    first = head.d[0]
+    if not isinstance(first, int):
+        return None
+    drv = bit_drivers.get(first)
+    if drv is None:
+        return None
+    cell_name, port, _idx = drv
+    if port != "Y":
+        return None
+    cell = module.cells.get(cell_name)
+    # ``$pmux`` (and every other cell type) is deliberately not walked.
+    if cell is None or cell.type != "$mux":
+        return None
+    y = cell.connections.get("Y", ())
+    a = cell.connections.get("A", ())
+    b = cell.connections.get("B", ())
+    n = len(head.d)
+    if len(y) != n or len(a) != n or len(b) != n:
+        return None
+    if tuple(y) != tuple(head.d):
+        return None
+    # The mux output must feed the flop's D and nothing else, or an
+    # intermediate stage escapes the chain through the mux.
+    if any(reader_counts.get(yb, 0) != 1 for yb in y):
+        return None
+    a_const = all(not isinstance(bit, int) for bit in a)
+    b_const = all(not isinstance(bit, int) for bit in b)
+    if a_const == b_const:
+        # Both constant: the register never shifts. Neither constant:
+        # an enable mux (own Q on the other leg) or an unrelated
+        # select — not a reset.
+        return None
+    return tuple(a) if b_const else tuple(b)
+
+
 def _packed_shift_register_depth(
     head: Flop,
     reader_counts: dict[Bit, int],
+    module: Module | None = None,
+    bit_drivers: dict[Bit, tuple[str, str, int]] | None = None,
 ) -> int | None:
     """Effective synchroniser depth when ``head`` is a *packed* shift
     register — a single multi-bit flop coded as ``q <= {q[N-2:0], d}``.
@@ -923,6 +1018,16 @@ def _packed_shift_register_depth(
     the per-lane shift from that single external input lane to the
     terminal tap yields the effective depth.
 
+    A **synchronous reset** in the same ``always_ff`` puts a ``$mux``
+    between the shift vector and ``D`` after ``proc`` (issue #301), so
+    the lane-for-lane test is applied to the mux's data leg instead
+    whenever ``module`` and ``bit_drivers`` are supplied and
+    :func:`_constant_leg_reset_mux_data_bits` accepts the shape — the
+    reset only forces the lanes to a constant and moves no data. Both
+    polarities and any constant reset value qualify; an **enable** mux
+    (the other leg is the flop's own ``Q``) and a mux whose other leg
+    is any other live signal do not, and still read as depth 1.
+
     Returns ``None`` when ``head`` is not this shape, so the caller
     falls back to its depth-1 verdict. Non-matches include a genuine
     multi-bit **bus** crossing (≥ 2 external lanes, no self-feedback),
@@ -932,14 +1037,31 @@ def _packed_shift_register_depth(
     The walk mirrors :func:`_sync_chain_depth`'s "exactly one reader"
     rule: an intermediate lane whose ``Q`` is read by anything other
     than the single follow-on shift lane ends the chain (the
-    synchronised value is already in use).
+    synchronised value is already in use). With a reset mux in front
+    of ``D`` that single reader is the mux input rather than the flop's
+    own ``D`` pin, which the count already handles — ``reader_counts``
+    counts every input-pin site, mux legs included.
     """
     n = len(head.q)
     if n < 2 or len(head.d) != n:
         return None
     if not all(isinstance(b, int) for b in head.q):
         return None
-    if not all(isinstance(b, int) for b in head.d):
+    # The vector the lane-for-lane test runs against. Normally the
+    # flop's own ``D``; with a synchronous reset it is the data leg of
+    # the ``$mux`` ``proc`` left on ``D`` (#301). Looking through that
+    # mux needs a driver map, so it only happens when the caller
+    # supplies the module (``_sync_chain_depth`` always does).
+    d_bits: tuple[Bit, ...] = tuple(head.d)
+    if module is not None:
+        if bit_drivers is None:
+            bit_drivers = _bit_drivers(module)
+        data_leg = _constant_leg_reset_mux_data_bits(
+            head, module, bit_drivers, reader_counts
+        )
+        if data_leg is not None:
+            d_bits = data_leg
+    if not all(isinstance(b, int) for b in d_bits):
         return None
     # Lane index of each of the flop's own Q bits. Distinct bits only;
     # a repeated Q bit isn't a well-formed register and breaks the
@@ -954,7 +1076,7 @@ def _packed_shift_register_depth(
     # flop's own ``Q`` bits are external inputs.
     succ: dict[int, int] = {}
     external_lanes: list[int] = []
-    for i, db in enumerate(head.d):
+    for i, db in enumerate(d_bits):
         j = q_index.get(db)
         if j is None:
             external_lanes.append(i)
@@ -994,6 +1116,7 @@ def _sync_chain_depth(
     reader_counts: dict[Bit, int] | None = None,
     *,
     d_bit_to_single_bit_flop: dict[Bit, Flop] | None = None,
+    bit_drivers: dict[Bit, tuple[str, str, int]] | None = None,
 ) -> int:
     """Length of the synchronizer chain that starts at ``head``.
 
@@ -1013,6 +1136,9 @@ def _sync_chain_depth(
     lookup instead of an O(N) ``find_flops`` scan. The argument is
     optional so callers that haven't built a context still work
     (the lazy-build path in each rule when ``ctx=None``).
+    ``bit_drivers`` is the same deal for the packed shift-register
+    recogniser's synchronous-reset mux look-through (#301): supplied
+    from the context when there is one, rebuilt on demand otherwise.
     """
     if reader_counts is None:
         reader_counts = _bit_reader_count(module)
@@ -1035,7 +1161,9 @@ def _sync_chain_depth(
             # chain lives intra-cell. Recognise that idiom and return
             # its effective depth instead of the false depth-1 (#264).
             if current is head:
-                packed = _packed_shift_register_depth(current, reader_counts)
+                packed = _packed_shift_register_depth(
+                    current, reader_counts, module, bit_drivers
+                )
                 if packed is not None:
                     return packed
             break
@@ -1091,6 +1219,7 @@ def _effective_sync_chain_depth(
         ctx.domains,
         ctx.reader_counts,
         d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        bit_drivers=ctx.bit_drivers,
     )
 
 
@@ -1294,6 +1423,38 @@ def check_cdc_002(
     return violations
 
 
+def _crossing_enters_through_reset_mux_only(
+    module: Module,
+    c: Crossing,
+    ctx: _RuleContext,
+) -> bool:
+    """True when the *only* cell between ``c``'s source flop and the
+    destination flop's ``D`` is that flop's synchronous-reset ``$mux``.
+
+    A synchronous reset is part of the destination flop, not logic on
+    the crossing path: the yosys frontend only leaves it visible as a
+    separate ``$mux`` because ``proc`` alone doesn't fold it, while the
+    slang frontend emits an ``$sdff`` whose ``D`` is the data leg
+    directly (CHANGELOG #86). Without this, the two frontends disagree
+    on the same source — slang silent, yosys reporting a CDC-003
+    "combinational logic on the way to a synchronizer" (#301).
+
+    The glitch hazard CDC-003 exists for needs *two* source-domain
+    signals combined by a gate. Here the mux's other leg is a constant
+    and its select is the destination-domain reset, so the crossing bit
+    reaches ``D`` unmixed. Any *extra* cell on the path means the source
+    bit is no longer a bare data-leg lane and the rule still fires.
+    """
+    if c.src_flop is None:
+        return False
+    data_leg = _constant_leg_reset_mux_data_bits(
+        c.dst_flop, module, ctx.bit_drivers, ctx.reader_counts
+    )
+    if data_leg is None:
+        return False
+    return any(qb in data_leg for qb in c.src_flop.q if isinstance(qb, int))
+
+
 def check_cdc_003(
     module: Module,
     crossings: list[Crossing],
@@ -1332,6 +1493,12 @@ def check_cdc_003(
             continue
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
             continue  # source is (* cdc_static *) — held constant, no metastability
+        if _crossing_enters_through_reset_mux_only(module, c, ctx):
+            # The only cell on the path is the destination flop's own
+            # synchronous-reset mux (#301) — part of the flop, not
+            # logic combining two source-domain signals. See the
+            # helper's docstring for the frontend-parity argument.
+            continue
         depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
         if depth < 2:
             # CDC-001 covers this crossing already; don't double-fire.
@@ -1878,6 +2045,7 @@ def check_cdc_006(
             ctx.domains,
             ctx.reader_counts,
             d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+            bit_drivers=ctx.bit_drivers,
         )
         if depth < 2:
             continue
@@ -4800,6 +4968,7 @@ def check_cdc_018(
             ctx.domains,
             ctx.reader_counts,
             d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+            bit_drivers=ctx.bit_drivers,
         )
         if depth < depth_threshold:
             continue
