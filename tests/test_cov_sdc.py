@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from rtl_buddy_cdc.sdc import (
     UNCONSTRAINED_SENTINEL,
     ArgSpec,
@@ -38,6 +40,21 @@ from rtl_buddy_cdc.sdc import (
     parse,
     parse_file,
 )
+
+
+@pytest.fixture(autouse=True)
+def _every_sdc_backend(sdc_backend):
+    """Run every test in this module once per SDC reader backend (#298).
+
+    ``sdc_backend`` is parametrised ``["tcl", "tokenizer"]`` in
+    tests/conftest.py and sets ``RB_CDC_SDC_BACKEND``, so the parse
+    calls below need no argument changes. Both readers must produce the
+    same :class:`ClockSpec` for the plain SDC these tests use; the
+    constructs only the Tcl reader can evaluate live in
+    tests/test_sdc_backends.py.
+    """
+    return sdc_backend
+
 
 # ---- ClockSpec.resolve corners ---------------------------------------------
 

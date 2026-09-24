@@ -1,15 +1,29 @@
-"""Unit tests for the Tcl-aware word tokenizer in :mod:`rtl_buddy_cdc.sdc`.
+"""Unit tests for the Tcl-aware word tokenizer.
 
 The tokenizer is the foundation of the issue #144 parser refactor —
 every collection-handling bug we fixed in #140 / #142 ultimately
 traced to mis-counting tokens emitted by ``shlex``. These tests pin
 the tokenizer's behaviour directly so a regression here would surface
 as a focused failure rather than a downstream parser mystery.
+
+The function moved to :mod:`rtl_buddy_cdc.tcl_tokenizer` in
+rtl-buddy-cdc#298 (so rtl-buddy can vendor that file verbatim) and is
+imported from its new home here. These tests are deliberately *not*
+parametrised over the two SDC reader backends: they exercise the
+tokenizer directly, below the backend split. Backend parity lives in
+tests/test_sdc_backends.py.
 """
 
 from __future__ import annotations
 
-from rtl_buddy_cdc.sdc import _tokenize
+from rtl_buddy_cdc import sdc as sdc_mod
+from rtl_buddy_cdc.tcl_tokenizer import _tokenize
+
+
+def test_sdc_re_exports_the_tokenizer() -> None:
+    """``sdc._tokenize`` stays importable after the #298 module split —
+    existing callers and vendored copies key on that name."""
+    assert sdc_mod._tokenize is _tokenize
 
 
 def test_plain_command() -> None:

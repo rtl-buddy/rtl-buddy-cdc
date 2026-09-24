@@ -59,8 +59,25 @@ EXPECTED_PIN_CLOCKS = {
 }
 
 
-@pytest.fixture(scope="module")
-def context():
+@pytest.fixture(autouse=True)
+def _every_sdc_backend(sdc_backend):
+    """Run every test in this module once per SDC reader backend (#298).
+
+    ``sdc_backend`` is parametrised ``["tcl", "tokenizer"]`` in
+    tests/conftest.py and sets ``RB_CDC_SDC_BACKEND``, so the parse
+    calls below need no argument changes. Both readers must produce the
+    same :class:`ClockSpec` for the plain SDC these tests use; the
+    constructs only the Tcl reader can evaluate live in
+    tests/test_sdc_backends.py.
+    """
+    return sdc_backend
+
+
+# Function-scoped on purpose: ``_every_sdc_backend`` re-parametrises
+# every test over both SDC readers, and a module-scoped cache would
+# hand the second backend the first backend's already-parsed spec.
+@pytest.fixture
+def context(sdc_backend):
     if not JSON.exists():
         pytest.skip(f"fixture netlist not built: {JSON}")
     module = netlist.load(JSON)
