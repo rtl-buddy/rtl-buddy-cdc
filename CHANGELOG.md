@@ -78,6 +78,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Separate-flop 2FF synchroniser with a per-stage *synchronous* reset
+  fired CDC-014 on the yosys frontend** (#304, the follow-up #303 left
+  open after fixing the packed form in #301). `if (rst) begin s1 <= '0;
+  s2 <= '0; end else begin s1 <= d; s2 <= s1; end` lowers, after
+  `proc`, to a 1-bit constant-leg `$mux` in front of *each* stage's
+  `D`. `_sync_chain_depth` walks a chain by `D` bits, so it saw `s1.Q`
+  read by a mux rather than a flop and stopped at depth 1; CDC-001 then
+  deferred to `_chain_has_inter_stage_comb`, which read that same reset
+  mux as a *gate between the stages*, and CDC-014 reported
+  "combinational logic between synchroniser stages" on every such
+  synchroniser. The slang frontend emits an `$sdff` per stage (#86) and
+  was silent with depth 2 on the same source.
+
+  `_RuleContext` gains `srst_mux_data_bit_to_single_bit_flop`: for
+  every 1-bit flop whose `D` is the output of the constant-leg reset
+  mux `_constant_leg_reset_mux_data_bits` already recognises, the mux's
+  data-leg bit maps to that flop. `_sync_chain_depth` and
+  `_sync_chain_flops` consult it when the `D`-bit lookup misses, so the
+  chain steps over a stage's own reset mux exactly as it steps onto an
+  `$sdff`; both rebuild it on demand when called without a context.
+  `_chain_has_inter_stage_comb` skips a mux the index attributes to
+  the follow-on flop, so CDC-014 (and CDC-001's deferral) no longer see
+  a gate there. Every consumer of the walkers — CDC-001/002/003/005/
+  006/013/015/016/018 and the compositional input-synchroniser proof —
+  reads the same depth. Both polarities are covered (data on `A` for an
+  active-high reset, on `B` for active-low).
+
+  What still breaks the chain and still fires CDC-014, unchanged: an
+  **enable** mux between the stages (`if (en) s2 <= s1;` — the other
+  leg is `s2`'s own `Q`, a live bit), a mux with any other live leg, a
+  real gate, `$pmux`, a mux whose `Y` has an extra reader, and a stage
+  in another clock domain. New fixture `good_2ff_sync_srst` carries
+  both polarities and asserts both frontends agree.
+
 - **Packed shift-register synchroniser with a *synchronous* reset read
   as depth 1** (#301, follow-up to #264). `q <= {q[0], d}` passed, but
   `if (rst) q <= '0; else q <= {q[0], d};` fired a false CDC-001
