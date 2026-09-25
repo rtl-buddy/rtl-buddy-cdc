@@ -430,6 +430,7 @@ def _prove_input_synchroniser(
         ctx.reader_counts,
         d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
         bit_drivers=ctx.bit_drivers,
+        srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
     )
     return depth, cell_name in ctx.user_syncs
 
@@ -532,6 +533,7 @@ def _reconvergent_input_ports(
                 domains,
                 ctx.reader_counts,
                 ctx.d_bit_to_single_bit_flop,
+                ctx.srst_mux_data_bit_to_single_bit_flop,
             )
             internal.update(f.cell.name for f in chain)
             starts.extend(chain[-1].q)
