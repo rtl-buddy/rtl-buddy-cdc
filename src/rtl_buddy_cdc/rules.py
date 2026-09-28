@@ -106,6 +106,13 @@ class _RuleContext:
     # chain walker previously did ``for f in find_flops(module):`` per
     # step; this turns each step into an O(1) lookup.
     d_bit_to_single_bit_flop: dict[Bit, Flop]
+    # Companion index for the same walk (#304): for every 1-bit flop
+    # whose ``D`` is the output of a constant-leg synchronous-reset
+    # ``$mux`` (the un-folded ``if (rst) q <= 1'b0; else q <= d;`` the
+    # yosys frontend leaves after ``proc``), map the mux's *data-leg*
+    # bit to the flop. Lets the chain extend through the reset mux
+    # exactly as it would through the ``$sdff`` slang emits instead.
+    srst_mux_data_bit_to_single_bit_flop: dict[Bit, Flop]
     # Reset-side user input (SV attributes + optional ``--reset-hints``
     # YAML overlay), merged once at context-build time so the RDC rules
     # consult ``ctx.reset_sync_flop_names`` / ``ctx.reset_polarity_overrides``
@@ -237,6 +244,9 @@ def _build_context(
     for f in flops:
         if len(f.d) == 1 and isinstance(f.d[0], int):
             d_bit_to_single_bit_flop[f.d[0]] = f
+    srst_mux_data_bit_to_single_bit_flop = _srst_mux_data_bit_to_single_bit_flop(
+        module, d_bit_to_single_bit_flop, bit_drivers, reader_counts
+    )
 
     return _RuleContext(
         module=module,
@@ -252,6 +262,7 @@ def _build_context(
         user_handshakes=frozenset(user_handshake_flop_names(module)),
         user_glitchless_mux_bits=frozenset(user_glitchless_clock_mux_bits(module)),
         d_bit_to_single_bit_flop=d_bit_to_single_bit_flop,
+        srst_mux_data_bit_to_single_bit_flop=srst_mux_data_bit_to_single_bit_flop,
         reset_sync_flop_names=frozenset(
             user_reset_sync_flop_names(module, hints=reset_hints)
         ),
@@ -993,6 +1004,44 @@ def _constant_leg_reset_mux_data_bits(
     return tuple(a) if b_const else tuple(b)
 
 
+def _srst_mux_data_bit_to_single_bit_flop(
+    module: Module,
+    d_bit_to_single_bit_flop: dict[Bit, Flop],
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int],
+) -> dict[Bit, Flop]:
+    """Reverse index from a synchronous-reset mux's *data-leg* bit to
+    the 1-bit flop the mux feeds (issue #304).
+
+    ``if (rst) s2 <= 1'b0; else s2 <= s1;`` lowers, on the yosys
+    frontend, to ``s1.Q → $mux → s2.D``. Walking a synchroniser chain
+    by ``D`` bits alone stops at ``s1``: its ``Q`` is read by a mux, not
+    a flop. This index answers "which flop sits behind that reset mux"
+    so :func:`_sync_chain_depth` / :func:`_sync_chain_flops` can step
+    over it, and :func:`_chain_has_inter_stage_comb` can tell it apart
+    from a real gate wedged between the stages.
+
+    Only the shape :func:`_constant_leg_reset_mux_data_bits` accepts is
+    indexed — one ``$mux`` whose ``Y`` is exactly the flop's ``D``,
+    exactly one leg entirely constant, ``Y`` read by nothing else. An
+    enable mux (other leg is the flop's own ``Q``) or a mux with a live
+    other leg is not a reset and is not indexed, so it still breaks the
+    chain and still counts as inter-stage comb.
+    """
+    out: dict[Bit, Flop] = {}
+    for flop in d_bit_to_single_bit_flop.values():
+        leg = _constant_leg_reset_mux_data_bits(
+            flop, module, bit_drivers, reader_counts
+        )
+        if leg is None or not isinstance(leg[0], int):
+            continue
+        # A data bit shared by two reset muxes has two readers, so the
+        # chain walkers reject it before consulting this index; keep
+        # the first flop for determinism.
+        out.setdefault(leg[0], flop)
+    return out
+
+
 def _packed_shift_register_depth(
     head: Flop,
     reader_counts: dict[Bit, int],
@@ -1117,6 +1166,7 @@ def _sync_chain_depth(
     *,
     d_bit_to_single_bit_flop: dict[Bit, Flop] | None = None,
     bit_drivers: dict[Bit, tuple[str, str, int]] | None = None,
+    srst_mux_data_bit_to_single_bit_flop: dict[Bit, Flop] | None = None,
 ) -> int:
     """Length of the synchronizer chain that starts at ``head``.
 
@@ -1126,7 +1176,10 @@ def _sync_chain_depth(
       module (any extra reader — combinational or otherwise — means
       the synchronized value is already in use; the chain ends),
     - that reader is a 1-bit flop on its D pin in the same clock
-      domain.
+      domain — either directly, or through that flop's constant-leg
+      synchronous-reset ``$mux`` (#304): a sync reset is part of the
+      flop, and the slang frontend folds the same source into an
+      ``$sdff`` with no mux at all.
 
     Returns the count of dst-domain flops *including* ``head``. Callers
     typically check ``depth >= 2``.
@@ -1137,8 +1190,10 @@ def _sync_chain_depth(
     optional so callers that haven't built a context still work
     (the lazy-build path in each rule when ``ctx=None``).
     ``bit_drivers`` is the same deal for the packed shift-register
-    recogniser's synchronous-reset mux look-through (#301): supplied
-    from the context when there is one, rebuilt on demand otherwise.
+    recogniser's synchronous-reset mux look-through (#301), and
+    ``srst_mux_data_bit_to_single_bit_flop`` for the separate-flop
+    one (#304): supplied from the context when there is one, rebuilt
+    on demand otherwise.
     """
     if reader_counts is None:
         reader_counts = _bit_reader_count(module)
@@ -1148,6 +1203,12 @@ def _sync_chain_depth(
             for f in find_flops(module)
             if len(f.d) == 1 and isinstance(f.d[0], int)
         }
+    if srst_mux_data_bit_to_single_bit_flop is None:
+        if bit_drivers is None:
+            bit_drivers = _bit_drivers(module)
+        srst_mux_data_bit_to_single_bit_flop = _srst_mux_data_bit_to_single_bit_flop(
+            module, d_bit_to_single_bit_flop, bit_drivers, reader_counts
+        )
 
     depth = 1
     current = head
@@ -1175,6 +1236,10 @@ def _sync_chain_depth(
         if reader_counts.get(next_q, 0) != 1:
             break
         nxt = d_bit_to_single_bit_flop.get(next_q)
+        if nxt is None:
+            # The single reader may be the next stage's synchronous-
+            # reset mux rather than its D pin (#304).
+            nxt = srst_mux_data_bit_to_single_bit_flop.get(next_q)
         if nxt is None or nxt.cell.name in visited:
             break
         if domains.get(nxt.cell.name) != head_clock:
@@ -1220,6 +1285,7 @@ def _effective_sync_chain_depth(
         ctx.reader_counts,
         d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
         bit_drivers=ctx.bit_drivers,
+        srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
     )
 
 
@@ -1230,6 +1296,7 @@ def _sync_chain_flops(
     domains: dict[str, str | None],
     reader_counts: dict[Bit, int],
     d_bit_to_single_bit_flop: dict[Bit, Flop],
+    srst_mux_data_bit_to_single_bit_flop: dict[Bit, Flop] | None = None,
 ) -> tuple[Flop, ...]:
     """Same walk as :func:`_sync_chain_depth` but returns the ordered
     list of chain flops (starting at ``head``).
@@ -1237,8 +1304,14 @@ def _sync_chain_flops(
     Phase-2 of CDC-005 needs the terminal flop's Q to start the
     forward-cone walk for the reconvergence filter; this helper is
     the shared truth between "how long is the chain" and "what's the
-    chain's tail".
+    chain's tail". It steps over a stage's constant-leg synchronous-
+    reset ``$mux`` the same way (#304); pass the context's index, or
+    leave it ``None`` to rebuild on demand.
     """
+    if srst_mux_data_bit_to_single_bit_flop is None:
+        srst_mux_data_bit_to_single_bit_flop = _srst_mux_data_bit_to_single_bit_flop(
+            module, d_bit_to_single_bit_flop, _bit_drivers(module), reader_counts
+        )
     out: list[Flop] = [head]
     current = head
     visited = {current.cell.name}
@@ -1251,6 +1324,8 @@ def _sync_chain_flops(
         if reader_counts.get(next_q, 0) != 1:
             break
         nxt = d_bit_to_single_bit_flop.get(next_q)
+        if nxt is None:
+            nxt = srst_mux_data_bit_to_single_bit_flop.get(next_q)
         if nxt is None or nxt.cell.name in visited:
             break
         if domains.get(nxt.cell.name) != head_clock:
@@ -1275,6 +1350,11 @@ def _chain_has_inter_stage_comb(head: Flop, ctx: _RuleContext) -> Flop | None:
     CDC-005's reconvergent-fanout filter; this is the load-bearing
     case (gate immediately following the first stage) and the only
     one whose framing is unambiguously sync-chain-related.
+
+    A constant-leg synchronous-reset ``$mux`` on the follow-on flop's
+    ``D`` is *not* a comb cell for this purpose (#304): the yosys
+    frontend leaves it un-folded after ``proc`` while slang emits an
+    ``$sdff``, and CDC-014 must reach the same verdict on both.
 
     Returns the downstream flop if the pattern matches, else ``None``.
     """
@@ -1304,6 +1384,14 @@ def _chain_has_inter_stage_comb(head: Flop, ctx: _RuleContext) -> Flop | None:
             if nxt.cell.name == head.cell.name:
                 continue
             if ctx.domains.get(nxt.cell.name) != head_clock:
+                continue
+            # The next stage's own synchronous-reset mux is part of
+            # that flop, not a gate between the stages (#304) — the
+            # chain walker steps over it and the slang frontend never
+            # emits it. An enable mux or a live other leg is not
+            # indexed and still counts.
+            behind = ctx.srst_mux_data_bit_to_single_bit_flop.get(head_q)
+            if behind is not None and behind.cell.name == nxt.cell.name:
                 continue
             return nxt
     return None
@@ -1915,6 +2003,7 @@ def check_cdc_005(
                 ctx.domains,
                 ctx.reader_counts,
                 ctx.d_bit_to_single_bit_flop,
+                ctx.srst_mux_data_bit_to_single_bit_flop,
             )
             terminal = chain[-1]
             chain_internal = {f.cell.name for f in chain}
@@ -2046,6 +2135,7 @@ def check_cdc_006(
             ctx.reader_counts,
             d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
             bit_drivers=ctx.bit_drivers,
+            srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
         )
         if depth < 2:
             continue
@@ -3800,6 +3890,7 @@ def _has_xor_tail_pulse_recovery(
         ctx.domains,
         ctx.reader_counts,
         d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
     )
     if len(chain) < 2:
         # The XOR-tail breaks _sync_chain_depth's exactly-one-reader
@@ -4309,6 +4400,7 @@ def check_cdc_015(
             ctx.domains,
             ctx.reader_counts,
             ctx.d_bit_to_single_bit_flop,
+            ctx.srst_mux_data_bit_to_single_bit_flop,
         )
         if len(chain) < 2:
             continue
@@ -4430,6 +4522,7 @@ def check_cdc_016(
             ctx.domains,
             ctx.reader_counts,
             ctx.d_bit_to_single_bit_flop,
+            ctx.srst_mux_data_bit_to_single_bit_flop,
         )
         if len(chain) < 2:
             continue
@@ -4969,6 +5062,7 @@ def check_cdc_018(
             ctx.reader_counts,
             d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
             bit_drivers=ctx.bit_drivers,
+            srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
         )
         if depth < depth_threshold:
             continue

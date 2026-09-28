@@ -221,6 +221,14 @@ GOOD_FIXTURES = [
     # to all-0 with the data on the mux's A leg, active-low to all-1
     # with the data on B). Two async crossings, one per chain.
     ("good_packed_shift_sync_srst", 2),
+    # Separate-flop 2FF synchroniser with a per-stage *synchronous*
+    # reset (issue #304). After `proc` each stage's D is the output of
+    # a 1-bit constant-leg $mux; the chain walker steps over that mux
+    # to the next stage (depth 2) and CDC-014 no longer reads it as a
+    # gate between the stages. Two chains, one per reset polarity /
+    # value (active-high to 0 with the data on the mux's A leg,
+    # active-low to 1 with the data on B). Two async crossings.
+    ("good_2ff_sync_srst", 2),
     # CDC-011 (#272) positive shape: the untyped synchronous reset of
     # bad_untyped_sync_reset_srst, typed via `set_input_delay -clock
     # clk`. Both `srst` (an `$sdff` SRST pin) and `dctl` (a `D` pin)
