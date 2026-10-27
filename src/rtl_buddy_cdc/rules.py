@@ -3209,6 +3209,21 @@ def check_rdc_006(
     return violations
 
 
+def _producer_async_reset_value(producer: Cell) -> str | None:
+    """The bit a producer flop's ``Q`` takes when its async reset asserts.
+
+    ``$adff`` / ``$adffe`` carry it in ``ARST_VALUE``; ``$dffsr`` /
+    ``$dffsre`` reset through ``CLR``, which drives ``Q`` to 0. Every
+    other producer (``$dff``, ``$sdff``, ``$aldff``, …) has no async
+    reset value, so there is nothing to compare: ``None`` (#306).
+    """
+    if producer.type in ("$adff", "$adffe"):
+        return _trailing_bit(producer.parameters.get("ARST_VALUE", "0"))
+    if producer.type in ("$dffsr", "$dffsre"):
+        return "0"
+    return None
+
+
 def check_rdc_002(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -3230,6 +3245,8 @@ def check_rdc_002(
     * *C* enters reset when its reset pin equals ``C.ARST_POLARITY``.
     * If ``P.ARST_VALUE != C.ARST_POLARITY``, *C* does **not** enter
       reset when *P* does — a polarity wiring bug.
+    * A resetless *P* (plain ``$dff``, ``$sdff``, …) has no reset
+      value, so this variant skips it (#306).
 
     *Port-declared variant* (issue #107). When a top-level reset port
     carries a ``(* reset_polarity = "<low|high>" *)`` attribute, treat
@@ -3302,9 +3319,11 @@ def check_rdc_002(
             # explicitly declared the chain trustworthy.
             if producer_name in recognised_syncs:
                 continue
-            producer_arst_value = _trailing_bit(
-                producer.parameters.get("ARST_VALUE", "0")
-            )
+            producer_arst_value = _producer_async_reset_value(producer)
+            if producer_arst_value is None:
+                # Resetless producer (#306): no reset value of its own,
+                # so no polarity to disagree with the consumer's.
+                continue
             if producer_arst_value == consumer_polarity_bit:
                 continue  # polarities match — wiring is correct
             groups[(producer_name, producer_arst_value, consumer_polarity_bit)].append(
