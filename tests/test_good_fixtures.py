@@ -112,6 +112,10 @@ GOOD_FIXTURES = [
     # polarity expectation. No async clock crossings — single-clock
     # design.
     ("good_rdc_002_polarity_match", 0),
+    # #306: the producer flop is resetless (a plain $dff, no
+    # ARST_VALUE), so there is no reset value whose polarity could
+    # disagree with the active-high consumer it drives.
+    ("good_rdc_002_resetless_producer", 0),
     # RDC-003 positive shape: sync-reset crossing protected by a 2FF
     # synchroniser in the dst_clk domain between the foreign src_rst
     # and the consuming $sdff. Zero async data crossings — the src

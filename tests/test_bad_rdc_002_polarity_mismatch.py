@@ -72,3 +72,29 @@ def test_no_other_rules_fire(context) -> None:
     violations = run_all_rules(module, async_crossings, spec)
     rule_ids = {v.rule_id for v in violations}
     assert rule_ids == {"RDC-002"}, f"unexpected rules fired: {rule_ids}"
+
+
+# --- #306: resetless producers have no reset value -------------------------
+
+
+@pytest.mark.parametrize(
+    "cell_type, params, expected",
+    [
+        ("$adff", {"ARST_VALUE": "1"}, "1"),
+        ("$adffe", {"ARST_VALUE": "0"}, "0"),
+        ("$dffsr", {}, "0"),
+        ("$dffsre", {}, "0"),
+        ("$dff", {}, None),
+        ("$dffe", {}, None),
+        ("$sdff", {"SRST_VALUE": "1"}, None),
+        ("$aldff", {}, None),
+    ],
+)
+def test_producer_async_reset_value(
+    cell_type: str, params: dict[str, str], expected: str | None
+) -> None:
+    from rtl_buddy_cdc.netlist import Cell
+    from rtl_buddy_cdc.rules import _producer_async_reset_value
+
+    cell = Cell(name="p", type=cell_type, parameters=params, connections={})
+    assert _producer_async_reset_value(cell) == expected
