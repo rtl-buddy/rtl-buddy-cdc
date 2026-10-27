@@ -1,6 +1,6 @@
 """Serialize the analyzer's domain model to a stable JSON artifact.
 
-The output is the v1.0 ``domain-map`` schema designed for downstream
+The output is the ``domain-map`` schema (v1.0, now v1.2) designed for downstream
 consumers — chiefly `rtl-buddy-view
 <https://github.com/rtl-buddy/rtl-buddy-view>`_ (clock-domain overlay on
 the hierarchy view), but generally useful for any tool that wants the
@@ -10,13 +10,16 @@ parsing.
 Schema reference: rtl-buddy-cdc issue #106.
 
 The format is stable: rename or retype any documented field requires a
-``schema_version`` bump (currently ``"1.0"``). Additions are
+``schema_version`` bump (currently ``"1.2"``). Additions are
 backward-compatible. Collections are sorted by a documented key so a
 golden-file diff against the same inputs stays empty.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from rtl_buddy_cdc.clock_network import ClockNetworkCrossing
@@ -28,12 +31,35 @@ from rtl_buddy_cdc.reporter import (
     _instance_path,
     _source_location,
 )
+from rtl_buddy_cdc.rules import (
+    Violation,
+    _build_context,
+    _RuleContext,
+    clock_network_synchronizer,
+    crossing_synchronizer,
+)
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
 # v1.1 adds the additive optional ``clock_network_crossings`` list
-# (#168). v1.0 consumers ignore unknown keys, so the bump is
-# backward-compatible — old maps without the field still validate.
-SCHEMA_VERSION = "1.1"
+# (#168). v1.2 adds the per-crossing verdict — ``synchronizer`` and
+# ``findings`` on every ``crossings[]`` and ``clock_network_crossings[]``
+# entry (#307). Each bump is additive: older consumers ignore unknown
+# keys, and no key was renamed or retyped.
+SCHEMA_VERSION = "1.2"
+
+# Identity of one data crossing: (src_clock, dst_clock, dst cell, source
+# kind, source id). The source kind keeps a port, a boundary pin and a
+# flop that happen to share a name from aliasing each other.
+_CrossingKey = tuple[str, str, str, str, str]
+
+# Rules whose single finding speaks for a whole fan-out group — every
+# single-bit crossing from one source flop into one destination clock —
+# while attaching only the group's first crossing to the Violation.
+# CDC-005 (reconvergent synchronizers) is the one such rule today.
+_SOURCE_GROUP_RULES: frozenset[str] = frozenset({"CDC-005"})
+# Rules that report one finding per unconstrained input port, anchored on
+# a representative destination flop (CDC-011).
+_PORT_RULES: frozenset[str] = frozenset({"CDC-011"})
 # Yosys is the only frontend whose ``Module`` we serialize today (the
 # slang frontend lowers to the same shape, so it lands here unchanged).
 _FRONTEND = "yosys"
@@ -47,8 +73,10 @@ def build_domain_map(
     *,
     async_crossings: list[Crossing] | None = None,
     clock_network_crossings: list[ClockNetworkCrossing] | None = None,
+    rule_context: _RuleContext | None = None,
+    findings: Sequence[Violation] | None = None,
 ) -> dict[str, Any]:
-    """Build the v1.1 domain-map payload.
+    """Build the v1.2 domain-map payload.
 
     ``async_crossings`` is the SDC-aware subset of ``crossings`` that
     the rule pack would receive. Each emitted crossing is tagged with
@@ -61,7 +89,29 @@ def build_domain_map(
     relationships that travel through the clock network (a foreign-
     domain flop driving a clock-mux select or ICG enable). Empty list
     when omitted — consumers always see the key. See issue #168.
+
+    Per-crossing verdict (#307) — every entry of both crossing lists
+    carries two more keys:
+
+    - ``synchronizer``: the scheme the rule pack recognises at the
+      destination (one of :data:`rules.SYNCHRONIZER_SCHEMES`), or
+      ``null``. Computed by :func:`rules.crossing_synchronizer` /
+      :func:`rules.clock_network_synchronizer` against
+      ``rule_context`` — pass the context the rule pass ran with
+      (boundary depths and all) so the verdict matches the findings.
+      When omitted, a plain context is built from ``module`` + ``spec``.
+    - ``findings``: the sorted, de-duplicated rule ids in ``findings``
+      that belong to this crossing (see :func:`_FindingIndex.build`
+      for the matching rule). Pass the violations that survived
+      waivers / pragmas (plus any baseline carry-over — still raised,
+      just not exit-code-driving). ``None`` means the rule pass did not
+      run (no SDC, or ``--no-findings``); every entry then carries
+      ``findings: null`` — "not checked", which ``[]`` ("checked,
+      clean") must not be confused with.
     """
+    if rule_context is None:
+        rule_context = _build_context(module, spec)
+    index = _FindingIndex.build(findings, crossings) if findings is not None else None
     async_keys = _crossing_keys(async_crossings or [])
     return {
         "schema_version": SCHEMA_VERSION,
@@ -73,9 +123,11 @@ def build_domain_map(
         "false_path_pairs": _serialize_false_paths(spec),
         "flop_domains": _serialize_flop_domains(module, domains),
         "port_domains": _serialize_port_domains(module, spec),
-        "crossings": _serialize_crossings(module, crossings, async_keys),
+        "crossings": _serialize_crossings(
+            module, crossings, async_keys, rule_context, index
+        ),
         "clock_network_crossings": _serialize_clock_network_crossings(
-            module, clock_network_crossings or []
+            module, clock_network_crossings or [], rule_context, index
         ),
     }
 
@@ -203,7 +255,9 @@ def _serialize_port_domains(
 def _serialize_crossings(
     module: Module,
     crossings: list[Crossing],
-    async_keys: set[tuple[str, str, str, str]],
+    async_keys: set[_CrossingKey],
+    rule_context: _RuleContext,
+    index: _FindingIndex | None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for c in crossings:
@@ -215,8 +269,7 @@ def _serialize_crossings(
         )
         # async_keys was built from raw cell names — match on those, not
         # the hier-path strings the consumer sees.
-        src_key = c.src_flop.cell.name if c.src_flop is not None else (c.src_port or "")
-        key = (c.src_clock, c.dst_clock, c.dst_flop.cell.name, src_key)
+        key = _crossing_key(c)
         entry: dict[str, Any] = {
             "src_clock": c.src_clock,
             "dst_clock": c.dst_clock,
@@ -227,6 +280,8 @@ def _serialize_crossings(
             "min_hops": c.min_hops,
             "width": c.width,
             "async_per_sdc": key in async_keys,
+            "synchronizer": crossing_synchronizer(module, c, rule_context),
+            "findings": index.for_crossing(c) if index is not None else None,
         }
         if c.src_flop is not None:
             entry["src_flop"] = src_path
@@ -250,6 +305,8 @@ def _serialize_crossings(
 def _serialize_clock_network_crossings(
     module: Module,
     crossings: list[ClockNetworkCrossing],
+    rule_context: _RuleContext,
+    index: _FindingIndex | None,
 ) -> list[dict[str, Any]]:
     """Per-cell flop→flop relationships routed via the clock network.
 
@@ -282,6 +339,12 @@ def _serialize_clock_network_crossings(
                 "control_pin": c.control_pin,
                 "control_kind": c.control_kind,
                 "async_per_sdc": True,
+                "synchronizer": clock_network_synchronizer(
+                    module, c.control_cell, c.control_pin, rule_context
+                ),
+                "findings": (
+                    index.for_clock_network_crossing(c) if index is not None else None
+                ),
             }
         )
     out.sort(
@@ -295,20 +358,131 @@ def _serialize_clock_network_crossings(
     return out
 
 
-def _crossing_keys(
-    cs: list[Crossing],
-) -> set[tuple[str, str, str, str]]:
-    """Build the key set used by ``async_per_sdc`` lookup.
+def _crossing_key(c: Crossing) -> _CrossingKey:
+    """Identity of a data crossing, built from raw cell names.
 
-    Keys are constructed from raw cell names — the serializer rewrites
-    them to ``_hier_path`` form before comparing, so this helper has to
-    use the same representation. Done lazily inside the serializer to
-    avoid duplicating the ``Module`` plumbing here."""
-    out: set[tuple[str, str, str, str]] = set()
-    for c in cs:
-        src = c.src_flop.cell.name if c.src_flop is not None else (c.src_port or "")
-        out.add((c.src_clock, c.dst_clock, c.dst_flop.cell.name, src))
-    return out
+    The serializer rewrites names to ``_hier_path`` form for the
+    consumer; every lookup (``async_per_sdc``, findings) happens on this
+    raw-name key instead, so the two representations never mix.
+    """
+    if c.src_flop is not None:
+        kind, src = "flop", c.src_flop.cell.name
+    elif c.src_port is not None:
+        kind, src = "port", c.src_port
+    elif c.src_boundary is not None:
+        kind, src = "boundary", ".".join(c.src_boundary)
+    else:
+        kind, src = "", ""
+    return (c.src_clock, c.dst_clock, c.dst_flop.cell.name, kind, src)
+
+
+def _crossing_keys(cs: list[Crossing]) -> set[_CrossingKey]:
+    """Build the key set used by ``async_per_sdc`` lookup."""
+    return {_crossing_key(c) for c in cs}
+
+
+@dataclass
+class _FindingIndex:
+    """Rule ids grouped by the crossing identity each finding carries.
+
+    Matching rule — a finding belongs to a domain-map crossing when:
+
+    1. **It carries that crossing.** Most data-crossing rules (CDC-001
+       to -004, -009, -012 to -016) attach the exact :class:`Crossing`
+       they fired on; the finding matches the map entry with the same
+       :func:`_crossing_key` (clocks, destination flop, source
+       flop/port/boundary pin). Its ``cell_name`` must also be one of
+       that crossing's endpoint flops — which is what keeps a finding
+       *lifted* from inside an abstracted boundary module (#261) off the
+       map: its crossing lives in the sub-module's namespace and its
+       ``cell_name`` is re-anchored on the boundary instance, so it
+       never names an endpoint of a parent crossing even if the raw
+       names happen to collide.
+    2. **It speaks for a fan-out group** (:data:`_SOURCE_GROUP_RULES`,
+       i.e. CDC-005): it attaches only the group's first crossing, but
+       names the source flop and destination clock, so it applies to
+       every single-bit map crossing from that flop into that clock.
+    3. **It carries no crossing but names a cell** (CDC-006, -018 to
+       -022, …): it belongs to every data crossing whose destination
+       flop, source flop or destination boundary instance (a sync
+       primitive / abstracted block the data enters) is that cell, and
+       to every clock-network crossing whose ``control_cell``, source
+       flop or destination flop is that cell. Only ``CDC-*`` ids take
+       this path — ``RDC-*`` findings name flops too, but they describe
+       reset-domain crossings, which have their own map.
+    4. **CDC-011 is per input port** but anchors on one representative
+       destination flop. It belongs to every unconstrained-port crossing
+       (``src_clock`` is the unconstrained sentinel) from any port that
+       has such a crossing into the anchor flop — so all of a port's
+       destinations show it, not just the alphabetically-first one.
+
+    A finding that matches none of these (a blackbox-coverage
+    ``CDC-BBX``, a clock-combine report on a net) is simply not about
+    any listed crossing and appears on none.
+    """
+
+    by_crossing: dict[_CrossingKey, set[str]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
+    by_group: dict[tuple[str, str], set[str]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
+    by_cell: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    by_port: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+
+    @classmethod
+    def build(
+        cls, findings: Sequence[Violation], crossings: Sequence[Crossing]
+    ) -> _FindingIndex:
+        index = cls()
+        # Unconstrained input port(s) captured by each flop — CDC-011's
+        # anchor → port relation (rule 4).
+        ports_into: dict[str, set[str]] = defaultdict(set)
+        for mc in crossings:
+            if mc.src_port is not None and mc.src_clock == UNCONSTRAINED_SENTINEL:
+                ports_into[mc.dst_flop.cell.name].add(mc.src_port)
+        for v in findings:
+            c = v.crossing
+            if c is None:
+                if v.cell_name is None or not v.rule_id.startswith("CDC-"):
+                    continue
+                if v.rule_id in _PORT_RULES:
+                    for port in ports_into.get(v.cell_name, ()):
+                        index.by_port[port].add(v.rule_id)
+                else:
+                    index.by_cell[v.cell_name].add(v.rule_id)
+                continue
+            endpoints = {c.dst_flop.cell.name}
+            if c.src_flop is not None:
+                endpoints.add(c.src_flop.cell.name)
+            if v.cell_name is not None and v.cell_name not in endpoints:
+                continue
+            if v.rule_id in _SOURCE_GROUP_RULES and c.src_flop is not None:
+                index.by_group[(c.src_flop.cell.name, c.dst_clock)].add(v.rule_id)
+            else:
+                index.by_crossing[_crossing_key(c)].add(v.rule_id)
+        return index
+
+    def for_crossing(self, c: Crossing) -> list[str]:
+        ids = set(self.by_crossing.get(_crossing_key(c), ()))
+        cells = [c.dst_flop.cell.name]
+        if c.src_flop is not None:
+            cells.append(c.src_flop.cell.name)
+            if c.width == 1:
+                ids |= self.by_group.get((c.src_flop.cell.name, c.dst_clock), set())
+        if c.dst_boundary is not None:
+            cells.append(c.dst_boundary[0])
+        for cell in cells:
+            ids |= self.by_cell.get(cell, set())
+        if c.src_port is not None and c.src_clock == UNCONSTRAINED_SENTINEL:
+            ids |= self.by_port.get(c.src_port, set())
+        return sorted(ids)
+
+    def for_clock_network_crossing(self, c: ClockNetworkCrossing) -> list[str]:
+        ids: set[str] = set()
+        for cell in (c.control_cell, c.src_flop.cell.name, c.dst_flop.cell.name):
+            ids |= self.by_cell.get(cell, set())
+        return sorted(ids)
 
 
 def _hier_path(module: Module, cell_name: str) -> str:
