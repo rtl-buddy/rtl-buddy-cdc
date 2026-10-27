@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "generator": {
     "name": "rtl-buddy-cdc",
     "version": "0.5.0"
@@ -186,6 +186,8 @@
       "min_hops": 0,
       "width": 1,
       "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": null,
       "src_flop": "ip_cdc_handshake.$procdff$57",
       "src_source_instance_path": "ip_cdc_handshake"
     },
@@ -197,6 +199,8 @@
       "min_hops": 1,
       "width": 8,
       "async_per_sdc": true,
+      "synchronizer": "handshake",
+      "findings": null,
       "src_flop": "ip_cdc_handshake.$procdff$67",
       "src_source_instance_path": "ip_cdc_handshake"
     },
@@ -208,6 +212,8 @@
       "min_hops": 0,
       "width": 1,
       "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": null,
       "src_flop": "ip_cdc_handshake.$procdff$62",
       "src_source_instance_path": "ip_cdc_handshake"
     }

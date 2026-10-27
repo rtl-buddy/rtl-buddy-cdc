@@ -7,7 +7,7 @@ import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 import typer
 
@@ -60,6 +60,7 @@ from rtl_buddy_cdc.reset_hints import (
 )
 from rtl_buddy_cdc.rules import (
     Violation,
+    _build_context as build_rule_context,
     run_all as run_all_rules,
     scan_mode_clock_select_flops,
     user_reset_polarity_overrides,
@@ -802,6 +803,10 @@ def _analyze_module_and_report(
     async_crossings: list[Crossing] = []
     violations: list[Violation] = []
     scan_mode_suppressed = 0
+    # Whether the rule pack ran at all (needs an SDC, and not
+    # ``--no-findings``) — the domain map says "not checked" otherwise.
+    rules_ran = False
+    rule_ctx_kwargs: dict[str, Any] = {"max_depth": clock_trace_depth}
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
         # Synthesize sentinel entries for input ports the SDC didn't
@@ -1025,24 +1030,32 @@ def _analyze_module_and_report(
         # crossings checked" are the same N by construction.
         if ignore_scan_mode:
             scan_mode_suppressed = sum(1 for c in async_crossings if c.scan_mode)
+        # The structural context the rule pack builds from these. Kept
+        # as one bag so the domain map's per-crossing synchroniser
+        # verdict (#307) is computed against exactly the context the
+        # rules ran with — boundary depths included — and cannot drift.
+        rule_ctx_kwargs = {
+            "reset_hints": reset_hints,
+            "boundary_modules": comp_stats.boundary_modules,
+            "blackbox_modules": frozenset(blackboxes or {}),
+            "boundary_clock_pins": boundary_clock_pins,
+            "boundary_sync_depth": boundary_sync_depth,
+            "boundary_reconvergence": boundary_reconvergence,
+            "boundary_user_syncs": frozenset(boundary_user_syncs),
+            "max_depth": clock_trace_depth,
+        }
         if not no_findings:
+            rules_ran = True
             violations = run_all_rules(
                 module,
                 async_crossings,
                 spec,
                 required_depth=sync_depth,
-                reset_hints=reset_hints,
                 cdc_010_heuristic=not cdc_010_no_heuristic,
                 cdc_018_depth_threshold=cdc_018_depth_threshold,
-                boundary_modules=comp_stats.boundary_modules,
-                blackbox_modules=frozenset(blackboxes or {}),
-                boundary_clock_pins=boundary_clock_pins,
-                boundary_sync_depth=boundary_sync_depth,
-                boundary_reconvergence=boundary_reconvergence,
-                boundary_user_syncs=frozenset(boundary_user_syncs),
-                max_depth=clock_trace_depth,
                 sync_primitives=sync_primitives,
                 ignore_scan_mode=ignore_scan_mode,
+                **rule_ctx_kwargs,
             )
             # Findings from INSIDE an analysed boundary module (#261),
             # lifted once per module type with the instances they cover
@@ -1170,6 +1183,10 @@ def _analyze_module_and_report(
             spec,
             async_crossings=async_crossings,
             clock_network_crossings=clock_net_crossings,
+            rule_context=build_rule_context(module, spec, **rule_ctx_kwargs),
+            # After waivers / pragmas; baseline carry-over is still a
+            # raised finding (it only stops driving the exit code).
+            findings=[*violations, *baseline_carryover] if rules_ran else None,
         )
         # Create the parent dir (#245): an emit target under an
         # uncommitted dir like ``.rtl-buddy/overlays/`` would otherwise

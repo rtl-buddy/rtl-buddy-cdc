@@ -2452,12 +2452,40 @@ findings stream: clocks, generated clocks, async / exclusive groups,
 false-path pairs, per-flop domain assignments with source locations,
 the typed port→clock map, and structural crossings (each tagged with
 `async_per_sdc` so consumers know which subset would reach the rule
-pack). It is its own contract: `schema_version: "1.0"` is pinned by
-`domain_map.SCHEMA_VERSION`, breaking changes require a bump, and the
+pack). It is its own contract: `schema_version` (currently `"1.2"`) is
+pinned by `domain_map.SCHEMA_VERSION`, breaking changes require a bump, and the
 artifact ships sorted deterministically so consumers can golden-diff
 against the same inputs. `--no-findings` short-circuits rule
 evaluation when the map is the sole deliverable. Primary consumer
 today is [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view).
+
+Schema 1.2 (#307) adds a per-crossing verdict to every `crossings[]`
+and `clock_network_crossings[]` entry, so a consumer can tell a
+recognised synchroniser from a raw path without re-running the rules:
+
+- `synchronizer` — the scheme the rule pack recognises at the
+  destination, or `null`. Vocabulary (`rules.SYNCHRONIZER_SCHEMES`,
+  additive only): `"2ff"` (multi-flop chain of depth ≥ 2, or a
+  `(* cdc_sync *)` destination), `"pulse"` (that chain fed by a toggle
+  source with the XOR-tail recovery CDC-013 accepts), `"gray"`
+  (`(* cdc_gray *)` source, or a structurally gray-encoded source into a
+  lane-aligned multi-bit chain or a gated load), `"handshake"` (gated
+  load whose source holds behind a synced-back ack, or a
+  `(* cdc_handshake *)` endpoint), `"mux"` (gated load without that
+  ack — CDC-012 decides whether that is a finding), `"static"`
+  (`(* cdc_static *)` source) and, on clock-network crossings only,
+  `"glitchless"` (`(* glitchless_clock_mux *)` select). Computed by
+  `rules.crossing_synchronizer` / `rules.clock_network_synchronizer`
+  from the same predicates the rules use for their exemptions, against
+  the same `_RuleContext` the rule pass ran with — no separate
+  recognition logic.
+- `findings` — sorted, de-duplicated rule ids raised on that crossing
+  after waivers / pragmas (baseline carry-over included); `[]` is
+  "checked, clean", `null` is "the rule pass did not run" (no SDC, or
+  `--no-findings`). Matching uses the identity the finding already
+  carries — the exact `Crossing` for crossing-carrying rules, the
+  fan-out group for CDC-005, the port for CDC-011, the named cell
+  otherwise; see `domain_map._FindingIndex`.
 
 Both `instance_path` (synth-leaf form) and `source_instance_path`
 (deepest enclosing SystemVerilog-source module instance, rooted at

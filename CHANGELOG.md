@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Domain map: per-crossing synchroniser verdict** (#307) — *minor:
+  additive, `schema_version` `"1.1"` → `"1.2"`, no key renamed or
+  retyped.* `--emit-domain-map` listed every crossing but not whether
+  lint accepted it, so consumers (rtl-buddy-sch's block diagram) drew a
+  clean 2FF synchroniser with the same hazard accent as a raw path.
+  Every `crossings[]` and `clock_network_crossings[]` entry now carries
+  `synchronizer` — the scheme recognised at the destination (`"2ff"`,
+  `"pulse"`, `"gray"`, `"handshake"`, `"mux"`, `"static"`, and
+  `"glitchless"` on clock-network crossings), or `null` — and
+  `findings`, the sorted rule ids raised on that crossing after waivers
+  and pragmas (`[]` = clean; `null` = rules did not run, i.e. no SDC or
+  `--no-findings`). The scheme comes from the predicates the rules
+  already use to exempt a crossing (`rules.crossing_synchronizer`),
+  evaluated against the same rule context, so it cannot disagree with
+  the findings. Boundary-sourced crossings are now keyed by their
+  boundary pin for `async_per_sdc` too, instead of sharing an empty
+  source key.
+
 - **SDC reader: `tkinter.Tcl()` safe-interp backend, tokenizer as
   fallback** (#298) — *minor: additive, no existing field renamed or
   retyped.* `sdc.parse` tokenized SDC with a hand-written Tcl word

@@ -5452,3 +5452,149 @@ def run_all(
     # finding so the user sees the missing-ack relationship without
     # having to correlate the two findings manually.
     return _tag_handshake_related(out)
+
+
+# --- per-crossing synchroniser verdict (domain map, #307) -------------------
+
+# Every value :func:`crossing_synchronizer` and
+# :func:`clock_network_synchronizer` can return. Published in the
+# domain map's ``crossings[].synchronizer`` /
+# ``clock_network_crossings[].synchronizer`` (schema 1.2), so the set is
+# part of the public JSON contract: add values freely, never rename one.
+SYNCHRONIZER_SCHEMES: tuple[str, ...] = (
+    "2ff",
+    "pulse",
+    "gray",
+    "handshake",
+    "mux",
+    "static",
+    "glitchless",
+)
+
+
+def crossing_synchronizer(
+    module: Module,
+    c: Crossing,
+    ctx: _RuleContext,
+) -> str | None:
+    """The synchroniser scheme the rule pack recognises at ``c``'s
+    destination, or ``None`` when it recognises none.
+
+    This adds no recognition of its own: each branch is a predicate a
+    rule already uses to decide the crossing is protected, consulted in
+    the order that rule consults it, so the verdict cannot drift from
+    what lint actually accepts. Being recognised is not being clean —
+    a ``"2ff"`` crossing can still carry CDC-003 (comb before the
+    chain) — which is why the domain map publishes the findings next
+    to the scheme.
+
+    Single-bit crossings (CDC-001's exemptions):
+
+    - ``"2ff"`` — the destination is tagged ``(* cdc_sync *)`` (or an
+      alias), or :func:`_effective_sync_chain_depth` finds a chain of
+      >= 2 dst-domain flops (boundary sinks use the depth the
+      compositional pass proved). ``"2ff"`` names the multi-flop
+      synchroniser family, not the exact depth: a 3-flop chain is
+      ``"2ff"`` too.
+    - ``"pulse"`` — that chain *and* the toggle source /
+      XOR-tail shape CDC-013 accepts as the pulse synchroniser
+      (:func:`pulse.classify_toggle_d_pin` +
+      :func:`_has_xor_tail_pulse_recovery`).
+    - ``"handshake"`` — the destination is tagged ``(* cdc_handshake *)``.
+    - ``"static"`` — the source is tagged ``(* cdc_static *)``.
+
+    Multi-bit crossings (CDC-004's exemptions, then CDC-012's):
+
+    - ``"gray"`` — the source is tagged ``(* cdc_gray *)``, or it is
+      structurally gray-encoded (:func:`_is_gray_encoded_source`) and
+      the destination is either a lane-aligned multi-bit sync chain
+      (CDC-004) or a gated load (CDC-012's gray exemption).
+    - ``"static"`` — the source is tagged ``(* cdc_static *)``.
+    - ``"handshake"`` — the destination only loads under a dst-domain
+      enable (:func:`_is_gated_bus_crossing`) and the source holds the
+      payload behind a synced-back ack
+      (:func:`_has_dst_to_src_feedback`) or either endpoint is tagged
+      ``(* cdc_handshake *)`` — the shape CDC-012 stays silent on.
+    - ``"mux"`` — the gated-load shape without that ack feedback
+      (a mux / load-enable synchroniser). CDC-012 decides whether the
+      missing hold is a finding; ``"mux"`` only says the destination
+      capture is gated.
+    """
+    src = c.src_flop
+    dst_name = c.dst_flop.cell.name
+    if c.width == 1:
+        if dst_name in ctx.user_syncs:
+            return "2ff"
+        if dst_name in ctx.user_handshakes:
+            return "handshake"
+        if src is not None and src.cell.name in ctx.user_statics:
+            return "static"
+        depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
+        if depth < 2:
+            return None
+        if src is not None and _is_pulse_synchronizer_source(module, src, ctx):
+            if _has_xor_tail_pulse_recovery(c.dst_flop, c.dst_clock, ctx, module):
+                return "pulse"
+        return "2ff"
+    if src is not None and src.cell.name in ctx.user_grays:
+        return "gray"
+    if src is not None and src.cell.name in ctx.user_statics:
+        return "static"
+    if (
+        src is not None
+        and _is_multibit_sync_first_stage(module, c.dst_flop, c.dst_clock, ctx.domains)
+        and _is_gray_encoded_source(module, src, ctx.bit_drivers)
+    ):
+        return "gray"
+    if not _is_gated_bus_crossing(module, c, ctx.domains, ctx.bit_drivers):
+        return None
+    if src is not None and _is_gray_encoded_source(module, src, ctx.bit_drivers):
+        return "gray"
+    if src is not None and (
+        src.cell.name in ctx.user_handshakes
+        or dst_name in ctx.user_handshakes
+        or _has_dst_to_src_feedback(
+            module,
+            c,
+            ctx.domains,
+            ctx.bit_drivers,
+            {f.cell.name: f for f in ctx.flops},
+        )
+    ):
+        return "handshake"
+    return "mux"
+
+
+def _is_pulse_synchronizer_source(module: Module, src: Flop, ctx: _RuleContext) -> bool:
+    """CDC-013's toggle-source test (``D = en ? ~Q : Q``), standalone."""
+    d_bits = src.cell.connections.get("D", ())
+    q_bits = src.cell.connections.get("Q", ())
+    if len(d_bits) != 1 or len(q_bits) != 1:
+        return False
+    return classify_toggle_d_pin(d_bits[0], q_bits[0], module, ctx.bit_drivers) == (
+        "toggle"
+    )
+
+
+def clock_network_synchronizer(
+    module: Module,
+    control_cell: str,
+    control_pin: str,
+    ctx: _RuleContext,
+) -> str | None:
+    """The scheme the rule pack recognises on a clock-network crossing.
+
+    CDC-010's only exemption for a foreign-domain control pin is the
+    ``(* glitchless_clock_mux *)`` promise on the select net, which
+    yields ``"glitchless"``. Anything else is ``None``: a clock-network
+    crossing is by construction a control flop async to every clock the
+    cell gates, and no synchroniser at a sink can recover a chopped
+    clock.
+    """
+    cell = module.cells.get(control_cell)
+    if cell is None or not ctx.user_glitchless_mux_bits:
+        return None
+    bits = cell.connections.get(control_pin, ())
+    if any(isinstance(b, int) and b in ctx.user_glitchless_mux_bits for b in bits):
+        return "glitchless"
+    return None
