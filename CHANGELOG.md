@@ -7,16 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **RDC-002: no false positive on a resetless producer** (#306). The
-  flop-to-flop variant read the producer's `ARST_VALUE` with a default
-  of `"0"`, so a plain `$dff` driving an active-high async reset was
-  reported as a polarity mismatch. A producer with no async reset
-  (`$dff`, `$sdff`, `$aldff`, …) has no reset value to compare, so it
-  is now skipped. `$adff`/`$adffe` still use `ARST_VALUE`, and
-  `$dffsr`/`$dffsre` (reset through `CLR`) still count as 0. New
-  fixture `good_rdc_002_resetless_producer`.
+## [0.6.0] — 2026-10-27
 
 ### Added
 
@@ -106,6 +97,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all pass unchanged under each.
 
 ### Fixed
+
+- **RDC-002: no false positive on a resetless producer** (#306). The
+  flop-to-flop variant read the producer's `ARST_VALUE` with a default
+  of `"0"`, so a plain `$dff` driving an active-high async reset was
+  reported as a polarity mismatch. A producer with no async reset
+  (`$dff`, `$sdff`, `$aldff`, …) has no reset value to compare, so it
+  is now skipped. `$adff`/`$adffe` still use `ARST_VALUE`, and
+  `$dffsr`/`$dffsre` (reset through `CLR`) still count as 0. New
+  fixture `good_rdc_002_resetless_producer`.
 
 - **Separate-flop 2FF synchroniser with a per-stage *synchronous* reset
   fired CDC-014 on the yosys frontend** (#304, the follow-up #303 left
@@ -2041,7 +2041,8 @@ shlex-based SDC subset (`create_clock`, `create_generated_clock`,
 through CDC-008 rule pack, `.swl`-style waiver matcher,
 and text / JSON / SARIF reporters.
 
-[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.2...v0.3.3
