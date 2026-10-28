@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -120,7 +121,8 @@ def test_incdir_must_be_an_existing_directory(tmp_path: Path, bad: str) -> None:
         target.write_text("")
     result = _lint(top, sdc, tmp_path / "o.json", ["--incdir", str(target)])
     assert result.exit_code == 2
-    assert "--incdir" in result.output
+    # CI colours typer's usage errors; the escapes split the option name.
+    assert "--incdir" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
 
 
 # --- yosys script ------------------------------------------------------------
