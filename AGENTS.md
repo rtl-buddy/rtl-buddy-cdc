@@ -295,7 +295,8 @@ The `rtl_buddy` repo at `../rtl_buddy/` consumes this analyzer via
 subprocess. The contract:
 
 - **CLI flags consumed today**: `--netlist`, `--sdc`, `--top`,
-  `--waivers`, `--sync-depth`, `--format`, `--output`. Renaming or
+  `--waivers`, `--sync-depth`, `--format`, `--output`, and (probed
+  from `lint --help` before use) `--incdir`. Renaming or
   removing any of these breaks `rtl_buddy/src/rtl_buddy/tools/cdc_rtl_buddy.py`.
 - **JSON schema consumed today**: `summary.violations` (int),
   `summary.suppressed` (int), `summary.crossings` (int). Other

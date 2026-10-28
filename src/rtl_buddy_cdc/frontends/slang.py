@@ -267,8 +267,13 @@ def _pyslang_namespaces(pyslang: Any) -> tuple[Any, Any]:
     return getattr(pyslang, "ast", pyslang), getattr(pyslang, "syntax", pyslang)
 
 
-def elaborate(sources: list[Path], top: str) -> Module:
-    """Elaborate ``sources`` via pyslang and produce a :class:`Module`."""
+def elaborate(
+    sources: list[Path], top: str, *, incdirs: list[Path] | None = None
+) -> Module:
+    """Elaborate ``sources`` via pyslang and produce a :class:`Module`.
+
+    ``incdirs`` are the `` `include `` search directories, searched after
+    the including file's own directory."""
     pyslang = _import_pyslang()
 
     # Relax two defaults that are too strict for a *standalone block*
@@ -289,9 +294,24 @@ def elaborate(sources: list[Path], top: str) -> Module:
     bag = pyslang.Bag()
     bag.compilationOptions = options
 
+    if incdirs:
+        # pyslang 11 moved PreprocessorOptions into ``pyslang.parsing``.
+        parsing_ns = getattr(pyslang, "parsing", pyslang)
+        pp_options = parsing_ns.PreprocessorOptions()
+        pp_options.additionalIncludePaths = [str(d) for d in incdirs]
+        bag.preprocessorOptions = pp_options
+
     comp = ast_ns.Compilation(bag)
     for src in sources:
-        tree = syntax_ns.SyntaxTree.fromFile(str(src))
+        if incdirs:
+            # The include paths reach the preprocessor only through the
+            # parse-time Bag; the one-argument overload uses default options.
+            # The default source manager is the one that overload uses.
+            tree = syntax_ns.SyntaxTree.fromFile(
+                str(src), syntax_ns.SyntaxTree.getDefaultSourceManager(), bag
+            )
+        else:
+            tree = syntax_ns.SyntaxTree.fromFile(str(src))
         comp.addSyntaxTree(tree)
 
     # Surface fatal parse / elaboration errors — keep going through
