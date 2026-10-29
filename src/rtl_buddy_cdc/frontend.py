@@ -81,6 +81,7 @@ def elaborate(
     single_unit: bool = False,
     blackbox: list[str] | None = None,
     greybox: list[str] | None = None,
+    incdirs: list[Path] | None = None,
 ) -> Module:
     """Elaborate ``sources`` into a flattened :class:`Module`.
 
@@ -93,7 +94,8 @@ def elaborate(
     ``--blackbox`` surface) and ``greybox`` names modules to keep as
     boundary cells *with* their internals (#261). Both are threaded into
     the Yosys invocation; the slang (pyslang) frontend supports neither
-    yet.
+    yet. ``incdirs`` are the `` `include `` search directories; both
+    frontends take them.
     """
     module, _blackboxes = elaborate_with_blackboxes(
         sources,
@@ -105,6 +107,7 @@ def elaborate(
         single_unit=single_unit,
         blackbox=blackbox,
         greybox=greybox,
+        incdirs=incdirs,
     )
     return module
 
@@ -120,6 +123,7 @@ def elaborate_with_blackboxes(
     single_unit: bool = False,
     blackbox: list[str] | None = None,
     greybox: list[str] | None = None,
+    incdirs: list[Path] | None = None,
 ) -> tuple[Module, dict[str, Module]]:
     """Elaborate ``sources`` into a top :class:`Module` plus its blackbox
     sibling modules (keyed by module name).
@@ -144,9 +148,10 @@ def elaborate_with_blackboxes(
             single_unit=single_unit,
             blackbox=blackbox,
             greybox=greybox,
+            incdirs=incdirs,
         )
     if frontend is Frontend.slang:
         from rtl_buddy_cdc.frontends import slang as slang_fe
 
-        return slang_fe.elaborate(sources, top), {}
+        return slang_fe.elaborate(sources, top, incdirs=incdirs), {}
     raise ValueError(f"unknown frontend: {frontend!r}")

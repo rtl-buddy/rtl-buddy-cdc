@@ -1014,6 +1014,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
         single_unit,
         blackbox,
         greybox,
+        incdirs,
     ):
         seen.update(
             sources=sources,
@@ -1024,6 +1025,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
             single_unit=single_unit,
             blackbox=blackbox,
             greybox=greybox,
+            incdirs=incdirs,
         )
         return Module(name=top, ports={}, cells={}, netnames={}), {}
 
@@ -1040,6 +1042,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
         single_unit=True,
         blackbox=["leaf"],
         greybox=["core"],
+        incdirs=[tmp_path / "inc"],
     )
     assert module.name == "topmod"
     assert seen["sources"] == [src]
@@ -1051,6 +1054,7 @@ def test_elaborate_yosys_dispatch_passes_options(monkeypatch, tmp_path: Path):
     assert seen["greybox"] == ["core"]
     assert seen["single_unit"] is True
     assert seen["blackbox"] == ["leaf"]
+    assert seen["incdirs"] == [tmp_path / "inc"]
 
 
 @pytest.mark.skipif(not PYSLANG_INSTALLED, reason="pyslang not installed")

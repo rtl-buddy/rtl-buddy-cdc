@@ -36,6 +36,7 @@ def elaborate(
     single_unit: bool = False,
     blackbox: list[str] | None = None,
     greybox: list[str] | None = None,
+    incdirs: list[Path] | None = None,
 ) -> Module:
     """Run yosys to produce a flattened netlist, returning the top module.
 
@@ -52,6 +53,7 @@ def elaborate(
         single_unit=single_unit,
         blackbox=blackbox,
         greybox=greybox,
+        incdirs=incdirs,
     )
     return module
 
@@ -66,6 +68,7 @@ def elaborate_with_blackboxes(
     single_unit: bool = False,
     blackbox: list[str] | None = None,
     greybox: list[str] | None = None,
+    incdirs: list[Path] | None = None,
 ) -> tuple[Module, dict[str, Module]]:
     """Run yosys to produce a flattened netlist JSON, then load it.
 
@@ -82,6 +85,11 @@ def elaborate_with_blackboxes(
     ``single_unit`` makes ``read_slang`` compile all sources together, sharing
     preprocessor definitions. It is useful for legacy filelists that define a
     macro in one source and consume it in a later source.
+
+    ``incdirs`` are the `` `include `` search directories, passed as
+    ``-I <dir>`` to whichever read command runs (``read_slang`` or
+    ``read_verilog``). Each is searched after the including file's own
+    directory.
 
     ``blackbox``, if set, names modules to treat as CDC boundary cells:
     each becomes a ``--blackboxed-module <name>`` flag on the
@@ -142,11 +150,23 @@ def elaborate_with_blackboxes(
             "(--yosys-plugin / RTL_BUDDY_SLANG_PLUGIN)"
         )
 
+    incdirs = list(incdirs or ())
+    if plugin_path is not None:
+        # read_slang splits a ``-I`` value on commas, so such a directory
+        # would be searched as two wrong ones.
+        comma = [str(d) for d in incdirs if "," in str(d)]
+        if comma:
+            raise YosysError(
+                "--incdir directories containing a comma cannot be passed to "
+                f"read_slang, which splits -I values on commas: {', '.join(comma)}"
+            )
+    inc = "".join(f"-I {shlex.quote(str(d))} " for d in incdirs)
+
     tmp_json = Path(tempfile.mkstemp(suffix=".json", prefix="rtl-buddy-cdc-")[1])
     try:
         srcs = " ".join(shlex.quote(str(s)) for s in sources)
         if plugin_path is None:
-            read_cmd = f"read_verilog -sv {srcs}"
+            read_cmd = f"read_verilog -sv {inc}{srcs}"
         else:
             bb = "".join(
                 f"--blackboxed-module {shlex.quote(m)} " for m in (blackbox or ())
@@ -166,7 +186,7 @@ def elaborate_with_blackboxes(
                 f"read_slang --std 1800-2017 --top {shlex.quote(top)} "
                 f"{'--single-unit ' if single_unit else ''}"
                 f"--allow-use-before-declare "
-                f"{bb}{srcs}"
+                f"{inc}{bb}{srcs}"
             )
         # ``setattr -mod -set blackbox 1`` must land AFTER ``proc`` (the
         # module still needs its processes lowered to cells — those cells

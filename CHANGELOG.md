@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`lint --incdir DIR` (`-I DIR`)** (#311) — *minor: additive.* `lint`
+  had no include-path option, so a source that `` `include``s a header by
+  bare name from another directory failed to elaborate (`'consts.vi': No
+  such file or directory`, then `unknown macro or compiler directive`).
+  The option is repeatable and is passed as `-I` to `read_slang` or
+  `read_verilog`, or added to the slang frontend's
+  `PreprocessorOptions.additionalIncludePaths`. It is resolved against
+  the current directory and must name an existing directory. rtl-buddy's
+  `rb cdc` can now forward a model filelist's `+incdir+` entries
+  (rtl-buddy/rtl_buddy#962).
+
 ## [0.6.0] — 2026-10-27
 
 ### Added

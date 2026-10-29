@@ -436,6 +436,19 @@ def lint(
         help="Yosys Slang frontend only: compile all sources as one "
         "compilation unit, sharing preprocessor macro definitions.",
     ),
+    incdir: list[Path] = typer.Option(
+        [],
+        "--incdir",
+        "-I",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help="Directory to search for `include files, after the including "
+        "file's own directory. Repeatable; searched in the order given. "
+        "Resolved against the current directory, like the sources. Passed "
+        "as `-I` to read_slang or read_verilog, or to the slang frontend's "
+        "include paths.",
+    ),
     blackbox: list[str] = typer.Option(
         [],
         "--blackbox",
@@ -520,6 +533,8 @@ def lint(
         typer.echo(f"top:      {top}")
         for s in sources:
             typer.echo(f"src:      {s}")
+        for d in incdir:
+            typer.echo(f"incdir:   {d}")
 
     try:
         # ``_with_blackboxes`` so the lint path auto-abstracts the same
@@ -536,6 +551,7 @@ def lint(
             single_unit=single_unit,
             blackbox=list(blackbox),
             greybox=list(greybox),
+            incdirs=[d.resolve() for d in incdir],
         )
     except SlangFrontendUnavailable as e:
         typer.echo(f"error: {e}", err=True)
