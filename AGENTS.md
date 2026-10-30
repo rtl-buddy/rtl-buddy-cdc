@@ -305,8 +305,8 @@ subprocess. The contract:
   plus `tests/test_reporter.py::test_json_contract_keys_present_and_typed`
   — a rename or retype on either key fails the test.
 - **Exit codes**: 0 = clean (or fully waived), 1 = at least one
-  unsuppressed violation, 2 = `lint`-only (yosys elaboration
-  failed). The wrapper treats {0, 1} as "ran successfully" and
+  unsuppressed violation, 2 = `lint`-only (elaboration failed,
+  either frontend). The wrapper treats {0, 1} as "ran successfully" and
   anything else as a hard fail.
 
 When changing any of the above, update

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`lint --frontend slang`: an elaboration error now exits 2** (#313) —
+  *patch.* A pyslang elaboration error (a missing `` `include``, an
+  unknown top, any source error) escaped `lint` as a Python traceback
+  and exit 1, the code that means "violations found". It now prints
+  `error: pyslang elaboration produced errors: ...` on stderr and exits
+  2, as the yosys frontend does for the same failure.
+
 ## [0.7.0] — 2026-10-29
 
 ### Added

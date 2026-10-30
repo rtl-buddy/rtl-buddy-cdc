@@ -82,7 +82,7 @@ uv run rtl-buddy-cdc analyze \
 Exit codes:
 - `0` — clean, or every violation suppressed by a waiver
 - `1` — at least one unsuppressed rule violation
-- `2` — `lint` only: yosys elaboration failed
+- `2` — `lint` only: elaboration failed (yosys or slang frontend)
 
 ## Inputs
 

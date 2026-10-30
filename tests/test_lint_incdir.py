@@ -244,11 +244,18 @@ def test_header_in_an_incdir_elaborates(
     assert "CDC-004" in rules
 
 
-@pytest.mark.parametrize("frontend_args", _FRONTENDS[:2])
+@pytest.mark.parametrize("frontend_args", _FRONTENDS)
 def test_header_without_incdir_fails_to_elaborate(
     tmp_path: Path, frontend_args: list[str]
 ) -> None:
-    """The control: without the option the yosys frontends cannot find the header."""
+    """The control: without the option no frontend can find the header.
+
+    Every frontend reports it as an ``error:`` line and exit 2, never a
+    traceback and exit 1 (#313: pyslang's elaboration error escaped)."""
     top, _inc, sdc = _design(tmp_path)
-    result = _lint(top, sdc, tmp_path / "o.json", frontend_args)
+    out = tmp_path / "o.json"
+    result = _lint(top, sdc, out, frontend_args)
     assert result.exit_code == 2, result.output
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert "error:" in result.output
+    assert not out.exists()
