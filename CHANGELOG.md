@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Faster analysis on large netlists** (#317) — *patch: no output
+  change.* Reports are byte-identical; only runtime changes. On a
+  large private design, `analyze` drops from over 20 minutes to about
+  14 s.
+  - CDC-012's handshake-feedback walk recomputed each register's
+    combinational fanin once per source flop that reached it; the
+    fanin is now cached per run.
+  - The backward and forward cone walks (`_backward_flop_fanin`,
+    `_forward_reachable_cells`, used by CDC-012, CDC-005 and others)
+    re-pushed every input of a wide cell once per output bit, which is
+    O(width^2) per cell. Each cell is now expanded once.
+  - CDC-004's multi-bit synchroniser check rescanned every cell once
+    per crossing; it now uses a flop index built once per run.
+  - `find_crossings` walked every flop's whole fanout; it now skips
+    bits that cannot reach a flop in another clock domain within the
+    hop budget. A test compares every fixture's report with this prune
+    on and off.
+  - `is_ff_cell` is cached.
+
 ## [0.7.1] — 2026-10-30
 
 ### Fixed

@@ -118,3 +118,128 @@ def test_run_all_scales_to_500_flops_under_one_second() -> None:
         f"run_all took {elapsed:.3f}s on a 500-flop synthetic module — "
         "regression vs the #12 memoisation refactor?"
     )
+
+
+def _build_multibit_module(num_pairs: int) -> Module:
+    """``num_pairs`` unsynchronised 2-bit src→dst flop pairs across two
+    domains: every pair is a 2-bit crossing that reaches CDC-004's
+    multi-bit synchroniser check."""
+    ports: dict[str, Port] = {
+        "src_clk": Port(name="src_clk", direction="input", bits=(2,)),
+        "dst_clk": Port(name="dst_clk", direction="input", bits=(3,)),
+    }
+    cells: dict[str, Cell] = {}
+    next_bit = 4
+    for i in range(num_pairs):
+        d, x, q = (
+            (next_bit, next_bit + 1),
+            (next_bit + 2, next_bit + 3),
+            (next_bit + 4, next_bit + 5),
+        )
+        next_bit += 6
+        cells[f"src_ff_{i}"] = Cell(
+            name=f"src_ff_{i}", type="$dff", connections={"CLK": (2,), "D": d, "Q": x}
+        )
+        cells[f"dst_ff_{i}"] = Cell(
+            name=f"dst_ff_{i}", type="$dff", connections={"CLK": (3,), "D": x, "Q": q}
+        )
+    return Module(name="multibit_perf", ports=ports, cells=cells, netnames={})
+
+
+def test_cdc_004_flop_scans_do_not_grow_with_crossings(monkeypatch) -> None:
+    """CDC-004's multi-bit synchroniser check used to rescan every cell
+    once per crossing (O(crossings x cells)). It now reads the rule
+    context's ``flops_by_d`` index, so the number of whole-module flop
+    scans during ``run_all`` must not depend on the crossing count."""
+    from rtl_buddy_cdc import rules
+
+    calls = 0
+    real = rules.find_flops
+
+    def counting(module: Module):
+        nonlocal calls
+        calls += 1
+        return real(module)
+
+    monkeypatch.setattr(rules, "find_flops", counting)
+    spec = parse_sdc(_PERF_SDC)
+    counts = []
+    for n in (5, 50):
+        module = _build_multibit_module(n)
+        crossings = find_crossings(module)
+        assert len(crossings) == n
+        calls = 0
+        violations = run_all(module, crossings, spec)
+        assert sum(v.rule_id == "CDC-004" for v in violations) == n
+        counts.append(calls)
+    assert counts[0] == counts[1], counts
+
+
+def test_cdc_012_feedback_walk_computes_each_fanin_once(monkeypatch) -> None:
+    """CDC-012's feedback walk used to recompute a register's whole
+    combinational fanin cone for every source flop that reached it,
+    which dominated runtime on large datapaths. With the shared
+    ``fanin_cache`` each register's fanin is computed once per run.
+
+    Two source flops ``s1`` / ``s2`` (clk_a) both read register ``p``
+    (clk_a), which reads ``q`` (clk_a). Walking from both must compute
+    ``p``'s and ``q``'s fanin once each.
+    """
+    from collections import Counter
+
+    from rtl_buddy_cdc import rules
+    from rtl_buddy_cdc.domain import Crossing
+    from rtl_buddy_cdc.flops import Flop
+
+    def ff(name: str, clk: int, d: tuple[int, ...], q: tuple[int, ...]) -> Cell:
+        return Cell(name=name, type="$dff", connections={"CLK": (clk,), "D": d, "Q": q})
+
+    cells = {
+        "q": ff("q", 2, (20,), (10,)),
+        "p": ff("p", 2, (10,), (11,)),
+        "g": Cell(
+            name="g", type="$and", connections={"A": (11,), "B": (10,), "Y": (12,)}
+        ),
+        "s1": ff("s1", 2, (12,), (13,)),
+        "s2": ff("s2", 2, (12,), (14,)),
+        "d1": ff("d1", 3, (13,), (15,)),
+        "d2": ff("d2", 3, (14,), (16,)),
+    }
+    module = Module(name="fanin_share", ports={}, cells=cells, netnames={})
+    flops = {
+        n: Flop(
+            cell=c,
+            clk=c.connections["CLK"][0],
+            d=c.connections["D"],
+            q=c.connections["Q"],
+        )
+        for n, c in cells.items()
+        if c.type == "$dff"
+    }
+    domains = {n: ("clk_b" if n.startswith("d") else "clk_a") for n in cells}
+    drivers = rules._bit_drivers(module)
+
+    computed: Counter[str] = Counter()
+    real = rules._flop_input_fanin_bits
+
+    def counting(flop: Flop):
+        computed[flop.cell.name] += 1
+        return real(flop)
+
+    monkeypatch.setattr(rules, "_flop_input_fanin_bits", counting)
+    cache: dict[str, set[str]] = {}
+    for src, dst in (("s1", "d1"), ("s2", "d2")):
+        c = Crossing(
+            src_clock="clk_a",
+            dst_flop=flops[dst],
+            dst_clock="clk_b",
+            min_hops=0,
+            width=1,
+            src_flop=flops[src],
+        )
+        assert not rules._has_dst_to_src_feedback(
+            module, c, domains, drivers, flops, fanin_cache=cache
+        )
+    assert computed["p"] == 1
+    assert computed["q"] == 1
+    assert max(computed.values()) == 1

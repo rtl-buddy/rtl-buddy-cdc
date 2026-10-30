@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import Callable, Iterable, Literal
 
 from rtl_buddy_cdc.domain import (
     Crossing,
@@ -82,6 +82,11 @@ class _RuleContext:
     module: Module
     clock_spec: ClockSpec | None
     flops: tuple[Flop, ...]
+    # Flops keyed by their full ``D`` bit tuple. Lets
+    # :func:`_is_multibit_sync_first_stage` find the next stage of a
+    # lane-aligned chain in O(1) instead of rescanning every cell once per
+    # crossing.
+    flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]]
     domains: dict[str, str | None]
     bit_drivers: dict[Bit, tuple[str, str, int]]
     # Forward index: maps each bit to every (cell_name, input_port_name,
@@ -206,6 +211,7 @@ def _build_context(
     the crossings list at any depth. See issue #263.
     """
     flops = tuple(find_flops(module))
+    flops_by_d = _index_flops_by_d(flops)
     flop_domains = assign_domains(
         module, clock_for_port=clock_for_port, max_depth=max_depth
     )
@@ -252,6 +258,7 @@ def _build_context(
         module=module,
         clock_spec=clock_spec,
         flops=flops,
+        flops_by_d=flops_by_d,
         domains=domains,
         bit_drivers=bit_drivers,
         bit_consumers=bit_consumers,
@@ -813,9 +820,15 @@ def _forward_reachable_cells(
     combinational reduction driving an unregistered output port.
     Two chains "reconverge" the moment any cell observes both
     values — registered or not.
+
+    Each combinational cell is expanded at most once. The walk goes
+    level by level, so a cell's first expansion is at its shallowest
+    depth and a later one would only re-push the same outputs deeper;
+    skipping it keeps a W-bit cell at O(W) instead of O(W^2) work.
     """
     reached: set[str] = set()
     seen: set[Bit] = set()
+    expanded: set[str] = set()
     frontier: list[tuple[Bit, int]] = [(b, 0) for b in start_bits if isinstance(b, int)]
     while frontier:
         nxt: list[tuple[Bit, int]] = []
@@ -829,8 +842,9 @@ def _forward_reachable_cells(
                 if is_ff_cell(cell.type):
                     # Flop boundary — recorded above, but don't cross.
                     continue
-                if depth >= max_depth:
+                if depth >= max_depth or cell_name in expanded:
                     continue
+                expanded.add(cell_name)
                 for out_port in _OUTPUT_PINS:
                     for b in cell.connections.get(out_port, ()):
                         if isinstance(b, int):
@@ -851,9 +865,14 @@ def _backward_flop_fanin(
     Traversal stops at flop ``Q`` outputs, top-level ports, or constants.
     The depth bound exists only to keep pathological fanins bounded; for
     well-structured CDC patterns the answer converges quickly.
+
+    Each combinational cell is expanded at most once (see
+    :func:`_forward_reachable_cells`): its first expansion is at its
+    shallowest depth, so a later one cannot reach anything new.
     """
     flops: set[str] = set()
     seen: set[Bit] = set()
+    expanded: set[str] = set()
     frontier: list[tuple[Bit, int]] = [(b, 0) for b in start_bits if isinstance(b, int)]
     while frontier:
         nxt: list[tuple[Bit, int]] = []
@@ -872,8 +891,9 @@ def _backward_flop_fanin(
                 flops.add(cell_name)
                 continue
             # combinational cell — walk back through every input pin
-            if depth >= max_depth:
+            if depth >= max_depth or cell_name in expanded:
                 continue
+            expanded.add(cell_name)
             for in_port, in_bits in cell.connections.items():
                 if in_port in _OUTPUT_PINS:
                     continue
@@ -1810,11 +1830,22 @@ def _is_gray_encoded_source(
     return False
 
 
+def _index_flops_by_d(
+    flops: Iterable[Flop],
+) -> dict[tuple[Bit, ...], tuple[Flop, ...]]:
+    """Group ``flops`` by their full ``D`` bit tuple."""
+    by_d: dict[tuple[Bit, ...], list[Flop]] = {}
+    for f in flops:
+        by_d.setdefault(tuple(f.d), []).append(f)
+    return {d: tuple(fs) for d, fs in by_d.items()}
+
+
 def _is_multibit_sync_first_stage(
     module: Module,
     dst_flop: Flop,
     dst_clock: str,
     domains: dict[str, str | None],
+    flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]] | None = None,
 ) -> bool:
     """Test whether ``dst_flop`` is the first stage of a multi-bit
     synchronizer chain.
@@ -1833,6 +1864,10 @@ def _is_multibit_sync_first_stage(
     a gray-coded crossing. We therefore accept it as the gray-code
     structural case; users who want stricter behaviour can keep
     asserting via ``set_clock_groups`` and the rule pass.
+
+    ``flops_by_d`` is the rule context's :attr:`_RuleContext.flops_by_d`
+    index. Rule callers must pass it: without it this rescans every cell
+    of ``module``, which is O(cells) per crossing.
     """
     if len(dst_flop.q) < 2:
         return False
@@ -1842,14 +1877,12 @@ def _is_multibit_sync_first_stage(
     q_bits = tuple(dst_flop.q)
     if not all(isinstance(b, int) for b in q_bits):
         return False
-    for f in find_flops(module):
+    if flops_by_d is None:
+        flops_by_d = _index_flops_by_d(find_flops(module))
+    for f in flops_by_d.get(q_bits, ()):
         if f.cell.name == dst_flop.cell.name:
             continue
-        if domains.get(f.cell.name) != dst_clock:
-            continue
-        if len(f.d) != width:
-            continue
-        if tuple(f.d) == q_bits:
+        if domains.get(f.cell.name) == dst_clock:
             return True
     return False
 
@@ -1908,7 +1941,7 @@ def check_cdc_004(
         if (
             c.src_flop is not None
             and _is_multibit_sync_first_stage(
-                module, c.dst_flop, c.dst_clock, ctx.domains
+                module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d
             )
             and _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers)
         ):
@@ -4104,6 +4137,7 @@ def _has_dst_to_src_feedback(
     flops_by_name: dict[str, Flop],
     *,
     max_flop_hops: int = 6,
+    fanin_cache: dict[str, set[str]] | None = None,
 ) -> bool:
     """Heuristic: does *this crossing's* source flop carry the
     structural marker of a synced-back req/ack handshake?
@@ -4127,6 +4161,13 @@ def _has_dst_to_src_feedback(
     domain-wide bleed fixed in rtl-buddy-cdc#239. The walk is bounded to
     ``max_flop_hops`` flop hops, enough to clear a 2–3FF ack
     synchroniser plus the enable flop(s) gating the payload load.
+
+    ``fanin_cache`` maps a flop name to the flops in its input fanin.
+    That set depends only on the flop, so a caller checking many
+    crossings should share one dict across calls: neighbouring source
+    flops reach the same registers, and recomputing each register's
+    combinational cone per source flop dominated runtime on large
+    datapaths.
     """
     src_flop = crossing.src_flop
     if src_flop is None:
@@ -4139,10 +4180,17 @@ def _has_dst_to_src_feedback(
     for _hop in range(max_flop_hops):
         nxt: list[Flop] = []
         for f in frontier:
-            in_bits = _flop_input_fanin_bits(f)
-            if not in_bits:
-                continue
-            for ff_name in _backward_flop_fanin(module, in_bits, bit_drivers):
+            fanin = fanin_cache.get(f.cell.name) if fanin_cache is not None else None
+            if fanin is None:
+                in_bits = _flop_input_fanin_bits(f)
+                fanin = (
+                    _backward_flop_fanin(module, in_bits, bit_drivers)
+                    if in_bits
+                    else set()
+                )
+                if fanin_cache is not None:
+                    fanin_cache[f.cell.name] = fanin
+            for ff_name in fanin:
                 if ff_name in seen:
                     continue
                 seen.add(ff_name)
@@ -4224,6 +4272,7 @@ def check_cdc_012(
     # crossing's handshake silence an unrelated broken crossing between
     # the same clocks (rtl-buddy-cdc#239).
     feedback_cache: dict[str, bool] = {}
+    fanin_cache: dict[str, set[str]] = {}
 
     for c in crossings:
         if c.src_clock == UNCONSTRAINED_SENTINEL:
@@ -4260,7 +4309,12 @@ def check_cdc_012(
         key = c.src_flop.cell.name
         if key not in feedback_cache:
             feedback_cache[key] = _has_dst_to_src_feedback(
-                module, c, ctx.domains, ctx.bit_drivers, flops_by_name
+                module,
+                c,
+                ctx.domains,
+                ctx.bit_drivers,
+                flops_by_name,
+                fanin_cache=fanin_cache,
             )
         if feedback_cache[key]:
             continue
@@ -4888,7 +4942,9 @@ def check_cdc_020(
             continue  # (* cdc_handshake *) — payload held stable across req/ack window (#247)
         # Structural gray + multi-bit-sync suppression — mirrors CDC-004.
         if _is_gray_encoded_source(module, src_flop, ctx.bit_drivers) and any(
-            _is_multibit_sync_first_stage(module, dst, dst_clock, ctx.domains)
+            _is_multibit_sync_first_stage(
+                module, dst, dst_clock, ctx.domains, ctx.flops_by_d
+            )
             for dst in dst_map.values()
         ):
             continue
@@ -5561,7 +5617,9 @@ def crossing_synchronizer(
         return "static"
     if (
         src is not None
-        and _is_multibit_sync_first_stage(module, c.dst_flop, c.dst_clock, ctx.domains)
+        and _is_multibit_sync_first_stage(
+            module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d
+        )
         and _is_gray_encoded_source(module, src, ctx.bit_drivers)
     ):
         return "gray"

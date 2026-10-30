@@ -20,6 +20,7 @@ CDC rule helpers extract those names directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cache
 
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 
@@ -66,6 +67,7 @@ GATE_LEVEL_FF_PREFIXES: frozenset[str] = frozenset(
 )
 
 
+@cache
 def is_ff_cell(cell_type: str) -> bool:
     """True iff ``cell_type`` is a Yosys flip-flop cell type the
     analyzer enumerates — either a higher-level family (``$dff`` /
@@ -76,6 +78,9 @@ def is_ff_cell(cell_type: str) -> bool:
     flop?". The two families have different pin name conventions
     (``CLK`` vs ``C``); use :func:`flop_clk_pin` to extract the
     clock connection portably.
+
+    Cached: it is called once per cell visit in every graph walk, and a
+    design has only a handful of distinct cell types.
     """
     if cell_type in FF_CELL_TYPES:
         return True
