@@ -38,7 +38,10 @@ from rtl_buddy_cdc.frontend import (
     elaborate_with_blackboxes,
     resolve_auto,
 )
-from rtl_buddy_cdc.frontends.slang import SlangFrontendUnavailable
+from rtl_buddy_cdc.frontends.slang import (
+    SlangElaborationError,
+    SlangFrontendUnavailable,
+)
 from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import (
     TOOL_VERSION,
@@ -553,7 +556,9 @@ def lint(
             greybox=list(greybox),
             incdirs=[d.resolve() for d in incdir],
         )
-    except SlangFrontendUnavailable as e:
+    except (SlangFrontendUnavailable, SlangElaborationError) as e:
+        # An elaboration error is exit 2, as the yosys frontend's
+        # YosysError is: exit 1 means "violations found" (#313).
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(code=2)
     except YosysError as e:
