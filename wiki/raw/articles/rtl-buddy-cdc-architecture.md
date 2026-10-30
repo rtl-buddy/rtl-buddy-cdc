@@ -2609,9 +2609,21 @@ blocks**, not full-SoC scale. On the alu_accel design (~90 flops, ~545
 cells, post-flatten) a full lint run is well under one second. The
 current bottlenecks if scaled up:
 
-- `find_crossings` is `O(F · max_hops · avg_fanout)` where F is flop
-  count. The hop budget caps the worst case, but very wide datapaths
-  with shallow logic still produce a large frontier.
+- `find_crossings` is `O(F · max_hops · avg_fanout)` in the worst
+  case, where F is flop count. A backward pass per clock domain
+  (`_make_fanout_filter`) first finds which bits can reach a
+  foreign-domain flop within the hop budget; the forward walk expands
+  only those, so same-domain logic costs one check per source bit.
+- CDC-004 / CDC-020 / the domain-map verdict find a multi-bit
+  synchroniser's next stage through `_RuleContext.flops_by_d`, an index
+  of flops by their `D` bit tuple, rather than rescanning every cell
+  per crossing.
+- CDC-012's handshake-feedback walk caches each register's input
+  fanin per run, and the backward / forward cone walks
+  (`_backward_flop_fanin`, `_forward_reachable_cells`) expand each
+  combinational cell at most once. Both walks go level by level, so a
+  cell's first expansion is at its shallowest depth and later ones
+  can reach nothing new; without this a W-bit cell cost O(W²).
 - `trace_clock_root` is called once per flop. `_bit_drivers` is
   precomputed once and shared.
 - The rule pack is `O(C)` in crossings for most rules, with two

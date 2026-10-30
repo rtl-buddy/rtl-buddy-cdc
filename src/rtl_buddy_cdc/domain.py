@@ -1181,6 +1181,96 @@ def _build_bit_consumers(
     return consumers
 
 
+def _make_fanout_filter(
+    module: Module,
+    flop_by_d_bit: dict[Bit, list[Flop]],
+    domains: dict[str, FlopDomain],
+    max_hops: int,
+) -> Callable[[Bit, int, str], bool]:
+    """Build the pruning test for the flop-sourced walk in :func:`find_crossings`.
+
+    The returned ``useful(bit, hops, src_clock)`` is False when no flop ``D``
+    pin in a clock other than ``src_clock`` is reachable from ``bit`` within
+    the ``max_hops - hops`` cells the walk has left. Expanding such a bit can
+    never produce a crossing, so the walk skips it. Most of a design's fanout
+    is same-domain logic, so this removes most of the walk.
+
+    Distances come from one bounded backward walk per clock domain over the
+    exact reverse of the forward walk's edges (every non-flop cell, every pin
+    but ``CLK``, lanes as :func:`_lane_targets` defines them). Reverse edges
+    are stored per cell, not per bit pair, so a wide arithmetic cell costs
+    O(width), not O(width^2).
+    """
+    # rev[out_bit] -> lists of predecessor bits. A non-lane-aligned cell
+    # shares one list across all its outputs; ``expanded`` below makes the
+    # backward walk read each shared list once per domain.
+    rev: dict[Bit, list[list[Bit]]] = defaultdict(list)
+    for cell in module.cells.values():
+        if cell.type == "$scopeinfo" or is_ff_cell(cell.type):
+            continue
+        ybits = cell.connections.get("Y", ())
+        lane_cell = cell.type in _LANE_ALIGNED_TYPES
+        all_preds: list[Bit] = []
+        lane_ports: list[tuple[Bit, ...]] = []
+        for port_name, bits in cell.connections.items():
+            if port_name == "CLK":
+                continue
+            if lane_cell and len(bits) == len(ybits):
+                lane_ports.append(bits)
+            else:
+                all_preds.extend(b for b in bits if isinstance(b, int))
+        if all_preds:
+            for ob in _cell_outputs(cell):
+                if isinstance(ob, int):
+                    rev[ob].append(all_preds)
+        for k, yb in enumerate(ybits):
+            if not isinstance(yb, int):
+                continue
+            lane = [bits[k] for bits in lane_ports if isinstance(bits[k], int)]
+            if lane:
+                rev[yb].append(lane)
+
+    seeds_by_clock: dict[str, list[Bit]] = defaultdict(list)
+    for b, dst_flops in flop_by_d_bit.items():
+        for f in dst_flops:
+            clock = domains[f.cell.name].clock
+            if clock is not None:
+                seeds_by_clock[clock].append(b)
+
+    # dist_to[bit][clock] = fewest cells from ``bit`` to a D pin of a flop
+    # in ``clock`` (only recorded up to ``max_hops``).
+    dist_to: dict[Bit, dict[str, int]] = {}
+    for clock, seeds in seeds_by_clock.items():
+        frontier = list(dict.fromkeys(seeds))
+        for b in frontier:
+            dist_to.setdefault(b, {})[clock] = 0
+        expanded: set[int] = set()
+        depth = 0
+        while frontier and depth < max_hops:
+            depth += 1
+            nxt: list[Bit] = []
+            for b in frontier:
+                for preds in rev.get(b, ()):
+                    if id(preds) in expanded:
+                        continue
+                    expanded.add(id(preds))
+                    for pb in preds:
+                        dists = dist_to.setdefault(pb, {})
+                        if clock not in dists:
+                            dists[clock] = depth
+                            nxt.append(pb)
+            frontier = nxt
+
+    def useful(bit: Bit, hops: int, src_clock: str) -> bool:
+        dists = dist_to.get(bit)
+        if not dists:
+            return False
+        budget = max_hops - hops
+        return any(d <= budget for c, d in dists.items() if c != src_clock)
+
+    return useful
+
+
 def find_crossings(
     module: Module,
     max_hops: int = 4,
@@ -1267,6 +1357,8 @@ def find_crossings(
     # one Crossing record.
     grouped: dict[tuple[str, str], _CrossingGroup] = {}
 
+    useful = _make_fanout_filter(module, flop_by_d_bit, domains, max_hops)
+
     for src_fd in domains.values():
         if src_fd.clock is None:
             continue
@@ -1306,7 +1398,7 @@ def find_crossings(
                         g["bits"].add(bit)
                         if hops < g["min_hops"]:
                             g["min_hops"] = hops
-                if hops >= max_hops:
+                if hops >= max_hops or not useful(bit, hops, src_fd.clock):
                     continue
                 # Push the bit through every consumer cell that isn't a
                 # flop, propagating along the data lanes it actually drives
