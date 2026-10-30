@@ -39,7 +39,7 @@ from rtl_buddy_cdc.abstract import (
     summarise_sync_primitive,
 )
 from rtl_buddy_cdc.compositional import ModuleAnalysis, analyse_module
-from rtl_buddy_cdc.domain import Crossing
+from rtl_buddy_cdc.domain import Crossing, _bit_drivers
 from rtl_buddy_cdc.netlist import BoundarySummary, Module
 from rtl_buddy_cdc.primitives import is_sync_primitive, normalise_type
 from rtl_buddy_cdc.rules import Violation
@@ -283,8 +283,17 @@ def compose_boundaries(
     # once and shared across instances.
     clock_out_pairs: set[tuple[str, str]] = set()
     clock_out_modules: set[str] = set()
+    # ``top``'s bit-driver map, built once: every instance's clock-pin
+    # trace reads it, and rebuilding it per instance was O(cells x
+    # instances) on a flat SoC (issue #320).
+    drivers = _bit_drivers(top)
     clock_pins_by_module = blackbox_clock_pins_by_module(
-        top, blackboxes, spec=spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
+        top,
+        blackboxes,
+        spec=spec,
+        pin_clocks=spec.pin_clocks,
+        max_depth=max_depth,
+        drivers=drivers,
     )
     sink_bits = _clock_sink_bits(
         top, clock_pins_by_module, spec=spec, pin_clocks=spec.pin_clocks
@@ -330,7 +339,13 @@ def compose_boundaries(
             # frozenset, so two instances wired src/dest in opposite
             # directions would collide. Tracing two clock pins is cheap.
             prim = summarise_sync_primitive(
-                top, cell, sub, spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
+                top,
+                cell,
+                sub,
+                spec,
+                pin_clocks=spec.pin_clocks,
+                max_depth=max_depth,
+                drivers=drivers,
             )
             if prim is not None:
                 out[inst_name] = prim
@@ -346,7 +361,13 @@ def compose_boundaries(
         # opposite directions key distinctly from each other, and
         # identical instances still hit the cache.
         ic = _instance_clocks(
-            top, cell, sub, spec=spec, pin_clocks=spec.pin_clocks, max_depth=max_depth
+            top,
+            cell,
+            sub,
+            spec=spec,
+            pin_clocks=spec.pin_clocks,
+            max_depth=max_depth,
+            drivers=drivers,
         )
         cache_key: Key = (cell.type, ic.pin_roots)
         if cache_key in seen:
@@ -375,6 +396,7 @@ def compose_boundaries(
                 pin_clocks=spec.pin_clocks,
                 max_depth=max_depth,
                 analysis=analyses[cache_key],
+                drivers=drivers,
             )
             seen[cache_key] = summary
         analysis = analyses.get(cache_key)

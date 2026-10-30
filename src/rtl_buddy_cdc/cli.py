@@ -22,6 +22,7 @@ from rtl_buddy_cdc import (
 from rtl_buddy_cdc.abstract import instance_clock_pins
 from rtl_buddy_cdc.domain import (
     Crossing,
+    _bit_drivers,
     assign_domains,
     filter_async as domain_filter_async,
     find_crossings,
@@ -1012,6 +1013,8 @@ def _analyze_module_and_report(
         # blackbox still fires.
         boundary_clock_pins: dict[str, frozenset[str]] = {}
         if blackboxes:
+            # One driver map for every instance (issue #320).
+            drivers = _bit_drivers(module)
             for inst_name, cell in module.cells.items():
                 sub = blackboxes.get(cell.type)
                 if sub is None:
@@ -1023,6 +1026,7 @@ def _analyze_module_and_report(
                     spec=spec,
                     pin_clocks=spec.pin_clocks,
                     max_depth=clock_trace_depth,
+                    drivers=drivers,
                 )
         # #261: the facts the compositional per-module pass proved about
         # each surviving boundary, projected onto the synthetic virtual
