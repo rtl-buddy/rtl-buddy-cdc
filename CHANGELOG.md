@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-29
+
 ### Added
 
 - **`lint --incdir DIR` (`-I DIR`)** (#311) — *minor: additive.* `lint`
@@ -2054,7 +2056,8 @@ shlex-based SDC subset (`create_clock`, `create_generated_clock`,
 through CDC-008 rule pack, `.swl`-style waiver matcher,
 and text / JSON / SARIF reporters.
 
-[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rtl-buddy/rtl-buddy-cdc/compare/v0.3.3...v0.4.0
