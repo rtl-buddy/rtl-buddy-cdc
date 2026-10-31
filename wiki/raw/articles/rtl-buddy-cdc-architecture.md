@@ -2625,7 +2625,11 @@ current bottlenecks if scaled up:
   cell's first expansion is at its shallowest depth and later ones
   can reach nothing new; without this a W-bit cell cost O(W²).
 - `trace_clock_root` is called once per flop. `_bit_drivers` is
-  precomputed once and shared.
+  precomputed once and shared. The same holds at blackbox boundaries:
+  `compose_boundaries` and the CLI's CDC-008 clock-pin pass each build
+  the parent's driver map once and pass it as `drivers=` to
+  `_instance_clocks` and its callers. Rebuilding it per instance was
+  O(cells × instances) (#320).
 - The rule pack is `O(C)` in crossings for most rules, with two
   exceptions: CDC-005 (reconvergence detection) is `O(C²)` worst-
   case from the per-group cone walks (each chain's

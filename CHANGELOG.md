@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Faster analysis of designs with many blackbox instances** (#320) —
+  *patch: no output change.* Reports are byte-identical. Classifying a
+  boundary instance's clock pins rebuilt the parent's bit-to-driver map
+  on every instance, an O(cells × instances) scan that dominated
+  `analyze` on a large private design flattened to one netlist. The map
+  is now built once per parent and shared.
+
 ## [0.7.2] — 2026-10-30
 
 ### Changed

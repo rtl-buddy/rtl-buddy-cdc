@@ -40,6 +40,12 @@ from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL as _UNCONSTRAINED, ClockSpe
 if TYPE_CHECKING:
     from rtl_buddy_cdc.compositional import ModuleAnalysis
 
+# ``bit -> (cell_name, output_port)`` as built by
+# :func:`~rtl_buddy_cdc.domain._bit_drivers`. Building it is a full scan
+# of the parent's cells, so callers that classify many instances of one
+# parent build it once and pass it in (issue #320).
+Drivers = dict[Bit, tuple[str, str]]
+
 # Yosys cell-port names a blackbox instance may use to carry a clock.
 # A summarised subtree is described by its *data* boundary; the clock
 # pin is consumed here (to learn the subtree's domain) and not emitted
@@ -178,6 +184,7 @@ def _instance_clocks(
     spec: ClockSpec | None = None,
     pin_clocks: dict[str, str] | None = None,
     max_depth: int = 16,
+    drivers: Drivers | None = None,
 ) -> _InstanceClocks:
     """Determine the clock SET (and clock-pin port names) of a subtree.
 
@@ -208,8 +215,13 @@ def _instance_clocks(
     walk would resolve could be dropped here and collapse a genuinely
     multi-clock boundary to a (false) single-clock summary — the
     silent-drop hazard the brief forbids. See issue #263.
+
+    ``drivers`` is ``parent``'s bit-driver map. Pass it when classifying
+    many instances of one parent: rebuilding it per instance is
+    O(cells x instances) (issue #320). Built here when omitted.
     """
-    drivers = _bit_drivers(parent)
+    if drivers is None:
+        drivers = _bit_drivers(parent)
     from rtl_buddy_cdc.domain import _build_bit_to_clock
 
     bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
@@ -307,6 +319,7 @@ def summarise_subtree(
     pin_clocks: dict[str, str] | None = None,
     max_depth: int = 16,
     analysis: "ModuleAnalysis | None" = None,
+    drivers: Drivers | None = None,
 ) -> BoundarySummary | None:
     """Summarise a blackboxed subtree to its port boundary.
 
@@ -359,9 +372,18 @@ def summarise_subtree(
     roots — otherwise a deep clock pin the walk resolves could be missed
     here and collapse a multi-clock boundary to a false single-clock
     summary, silently dropping its internal crossing. See issue #263.
+
+    ``drivers`` is ``parent``'s shared bit-driver map (see
+    :func:`_instance_clocks`).
     """
     ic = _instance_clocks(
-        parent, instance, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+        parent,
+        instance,
+        sub,
+        spec=spec,
+        pin_clocks=pin_clocks,
+        max_depth=max_depth,
+        drivers=drivers,
     )
     # The subtree's clock set: ALL distinct roots driving the instance's
     # clock pins (FIX 1). A dual-clock IP (e.g. ``wr_clk`` / ``rd_clk``)
@@ -526,6 +548,7 @@ def summarise_sync_primitive(
     *,
     pin_clocks: dict[str, str] | None = None,
     max_depth: int = 16,
+    drivers: Drivers | None = None,
 ) -> BoundarySummary | None:
     """Summarise a recognised CDC macro (issue #275) as a *synchroniser*.
 
@@ -566,13 +589,23 @@ def summarise_sync_primitive(
     resolve to a declared clock (an undeclared port, an unresolved
     generated clock); refusing to vouch for the macro there is the
     conservative reading, and CDC-021 / CDC-BBX then say why.
+
+    ``drivers`` is ``parent``'s shared bit-driver map (see
+    :func:`_instance_clocks`).
     """
+    if drivers is None:
+        drivers = _bit_drivers(parent)
     ic = _instance_clocks(
-        parent, instance, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+        parent,
+        instance,
+        sub,
+        spec=spec,
+        pin_clocks=pin_clocks,
+        max_depth=max_depth,
+        drivers=drivers,
     )
     if not ic.clock_pins:
         return None
-    drivers = _bit_drivers(parent)
     from rtl_buddy_cdc.domain import _build_bit_to_clock
 
     bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
@@ -665,6 +698,7 @@ def instance_clock_pins(
     spec: ClockSpec | None = None,
     pin_clocks: dict[str, str] | None = None,
     max_depth: int = 16,
+    drivers: Drivers | None = None,
 ) -> frozenset[str]:
     """The set of port names determined to be clock pins on ``instance``.
 
@@ -672,9 +706,18 @@ def instance_clock_pins(
     blackbox's CLOCK pin is distribution and must not fire clock-as-data,
     but a clock wired into a genuine DATA input still must. Uses the same
     traced determination as the summariser, so the two never disagree.
+
+    ``drivers`` is ``parent``'s shared bit-driver map (see
+    :func:`_instance_clocks`).
     """
     return _instance_clocks(
-        parent, instance, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+        parent,
+        instance,
+        sub,
+        spec=spec,
+        pin_clocks=pin_clocks,
+        max_depth=max_depth,
+        drivers=drivers,
     ).clock_pins
 
 
@@ -702,6 +745,7 @@ def blackbox_clock_pins_by_module(
     spec: ClockSpec | None = None,
     pin_clocks: dict[str, str] | None = None,
     max_depth: int = 16,
+    drivers: Drivers | None = None,
 ) -> dict[str, frozenset[str]]:
     """Per blackbox module type, the UNION of its instances' clock pins.
 
@@ -716,14 +760,25 @@ def blackbox_clock_pins_by_module(
     forwarded clock's sink structurally, without falling back to
     guessing from the pin's name (which would misread ``dest_ack`` — it
     contains the ``ck`` hint — as a clock pin). See issue #273.
+
+    ``drivers`` is ``parent``'s bit-driver map, built once here when
+    omitted and shared by every instance.
     """
+    if drivers is None:
+        drivers = _bit_drivers(parent)
     out: dict[str, set[str]] = {}
     for cell in parent.cells.values():
         sub = blackboxes.get(cell.type)
         if sub is None:
             continue
         pins = _instance_clocks(
-            parent, cell, sub, spec=spec, pin_clocks=pin_clocks, max_depth=max_depth
+            parent,
+            cell,
+            sub,
+            spec=spec,
+            pin_clocks=pin_clocks,
+            max_depth=max_depth,
+            drivers=drivers,
         ).clock_pins
         out.setdefault(cell.type, set()).update(pins)
     return {k: frozenset(v) for k, v in out.items()}
