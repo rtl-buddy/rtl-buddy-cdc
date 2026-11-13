@@ -248,6 +248,17 @@ GOOD_FIXTURES = [
     # external capture; tests/test_cdc_024_output_boundary.py pins that
     # the rule really evaluates these contracts.
     ("good_output_sync_contract", 0),
+    # CDC-025 (#329) positive shape for the asynchronous merge: the clk_a
+    # flag and the clk_b enable are each 2FF-synchronised into the other
+    # domain before they meet the output logic, so every output bit is
+    # launched from one domain. The two synchronised crossings are the
+    # two async crossings counted here.
+    ("good_output_async_merge_synced", 2),
+    # CDC-025 (#329) positive shape for the self-calibrating warning:
+    # every data output carries a set_output_delay contract (the
+    # mixed-domain pair split into one port per domain); the clock,
+    # constant and feed-through outputs need none. No crossings.
+    ("good_output_contracts_complete", 0),
 ]
 
 

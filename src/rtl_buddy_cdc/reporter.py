@@ -80,6 +80,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "CDC-022": "CDC primitive with insufficient DEST_SYNC_FF depth",
     "CDC-023": "Clock net driven by a combine of two declared clocks",
     "CDC-024": "Top-level output launched asynchronously to its set_output_delay clock",
+    "CDC-025": "Top-level output from clocked logic with no set_output_delay contract",
 }
 
 

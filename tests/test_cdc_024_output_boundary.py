@@ -126,14 +126,20 @@ def test_internal_receiver_keeps_exactly_its_cdc_001() -> None:
     CDC-024, as a separate obligation."""
     crossings, violations, _ = _run(_repro(internal_receiver=True), _contract("clk_a"))
     assert len(crossings) == 1
-    assert sorted(v.rule_id for v in violations) == ["CDC-001"]
-    cdc_001 = violations[0]
+    # The receiver's own output `captured` has no contract while `q_out`
+    # does, so CDC-025's self-calibrating warning (#329) reports it too.
+    assert sorted(v.rule_id for v in violations) == ["CDC-001", "CDC-025"]
+    cdc_001 = violations[[v.rule_id for v in violations].index("CDC-001")]
 
     crossings_b, violations_b, _ = _run(
         _repro(internal_receiver=True), _contract("clk_b")
     )
     assert crossings_b == crossings
-    assert sorted(v.rule_id for v in violations_b) == ["CDC-001", "CDC-024"]
+    assert sorted(v.rule_id for v in violations_b) == [
+        "CDC-001",
+        "CDC-024",
+        "CDC-025",
+    ]
     assert [v for v in violations_b if v.rule_id == "CDC-001"] == [cdc_001]
 
 

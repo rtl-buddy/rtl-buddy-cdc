@@ -148,8 +148,8 @@ def test_genuine_crossing_present() -> None:
 def test_parity_with_latch_clause_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """PARITY: disabling the P2 latch clause (restoring the pre-P2 tracer,
     which leaves the latch-clocked flops domain-unknown) yields the IDENTICAL
-    crossing and violation set. The clause only adds resolved domains; it never
-    drops, gains, or perturbs a crossing.
+    crossing and violation set, CDC-025 aside (see below). The clause only adds
+    resolved domains; it never drops, gains, or perturbs a crossing.
 
     Disabling is done by forcing ``domain.is_latch_cell`` to ``False`` — the
     exact predicate guarding the new clause — so the walk behaves as it did
@@ -162,4 +162,14 @@ def test_parity_with_latch_clause_disabled(monkeypatch: pytest.MonkeyPatch) -> N
     plain_cross, plain_viol = _analyze(JSON, SDC)
 
     assert _cross_keys(with_clause_cross) == _cross_keys(plain_cross)
-    assert _viol_keys(with_clause_viol) == _viol_keys(plain_viol)
+    # CDC-025 (#329) is the one rule that judges the launch domains of
+    # *non-crossing* flops: `q_out = dq ^ eq ^ b_q` merges the latch-clocked
+    # clk_a flops with the clk_b receiver, which is only visible once the
+    # clause resolves them. Every other finding is identical.
+    assert _viol_keys(
+        [v for v in with_clause_viol if v.rule_id != "CDC-025"]
+    ) == _viol_keys(plain_viol)
+    assert [v.rule_id for v in with_clause_viol if v.rule_id == "CDC-025"] == [
+        "CDC-025"
+    ]
+    assert not [v for v in plain_viol if v.rule_id == "CDC-025"]

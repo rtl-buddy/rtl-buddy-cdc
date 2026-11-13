@@ -40,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   No schema change — an additive rule id through the normal `Violation`
   path (text / JSON / SARIF). Outputs without a `set_output_delay` are
-  not checked, so every existing fixture report is byte-identical. A
+  not checked by CDC-024 (see CDC-025 below), so every existing fixture
+  report is byte-identical under it. A
   design whose SDC contracts an output to a clock it declares
   asynchronous to the output's launch domain, and which previously
   reported clean, will now report a CDC-024 `warning`. New fixtures
@@ -48,6 +49,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `domain.flop_domain_resolver` is the per-flop domain function
   `assign_domains` now delegates to, so the rule resolves only the
   launching registers without re-tracing the whole design.
+
+- **CDC-025 — top-level output from clocked logic with no
+  `set_output_delay` contract** (#329). The output-side mirror of
+  CDC-011: CDC-024 can only check an output that has a contract, so an
+  uncontracted output was skipped silently. CDC-025 reuses CDC-024's
+  cone walk, launch-domain resolution and async predicate (shared per
+  run, so each output's cone is walked once whichever of the two rules
+  asks) and reports two shapes, one finding per output port (a bus is
+  one finding) naming the port and its launch domain(s):
+
+  - **`error`, always on** — some bit of the output is a combinational
+    function of launches from two or more domains the SDC declares
+    mutually asynchronous (`irq = irq_a | irq_b`, a `clk_b` enable
+    gating a `clk_a` bus). No output constraint makes that safe. Judged
+    per bit: a bus whose halves come from different domains but never
+    meet on a bit is not escalated.
+  - **`warning` (`--strict` → error), self-calibrating** — the output is
+    launched from one domain and simply has no contract. Fires only when
+    the SDC already types at least one top-level output with
+    `set_output_delay -clock`: once you start typing outputs, a missing
+    one is likely an omission. An SDC that types no output sees no new
+    warnings, and there is no new CLI flag.
+
+  Not checked: contracted outputs (CDC-024's), clock outputs (a port
+  declared as a clock, a cone reaching a declared clock port, or a net
+  on the clock-distribution network), constant / undriven outputs, pure
+  input feed-throughs, and launchers whose domain is unresolved or an
+  undeclared clock port (CDC-021). Accept an intentional one with an
+  ordinary waiver (`waive CDC-025 <port> <reason>` or `// rbcdc:
+  disable-rule CDC-025`); it stays visible as suppressed. Excluded from
+  the compositional per-module pass, like CDC-011.
+
+  No schema change — an additive rule id. **Existing reports change**
+  where a top-level output merges asynchronous domains: six existing
+  fixtures (seven netlists) now report one CDC-025 `error` each —
+  `bad_unresolved_clock_latch`, `bbx_residual_declines` (flat),
+  `clock_through_latch`, `declared_pin_clock`, `inferred_fwd_clock`,
+  `scaling_perf` (flat and hierarchical), all keep-alive outputs that
+  XOR a `clk_a` register with a `clk_b` one; `deep_clock_divider_chain`
+  does too at `--clock-trace-depth 40`. No `good_*` fixture changes. A
+  downstream design with such an output will fail where it passed
+  before. New fixtures `bad_output_async_merge` /
+  `good_output_async_merge_synced` and `bad_output_missing_contract` /
+  `good_output_contracts_complete`.
 
 ## [0.7.3] — 2026-10-31
 
