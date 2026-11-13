@@ -111,6 +111,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are not normalised, so CDC-021 still sees raw port names.
   `set_input_delay`-typed data ports never count as clocks.
 
+- **Gate-level netlists: bit-blasted buses are regrouped into their
+  registers** (#337). After `techmap` / `abc` a W-bit register is W
+  one-bit `$_DFF_*` cells, so every bus rule lost the bus:
+  `bad_bus_crossing` was silent at gate level, and a load-gated bus
+  (`good_dffe_gated_bus_crossing`) reported CDC-001 once per bit. The
+  loader now rebuilds each register as one wide coarse flop cell, keyed
+  on the register's multi-bit netname plus matching clock, reset,
+  enable and `always` block (new `regroup.py`), and rebuilds the
+  lane-wise enable / reset muxes and gray-encoder XORs in front of it.
+  The rebuilt cell is named after the register (`src_q`), not a
+  generated `$auto$…` cell name. Also on gate-level netlists:
+  - The gray-code acceptance recognises a gray code `abc` re-derived
+    without the `b ^ (b >> 1)` XOR, by comparing truth tables of the
+    register's `D` with the gray code of another register's `D` / `Q`
+    (new `gate_eval.py`).
+  - CDC-019 groups a decoder split into per-lane gates by its output
+    netname (`one_hot`).
+  - Where no register name survives, the bits stay one-bit and CDC-004
+    reports bits of one `always` block crossing together as a possible
+    bus (`warning`) rather than going silent.
+
+  RTL-level netlists are not touched: no RTL-level fixture verdict
+  changes. All 53 bit-blast / decoder rows of the gate-level corpus
+  allowlist are gone, and three more committed gate netlists cover the
+  regrouping in the default CI job.
+
 ### Internal
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
