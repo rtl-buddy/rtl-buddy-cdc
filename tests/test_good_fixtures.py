@@ -250,6 +250,14 @@ GOOD_FIXTURES = [
     # neither the D-pin crossing walk nor the SRST walk added in #272
     # can produce a finding. Single-clock — zero async crossings.
     ("good_typed_sync_reset", 0),
+    # CDC-024 (#323) positive shape: every top-level output carries a
+    # set_output_delay contract RELATED to its launch clock — the same
+    # clock, a virtual clock never declared async, a forwarded
+    # generated clock of the launch clock, and a second clock launching
+    # its own output. No internal crossings — the rule's subject is the
+    # external capture; tests/test_cdc_024_output_boundary.py pins that
+    # the rule really evaluates these contracts.
+    ("good_output_sync_contract", 0),
 ]
 
 

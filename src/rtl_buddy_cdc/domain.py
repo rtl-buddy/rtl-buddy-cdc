@@ -1039,7 +1039,39 @@ def assign_domains(
     leg whichever input that leg is on (``clk & en`` and ``en & clk``
     agree), and is ignored when ``clock_for_port`` is given.
     """
-    drivers = _bit_drivers(module)
+    resolve = flop_domain_resolver(
+        module,
+        pin_clocks,
+        clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_for_port,
+        max_depth=max_depth,
+        case_analysis=case_analysis,
+    )
+    return [FlopDomain(flop=f, clock=resolve(f)) for f in find_flops(module)]
+
+
+def flop_domain_resolver(
+    module: Module,
+    pin_clocks: dict[str, str] | None = None,
+    *,
+    clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
+    drivers: dict[Bit, tuple[str, str]] | None = None,
+    case_analysis: Mapping[str, str] | None = None,
+) -> Callable[[Flop], str | None]:
+    """Return the per-flop domain function :func:`assign_domains` applies.
+
+    Split out (#323) so a caller that needs the domain of only a *few*
+    flops — CDC-024 resolves just the flops that launch a top-level
+    output — gets exactly the answer :func:`assign_domains` (and so
+    :func:`find_crossings`) would give, without tracing every flop in the
+    design. The shared bit→driver / pin-clock maps are built once, when
+    the resolver is made; ``drivers`` lets a caller that already holds
+    one skip that pass.
+    """
+    if drivers is None:
+        drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
     clock_identity = _clock_identity_fn(
         clock_for_port if clock_for_port is not None else declared_clock_for_port,
@@ -1047,8 +1079,7 @@ def assign_domains(
     )
     case_bits = _build_case_bits(module, case_analysis)
 
-    out: list[FlopDomain] = []
-    for f in find_flops(module):
+    def resolve(f: Flop) -> str | None:
         root = trace_clock_root(
             module,
             f.clk,
@@ -1062,8 +1093,9 @@ def assign_domains(
             resolved = clock_for_port(root)
             if resolved is not None:
                 root = resolved
-        out.append(FlopDomain(flop=f, clock=root))
-    return out
+        return root
+
+    return resolve
 
 
 # Default minimum number of flop CLK pins a candidate net must drive
