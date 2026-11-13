@@ -370,6 +370,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   context; the boundary clock-pin walk also makes the same leg choice
   and names a pin's clock canonically.
 
+- **CDC-006 fired on a typed input wired straight into a synchroniser**
+  (rtl-buddy-cdc#360). Any foreign-clock port in the first stage's `D`
+  fanin was reported as a "combinational source", including a port that
+  *is* the `D` pin (`good_virtual_clock_io`); the typed-port good
+  fixtures escaped only through `(* cdc_sync *)`. CDC-006 now needs a
+  real combinational cell between the port and the first stage —
+  single-input buffers / inverters and the stage's own constant-leg
+  synchronous-reset `$mux` don't count. Comb logic of ports before a
+  synchroniser still fires.
+
 - **CDC-012 missed an acknowledge relayed through a third clock domain**
   (rtl-buddy-cdc#359). The handshake-feedback walk stayed inside the
   source domain, so a payload held until an ack that travels

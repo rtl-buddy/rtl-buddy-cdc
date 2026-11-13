@@ -2411,6 +2411,58 @@ def _boundary_reconvergence(
     return None
 
 
+# Single-input cells that pass one bit through (inverted or not). A
+# chain of them from one port to a synchroniser's ``D`` is a wire for
+# CDC-006: a function of one input cannot glitch on its own
+# (rtl-buddy-cdc#360). ``$logic_not`` / ``$reduce_bool`` reduce their
+# whole ``A`` operand and count only on a one-bit operand.
+_CDC_006_WIRE_TYPES: frozenset[str] = frozenset(
+    {"$buf", "$pos", "$not", "$_BUF_", "$_NOT_", "$logic_not", "$reduce_bool"}
+)
+_REDUCING_WIRE_TYPES: frozenset[str] = frozenset({"$logic_not", "$reduce_bool"})
+
+
+def _comb_driven_bits(
+    module: Module,
+    bits: Iterable[Bit],
+    drivers: dict[Bit, tuple[str, str, int]],
+) -> tuple[Bit, ...]:
+    """The bits among ``bits`` that a combinational cell drives, looking
+    through single-input buffers / inverters.
+
+    Each bit is followed back while its driver is a one-input
+    :data:`_CDC_006_WIRE_TYPES` cell. It ends at a top-level port or a
+    constant (no driver: a wire, not returned), a flop / storage output
+    (not returned), or a genuine combinational cell — whose output bit
+    is returned. Used by CDC-006: only logic between a foreign source and
+    a synchroniser can produce the glitch the rule is about.
+    """
+    out: list[Bit] = []
+    for b in bits:
+        seen: set[Bit] = set()
+        while isinstance(b, int) and b not in seen:
+            seen.add(b)
+            drv = drivers.get(b)
+            if drv is None:
+                break
+            cell_name, out_port, idx = drv
+            cell = module.cells[cell_name]
+            if is_ff_cell(cell.type) or is_latch_cell(cell.type) or out_port == "Q":
+                break
+            a = cell.connections.get("A", ())
+            y = cell.connections.get("Y", ())
+            if cell.type in _CDC_006_WIRE_TYPES and set(cell.connections) == {"A", "Y"}:
+                if len(a) == 1:
+                    b = a[0]
+                    continue
+                if len(a) == len(y) and cell.type not in _REDUCING_WIRE_TYPES:
+                    b = a[idx]  # bitwise: lane idx of Y is lane idx of A
+                    continue
+            out.append(b)
+            break
+    return tuple(out)
+
+
 def check_cdc_006(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -2431,6 +2483,13 @@ def check_cdc_006(
     case). Top-level ports declared as clocks in the SDC are
     intentionally ignored — they aren't logic data, just a clock
     signal whose level is irrelevant to data correctness.
+
+    There must be an actual combinational cell between the port and the
+    first stage (rtl-buddy-cdc#360). A port wired straight to ``D`` —
+    or through single-input buffers / inverters, or through the stage's
+    own constant-leg synchronous-reset ``$mux`` (part of the flop, #304)
+    — is an ordinary port-sourced crossing: the 2FF chain handles it,
+    and a missing chain is CDC-001's.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -2463,11 +2522,24 @@ def check_cdc_006(
         )
         if depth < 2:
             continue
-        fanin_flops, fanin_ports = _backward_fanin(module, f.d, ctx.bit_drivers)
+        fanin_flops, _ = _backward_fanin(module, f.d, ctx.bit_drivers)
         # If a real source-domain flop exists in the fanin, this
         # crossing is already covered by CDC-001/-002/-003 logic.
         if fanin_flops:
             continue
+        # Only ports that reach D through a real combinational cell can
+        # glitch it (#360). Step over the stage's own sync-reset mux
+        # first: the reset only forces a constant.
+        d_bits = (
+            _constant_leg_reset_mux_data_bits(
+                f, module, ctx.bit_drivers, ctx.reader_counts
+            )
+            or f.d
+        )
+        comb_bits = _comb_driven_bits(module, d_bits, ctx.bit_drivers)
+        if not comb_bits:
+            continue
+        _, fanin_ports = _backward_fanin(module, comb_bits, ctx.bit_drivers)
         # Drop ports that are top-level clocks (clock leakage into
         # data paths is a CDC-008 shape, not CDC-006) and ports that
         # the SDC has explicitly typed into the *same* domain as the

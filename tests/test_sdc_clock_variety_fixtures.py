@@ -200,14 +200,7 @@ EXPECTED: dict[str, Verdict] = {
 # Fixtures whose analyzer verdict disagrees with the reasoned one. Each is
 # a finding for an issue; the test flips to XPASS (a failure, strict) the
 # day the analyzer is fixed, and the entry must then be removed.
-_XFAIL: dict[str, str] = {
-    "good_virtual_clock_io": (
-        "false CDC-006 on a typed input port wired straight into a 2FF "
-        "synchroniser: there is no combinational logic before the first "
-        "stage, but check_cdc_006 fires on any input port in the D fanin "
-        "whose clock differs from the synchroniser's"
-    ),
-}
+_XFAIL: dict[str, str] = {}
 
 
 def _params() -> list:
@@ -275,9 +268,10 @@ def test_gen_clock_chain_raw_paths_are_synchronous() -> None:
 def test_virtual_clock_io_contracts_are_clean() -> None:
     """good_virtual_clock_io: the output contracts (one virtual clock
     related to clk, one clk) and the related virtual-clock input raise
-    nothing; only the CDC-006 noted in _XFAIL fires."""
+    nothing, and the async input wired straight into a 2FF is not a
+    CDC-006 (rtl-buddy-cdc#360)."""
     _, report = _analyze("good_virtual_clock_io")
-    assert {v["rule_id"] for v in report["violations"]} <= {"CDC-006"}
+    assert report["violations"] == []
 
 
 # --- targeted checks --------------------------------------------------------

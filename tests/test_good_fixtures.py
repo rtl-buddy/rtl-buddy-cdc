@@ -312,15 +312,8 @@ GOOD_FIXTURES = [
     # same-domain; the clk_b and clk_c crossings are 2FF.
     ("good_case_analysis_mode_sel0", 2),
     # Virtual clocks typing the I/O: one async input into a 2FF.
-    pytest.param(
-        "good_virtual_clock_io",
-        1,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="false CDC-006: a typed input port wired straight into a "
-            "2FF synchroniser (no combinational logic) still fires",
-        ),
-    ),
+    # No comb cell before the synchroniser: not CDC-006 (rtl-buddy-cdc#360).
+    ("good_virtual_clock_io", 1),
 ]
 
 
