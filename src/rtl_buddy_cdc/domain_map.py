@@ -50,7 +50,11 @@ from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 # ``datapath_only_pairs`` (the clock pairs it marks as intended async
 # crossings), and ``case_analysis`` (the ``set_case_analysis`` port
 # values the clock tracer resolved clock-mux selects with). Each bump is additive: older consumers ignore unknown
-# keys, and no key was renamed or retyped.
+# keys, and no key was renamed or retyped. The optional ``async_via``
+# object on a ``crossings[]`` entry (#330, the co-located clock pair a
+# multi-clock-port crossing is asynchronous through) rides on the
+# still-unreleased v1.3 rather than bumping again; it is absent on every
+# design without a ``create_clock -add`` port.
 SCHEMA_VERSION = "1.3"
 
 # Identity of one data crossing: (src_clock, dst_clock, dst cell, source
@@ -119,6 +123,11 @@ def build_domain_map(
         rule_context = _build_context(module, spec)
     index = _FindingIndex.build(findings, crossings) if findings is not None else None
     async_keys = _crossing_keys(async_crossings or [])
+    async_via = {
+        _crossing_key(c): c.async_via
+        for c in async_crossings or []
+        if c.async_via is not None
+    }
     return {
         "schema_version": SCHEMA_VERSION,
         "generator": {"name": TOOL_NAME, "version": TOOL_VERSION},
@@ -133,7 +142,7 @@ def build_domain_map(
         "flop_domains": _serialize_flop_domains(module, domains),
         "port_domains": _serialize_port_domains(module, spec),
         "crossings": _serialize_crossings(
-            module, crossings, async_keys, rule_context, index
+            module, crossings, async_keys, rule_context, index, async_via
         ),
         "clock_network_crossings": _serialize_clock_network_crossings(
             module, clock_network_crossings or [], rule_context, index
@@ -326,6 +335,7 @@ def _serialize_crossings(
     async_keys: set[_CrossingKey],
     rule_context: _RuleContext,
     index: _FindingIndex | None,
+    async_via: dict[_CrossingKey, tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for c in crossings:
@@ -358,6 +368,11 @@ def _serialize_crossings(
             )
         if c.src_port is not None:
             entry["src_port"] = c.src_port
+        via = (async_via or {}).get(key)
+        if via is not None:
+            # Additive (#330): the co-located clock pair a multi-clock
+            # port crossing is asynchronous through; absent otherwise.
+            entry["async_via"] = {"src_clock": via[0], "dst_clock": via[1]}
         out.append(entry)
     out.sort(
         key=lambda e: (

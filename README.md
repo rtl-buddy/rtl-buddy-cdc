@@ -219,8 +219,8 @@ Registered names get the same treatment minus the XPM port-naming promise, so al
 
 The parser is a focused subset — STA-only commands (plain `set_max_delay`, `set_min_delay`, `set_load`, `set_drive`, `set_disable_timing`, etc.) are silently ignored. CDC-relevant commands recognised today:
 
-- `create_clock -name <name> -period <p> [get_ports <port>]`
-- `create_generated_clock -name <n> -master_clock <m> -source <pin> -divide_by N [get_pins <pin>]` — generated clock is treated as synchronous to its master unless the SDC explicitly overrides via `set_clock_groups -asynchronous`
+- `create_clock -name <name> -period <p> [-add] [get_ports <port>]` — a second clock on a port **replaces** the first unless `-add` is given (warning). With `-add` the port carries both clocks: its flops are named after the first-declared clock, and a crossing between them and another domain is synchronous only if it is synchronous to **every** clock on the port — otherwise it is checked, and the finding names the clock it is asynchronous to (`[multi-clock port] asynchronous as clk_a2 → clk_b`; `async_via` in the JSON report and domain map). Declare the modes on the pin `-physically_exclusive` / `-logically_exclusive` as usual (#330)
+- `create_generated_clock -name <n> -master_clock <m> -source <pin> -divide_by N [get_pins <pin>]` — generated clock is treated as synchronous to its master unless the SDC explicitly overrides via `set_clock_groups -asynchronous`. The master comes from `-master_clock` only; on a `-source` port carrying several clocks, a missing `-master_clock` (or one naming none of them) is a warning (#330)
 - `set_clock_groups -asynchronous -group {…} -group {…}` — load-bearing for the entire rule pass
 - `set_clock_groups -logically_exclusive` / `-physically_exclusive` — clocks in different exclusive groups never coexist at runtime, so the analyzer drops the apparent crossing as unreachable before the rule pack sees it
 - `set_false_path -from [get_clocks A] -to [get_clocks B]` — equivalent to declaring `A` and `B` async for CDC purposes (path-specific `-through` is not interpreted)

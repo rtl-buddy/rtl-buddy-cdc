@@ -42,9 +42,9 @@ The original #144 decision was the opposite one ("not a Tcl interpreter"); it wa
 ## Supported Commands
 
 ```
-create_clock -name <name> -period <p> [get_ports <port> ...]
+create_clock -name <name> -period <p> [-add] [get_ports <port> ...]
 create_generated_clock -name <n> -master_clock <m> \
-    -source <pin-or-port> -divide_by N [get_pins <pin>]
+    -source <pin-or-port> -divide_by N [-add] [get_pins <pin>]
 set_clock_groups -asynchronous          -group {…} -group {…} …
 set_clock_groups -logically_exclusive   -group {…} -group {…} …
 set_clock_groups -physically_exclusive  -group {…} -group {…} …
@@ -59,7 +59,8 @@ Plus: `#` comments, `\` line continuation, and permissive flag-skipping for unre
 
 ## Key Behaviors
 
-- **Generated clocks** fold back into their master via `ClockSpec.resolve` unless `set_clock_groups -asynchronous` explicitly overrides
+- **Generated clocks** fold back into their master via `ClockSpec.resolve` unless `set_clock_groups -asynchronous` explicitly overrides. The master comes from `-master_clock` only; `-source` is recorded (`Clock.source`) but never infers one
+- **Several clocks on one port** (rtl-buddy-cdc#330) — without `-add`, a later `create_clock` (or port-targeted `create_generated_clock`) on a port **replaces** the earlier clock: the port is stripped from it, the clock is removed once it has no port left, and a warning names both. With `-add` the port carries every clock, recorded in `ClockSpec.multi_clock_ports` (port → clocks, declaration order). The first-declared clock is the port's *primary*: `clock_for_port` returns it, so it names every flop behind the port, and it **stands for all the port's clocks** — `are_async` / `is_unreachable_crossing` expand it through `colocated_clocks`, so a crossing is synchronous only if it is synchronous (or exclusive) to every clock on the port. `async_witness` names the first asynchronous, reachable pair (deterministic, same on both backends); `filter_async` stamps it on `Crossing.async_via` and the finding gains a `[multi-clock port] asynchronous as X → Y` suffix. A non-primary clock named elsewhere (`set_input_delay -clock clk_a2`) means only itself. A multi-clock `-source` without `-master_clock`, or with one naming none of its clocks, is a G-11 warning. Internal-pin targets still hold one clock per pin (`-add` there is not modelled; warning). See the architecture article §4.5 "Multi-clock ports"
 - **Internal-pin generated clocks** — when a `create_generated_clock` target is `[get_pins <hier_pin>]` rather than a top-level port, the pin path is stored in `ClockSpec.pin_clocks` and consumed by `trace_clock_root` via the `_build_bit_to_clock` helper to give each block in an internally-wired clock-forwarding chain a distinct clock identity. Pin paths use SDC convention (`u_a/clk_out`); the consumer normalises to Yosys' flattened netname (`u_a.clk_out`)
 - **`-source` parsing** is shlex-tolerant: the bracketed expression after `-source` is consumed forward to the next `-` flag, so `-source [get_ports ck_a]` (split by shlex into two tokens) doesn't leak `ck_a]` into the trailing target list
 - **Interface-member ports** are addressed by their **dotted name** — `[get_ports i_axi.clk]`, *not* the Yosys escaped-id form `[get_ports {\i_axi.clk }]`. The escaped-id spelling parses but no longer matches the flattened port, so the SDC silently fails to type it (the usual symptom is an `<unconstrained>` input driving a `CDC-021`/`CDC-011` cascade). Use the canonical dotted name. (See rtl-buddy-cdc#245.)

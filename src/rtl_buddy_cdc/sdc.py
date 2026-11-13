@@ -2,10 +2,10 @@
 
 Supported commands:
 
-    create_clock -name <name> -period <p> [get_ports <port>]
+    create_clock -name <name> -period <p> [-add] [get_ports <port>]
     create_generated_clock -name <name> -source <port-or-pin> \\
                            [-master_clock <name>] [-divide_by N] \\
-                           [-multiply_by N] [-edges …] [get_pins <pin>]
+                           [-multiply_by N] [-edges …] [-add] [get_pins <pin>]
     set_clock_groups -asynchronous          -group {…} -group {…} …
     set_clock_groups -logically_exclusive   -group {…} -group {…} …
     set_clock_groups -physically_exclusive  -group {…} -group {…} …
@@ -14,6 +14,10 @@ Supported commands:
     set_output_delay -clock <name> … [get_ports <port>]
     set_max_delay <v> -datapath_only -from <clocks|objects> -to <…>
     set_case_analysis <0|1|zero|one|rising|falling> [get_ports <port>]
+
+A clock defined on a port that already carries one replaces it unless
+``-add`` is given; with ``-add`` the port carries both
+(:attr:`ClockSpec.multi_clock_ports`, rtl-buddy-cdc#330).
 
 Numeric delays, slack, drive, load — all silently dropped. The parser
 only cares about clock topology and async-partitioning, not timing.
@@ -79,6 +83,7 @@ end-of-parse warning rather than spamming line-by-line.
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import json
 import logging
@@ -151,6 +156,9 @@ class Clock:
     ports: tuple[str, ...]  # top-level port names this clock is associated with
     master: str | None = None  # name of the master clock when generated
     is_generated: bool = False
+    # ``create_generated_clock -source`` objects, as written (rtl-buddy-cdc#330).
+    # Recorded for diagnostics only: the master comes from ``-master_clock``.
+    source: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -258,6 +266,14 @@ class ClockSpec:
     # wins). Consumed by the clock tracer, which resolves a clock mux
     # whose select is a case-analysed constant to the selected leg.
     case_analysis: dict[str, str] = field(default_factory=dict)
+    # Top-level port → every clock declared on it, in declaration order,
+    # for ports that carry more than one clock (``create_clock -add``,
+    # rtl-buddy-cdc#330). The first entry is the port's *primary* clock —
+    # the one ``clock_for_port`` returns, so the one the flops behind the
+    # port are named after; the rest are co-located with it, and
+    # ``are_async`` checks a crossing against each of them. Filled at the
+    # end of :func:`parse`; empty for every SDC without such a port.
+    multi_clock_ports: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Diagnostics accumulated during parse. Each entry is a single
     # human-readable sentence describing a CDC-relevant command the
     # parser couldn't fully understand. Surfaced once at the end of
@@ -273,6 +289,10 @@ class ClockSpec:
         explicitly typed by the user), then falls back to scanning
         ``create_clock`` port lists. Returns ``None`` if the port is
         not associated with any clock.
+
+        On a port carrying several clocks (``create_clock -add``) this is
+        the first-declared one — the port's primary clock, see
+        :attr:`multi_clock_ports` (rtl-buddy-cdc#330).
         """
         if port in self.port_clock:
             return self.port_clock[port]
@@ -331,7 +351,76 @@ class ClockSpec:
         sharing one ``-group``, which ``are_async`` already reads as
         synchronous) the analyzer takes the reading that reports more:
         the crossing is checked for a synchroniser.
+
+        **Multi-clock ports** (``create_clock -add``, rtl-buddy-cdc#330).
+        A flop behind a port that carries several clocks is named after
+        the port's primary clock (see :attr:`multi_clock_ports`), and that
+        name stands for every clock on the port. When ``a`` or ``b`` is
+        such a primary, the pair is async iff *some* combination of their
+        co-located clocks is async and not unreachable (exclusive) — a
+        crossing is synchronous only if it is synchronous to every clock
+        on the port. :meth:`async_witness` names the combination. For
+        clocks on single-clock ports this is exactly the per-pair answer.
         """
+        if a == b:
+            return False
+        ca = self.colocated_clocks(a)
+        cb = self.colocated_clocks(b)
+        if len(ca) == 1 and len(cb) == 1:
+            return self._are_async_pair(a, b)
+        return self._first_async_pair(ca, cb) is not None
+
+    def colocated_clocks(self, name: str) -> tuple[str, ...]:
+        """Every clock a domain named ``name`` stands for (rtl-buddy-cdc#330).
+
+        ``(name,)`` unless ``name`` is the primary clock of a port in
+        :attr:`multi_clock_ports`; then ``name`` first, followed by the
+        other clocks on that port (or ports) in declaration order. A
+        non-primary clock on such a port — ``clk_a2`` named by
+        ``set_input_delay -clock clk_a2`` — means exactly itself.
+        """
+        if not self.multi_clock_ports:
+            return (name,)
+        out = [name]
+        for clocks in self.multi_clock_ports.values():
+            if clocks[0] == name:
+                out.extend(c for c in clocks[1:] if c not in out)
+        return tuple(out)
+
+    def async_witness(self, a: str, b: str) -> tuple[str, str] | None:
+        """The clock pair that makes a crossing ``a`` → ``b`` checkable.
+
+        ``None`` when the crossing is synchronous or unreachable — the
+        crossings :func:`rtl_buddy_cdc.domain.filter_async` drops.
+        Otherwise ``(a, b)`` itself when that pair is async and
+        reachable, else the first async, reachable pair of co-located
+        clocks (:meth:`colocated_clocks`), scanning ``a``'s clocks then
+        ``b``'s in declaration order — so the answer is deterministic and
+        the same on both SDC backends.
+        """
+        if a == b:
+            return None
+        ca = self.colocated_clocks(a)
+        cb = self.colocated_clocks(b)
+        if len(ca) == 1 and len(cb) == 1:
+            if self._is_unreachable_pair(a, b) or not self._are_async_pair(a, b):
+                return None
+            return (a, b)
+        return self._first_async_pair(ca, cb)
+
+    def _first_async_pair(
+        self, ca: tuple[str, ...], cb: tuple[str, ...]
+    ) -> tuple[str, str] | None:
+        for x in ca:
+            for y in cb:
+                if x == y or self._is_unreachable_pair(x, y):
+                    continue
+                if self._are_async_pair(x, y):
+                    return (x, y)
+        return None
+
+    def _are_async_pair(self, a: str, b: str) -> bool:
+        """:meth:`are_async` for two single clocks (no port expansion)."""
         if a == b:
             return False
         # Sentinel port-clock (synthesised for input ports without
@@ -379,7 +468,23 @@ class ClockSpec:
         never unreachable (rtl-buddy-cdc#325): bounding a path's delay
         says its author believes the path is live, and dropping it would
         hide the crossing — the less-reporting reading.
+
+        When ``a`` or ``b`` is the primary clock of a multi-clock port
+        (rtl-buddy-cdc#330), the crossing is unreachable only if every
+        combination of their co-located clocks is — the usual
+        ``-physically_exclusive`` between two modes on one pin removes
+        just the pairs it names.
         """
+        if a == b:
+            return False
+        ca = self.colocated_clocks(a)
+        cb = self.colocated_clocks(b)
+        if len(ca) == 1 and len(cb) == 1:
+            return self._is_unreachable_pair(a, b)
+        return all(x != y and self._is_unreachable_pair(x, y) for x in ca for y in cb)
+
+    def _is_unreachable_pair(self, a: str, b: str) -> bool:
+        """:meth:`is_unreachable_crossing` for two single clocks."""
         if a == b:
             return False
         if self._is_datapath_only_pair(a, b):
@@ -519,7 +624,27 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             note_tokenizer_skip(f"{cmd}: kept a literal $-word unevaluated")
         parsed = _slice(args, spec_for_cmd)
         _DISPATCH[cmd](spec, parsed)
+    spec.multi_clock_ports = _index_multi_clock_ports(spec.clocks)
     return spec
+
+
+def _index_multi_clock_ports(clocks: dict[str, Clock]) -> dict[str, tuple[str, ...]]:
+    """Port → its clocks in declaration order, for ports carrying ≥ 2.
+
+    Without ``-add`` a later clock on a port replaces the earlier one
+    (:func:`_claim_ports`), so after a parse a port can only carry
+    several clocks through ``-add``. The order is ``spec.clocks``
+    order, which is what :meth:`ClockSpec.clock_for_port` scans — so
+    the first entry is always the clock the port's flops are named
+    after.
+    """
+    owners: dict[str, list[str]] = {}
+    for clk in clocks.values():
+        for port in clk.ports:
+            names = owners.setdefault(port, [])
+            if clk.name not in names:
+                names.append(clk.name)
+    return {p: tuple(names) for p, names in owners.items() if len(names) > 1}
 
 
 def parse_file(path: str | Path, *, backend: str | None = None) -> ClockSpec:
@@ -554,7 +679,12 @@ def validate_clock_graph(spec: ClockSpec) -> list[str]:
        match found while scanning ``spec.clocks.values()``) but the
        user's intent is ambiguous; the value-derived rules (CDC-001,
        CDC-011, CDC-021, RDC-008) silently see one clock and not the
-       other.
+       other. Since rtl-buddy-cdc#330 a parsed SDC never reaches this
+       shape by accident: without ``-add`` the later clock replaces the
+       earlier one (warned at parse time), and a port shared through
+       ``-add`` is a legitimate multi-clock port
+       (:attr:`ClockSpec.multi_clock_ports`) that is not flagged. The
+       check still guards specs built without :func:`parse`.
 
     2. **Unresolved master clock** — a ``create_generated_clock`` whose
        ``-master_clock`` names a clock not present in ``spec.clocks``.
@@ -568,6 +698,11 @@ def validate_clock_graph(spec: ClockSpec) -> list[str]:
        :meth:`ClockSpec.resolve` has a cycle guard that prevents
        infinite-loop, but the SDC is methodology-broken; surface it.
 
+    4. **Generated clock on a multi-clock source** (rtl-buddy-cdc#330)
+       — a ``create_generated_clock -source`` port that carries several
+       clocks, with no ``-master_clock`` to pick one (ambiguous), or with
+       a ``-master_clock`` that names none of them.
+
     Duplicate clock names (two ``create_clock -name X``, or
     ``create_clock -name X`` followed by ``create_generated_clock -name
     X``) are caught inline by the per-command handlers — there the
@@ -576,13 +711,19 @@ def validate_clock_graph(spec: ClockSpec) -> list[str]:
     """
     out: list[str] = []
 
-    # Check 1: same port in multiple clocks.
+    # Check 1: same port in multiple clocks. A port the parser recorded
+    # in ``multi_clock_ports`` got there through ``-add`` (a replacement
+    # without it already warned at parse time and left one clock), so
+    # it is a legitimate declaration and is not flagged. What remains is
+    # a spec assembled without :func:`parse` — no -add / replace record.
     port_owners: dict[str, list[str]] = {}
     for clk in spec.clocks.values():
         for port in clk.ports:
             port_owners.setdefault(port, []).append(clk.name)
     for port, owners in sorted(port_owners.items()):
         if len(owners) < 2:
+            continue
+        if spec.multi_clock_ports.get(port) == tuple(owners):
             continue
         out.append(
             f"port '{port}' is claimed by multiple clocks: "
@@ -632,6 +773,34 @@ def validate_clock_graph(spec: ClockSpec) -> list[str]:
                 f"{', '.join(sorted(cycle_found))} (master chain "
                 f"doesn't terminate at a primary clock)"
             )
+
+    # Check 4 (rtl-buddy-cdc#330): a generated clock whose -source is a
+    # port carrying several clocks. The master comes from -master_clock
+    # only (never inferred from -source), so without it the generated
+    # clock has no master on ANY source — but on a multi-clock source the
+    # missing choice is genuinely ambiguous, so say so; and a
+    # -master_clock that names none of the source's clocks contradicts it.
+    for clk in spec.clocks.values():
+        if not clk.is_generated:
+            continue
+        for src in clk.source:
+            on_src = spec.multi_clock_ports.get(src)
+            if on_src is None:
+                continue
+            listed = ", ".join(on_src)
+            if clk.master is None:
+                out.append(
+                    f"create_generated_clock '{clk.name}': -source port "
+                    f"'{src}' carries clocks {listed} and no -master_clock "
+                    f"picks one — the generated clock is left without a "
+                    f"master; add -master_clock"
+                )
+            elif clk.master not in on_src:
+                out.append(
+                    f"create_generated_clock '{clk.name}': -master_clock "
+                    f"'{clk.master}' is not one of the clocks on -source "
+                    f"port '{src}' ({listed})"
+                )
 
     return out
 
@@ -1285,7 +1454,44 @@ def _handle_create_clock(spec: ClockSpec, p: Parsed) -> None:
             f"duplicate clock name '{name}': second create_clock silently "
             f"overrides the first"
         )
+    _claim_ports(spec, "create_clock", name, ports, add=p.present("-add"))
     spec.clocks[name] = Clock(name=name, period=period, ports=tuple(ports))
+
+
+def _claim_ports(
+    spec: ClockSpec, cmd: str, name: str, ports: list[str], *, add: bool
+) -> None:
+    """Apply SDC replace-vs-add semantics to a new clock's ports (#330).
+
+    Without ``-add``, a clock defined on a source object that already
+    carries a clock *replaces* it: the earlier clock loses that port,
+    and is removed altogether once it has no port left. With ``-add``
+    both clocks exist on the port (:attr:`ClockSpec.multi_clock_ports`).
+    A replacement is almost always an accident in a constraints file —
+    the earlier clock silently stops existing — so it warns; ``-add`` is
+    a legitimate declaration and does not.
+    """
+    if add or not ports:
+        return
+    claimed = set(ports)
+    for other in list(spec.clocks.values()):
+        if other.name == name:
+            continue
+        lost = [p for p in other.ports if p in claimed]
+        if not lost:
+            continue
+        kept = tuple(p for p in other.ports if p not in claimed)
+        if kept:
+            spec.clocks[other.name] = dataclasses.replace(other, ports=kept)
+            fate = f"'{other.name}' keeps {', '.join(kept)}"
+        else:
+            del spec.clocks[other.name]
+            fate = f"'{other.name}' is removed"
+        spec.partial_warnings.append(
+            f"{cmd} '{name}' without -add replaces clock '{other.name}' on "
+            f"port {', '.join(repr(p) for p in lost)}; {fate} (use -add to "
+            f"keep both clocks on the port)"
+        )
 
 
 def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
@@ -1343,10 +1549,33 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
     # consumed by the clock-trace pass.
     if target_is_pin:
         clock_ports: tuple[str, ...] = ()
+        add = p.present("-add")
         for t in targets:
+            prev = spec.pin_clocks.get(t)
+            if prev is not None and prev != name:
+                # rtl-buddy-cdc#330: replace-vs-add on an internal pin.
+                # ``pin_clocks`` holds one clock per pin, so an added
+                # clock is kept out of the domain model (the first one
+                # stays) and said so; a replacement keeps today's
+                # last-writer-wins and warns like a port replacement.
+                if add:
+                    spec.partial_warnings.append(
+                        f"create_generated_clock '{name}' -add on pin '{t}', "
+                        f"which already carries '{prev}': several generated "
+                        f"clocks on one internal pin are not modelled — flops "
+                        f"behind it stay in '{prev}'"
+                    )
+                    continue
+                spec.partial_warnings.append(
+                    f"create_generated_clock '{name}' without -add replaces "
+                    f"clock '{prev}' on pin '{t}' (use -add to keep both)"
+                )
             spec.pin_clocks[t] = name
     else:
         clock_ports = tuple(targets)
+        _claim_ports(
+            spec, "create_generated_clock", name, targets, add=p.present("-add")
+        )
 
     if name in spec.clocks:
         # G-11 duplicate-name check, mirroring create_clock's surface.
@@ -1354,12 +1583,15 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
             f"duplicate clock name '{name}': second create_generated_clock "
             f"silently overrides the first"
         )
+    source_word = p.first("-source")
+    source = tuple(_extract_names(source_word)[0]) if source_word is not None else ()
     spec.clocks[name] = Clock(
         name=name,
         period=period,
         ports=clock_ports,
         master=master,
         is_generated=True,
+        source=source,
     )
 
 
