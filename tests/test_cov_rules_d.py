@@ -1764,44 +1764,65 @@ def test_cdc_015_synchronous_reset_source_not_reported() -> None:
 
 
 def test_has_dst_to_src_feedback_gate_level_c_pin_present() -> None:
-    """A gate-level ``$_DFF_P_`` source flop (clock on pin ``C``) whose
-    ``D`` fanin reaches a dst-domain flop's Q still detects feedback —
-    ``_flop_input_fanin_bits`` skips the ``C`` pin (rules.py line 3516)
-    but walks ``D``."""
+    """A gate-level ``$_DFFE_PP_`` source flop (clock on pin ``C``) whose
+    enable ``E`` is the dst-domain ack detects feedback: ``E`` is its
+    load control. The same ack on ``D`` only changes the stored value and
+    is not an acknowledge (rtl-buddy-cdc#369)."""
     src_clk_bit, dst_clk_bit = 2, 3
     src_q = 4
-    ack_q = 5  # dst-domain ack flop's Q feeds the src flop's D
-    cells = {
-        # Gate-level src flop: clock on C, D from the dst-domain ack.
-        "src": Cell(
+    ack_q = 5  # dst-domain ack flop's Q
+
+    def build(src: Cell) -> bool:
+        cells = {
+            "src": src,
+            "ack": Cell(
+                name="ack",
+                type="$dff",
+                connections={"CLK": (dst_clk_bit,), "D": (11,), "Q": (ack_q,)},
+            ),
+        }
+        module = Module(
+            name="gatelevel_fb",
+            ports={
+                "sclk": Port(name="sclk", direction="input", bits=(src_clk_bit,)),
+                "dclk": Port(name="dclk", direction="input", bits=(dst_clk_bit,)),
+            },
+            cells=cells,
+            netnames={},
+        )
+        ctx = _build_context(module, clock_spec=None)
+        src_flop = next(f for f in find_flops(module) if f.cell.name == "src")
+        dst_flop = next(f for f in find_flops(module) if f.cell.name == "ack")
+        crossing = _crossing(
+            src_clk="sclk",
+            dst_clk="dclk",
+            width=1,
+            src_flop=src_flop,
+            dst_flop=dst_flop,
+        )
+        flops_by_name = {f.cell.name: f for f in ctx.flops}
+        return _has_dst_to_src_feedback(
+            module, crossing, ctx.domains, ctx.bit_drivers, flops_by_name
+        )
+
+    assert build(
+        Cell(
+            name="src",
+            type="$_DFFE_PP_",
+            connections={
+                "C": (src_clk_bit,),
+                "E": (ack_q,),
+                "D": (12,),
+                "Q": (src_q,),
+            },
+        )
+    )
+    assert not build(
+        Cell(
             name="src",
             type="$_DFF_P_",
             connections={"C": (src_clk_bit,), "D": (ack_q,), "Q": (src_q,)},
-        ),
-        "ack": Cell(
-            name="ack",
-            type="$dff",
-            connections={"CLK": (dst_clk_bit,), "D": (11,), "Q": (ack_q,)},
-        ),
-    }
-    module = Module(
-        name="gatelevel_fb",
-        ports={
-            "sclk": Port(name="sclk", direction="input", bits=(src_clk_bit,)),
-            "dclk": Port(name="dclk", direction="input", bits=(dst_clk_bit,)),
-        },
-        cells=cells,
-        netnames={},
-    )
-    ctx = _build_context(module, clock_spec=None)
-    src_flop = next(f for f in find_flops(module) if f.cell.name == "src")
-    dst_flop = next(f for f in find_flops(module) if f.cell.name == "ack")
-    crossing = _crossing(
-        src_clk="sclk", dst_clk="dclk", width=1, src_flop=src_flop, dst_flop=dst_flop
-    )
-    flops_by_name = {f.cell.name: f for f in ctx.flops}
-    assert _has_dst_to_src_feedback(
-        module, crossing, ctx.domains, ctx.bit_drivers, flops_by_name
+        )
     )
 
 

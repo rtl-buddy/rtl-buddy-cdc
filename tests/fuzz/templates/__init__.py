@@ -24,6 +24,7 @@ from .cdc021 import UndeclaredClockPort
 from .cdc022 import XpmShallowSyncDepth
 from .cdc023 import ClockCombine
 from .cdc_bbx import BlackboxBoundary
+from .concat_lvalue import ConcatLvalueSync
 from .gap_g1 import GapG1LatchInSyncChain
 from .gap_g2 import GapG2CascadedSynchroniser
 from .gap_g3 import GapG3PulseSyncFalsePositive
@@ -74,6 +75,7 @@ ALL_TEMPLATES: list[type[Template]] = [
     BlackboxBoundary,
     # rtl-buddy-cdc#353: instance arrays (lowered by the slang frontend).
     InstanceArraySync,
+    ConcatLvalueSync,
     AsyncResetCrossing,
     ResetPolarityMismatch,
     SyncResetCrossing,
@@ -109,6 +111,7 @@ __all__ = [
     "CombBetweenStages",
     "CombDrivenReset",
     "CombSource",
+    "ConcatLvalueSync",
     "DecoderLanesIndependentSync",
     "DerivedAsyncResetUnsync",
     "ExpectedFinding",

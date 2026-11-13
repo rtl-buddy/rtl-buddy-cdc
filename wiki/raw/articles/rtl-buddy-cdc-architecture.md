@@ -374,14 +374,33 @@ cell level).
 
 ### 4.3 Domain assignment
 
-`FlopDomain` ties a `Flop` to a `clock: str | None` — the top-level
-input port name that ultimately drives its CLK pin, or `None` if no
-root could be resolved within the trace depth budget. The analyzer
-treats `None` as "domain unknown" and excludes those flops from
-crossing detection rather than emitting a false positive. A flop
-behind a port that carries several clocks (`create_clock -add`) gets
-the port's primary clock, which stands for all of them (§4.5,
-"Multi-clock ports", #330).
+`FlopDomain` ties a `Flop` to a `clock: str | None` — the clock that
+ultimately drives its CLK pin, or `None` if no root could be resolved
+within the trace depth budget. The analyzer treats `None` as "domain
+unknown" and excludes those flops from crossing detection rather than
+emitting a false positive. A flop behind a port that carries several
+clocks (`create_clock -add`) gets the port's primary clock, which
+stands for all of them (§4.5, "Multi-clock ports", #330).
+
+The clock is the trace's *raw root* — the top-level port, the
+`create_generated_clock` pin target (§5.1), or an undeclared internal
+net — put through `ClockSpec.clock_for_port`, so a port carries the
+name of the clock declared on it (`create_clock -name core [get_ports
+clk]` → `core`). **One flop has one domain on a run.** The crossing
+walk, the rule context (`_RuleContext.domains`), CDC-023's combine
+walk, the scan-mode walk, CDC-024's launch domains, memory port clocks,
+the clock-network surface and the boundary clock-pin walk all take the
+same four SDC inputs — `ClockSpec.clock_root_inputs()`: `pin_clocks`,
+`clock_for_port`, `declared_clock_for_port` (§5) and `case_analysis`
+(§5.2) — plus the run's `max_depth`. Before rtl-buddy-cdc#358 the rule
+context was built without the first two, so a rule comparing
+`ctx.domains[f]` with a crossing's `dst_clock` compared a port name with
+a clock name, and every synchroniser on a renamed or pin-declared clock
+read as depth 1. The rule context keeps the raw roots too
+(`_RuleContext.clock_roots`, from the same trace) for the one rule that
+needs a port name: CDC-021, naming an undeclared clock port that
+`clock_for_port` would otherwise turn into the `<unconstrained>`
+sentinel.
 
 ### 4.4 Crossings
 
@@ -1226,7 +1245,7 @@ Cell-type categories the walker recognizes:
 | Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline, and never produces a CDC-023 finding |
 | Case-analysed mux | `$mux`, `$pmux`, `$_MUX_` whose every `S` bit is a `set_case_analysis` constant | Follow **only** the selected leg (§5.2) — the mode fixes `S`. Replaces the first-resolves-wins row above for that cell |
 
-| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor`, and the gate-level `cells.GATE_LOGIC_TYPES` (`$_AND_`, `$_OR_`, `$_NAND_`, `$_NOR_`, `$_XOR_`, `$_XNOR_`, `$_ANDNOT_`, `$_ORNOT_`, `$_AOI3_`, `$_OAI3_`, `$_AOI4_`, `$_OAI4_`; rtl-buddy-cdc#336) | Trace every input (`A`/`B`, plus `C`/`D` on the AOI/OAI cells). The leg choice depends on the legs' clocks, not their order: the rule context passes `assign_domains(declared_clock_for_port=…)`, built from `create_clock` ports only, so `en & clk` and `clk & en` resolve alike; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline and are reported as CDC-023 (see below) |
+| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor`, and the gate-level `cells.GATE_LOGIC_TYPES` (`$_AND_`, `$_OR_`, `$_NAND_`, `$_NOR_`, `$_XOR_`, `$_XNOR_`, `$_ANDNOT_`, `$_ORNOT_`, `$_AOI3_`, `$_OAI3_`, `$_AOI4_`, `$_OAI4_`; rtl-buddy-cdc#336) | Trace every input (`A`/`B`, plus `C`/`D` on the AOI/OAI cells). The leg choice depends on the legs' clocks, not their order: every walk passes `declared_clock_for_port` (`ClockSpec.declared_clock_for_port`, `create_clock` ports only — a `set_input_delay`-typed data port is not a clock; rtl-buddy-cdc#358), so `en & clk` and `clk & en` resolve alike, and an enable typed to a foreign clock is not a second clock; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline and are reported as CDC-023 (see below) |
 | Mux | `cells.MUX_PINS`: `$mux`, `$pmux`, and gate-level `$_MUX_`, `$_NMUX_`, `$_MUX4_`, `$_MUX8_`, `$_MUX16_` (rtl-buddy-cdc#336) | Trace each candidate data input (`A`/`B`, or `A`…`P` on the wide gate muxes); every select pin (`S`, plus `T`/`U`/`V`) is reported as the mux's control; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline, and never produces a CDC-023 finding |
 | FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root |
 | Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline and are reported as CDC-023 (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
@@ -2017,6 +2036,7 @@ free functions in `rules.py`:
 | `_crossing_enters_through_reset_mux_only(module, crossing, ctx)` | CDC-003 | True when the only cell between the source flop and the destination flop's `D` is that flop's constant-leg sync-reset `$mux` — part of the flop, not logic on the crossing path. Keeps the yosys frontend in step with slang, which emits `$sdff` for the same source (#86/#301) |
 | `_sync_chain_flops(module, head, ...)` | CDC-005 | Same walk as `_sync_chain_depth`, but returns the ordered tuple of chain flops so callers can reach the chain's tail without re-walking |
 | `_backward_fanin(module, start_bits, drivers, ...)` | CDC-006 | Reverse-BFS from a flop's `D` through comb cells; returns the set of upstream flop names and input-port names reached |
+| `_comb_driven_bits(module, bits, drivers)` | CDC-006 | The bits a genuine combinational cell drives, looking back through single-input buffers / inverters. CDC-006 walks `_backward_fanin` from these only (after stepping over the stage's own constant-leg sync-reset `$mux`), so a port wired straight to a synchroniser's `D` is an ordinary port-sourced crossing, not a glitchy comb source (rtl-buddy-cdc#360) |
 | `_forward_reachable_flops(module, start_bits, consumers, ...)` | available for rule writers | Forward analog of `_backward_fanin`: returns the set of *flop* cell names whose `D` is on the cone |
 | `_forward_reachable_cells(module, start_bits, consumers, ...)` | CDC-005 | Forward walk that returns *every* cell on the cone — flop or comb. CDC-005 uses this for reconvergence detection so a comb-cell recombination (sync outputs into an OR driving an output port) still counts |
 | `_is_multibit_sync_first_stage(...)` | CDC-004 | Verify the destination is a width-N flop whose Q exactly equals another same-domain flop's D lane-wise — directly, or as the data leg of that flop's constant-leg synchronous-reset `$mux` (the shape `_constant_leg_reset_mux_data_bits` accepts for the single-bit walk) when the mux select fans in only from dst-domain flops, ports or constants (rtl-buddy-cdc#366) |
@@ -2029,7 +2049,8 @@ free functions in `rules.py`:
 | `_output_cone(module, start_bits, drivers, input_bit_port)` | CDC-024, -025 | Backward combinational cone of a top-level output: the cells whose `Q` launches it, the top-level input ports it reaches (feed-throughs), and the bit set visited. Same walk shape as `_backward_flop_fanin` (each comb cell expanded once, depth 12) but keeps the ports and bits that walk discards; reads input ports from a prebuilt bit→port index rather than `Module.port_of_bit` (a linear scan) |
 | `_reached_output_bits(module, seeds, cone, consumers, port_bit_index)` | CDC-024, -025 | Forward replay confined to that cone, lane-aware via `domain._lane_targets`, returning which of the output's bits the given launchers reach — so a bus reports "2 of 4 bits", not the whole bus, and CDC-025 can tell a per-bit merge of two domains from a bus whose halves merely sit side by side |
 | `_output_launch_index(module, clock_spec, ctx)` | CDC-024, -025 | The run's `_OutputLaunchIndex`, built on first use and cached in `_RuleContext.output_launch_memo` (keyed by the `ClockSpec`): each output's `_output_cone` (walked at most once per run however many output rules ask), the memoised `flop_domain_resolver`, the bit→input-port index, and the `canonical` / `is_async` predicate `filter_async` applies. A plain mutable memo by design — the one non-frozen object on the rule context, invisible outside the two rules |
-| `domain.flop_domain_resolver(module, pin_clocks, clock_for_port=, max_depth=, drivers=)` | `assign_domains`, CDC-024, -025 | The per-flop domain function `assign_domains` applies, split out so CDC-024 resolves only the flops that launch an output — with pin-declared generated clocks and canonical clock names, exactly as `find_crossings` sees them (the rule context's `domains` is built without either) |
+| `domain.flop_domain_resolver(module, pin_clocks, clock_for_port=, declared_clock_for_port=, max_depth=, drivers=, case_analysis=)` | `assign_domains`, CDC-024, -025 | The per-flop domain function `assign_domains` applies: `flop_clock_root_resolver`'s raw root put through `clock_for_port`. CDC-024 / -025 read the rule context's `domains`, which is built from the same inputs (`ClockSpec.clock_root_inputs()`, rtl-buddy-cdc#358); the resolver is their fallback for a context built for another spec |
+| `domain.flop_clock_root_resolver(...)` | `_build_context`, `flop_domain_resolver` | The raw root of the same walk, before normalisation. The rule context traces each flop once and keeps both: `clock_roots` (CDC-021) and `domains` |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |
 | `scan_mode_port_names(module)` | §8.20 scan filter | Return the names of top-level **input ports** annotated with one of `SCAN_MODE_ATTRS` (`scan_en` / `scan_mode` / `test_mode` / `dft_scan_en`, matched case-insensitively). Port-scoped, not flop-scoped |
@@ -2310,11 +2331,14 @@ look like.
 
 Detection walks `ctx.flops` directly and consults the precomputed
 `declared_clock_ports` set (the union of `clk.ports` across every
-declared `Clock`). A flop whose `ctx.domains[name]` is the name of
-a top-level input port that *isn't* in that set is flagged.
-Generated clocks declared via `[get_pins ...]` have domain names
-that are clock names (not port names), so they're filtered out by
-the port-membership check. The rule is skipped when no SDC is
+declared `Clock`). A flop whose raw clock root
+(`ctx.clock_roots[name]`, §4.3) is the name of a top-level input port
+that *isn't* in that set is flagged. It reads the raw root rather than
+`ctx.domains` because the domain is normalised through
+`clock_for_port`, which on the CLI path maps an undeclared (untyped)
+port to the `<unconstrained>` sentinel. Generated clocks declared via
+`[get_pins ...]` have roots that are clock names (not port names), so
+they're filtered out by the port-membership check. The rule is skipped when no SDC is
 supplied (no rules fire in that case anyway).
 
 Severity `error` — undeclared clocks aren't a styling concern;
@@ -2575,11 +2599,8 @@ value — not the payload that motivated the original request.
 
 The textbook fix is a req/ack handshake: source holds the payload
 (and the request) until a synced-back ack proves the destination
-has sampled. The handshake's structural marker — and the rule's
-detection signal — is a src-clock flop with `D`-pin fanin from a
-dst-clock flop's `Q`: the `ack_sync` register. CDC-012 stays
-silent whenever that feedback path is reachable from *this
-crossing's* source flop.
+has sampled. The rule's detection signal is that ack, as an
+**acknowledge path** reachable from *this crossing's* source flop.
 
 The detection is per-crossing:
 
@@ -2593,18 +2614,57 @@ The detection is per-crossing:
    via `ctx.user_grays`). Gray-coded sources guarantee at most one
    bit changes per src cycle, so any dst-side sample is coherent
    regardless of the enable's sync-chain latency.
-4. The crossing's source flop has no register-neighbourhood path
-   back to a `dst_clock` flop (`_has_dst_to_src_feedback`).
+4. The crossing's source flop has no acknowledge path
+   (`_has_dst_to_src_feedback`).
 
-`_has_dst_to_src_feedback` walks the register-neighbourhood of
-`crossing.src_flop`: from the payload register it hops flop → its
-full input fanin (`D` plus enable / set / reset, via
-`_flop_input_fanin_bits`) → flop, staying inside the src domain,
-and reports feedback the moment the walk reaches a dst-domain flop
-(bounded to a handful of flop hops — enough to clear a 2–3FF ack
-synchroniser plus the enable flop(s) gating the payload load). The
-feedback result is cached per `c.src_flop.cell.name`, one entry
-per source flop.
+**The acknowledge path** (rtl-buddy-cdc#359, #369) is a chain of
+registers from a `dst_clock` register to the payload register's
+**load / hold control**. `_has_dst_to_src_feedback` walks it backward
+from the payload register (`crossing.src_flop`):
+
+1. **Entry: the hold control only.** `_hold_control_bits` is the
+   payload register's clock enable (`EN` / gate-level `E`) plus the
+   select of every *hold mux* — a mux on a mux-data-leg path from `D`
+   back to the register's own `Q` (`if (load) q <= x` lowers to
+   `$mux(A=q, B=x, S=load)`). The walk starts from those bits'
+   combinational fanin, never from the `D` value. A destination signal
+   that only changes *what* is loaded — a mode bit synchronised into
+   the source and steering `q <= m ? ~x : x` — holds nothing, and is
+   not an acknowledge (`bad_datahold_dst_mode_bit`; before #369 any
+   path into `D` silenced the rule).
+2. **Then register to register** through `_flop_functional_fanin_bits`
+   — `D`, the clock enable, a synchronous reset — never an asynchronous
+   reset, set or load, so a register that hears the destination only
+   through a shared reset carries no acknowledge. At most 6
+   source-domain registers: the ack synchroniser and the request /
+   busy flops the load condition reads. That is also how the request
+   (or toggle) generator counts: when the payload's load is derived
+   from the generator's state, the generator is in the hold-control
+   cone and its own control is walked; a generator that is gated by
+   the ack while the payload loads freely does not hold the payload,
+   and CDC-012 fires.
+3. **Then, if needed, through other domains.** An ack relayed
+   destination → a third domain → source
+   (`good_handshake_ack_via_third_domain`: clk_b's ack is synchronised
+   into clk_c, re-registered, and synchronised into clk_a) is followed
+   through at most 6 registers of domains other than `src_clock`.
+   Whether each relay hop is itself synchronised is CDC-001's job
+   (`bad_handshake_ack_via_third_domain`: CDC-001 on the C → A capture,
+   no CDC-012).
+
+The walk reports feedback on reaching a `dst_clock` register, with one
+visited set. Clock-network registers (dividers) and recognised reset
+synchronisers (`_ack_walk_excluded`) are never traversed or accepted; a
+register whose own fanin never reaches the destination (a free-running
+register) ends its path. The feedback result is cached per
+`c.src_flop.cell.name`, and each register's functional fanin is
+computed once per run (`fanin_cache`). The domain map's `"handshake"`
+verdict (`crossing_synchronizer`) uses the same walk.
+`tests/test_cdc_012_relayed_ack.py` pins the relayed ack (clean), the
+mode-bit reproducer (fires), the same bit moved onto the hold mux's
+select (clean), and the reset-only and free-running relays (fire). Every
+committed CDC-012 good fixture holds its payload through its load
+control; none relied on a data-only path.
 
 Feedback presence is a **crossing-level** property, not a
 domain-level one. Scoping the walk to the crossing's own source

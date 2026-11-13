@@ -290,28 +290,14 @@ GOOD_FIXTURES = [
     # clk_c and combined: not CDC-005 (no shared source flop).
     ("good_reconvergence_two_source_domains", 2),
     # Req/ack handshake whose ack returns clk_b → clk_c → clk_a.
-    pytest.param(
-        "good_handshake_ack_via_third_domain",
-        4,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="false CDC-012: the data-hold feedback walk stays in the "
-            "source domain and misses an ack relayed through clk_c",
-        ),
-    ),
+    # CDC-012 follows the acknowledge through clk_c (rtl-buddy-cdc#359).
+    ("good_handshake_ack_via_third_domain", 4),
     # --- rtl-buddy-cdc#331: SDC forms ---
     # Generated clock of a generated clock on internal pins; clk_ext
     # crosses into ck_div4 through a 2FF synchroniser.
-    pytest.param(
-        "good_gen_clock_chain",
-        2,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="false CDC-001: the rule context assigns domains without "
-            "pin_clocks, so a 2FF synchroniser clocked by a pin-declared "
-            "generated clock reads as depth 1",
-        ),
-    ),
+    # The rule context names the synchroniser's domain as the crossing
+    # walk does (rtl-buddy-cdc#358).
+    ("good_gen_clock_chain", 2),
     # -edges / -invert / -combinational generated clocks: every path among
     # them is synchronous; only clk_x → clk (2FF) is async.
     ("good_gen_clock_edges_invert", 1),
@@ -326,15 +312,8 @@ GOOD_FIXTURES = [
     # same-domain; the clk_b and clk_c crossings are 2FF.
     ("good_case_analysis_mode_sel0", 2),
     # Virtual clocks typing the I/O: one async input into a 2FF.
-    pytest.param(
-        "good_virtual_clock_io",
-        1,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="false CDC-006: a typed input port wired straight into a "
-            "2FF synchroniser (no combinational logic) still fires",
-        ),
-    ),
+    # No comb cell before the synchroniser: not CDC-006 (rtl-buddy-cdc#360).
+    ("good_virtual_clock_io", 1),
     # Gray encoder written (b >> 1) ^ b, into an ungated 4-bit 2FF
     # (rtl-buddy-cdc#365); one 4-bit crossing.
     ("good_gray_xor_swapped", 1),
@@ -366,8 +345,10 @@ def test_good_fixture_has_no_violations(name: str, expected_async: int) -> None:
     module = netlist.load(json_path)
     spec = sdc_mod.parse_file(sdc_path)
     sdc_mod.synthesize_unconstrained_inputs(spec, module)
+    # The clock inputs the CLI hands the crossing walk — the rule context
+    # builds its domains from the same bundle (rtl-buddy-cdc#358).
     crossings = find_crossings(
-        module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+        module, port_clock=spec.port_clock, **spec.clock_root_inputs()
     )
     async_crossings = []
     for c in crossings:

@@ -48,41 +48,40 @@ schema = 1
 # analyzer is fixed the affected design's test fails; update its counts,
 # drop the finding / missed entry, and remove the gap here.
 
-[gaps.cdc012-unrelated-feedback]
-kind = "false_negative"
-rules = ["CDC-012"]
-summary = """
-CDC-012 stays silent when _has_dst_to_src_feedback finds any path from
-a destination-clock flop into the source payload register's
-neighbourhood. That path need not be an acknowledge for this payload:
-an unrelated status bit synchronised from the destination domain and
-read by the payload's next-state logic silences the warning."""
-reproducer = """
-Toggle-pulse transfer of an 8-bit payload with no acknowledge (CDC-012
-fires). Make the payload's next-state logic read an unrelated clk_b
-status bit brought into clk_a through a 2FF synchroniser
-(data_a <= m2 ? ~data_in : data_in): CDC-012 goes silent on both
-frontends although nothing holds the payload."""
-
-[gaps.slang-concat-lvalue]
+[gaps.slang-comb-forward-read]
 kind = "frontend"
 rules = []
 summary = """
-The slang frontend drops any assignment whose target is a concatenation
-l-value ({a, b} <= ... / {c, s} = ...): _lvalue_bits has no
-ConcatenationExpression case, so the registers it writes vanish from
-the netlist. In a clocked block this is silent; in a combinational block
-it can surface as a 'procedural block not lowered' warning for the whole
-block. Downstream, the liveness pass removes logic that only fed the
-dropped registers, so whole synchronisers and crossings disappear (and
-CDC-026 can fire on a memory whose pointer crossing was dropped)."""
+On the slang path a value computed by a procedural combinational block
+(always @* / always_comb) does not reach logic that reads it earlier in
+source order. The frontend lowers such a block by re-pointing the
+written variable at its new driver; continuous assigns also re-point
+every cell built before them (rtl-buddy-cdc#326), procedural blocks do
+not, so an earlier reader keeps the variable's undriven placeholder.
+Combinational blocks are order-independent in the language and on the
+Yosys path."""
 reproducer = """
-A two-flop synchroniser written `always @(posedge clk_b) {q, meta} <=
-{meta, a_q};` with a_q a clk_a register: Yosys sees 3 flops and 1
-crossing; slang sees 0 flops and 0 crossings and reports PASS with no
-diagnostic. Writing the two stages as separate statements makes the
-frontends agree. Combinational variant: `always @* {carry, sum} = acc +
-inc;` drops the acc register on the slang path."""
+a_q is a clk_a register; `always @(posedge clk_b) begin s1 <= x; q <=
+s1; end` followed by `always @* x = a_q;`. Yosys: 3 flops, 1 crossing;
+slang: the s1 stage reads nothing, a_q is pruned, 0 crossings. Moving
+the always @* above the clocked block makes the frontends agree."""
+
+[gaps.slang-incomplete-comb-block]
+kind = "frontend"
+rules = []
+summary = """
+The slang frontend drops (with a 'procedural block not lowered'
+warning) a level-sensitive always block in which some variable is not
+assigned on every path, unless the block is the single `if (en) q = d;`
+latch shape. Yosys lowers the complete targets as combinational logic
+and infers a latch only for the incomplete one, so one scratch variable
+assigned under a condition costs every other output of the block on
+the slang path."""
+reproducer = """
+a_q is a clk_a register; `always @* begin x = a_q; if (v) t = a_q;
+end` with x captured by a two-flop clk_b synchroniser (t unused).
+Yosys: 3 flops, 1 crossing; slang: the block is dropped with a
+warning, 2 flops, 0 crossings."""
 
 [gaps.slang-function-call]
 kind = "frontend"
@@ -121,7 +120,7 @@ sources = [
 top = "async_fifo"
 sdc = "sdc/dpretet_async_fifo.sdc"
 expect = { clocks = ["wclk", "rclk"], crossings = 2, rules = {} }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-concat-lvalue" }
+slang = { reads = true, matches_yosys = true }
 notes = """
 Clean on the Yosys path. Both pointer crossings (wptr -> sync_w2r,
 rptr -> sync_r2w) carry a gray code, wgraynext = (wbinnext >> 1) ^
@@ -199,13 +198,15 @@ sources = ["rtl/afifo.v"]
 top = "afifo"
 sdc = "sdc/zipcpu_afifo.sdc"
 expect = { clocks = ["i_wclk", "i_rclk"], crossings = 2, rules = {} }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = { "CDC-026" = 1 }, gap = "slang-concat-lvalue" }
+slang = { reads = true, matches_yosys = false, crossings = 2, rules = { "CDC-026" = 1 }, gap = "slang-comb-forward-read" }
 notes = """
 Clean on the Yosys path, as expected for a textbook gray-pointer FIFO.
-On the slang path the {wr_rgray, rgray_cross} / {rd_wgray, wgray_cross}
-synchroniser assignments are dropped, so both pointer crossings vanish
-and CDC-026 (false positive) fires on the RAM: no write-clock crossing
-reaches the read address cone any more."""
+On the slang path both pointer crossings are found (the packed
+{rd_wgray, wgray_cross} <= {wgray_cross, wgray} synchronisers lower
+since rtl-buddy-cdc#370), but CDC-026 fires on the RAM (false
+positive): the rd_addr register's enable reads lcl_read / lcl_rd_empty,
+which always @(*) blocks further down the file compute, so the
+synchronised write pointer never reaches the read address cone."""
 
 [[design]]
 name = "zipcpu_apbxclk"
@@ -223,7 +224,7 @@ sources = ["rtl/apbxclk.v"]
 top = "apbxclk"
 sdc = "sdc/zipcpu_apbxclk.sdc"
 expect = { clocks = ["S_APB_PCLK", "M_APB_PCLK"], crossings = 2, rules = { "CDC-024" = 7, "RDC-008" = 1 } }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = { "CDC-024" = 7 }, gap = "slang-concat-lvalue" }
+slang = { reads = true, matches_yosys = true }
 notes = """
 {full_reset, full_reset_pipe} <= {full_reset_pipe, 1'b1} on S_APB_PCLK
 with async reset M_PRESETn is the textbook reset synchroniser that
@@ -271,8 +272,20 @@ license_file = "COPYING"
 sources = ["rtl/ptp_clock_cdc.v"]
 top = "ptp_clock_cdc"
 sdc = "sdc/ptp_clock_cdc.sdc"
-expect = { clocks = ["input_clk", "output_clk", "sample_clk"], crossings = 9, rules = { "CDC-001" = 1, "CDC-012" = 2 } }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-concat-lvalue" }
+expect = { clocks = ["input_clk", "output_clk", "sample_clk"], crossings = 9, rules = { "CDC-001" = 1, "CDC-012" = 3 } }
+slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-incomplete-comb-block" }
+notes = """
+Both next-state always @* blocks (dest_* at line 358, ts_* at line 551)
+assign a scratch overflow variable (dest_ovf / ptp_ovf) only under a
+condition, so each is dropped with a warning, and with them every
+register that feeds the outputs; dead-logic pruning then removes the
+source and sample domains. The concatenation targets in those blocks
+({dest_update_next, dest_phase_next} = ..., ...) lower since
+rtl-buddy-cdc#370. The clocked block at line 429 also reads values the
+line-551 block computes (slang-comb-forward-read). Lowering both blocks
+and forward reads (an experiment, not shipped) reaches 28 of Yosys' 77
+flops and 3 of 9 crossings, so further, untriaged slang gaps remain
+behind these two."""
 
 [[design.finding]]
 rule = "CDC-001"
@@ -302,17 +315,18 @@ captures within about three output_clk cycles of the toggle. The hold
 is guaranteed by the update rate and the clock ratio, which the
 structural rule cannot see; CDC-012 is a warning for this reason."""
 
-[[design.missed]]
+[[design.finding]]
 rule = "CDC-012"
 count = 1
-gap = "cdc012-unrelated-feedback"
+classification = "outside_model"
 reason = """
 sample_acc_out_reg -> sample_acc_sync_reg (5-bit, sample_clk ->
 output_clk) has the same rate-limited, ack-less shape as the two
-CDC-012 findings above and should be reported the same way. It is
-silent because the payload's fanin reaches dest_sync_reg (output_clk)
-through the phase detector's own synchroniser, which the feedback
-heuristic takes for an acknowledge."""
+timestamp crossings above and is reported the same way. It was silent
+until rtl-buddy-cdc#369: the payload's data fanin reaches
+dest_sync_reg (output_clk) through the phase detector's own
+synchroniser, which the feedback walk used to take for an
+acknowledge."""
 
 [[design]]
 name = "cdc_utils_cc561"

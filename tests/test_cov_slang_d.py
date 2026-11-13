@@ -756,10 +756,9 @@ def test_latch_nonassignment_arm_drops_latch(tmp_path: Path) -> None:
     assert "$dlatch" not in _cell_types(mod)
 
 
-def test_latch_unresolvable_lvalue_drops_latch(tmp_path: Path) -> None:
-    """``always_latch if (en) s.f = d;`` — a struct-member LHS isn't a
-    plain named / element / range select, so ``_lvalue_bits`` returns
-    ``None`` and the latch is dropped."""
+def test_latch_struct_member_lvalue(tmp_path: Path) -> None:
+    """``always_latch if (en) s.f = d;`` — a packed-struct member target
+    resolves through the field offset (rtl-buddy-cdc#370)."""
     src = """
     module m (input logic en, d, output logic q);
         typedef struct packed { logic f; } s_t;
@@ -771,7 +770,25 @@ def test_latch_unresolvable_lvalue_drops_latch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
+    assert "$dlatch" in _cell_types(mod)
+
+
+def test_latch_unresolvable_lvalue_drops_latch(tmp_path: Path, caplog) -> None:
+    """``always_latch if (en) {>>{y}} = d;`` — a streaming target has no
+    lowering: the latch is dropped, with a WARNING."""
+    src = """
+    module m (input logic en, input logic [1:0] d, output logic [1:0] q);
+        logic [1:0] y;
+        always_latch begin
+            if (en) {>>{y}} = d;
+        end
+        assign q = y;
+    endmodule
+    """
+    with caplog.at_level("WARNING", logger="rtl_buddy_cdc.frontends.slang"):
+        mod = _elaborate(tmp_path, src)
     assert "$dlatch" not in _cell_types(mod)
+    assert any("assignment not lowered" in r.getMessage() for r in caplog.records)
 
 
 def test_latch_unmodelled_rhs_emits_dlatch_with_unknown_d(tmp_path: Path) -> None:

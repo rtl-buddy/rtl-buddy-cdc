@@ -103,6 +103,10 @@ def find_clock_network_crossings(
         module,
         pin_clocks=pin_clocks,
         clock_for_port=clock_for_port,
+        # The leg choice the crossing walk makes (rtl-buddy-cdc#358).
+        declared_clock_for_port=(
+            clock_spec.declared_clock_for_port if clock_spec is not None else None
+        ),
         max_depth=max_depth,
         case_analysis=clock_spec.case_analysis if clock_spec is not None else None,
     )

@@ -29,9 +29,16 @@ that loads the blackbox siblings and attaches the summaries lives in
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from rtl_buddy_cdc.domain import _bit_drivers, trace_clock_root
+from rtl_buddy_cdc.domain import (
+    _bit_drivers,
+    _build_bit_to_clock,
+    _build_case_bits,
+    _clock_identity_fn,
+    trace_clock_root,
+)
 from rtl_buddy_cdc.flops import flop_clk_pin, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, PortBoundary
 from rtl_buddy_cdc.primitives import clock_pin_role, port_domain
@@ -176,6 +183,74 @@ def _is_known_clock(root: str, spec: ClockSpec | None) -> bool:
     return clk is not None and clk != _UNCONSTRAINED and clk in spec.clocks
 
 
+@dataclass(frozen=True)
+class _BoundaryClockWalk:
+    """The clock-root walk inputs for a parent's boundary clock pins.
+
+    The same SDC inputs the flat crossing walk resolves a flop's domain
+    from (rtl-buddy-cdc#358): generated-clock pins, ``set_case_analysis``
+    constants, the declared-clock leg choice at a gate / latch, and the
+    ``clock_for_port`` normalisation. Without the last two a boundary
+    clock pin behind ``en & clk`` resolved to ``en``, and a pin on a
+    clock whose ``-name`` differs from its port kept the port name — a
+    root no ``are_async`` answer knows, so the subtree read as
+    multi-clock and its derived sub-spec named a clock the SDC never
+    declared.
+    """
+
+    bit_to_clock: dict[Bit, str]
+    case_bits: dict[Bit, int]
+    spec: ClockSpec | None
+    clock_identity: Callable[[str], str | None] | None
+
+    @classmethod
+    def build(
+        cls,
+        parent: Module,
+        spec: ClockSpec | None,
+        pin_clocks: dict[str, str] | None,
+    ) -> _BoundaryClockWalk:
+        bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
+        return cls(
+            bit_to_clock=bit_to_clock,
+            case_bits=_build_case_bits(
+                parent, spec.case_analysis if spec is not None else None
+            ),
+            spec=spec,
+            clock_identity=(
+                _clock_identity_fn(
+                    spec.declared_clock_for_port, set(bit_to_clock.values())
+                )
+                if spec is not None
+                else None
+            ),
+        )
+
+    def root(
+        self,
+        parent: Module,
+        bit: Bit,
+        drivers: Drivers,
+        *,
+        max_depth: int,
+        allow_divider: bool = True,
+    ) -> str | None:
+        spec = self.spec
+        root = trace_clock_root(
+            parent,
+            bit,
+            drivers,
+            max_depth=max_depth,
+            bit_to_clock=self.bit_to_clock,
+            allow_divider=allow_divider,
+            case_bits=self.case_bits,
+            clock_identity=self.clock_identity,
+        )
+        if root is not None and spec is not None:
+            root = spec.clock_for_port(root) or root
+        return root
+
+
 def _instance_clocks(
     parent: Module,
     instance: Cell,
@@ -222,15 +297,11 @@ def _instance_clocks(
     """
     if drivers is None:
         drivers = _bit_drivers(parent)
-    from rtl_buddy_cdc.domain import _build_bit_to_clock, _build_case_bits
-
-    bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
-    # Same set_case_analysis select resolution the flat walk uses (#325),
-    # so a boundary clock pin behind a case-analysed mux gets the clock
-    # the flat assign_domains would give it.
-    case_bits = _build_case_bits(
-        parent, spec.case_analysis if spec is not None else None
-    )
+    # Same SDC inputs and normalisation the flat walk uses (case analysis
+    # #325, leg choice and canonical names rtl-buddy-cdc#358), so a
+    # boundary clock pin gets the clock the flat assign_domains would
+    # give a flop on the same net.
+    walk = _BoundaryClockWalk.build(parent, spec, pin_clocks)
     roots: set[str] = set()
     clock_pins: set[str] = set()
     pin_roots: dict[str, str | None] = {}
@@ -251,14 +322,7 @@ def _instance_clocks(
             # walker (divider rule included — a forwarded / divided clock
             # on an explicit clock pin is legitimate). It is a clock pin
             # regardless of whether the trace resolves.
-            root = trace_clock_root(
-                parent,
-                bits[0],
-                drivers,
-                max_depth=max_depth,
-                bit_to_clock=bit_to_clock,
-                case_bits=case_bits,
-            )
+            root = walk.root(parent, bits[0], drivers, max_depth=max_depth)
             clock_pins.add(pin)
             pin_roots[pin] = root
             if root is not None:
@@ -274,14 +338,8 @@ def _instance_clocks(
             # name gate (above) means a genuine DATA input mis-wired to a
             # clock net is NOT absorbed here, so CDC-008 (FIX 4) still
             # fires on it.
-            root = trace_clock_root(
-                parent,
-                bits[0],
-                drivers,
-                max_depth=max_depth,
-                bit_to_clock=bit_to_clock,
-                allow_divider=False,
-                case_bits=case_bits,
+            root = walk.root(
+                parent, bits[0], drivers, max_depth=max_depth, allow_divider=False
             )
             if root is not None and _is_known_clock(root, spec):
                 clock_pins.add(pin)
@@ -614,26 +672,14 @@ def summarise_sync_primitive(
     )
     if not ic.clock_pins:
         return None
-    from rtl_buddy_cdc.domain import _build_bit_to_clock, _build_case_bits
-
-    bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
-    case_bits = _build_case_bits(parent, spec.case_analysis)
+    walk = _BoundaryClockWalk.build(parent, spec, pin_clocks)
 
     roles: dict[str, str | None] = {}
     unclassified: list[str | None] = []
     for pin in sorted(ic.clock_pins):
         bits = instance.connections.get(pin)
         root = (
-            trace_clock_root(
-                parent,
-                bits[0],
-                drivers,
-                max_depth=max_depth,
-                bit_to_clock=bit_to_clock,
-                case_bits=case_bits,
-            )
-            if bits
-            else None
+            walk.root(parent, bits[0], drivers, max_depth=max_depth) if bits else None
         )
         role = clock_pin_role(pin)
         if role is None:

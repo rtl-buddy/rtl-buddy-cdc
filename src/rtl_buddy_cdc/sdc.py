@@ -95,7 +95,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypedDict
 
 # The tokenizer reader lives in its own stdlib-only module so rtl-buddy
 # can vendor it verbatim (rtl-buddy-cdc#298). Re-exported here because
@@ -365,6 +365,16 @@ CASE_ANALYSIS_VALUES: dict[str, str] = {
 }
 
 
+class ClockRootInputs(TypedDict):
+    """Keyword arguments of every clock-root resolver in
+    :mod:`rtl_buddy_cdc.domain` — see :meth:`ClockSpec.clock_root_inputs`."""
+
+    pin_clocks: dict[str, str]
+    clock_for_port: Callable[[str], str | None]
+    declared_clock_for_port: Callable[[str], str | None]
+    case_analysis: dict[str, str]
+
+
 @dataclass
 class ClockSpec:
     """The fully parsed CDC-relevant view of an SDC file."""
@@ -458,10 +468,45 @@ class ClockSpec:
         """
         if port in self.port_clock:
             return self.port_clock[port]
+        return self.declared_clock_for_port(port)
+
+    def declared_clock_for_port(self, port: str) -> str | None:
+        """The ``create_clock`` declared on ``port`` (or on the internal
+        pin of that name), or ``None``.
+
+        Unlike :meth:`clock_for_port` this ignores ``set_input_delay``
+        typing: a data port launched by a clock is not itself a clock.
+        It is the clock-*identity* question the clock tracer asks when a
+        gate or latch combines several legs (rtl-buddy-cdc#358): only a
+        leg that carries a declared clock competes, so ``en & clk``
+        resolves to ``clk`` even when ``en`` is typed to some clock. On
+        a ``create_clock -add`` port it is the primary clock, as
+        :meth:`clock_for_port` is.
+        """
         for clk in self.clocks.values():
             if port in clk.ports:
                 return clk.name
         return None
+
+    def clock_root_inputs(self) -> ClockRootInputs:
+        """The SDC inputs every clock-root walk on a run takes.
+
+        Keyword arguments for :func:`~rtl_buddy_cdc.domain.assign_domains`,
+        :func:`~rtl_buddy_cdc.domain.find_crossings` and the other
+        resolvers in :mod:`rtl_buddy_cdc.domain`: generated-clock pin
+        targets, the canonical-name normaliser, the declared-clock
+        identity predicate and the ``set_case_analysis`` constants. Every
+        view of a flop's clock domain (the crossing walk, the rule
+        context, the clock-network and boundary walks) is built from
+        this one bundle, so two views of one flop cannot disagree because
+        one of them was handed fewer inputs (rtl-buddy-cdc#358).
+        """
+        return {
+            "pin_clocks": self.pin_clocks,
+            "clock_for_port": self.clock_for_port,
+            "declared_clock_for_port": self.declared_clock_for_port,
+            "case_analysis": self.case_analysis,
+        }
 
     def resolve(self, name: str) -> str:
         """Collapse a generated clock to its root master.

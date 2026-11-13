@@ -17,10 +17,10 @@ from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, Sequence
 from rtl_buddy_cdc.domain import (
     Crossing,
     _lane_targets,
-    assign_domains,
     bit_clock_resolver,
     find_clock_combines,
     find_scan_mode_flops,
+    flop_clock_root_resolver,
     flop_domain_resolver,
 )
 from rtl_buddy_cdc.cells import MUX2_TYPES, MUX_PINS, parse_gate_storage_cell
@@ -108,7 +108,18 @@ class _RuleContext:
     # lane-aligned chain in O(1) instead of rescanning every cell once per
     # crossing.
     flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]]
+    # Per-flop clock domain: exactly the name ``find_crossings`` gives
+    # the flop (same pin clocks, case constants, leg choice and canonical
+    # normalisation — ``ClockSpec.clock_root_inputs()``), so a rule
+    # comparing ``domains[f]`` with a crossing's ``src_clock`` /
+    # ``dst_clock`` compares like with like (rtl-buddy-cdc#358).
     domains: dict[str, str | None]
+    # The same walk's *raw* root, before ``clock_for_port`` renames it:
+    # the top-level port (or generated clock, or undeclared internal
+    # net) the trace stopped at. Only CDC-021 reads it, to name an
+    # undeclared clock port the normalisation turns into the
+    # ``<unconstrained>`` sentinel.
+    clock_roots: dict[str, str | None]
     bit_drivers: dict[Bit, tuple[str, str, int]]
     # Forward index: maps each bit to every (cell_name, input_port_name,
     # index) consuming it. Symmetric to ``bit_drivers``. Used by
@@ -295,7 +306,6 @@ def _build_context(
     boundary_sync_depth: dict[str, int] | None = None,
     boundary_reconvergence: dict[str, frozenset[frozenset[str]]] | None = None,
     boundary_user_syncs: frozenset[str] = frozenset(),
-    clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
@@ -310,31 +320,39 @@ def _build_context(
     walk uses so ``ctx.domains`` — the rule-context per-flop domain
     view, consulted by CDC-010 and the domain-map path — agrees with
     the crossings list at any depth. See issue #263.
+
+    The other clock inputs come from ``clock_spec`` itself
+    (``clock_spec.clock_root_inputs()``): generated-clock pins, the
+    canonical-name normaliser, the declared-clock leg choice and the
+    case constants — the bundle the CLI hands ``find_crossings``. A
+    context built with fewer of them than the crossing walk disagrees
+    with the crossings about a flop's domain: a synchroniser clocked by
+    a pin-declared generated clock read as depth 1, and so did every
+    synchroniser on a clock whose ``-name`` differs from its port
+    (rtl-buddy-cdc#358). Callers that build crossings without an SDC
+    bundle (unit tests) pass the same spec's bundle to ``find_crossings``.
     """
     flops = tuple(find_flops(module))
     flops_by_d = _index_flops_by_d(flops)
-    # Without ``clock_for_port`` the domains keep raw root names (CDC-021
-    # needs the port name of an undeclared clock), but the tracer still
-    # needs to know which ports ARE clocks to pick the clock leg of a
-    # clock gate: otherwise first-leg-wins makes ``en & clk`` resolve to
-    # the enable port (found by the gate-level corpus, where abc swaps
-    # the legs of $_AND_; rtl-buddy-cdc#336). Only ``create_clock``
-    # ports count — not ``set_input_delay``-typed data ports.
-    declared_clock_ports: dict[str, str] = {}
-    if clock_spec is not None:
-        for clk in clock_spec.clocks.values():
-            for port in clk.ports:
-                declared_clock_ports.setdefault(port, clk.name)
-    flop_domains = assign_domains(
-        module,
-        clock_for_port=clock_for_port,
-        declared_clock_for_port=declared_clock_ports.get,
-        max_depth=max_depth,
-        case_analysis=clock_spec.case_analysis if clock_spec is not None else None,
-    )
-    domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
-
     bit_drivers = _bit_drivers(module)
+    # One trace per flop gives both views: the raw root (CDC-021 needs
+    # the port name of an undeclared clock) and, through the same
+    # ``clock_for_port`` the crossing walk applies, the domain.
+    normalise: Callable[[str], str | None] | None = None
+    if clock_spec is not None:
+        clock_inputs = clock_spec.clock_root_inputs()
+        root_of = flop_clock_root_resolver(module, max_depth=max_depth, **clock_inputs)
+        normalise = clock_inputs["clock_for_port"]
+    else:
+        root_of = flop_clock_root_resolver(module, max_depth=max_depth)
+    clock_roots: dict[str, str | None] = {}
+    domains: dict[str, str | None] = {}
+    for f in flops:
+        root = root_of(f)
+        clock_roots[f.cell.name] = root
+        if root is not None and normalise is not None:
+            root = normalise(root) or root
+        domains[f.cell.name] = root
 
     # Forward index: same shape as ``bit_drivers`` but for *inputs*.
     # CLK is excluded (clock pins are walked separately by the clock-
@@ -374,6 +392,7 @@ def _build_context(
         flops=flops,
         flops_by_d=flops_by_d,
         domains=domains,
+        clock_roots=clock_roots,
         bit_drivers=bit_drivers,
         bit_consumers=bit_consumers,
         reader_counts=reader_counts,
@@ -700,6 +719,7 @@ def scan_mode_clock_select_flops(
     *,
     pin_clocks: dict[str, str] | None = None,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
 ) -> set[str]:
@@ -745,6 +765,7 @@ def scan_mode_clock_select_flops(
         is_scan_control=is_scan_control,
         pin_clocks=pin_clocks,
         clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_for_port,
         max_depth=max_depth,
         case_analysis=case_analysis,
     )
@@ -2764,6 +2785,58 @@ def _boundary_reconvergence(
     return None
 
 
+# Single-input cells that pass one bit through (inverted or not). A
+# chain of them from one port to a synchroniser's ``D`` is a wire for
+# CDC-006: a function of one input cannot glitch on its own
+# (rtl-buddy-cdc#360). ``$logic_not`` / ``$reduce_bool`` reduce their
+# whole ``A`` operand and count only on a one-bit operand.
+_CDC_006_WIRE_TYPES: frozenset[str] = frozenset(
+    {"$buf", "$pos", "$not", "$_BUF_", "$_NOT_", "$logic_not", "$reduce_bool"}
+)
+_REDUCING_WIRE_TYPES: frozenset[str] = frozenset({"$logic_not", "$reduce_bool"})
+
+
+def _comb_driven_bits(
+    module: Module,
+    bits: Iterable[Bit],
+    drivers: dict[Bit, tuple[str, str, int]],
+) -> tuple[Bit, ...]:
+    """The bits among ``bits`` that a combinational cell drives, looking
+    through single-input buffers / inverters.
+
+    Each bit is followed back while its driver is a one-input
+    :data:`_CDC_006_WIRE_TYPES` cell. It ends at a top-level port or a
+    constant (no driver: a wire, not returned), a flop / storage output
+    (not returned), or a genuine combinational cell — whose output bit
+    is returned. Used by CDC-006: only logic between a foreign source and
+    a synchroniser can produce the glitch the rule is about.
+    """
+    out: list[Bit] = []
+    for b in bits:
+        seen: set[Bit] = set()
+        while isinstance(b, int) and b not in seen:
+            seen.add(b)
+            drv = drivers.get(b)
+            if drv is None:
+                break
+            cell_name, out_port, idx = drv
+            cell = module.cells[cell_name]
+            if is_ff_cell(cell.type) or is_latch_cell(cell.type) or out_port == "Q":
+                break
+            a = cell.connections.get("A", ())
+            y = cell.connections.get("Y", ())
+            if cell.type in _CDC_006_WIRE_TYPES and set(cell.connections) == {"A", "Y"}:
+                if len(a) == 1:
+                    b = a[0]
+                    continue
+                if len(a) == len(y) and cell.type not in _REDUCING_WIRE_TYPES:
+                    b = a[idx]  # bitwise: lane idx of Y is lane idx of A
+                    continue
+            out.append(b)
+            break
+    return tuple(out)
+
+
 def check_cdc_006(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -2784,6 +2857,13 @@ def check_cdc_006(
     case). Top-level ports declared as clocks in the SDC are
     intentionally ignored — they aren't logic data, just a clock
     signal whose level is irrelevant to data correctness.
+
+    There must be an actual combinational cell between the port and the
+    first stage (rtl-buddy-cdc#360). A port wired straight to ``D`` —
+    or through single-input buffers / inverters, or through the stage's
+    own constant-leg synchronous-reset ``$mux`` (part of the flop, #304)
+    — is an ordinary port-sourced crossing: the 2FF chain handles it,
+    and a missing chain is CDC-001's.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -2816,11 +2896,24 @@ def check_cdc_006(
         )
         if depth < 2:
             continue
-        fanin_flops, fanin_ports = _backward_fanin(module, f.d, ctx.bit_drivers)
+        fanin_flops, _ = _backward_fanin(module, f.d, ctx.bit_drivers)
         # If a real source-domain flop exists in the fanin, this
         # crossing is already covered by CDC-001/-002/-003 logic.
         if fanin_flops:
             continue
+        # Only ports that reach D through a real combinational cell can
+        # glitch it (#360). Step over the stage's own sync-reset mux
+        # first: the reset only forces a constant.
+        d_bits = (
+            _constant_leg_reset_mux_data_bits(
+                f, module, ctx.bit_drivers, ctx.reader_counts
+            )
+            or f.d
+        )
+        comb_bits = _comb_driven_bits(module, d_bits, ctx.bit_drivers)
+        if not comb_bits:
+            continue
+        _, fanin_ports = _backward_fanin(module, comb_bits, ctx.bit_drivers)
         # Drop ports that are top-level clocks (clock leakage into
         # data paths is a CDC-008 shape, not CDC-006) and ports that
         # the SDC has explicitly typed into the *same* domain as the
@@ -4780,23 +4873,99 @@ def check_cdc_013(
     return out
 
 
-def _flop_input_fanin_bits(flop: Flop) -> tuple[Bit, ...]:
-    """Every data/control input bit of a flop cell — D, EN/E, set/reset,
-    everything except the clock and the Q/Y outputs.
+def _flop_functional_fanin_bits(flop: Flop) -> tuple[Bit, ...]:
+    """The input bits a flop's next *value* flows through: ``D``, the
+    clock enable and a synchronous reset — not an asynchronous reset,
+    set or load (rtl-buddy-cdc#359).
 
-    The handshake feedback can gate the payload register through either
-    its ``D`` (mux-on-D hold) or its enable (``$dffe`` ``EN`` / gate-level
-    ``E``), so a feedback walk that looked at ``D`` alone would miss the
-    enable-gated form. Walking the full input surface catches both.
+    The acknowledge walk in :func:`_has_dst_to_src_feedback` follows
+    these pins only, so a register that hears the destination solely
+    through a shared reset carries no acknowledge.
     """
+    cell = flop.cell
+    pins = ["D"]
+    en = flop_enable_pin(cell)
+    if en is not None:
+        pins.append(en)
+    rst = flop_reset(cell)
+    if rst is not None and rst.kind == "sync":
+        pins.append(rst.pin)
     out: list[Bit] = []
-    is_ff = is_ff_cell(flop.cell.type)
-    for port_name, bits in flop.cell.connections.items():
-        if port_name == "CLK" or port_name in _OUTPUT_PINS:
-            continue
-        if is_ff and port_name == "C":
-            continue
-        out.extend(b for b in bits if isinstance(b, int))
+    for pin in pins:
+        out.extend(b for b in cell.connections.get(pin, ()) if isinstance(b, int))
+    return tuple(out)
+
+
+def _hold_control_bits(
+    flop: Flop,
+    module: Module,
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+    *,
+    max_depth: int = 8,
+) -> tuple[Bit, ...]:
+    """The bits that decide whether ``flop`` loads or holds
+    (rtl-buddy-cdc#369): its clock enable, plus the selects of its
+    *hold muxes* — the muxes on a mux-data-leg path from ``D`` back to
+    the flop's own ``Q`` (``if (load) q <= x;`` lowers to
+    ``$mux(A=q, B=x, S=load)``).
+
+    A mux whose legs never lead back to ``Q`` computes the loaded
+    *value* (``q <= m ? ~x : x``) and contributes nothing: its select
+    changes what is stored, not when. Walked through mux data legs only,
+    at most ``max_depth`` muxes deep.
+    """
+    cell = flop.cell
+    out: list[Bit] = []
+    en = flop_enable_pin(cell)
+    if en is not None:
+        out.extend(b for b in cell.connections.get(en, ()) if isinstance(b, int))
+    q_bits = {b for b in flop.q if isinstance(b, int)}
+    # The mux tree behind D, through data legs only.
+    tree: dict[str, tuple[tuple[Bit, ...], tuple[Bit, ...]]] = {}
+    frontier: list[Bit] = [b for b in flop.d if isinstance(b, int)]
+    for _ in range(max_depth):
+        nxt: list[Bit] = []
+        for b in frontier:
+            drv = bit_drivers.get(b)
+            if drv is None or drv[0] in tree:
+                continue
+            mux = module.cells[drv[0]]
+            pins = MUX_PINS.get(mux.type)
+            if pins is None:
+                continue
+            data = tuple(
+                d
+                for p in pins[0]
+                for d in mux.connections.get(p, ())
+                if isinstance(d, int)
+            )
+            sel = tuple(
+                s
+                for p in pins[1]
+                for s in mux.connections.get(p, ())
+                if isinstance(s, int)
+            )
+            tree[mux.name] = (data, sel)
+            nxt.extend(data)
+        if not nxt:
+            break
+        frontier = nxt
+    # A mux holds when one of its data legs is Q or another holding mux.
+    holds: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for name, (legs, _sel) in tree.items():
+            if name in holds:
+                continue
+            for d in legs:
+                drv = bit_drivers.get(d)
+                if d in q_bits or (drv is not None and drv[0] in holds):
+                    holds.add(name)
+                    changed = True
+                    break
+    for name in sorted(holds):
+        out.extend(tree[name][1])
     return tuple(out)
 
 
@@ -4808,72 +4977,107 @@ def _has_dst_to_src_feedback(
     flops_by_name: dict[str, Flop],
     *,
     max_flop_hops: int = 6,
+    max_relay_hops: int = 6,
+    excluded: frozenset[str] = frozenset(),
     fanin_cache: dict[str, set[str]] | None = None,
 ) -> bool:
-    """Heuristic: does *this crossing's* source flop carry the
-    structural marker of a synced-back req/ack handshake?
+    """Does *this crossing's* payload wait for an acknowledge from the
+    destination?
 
-    In a handshake design the source conditions its payload / request
-    updates on an ``ack_sync`` flop in ``src_clock`` whose ``D`` fanin
-    reaches the destination's ack (a ``dst_clock`` flop's ``Q``). We
-    walk the register-neighbourhood of ``crossing.src_flop`` — hopping
-    flop → its full input fanin (:func:`_flop_input_fanin_bits`) →
-    flop, staying inside ``src_clock`` — and report feedback the moment
-    that walk reaches a ``dst_clock`` flop. Absence of any such path
-    means the source has no signalling channel from the destination
-    for *this* crossing — the payload can change independently of the
-    enable's in-flight progress, which is the failure mode CDC-012
-    flags.
+    **The acknowledge path** (rtl-buddy-cdc#359, #369): a chain of
+    registers from a ``dst_clock`` register to the payload register's
+    **load / hold control** — :func:`_hold_control_bits`: its clock
+    enable, or the select of the mux that holds it. Walked backward:
 
-    Feedback presence is a **crossing-level** property, not a
-    domain-level one: scoping the walk to ``crossing.src_flop`` is what
-    stops an unrelated handshake (or a FIFO's pointer sync) between the
-    same domain pair from silencing a genuinely broken crossing — the
-    domain-wide bleed fixed in rtl-buddy-cdc#239. The walk is bounded to
-    ``max_flop_hops`` flop hops, enough to clear a 2–3FF ack
-    synchroniser plus the enable flop(s) gating the payload load.
+    1. from the payload register (``crossing.src_flop``), only its hold
+       control's combinational fanin — never its ``D`` value: a
+       destination signal that only changes *what* is loaded (a mode bit
+       steering ``q <= m ? ~x : x``) does not hold anything;
+    2. then register to register through
+       :func:`_flop_functional_fanin_bits` (``D`` / enable / synchronous
+       reset — not an asynchronous reset, so a shared reset is no
+       acknowledge), at most ``max_flop_hops`` registers of
+       ``src_clock`` (the ack synchroniser, the request / busy flops the
+       load condition reads — the request generator's own control is
+       reached this way when the load is derived from it);
+    3. then, if needed, through registers of *other* domains — an ack
+       relayed destination → third domain → source — at most
+       ``max_relay_hops`` of them. Whether each relay hop is synchronised
+       is CDC-001's question.
 
-    ``fanin_cache`` maps a flop name to the flops in its input fanin.
-    That set depends only on the flop, so a caller checking many
-    crossings should share one dict across calls: neighbouring source
-    flops reach the same registers, and recomputing each register's
-    combinational cone per source flop dominated runtime on large
-    datapaths.
+    The walk reports feedback on reaching a ``dst_clock`` register.
+    ``excluded`` registers (clock dividers, reset synchronisers; see
+    :func:`_ack_walk_excluded`) are never traversed or accepted.
+
+    Feedback presence is a **crossing-level** property: scoping the walk
+    to ``crossing.src_flop`` stops an unrelated handshake between the
+    same domain pair from silencing a broken crossing (rtl-buddy-cdc#239).
+
+    ``fanin_cache`` maps a register name to the registers in its
+    functional fanin; it depends only on the register, so a caller
+    checking many crossings shares one dict.
     """
     src_flop = crossing.src_flop
     if src_flop is None:
         return False
     src_clock = crossing.src_clock
     dst_clock = crossing.dst_clock
+    if fanin_cache is None:
+        fanin_cache = {}
 
+    def fanin_of(f: Flop) -> set[str]:
+        hit = fanin_cache.get(f.cell.name)
+        if hit is None:
+            bits = _flop_functional_fanin_bits(f)
+            hit = _backward_flop_fanin(module, bits, bit_drivers) if bits else set()
+            fanin_cache[f.cell.name] = hit
+        return hit
+
+    control = _hold_control_bits(src_flop, module, bit_drivers)
+    first = _backward_flop_fanin(module, control, bit_drivers) if control else set()
     seen: set[str] = {src_flop.cell.name}
-    frontier: list[Flop] = [src_flop]
-    for _hop in range(max_flop_hops):
-        nxt: list[Flop] = []
-        for f in frontier:
-            fanin = fanin_cache.get(f.cell.name) if fanin_cache is not None else None
-            if fanin is None:
-                in_bits = _flop_input_fanin_bits(f)
-                fanin = (
-                    _backward_flop_fanin(module, in_bits, bit_drivers)
-                    if in_bits
-                    else set()
-                )
-                if fanin_cache is not None:
-                    fanin_cache[f.cell.name] = fanin
-            for ff_name in fanin:
-                if ff_name in seen:
-                    continue
-                seen.add(ff_name)
-                ff_domain = domains.get(ff_name)
-                if ff_domain == dst_clock:
-                    return True
-                if ff_domain == src_clock and ff_name in flops_by_name:
-                    nxt.append(flops_by_name[ff_name])
-        if not nxt:
-            break
-        frontier = nxt
+    # (register, source-domain hops, relay hops) on the path to it.
+    frontier: list[tuple[Flop, int, int]] = []
+
+    def visit(names: set[str], src_hops: int, relay_hops: int) -> bool:
+        for ff_name in sorted(names):
+            if ff_name in seen or ff_name in excluded:
+                continue
+            seen.add(ff_name)
+            ff_domain = domains.get(ff_name)
+            if ff_domain is None:
+                continue
+            if ff_domain == dst_clock:
+                return True
+            ff = flops_by_name.get(ff_name)
+            if ff is None:
+                continue
+            if ff_domain == src_clock and relay_hops == 0:
+                frontier.append((ff, src_hops + 1, 0))
+            else:
+                frontier.append((ff, src_hops, relay_hops + 1))
+        return False
+
+    if visit(first, 0, 0):
+        return True
+    while frontier:
+        level, frontier = frontier, []
+        for f, src_hops, relay_hops in level:
+            if relay_hops == 0 and src_hops >= max_flop_hops:
+                continue
+            if relay_hops >= max_relay_hops:
+                continue
+            if visit(fanin_of(f), src_hops, relay_hops):
+                return True
     return False
+
+
+def _ack_walk_excluded(ctx: _RuleContext) -> frozenset[str]:
+    """Registers that are never an acknowledge however they are wired:
+    clock dividers and reset synchronisers (rtl-buddy-cdc#359)."""
+    return (ctx.clock_network_cells | ctx.reset_synchronizers) & frozenset(
+        f.cell.name for f in ctx.flops
+    )
 
 
 def check_cdc_012(
@@ -4944,6 +5148,7 @@ def check_cdc_012(
     # the same clocks (rtl-buddy-cdc#239).
     feedback_cache: dict[str, bool] = {}
     fanin_cache: dict[str, set[str]] = {}
+    excluded: frozenset[str] | None = None
 
     for c in crossings:
         if c.src_clock == UNCONSTRAINED_SENTINEL:
@@ -4979,12 +5184,15 @@ def check_cdc_012(
             continue
         key = c.src_flop.cell.name
         if key not in feedback_cache:
+            if excluded is None:
+                excluded = _ack_walk_excluded(ctx)  # once, on the first candidate
             feedback_cache[key] = _has_dst_to_src_feedback(
                 module,
                 c,
                 ctx.domains,
                 ctx.bit_drivers,
                 flops_by_name,
+                excluded=excluded,
                 fanin_cache=fanin_cache,
             )
         if feedback_cache[key]:
@@ -5765,7 +5973,10 @@ def check_cdc_021(
 
     undeclared: dict[str, list[str]] = defaultdict(list)
     for f in ctx.flops:
-        domain = ctx.domains.get(f.cell.name)
+        # The raw root, not the canonical domain: on the CLI path an
+        # undeclared clock port is normalised to the ``<unconstrained>``
+        # sentinel, which names no port.
+        domain = ctx.clock_roots.get(f.cell.name)
         if domain is None:
             continue
         port = module.ports.get(domain)
@@ -6033,11 +6244,7 @@ def check_cdc_023(
     max_depth = ctx.max_depth if ctx is not None else 16
     violations: list[Violation] = []
     for combine in find_clock_combines(
-        module,
-        clock_spec.pin_clocks,
-        clock_for_port=clock_spec.clock_for_port,
-        max_depth=max_depth,
-        case_analysis=clock_spec.case_analysis,
+        module, max_depth=max_depth, **clock_spec.clock_root_inputs()
     ):
         shown = combine.sinks[:_CDC_023_SINK_SAMPLE]
         sample = ", ".join(f"`{name}`" for name in shown)
@@ -6192,12 +6399,12 @@ class _OutputLaunchIndex:
 
     * :meth:`cone` — :func:`_output_cone` of one output port, walked at
       most once per port per run.
-    * :meth:`launch_domain` — the launching flop's domain, from
-      :func:`~rtl_buddy_cdc.domain.flop_domain_resolver` (the function
-      ``assign_domains`` applies, with pin-declared generated clocks and
-      canonical names — exactly what ``find_crossings`` sees; the rule
-      context's ``domains`` is built without either). The resolver is
-      built on first use and memoised per flop.
+    * :meth:`launch_domain` — the launching flop's domain: the rule
+      context's ``domains``, which is exactly what ``find_crossings``
+      sees (pin-declared generated clocks, canonical names;
+      rtl-buddy-cdc#358). Only a context built for another spec falls
+      back to a :func:`~rtl_buddy_cdc.domain.flop_domain_resolver` of
+      this one, built on first use and memoised per flop.
     * :meth:`canonical` / :meth:`is_async` — the normalisation and the
       async predicate ``filter_async`` applies to a crossing, so "is this
       output asynchronous?" has one answer across the tool.
@@ -6235,17 +6442,17 @@ class _OutputLaunchIndex:
 
     def launch_domain(self, f: Flop) -> str | None:
         name = f.cell.name
+        if self.ctx.clock_spec is self.clock_spec and self.ctx.module is self.module:
+            return self.ctx.domains.get(name)
         if name not in self._domain_of:
             if self._resolve is None:
                 self._resolve = flop_domain_resolver(
                     self.module,
-                    self.clock_spec.pin_clocks,
-                    clock_for_port=self.clock_spec.clock_for_port,
                     max_depth=self.ctx.max_depth,
                     drivers={
                         b: (c, p) for b, (c, p, _i) in self.ctx.bit_drivers.items()
                     },
-                    case_analysis=self.clock_spec.case_analysis,
+                    **self.clock_spec.clock_root_inputs(),
                 )
             self._domain_of[name] = self._resolve(f)
         return self._domain_of[name]
@@ -6861,13 +7068,12 @@ def memory_crossings(
         return []
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    clock_of = bit_clock_resolver(
-        module,
-        clock_spec.pin_clocks if clock_spec is not None else None,
-        clock_for_port=clock_spec.clock_for_port if clock_spec is not None else None,
-        max_depth=ctx.max_depth,
-        case_analysis=clock_spec.case_analysis if clock_spec is not None else None,
-    )
+    if clock_spec is not None:
+        clock_of = bit_clock_resolver(
+            module, max_depth=ctx.max_depth, **clock_spec.clock_root_inputs()
+        )
+    else:
+        clock_of = bit_clock_resolver(module, max_depth=ctx.max_depth)
     flops_by_name = {f.cell.name: f for f in ctx.flops}
 
     def flop_clock(name: str) -> str | None:
@@ -7358,6 +7564,7 @@ def crossing_synchronizer(
             ctx.domains,
             ctx.bit_drivers,
             {f.cell.name: f for f in ctx.flops},
+            excluded=_ack_walk_excluded(ctx),
         )
     ):
         return "handshake"
