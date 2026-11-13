@@ -39,6 +39,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The JSON and SARIF reports are serialised with `json.dumps`, which
     can use the C encoder, instead of `json.dump`.
 
+### Internal
+
+- **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
+  work item 2) — *test-only: no analyzer change.* CDC-022, CDC-023 and
+  CDC-BBX had no fuzz template; CDC-018/019/020/021 and RDC-007/008 had
+  only a single-shape `gap_g*` sentinel (still in place). Nine new
+  templates (154 cases) sweep what each detector compares: CDC-018
+  chain depth against `--cdc-018-depth-threshold`; CDC-019 lane count
+  and decoder shape; CDC-020 bus width, slice pattern and destination
+  split; CDC-021 consumer count and port declaration; CDC-022
+  `DEST_SYNC_FF` (including the XPM default) against `--sync-depth` per
+  macro; CDC-023 combine cell against a mux and an ICG; RDC-007 polarity
+  against the head constant; RDC-008's ≥2-consumer and chain-elsewhere
+  thresholds; CDC-BBX decline reasons. Each has silent and
+  attribute-/pragma-suppressed variants.
+  - The fuzz runner takes `cdc_018_depth_threshold`, `sync_primitives`
+    and `analysis="cli"` from a case's `params` (beside
+    `required_depth`). `"cli"` runs the case through the CLI's own
+    analysis path, so blackbox stubs, CDC-BBX and `// rbcdc:` pragmas
+    work in the corpus.
+  - The cross-frontend allowlist accepts a single case id as well as a
+    template family. New rows: no blackbox support in the pyslang
+    frontend (CDC-022, CDC-BBX); the pyslang frontend dropping plain
+    `always @(posedge …)` flops; and the Yosys path missing CDC-019 when
+    `proc` lowers an 8-way `case` decoder to a ROM.
+  - Seven cases pin verdicts believed wrong, each with a `gap_note`. The
+    list is in `wiki/concepts/cdc-testing-strategy.md`.
+
 ## [0.7.3] — 2026-10-31
 
 ### Changed
