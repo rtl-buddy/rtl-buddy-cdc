@@ -231,6 +231,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     The slang fuzz cache now pickles `(module, blackboxes)` under a new
     file suffix.
 
+- **Several clocks on one port (`create_clock -add`)** (#330) — `-add`
+  was parsed and ignored: with or without it, both clocks stayed on the
+  port, the flops behind it took the first-declared clock (on both SDC
+  backends), and a crossing asynchronous only to the *other* clock on
+  the port was filtered out as synchronous — no finding, while the
+  G-11 linter called the legitimate `-add` a conflict. Now:
+  - without `-add` a later clock on a port **replaces** the earlier one,
+    per SDC semantics — the earlier clock loses the port (and is removed
+    once it has none), with a warning naming both. An internal-pin
+    target of `create_generated_clock` still holds one clock: a
+    replacement warns the same way, and an `-add` on a pin is not
+    modelled (the first clock stays; warning);
+  - with `-add` the port carries every clock (`ClockSpec.multi_clock_ports`).
+    Its flops keep the first-declared clock's name, and that name
+    stands for all of them: a crossing is kept as asynchronous if **any**
+    co-located clock is asynchronous to the other side and not
+    exclusive with it. The finding gains a
+    `[multi-clock port] asynchronous as clk_a2 → clk_b` suffix, and the
+    crossing an additive `async_via` object in the JSON report and the
+    domain map (no schema bump; the key is absent on every other
+    design). G-11 no longer warns on `-add`;
+  - a `create_generated_clock -source` port carrying several clocks
+    without `-master_clock` — or with one naming none of them — warns.
+    `-master_clock` disambiguates; the master is still never inferred
+    from `-source`.
+  Reports on SDCs without such a port are unchanged.
+
 ### Internal
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,

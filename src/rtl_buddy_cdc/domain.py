@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, TypedDict
 
 from rtl_buddy_cdc.cells import GATE_LOGIC_INPUTS, GATE_LOGIC_TYPES, MUX_PINS
@@ -177,6 +177,16 @@ class Crossing:
     and only an explicit ``--ignore-scan-mode`` makes the rule pack
     skip it. Stamped from :func:`find_scan_mode_flops`, which reads the
     fact off the ordinary clock-root walk rather than re-deriving it.
+
+    ``async_via`` (rtl-buddy-cdc#330) is set by :func:`filter_async` when
+    an endpoint sits behind a port carrying several clocks
+    (``create_clock -add``) and the crossing is asynchronous only through
+    one of the port's *co-located* clocks: ``src_clock`` / ``dst_clock``
+    keep the port's primary clock (the name every flop behind the port
+    has), and ``async_via`` names the ``(src, dst)`` clock pair that is
+    actually asynchronous. ``None`` whenever the primary names already
+    are that pair — every crossing on a design without a multi-clock
+    port. Additive and optional, like ``src_boundary``.
     """
 
     src_clock: str
@@ -189,6 +199,7 @@ class Crossing:
     src_boundary: tuple[str, str] | None = None
     dst_boundary: tuple[str, str] | None = None
     scan_mode: bool = False
+    async_via: tuple[str, str] | None = None
 
     @property
     def src_name(self) -> str:
@@ -1875,15 +1886,23 @@ def filter_async(crossings: list[Crossing], spec: "ClockSpec") -> list[Crossing]
     exactly the same predicate the top-level run uses — two answers to
     "is this crossing async?" is how an abstracted run and a flat run
     start to disagree. ``cli._filter_async`` is a thin alias.
+
+    A clock on a port that carries several clocks (``create_clock
+    -add``, rtl-buddy-cdc#330) stands for all of them: the crossing is
+    kept if *any* combination of co-located clocks is async and
+    reachable (:meth:`~rtl_buddy_cdc.sdc.ClockSpec.async_witness`). When
+    that combination is not the primary pair itself, the kept crossing
+    carries it as :attr:`Crossing.async_via` so the report can name the
+    clock the crossing is asynchronous to.
     """
     out: list[Crossing] = []
     for c in crossings:
         a = spec.clock_for_port(c.src_clock) or c.src_clock
         b = spec.clock_for_port(c.dst_clock) or c.dst_clock
-        if spec.is_unreachable_crossing(a, b):
+        via = spec.async_witness(a, b)
+        if via is None:
             continue
-        if spec.are_async(a, b):
-            out.append(c)
+        out.append(c if via == (a, b) else replace(c, async_via=via))
     return out
 
 

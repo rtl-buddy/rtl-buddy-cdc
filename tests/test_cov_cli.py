@@ -331,10 +331,11 @@ def test_analyze_missing_waivers_file_is_usage_error() -> None:
 
 def test_analyze_emits_clock_graph_warning_on_shared_port(tmp_path: Path) -> None:
     """When the SDC declares the same top-level port under two clock
-    names, ``validate_clock_graph`` flags it and the CLI surfaces a
-    ``warning:`` diagnostic on stderr (cli.py 571-573) for the text
-    format. The diagnostic is emitted regardless of the final exit
-    code; assert on the warning content, not the code."""
+    names without ``-add``, the second replaces the first
+    (rtl-buddy-cdc#330) and the CLI surfaces that as a ``warning:``
+    diagnostic on stderr for the text format. The diagnostic is emitted
+    regardless of the final exit code; assert on the warning content,
+    not the code."""
     _skip_if_missing(_CLEAN_JSON)
     # good_reset_sync declares src_clk + dst_clk; additionally claim the
     # data port d_in under two clock names to force the
@@ -351,7 +352,9 @@ def test_analyze_emits_clock_graph_warning_on_shared_port(tmp_path: Path) -> Non
     result = runner.invoke(app, ["analyze", "-n", str(_CLEAN_JSON), "-s", str(sdc)])
     # CliRunner mixes stderr into .output by default.
     assert "warning:" in result.output
-    assert "claimed by multiple clocks" in result.output
+    assert "create_clock 'ghost_b' without -add replaces clock 'ghost_a'" in (
+        result.output
+    )
 
 
 # --- analyze: --emit-domain-map / --emit-reset-domain-map / --no-findings ----

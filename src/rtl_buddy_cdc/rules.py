@@ -10,7 +10,7 @@ done.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping
 
@@ -5720,6 +5720,43 @@ def _tag_handshake_related(violations: list[Violation]) -> list[Violation]:
     return out
 
 
+def _tag_async_via(violations: list[Violation]) -> list[Violation]:
+    """Name the co-located clock a crossing is asynchronous through (#330).
+
+    A flop behind a port carrying several clocks (``create_clock -add``)
+    is in the port's primary clock, and every rule message names that
+    primary. When the crossing is asynchronous only through another
+    clock on the port, :func:`~rtl_buddy_cdc.domain.filter_async` stamps
+    that pair on :attr:`Crossing.async_via`; this appends it to the
+    message so the finding names the clock it is actually asynchronous
+    to. A pure suffix, like the G-5 tag — no field changes, no new
+    findings, and a no-op on every design without a multi-clock port.
+    """
+    out: list[Violation] = []
+    for v in violations:
+        c = v.crossing
+        if c is None or c.async_via is None:
+            out.append(v)
+            continue
+        src, dst = c.async_via
+        swaps = [
+            f"{added} shares the port of {primary}"
+            for primary, added in ((c.src_clock, src), (c.dst_clock, dst))
+            if added != primary
+        ]
+        out.append(
+            replace(
+                v,
+                message=(
+                    f"{v.message}\n"
+                    f"  [multi-clock port] asynchronous as {src} → {dst} "
+                    f"({'; '.join(swaps)}, declared with create_clock -add)"
+                ),
+            )
+        )
+    return out
+
+
 def run_all(
     module: Module,
     crossings: list[Crossing],
@@ -5815,7 +5852,7 @@ def run_all(
     # CDC-002 findings that share an async domain pair with a CDC-012
     # finding so the user sees the missing-ack relationship without
     # having to correlate the two findings manually.
-    return _tag_handshake_related(out)
+    return _tag_async_via(_tag_handshake_related(out))
 
 
 # --- per-crossing synchroniser verdict (domain map, #307) -------------------

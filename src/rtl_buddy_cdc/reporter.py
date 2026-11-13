@@ -606,6 +606,10 @@ def _crossing_to_dict(c: Crossing) -> dict:
             "instance": c.dst_boundary[0],
             "port": c.dst_boundary[1],
         }
+    # Additive (#330): only on a crossing asynchronous through a clock
+    # co-located on a multi-clock port, never on any other design.
+    if c.async_via is not None:
+        out["async_via"] = {"src_clock": c.async_via[0], "dst_clock": c.async_via[1]}
     return out
 
 

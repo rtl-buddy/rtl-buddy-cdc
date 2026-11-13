@@ -44,6 +44,9 @@ GOOD_FIXTURES = [
     # set_max_delay -datapath_only between two clocks marks the pair as an
     # intended async crossing (#325); 1 crossing landing in a 2FF sync.
     ("good_datapath_only_pair", 1),
+    # Port clk_a carries clk_a and clk_a2 (create_clock -add, #330); only
+    # clk_a2 is async to clk_b. Both directions cross through a 2FF sync.
+    ("good_multi_clock_port", 2),
     # set_input_delay -clock dst_clk types the data ports as same-
     # domain as the destination — CDC-006 must not fire.
     ("good_input_delay_domain", 0),

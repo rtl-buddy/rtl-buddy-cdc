@@ -372,7 +372,10 @@ cell level).
 input port name that ultimately drives its CLK pin, or `None` if no
 root could be resolved within the trace depth budget. The analyzer
 treats `None` as "domain unknown" and excludes those flops from
-crossing detection rather than emitting a false positive.
+crossing detection rather than emitting a false positive. A flop
+behind a port that carries several clocks (`create_clock -add`) gets
+the port's primary clock, which stands for all of them (§4.5,
+"Multi-clock ports", #330).
 
 ### 4.4 Crossings
 
@@ -392,6 +395,7 @@ class Crossing:
     src_boundary: tuple[str, str] | None = None  # (instance, port): abstracted-subtree output
     dst_boundary: tuple[str, str] | None = None  # (instance, port): data entering a boundary input
     scan_mode: bool = False      # #45: dst flop clocked through a DFT scan structure
+    async_via: tuple[str, str] | None = None  # #330: co-located clock pair it is async through
 ```
 
 Three design choices matter here:
@@ -426,6 +430,14 @@ Three design choices matter here:
    optional fields so the public JSON contract (`summary.crossings`) is
    never forked.
 
+`async_via` (#330) is stamped by `filter_async` on a crossing whose
+endpoint sits behind a multi-clock port and which is asynchronous only
+through a clock *co-located* with the port's primary (§4.5,
+"Multi-clock ports"). `src_clock` / `dst_clock` keep the primary names
+— the names the flops have, which every rule compares domains against —
+and `async_via` names the pair that is actually asynchronous. It is
+`None` on every crossing of a design without a multi-clock port.
+
 ### 4.5 Clock topology
 
 `ClockSpec` is the parsed, CDC-relevant view of an SDC file:
@@ -442,6 +454,7 @@ class ClockSpec:
     datapath_only_delays: list[DatapathOnlyDelay]  # every set_max_delay -datapath_only (#325)
     datapath_only_pairs: set[frozenset[str]]       # …the clock-to-clock ones, as pairs
     case_analysis: dict[str, str]                  # set_case_analysis port → "0"/"1"/"rising"/"falling" (#325)
+    multi_clock_ports: dict[str, tuple[str, ...]]  # port → its clocks, primary first, ports with ≥2 (#330)
     partial_warnings: list[str]                    # diagnostics surfaced once at end-of-parse
 ```
 
@@ -480,6 +493,65 @@ Three consumer-facing predicates:
 Clocks not mentioned in any group remain conservatively synchronous
 to everything (zero false positives for crossings the user has not
 declared async). See [§6](#6-sdc-parsing) for the parser scope.
+
+**Multi-clock ports (issue #330).** SDC lets a source object carry
+several clocks: `create_clock -name clk_a2 -add [get_ports clk_a]` on a
+port that already has `clk_a` keeps both (typically two modes on one
+pin, declared `-physically_exclusive` / `-logically_exclusive`). Without
+`-add`, a later `create_clock` on the same port *replaces* the earlier
+one — the parser strips the port from the earlier clock, removes that
+clock once it has no port left, and warns (`_claim_ports`). So after a
+parse a port carries several clocks only through `-add`, and
+`parse()` records them in `ClockSpec.multi_clock_ports` (port → clocks
+in declaration order).
+
+The data model keeps one clock per flop (`FlopDomain.clock: str |
+None`). Rather than a composite domain, the port's **primary** clock —
+the first declared, which is what `clock_for_port` returns — names every
+flop behind it, and that name **stands for every clock on the port**:
+
+- `colocated_clocks(name)` is `(name,)` unless `name` is a primary,
+  then `name` followed by the port's other clocks in declaration
+  order. A non-primary clock (`set_input_delay -clock clk_a2`) means
+  only itself; a port typed with the primary means the whole port.
+- `are_async(a, b)` is true iff **some** pair in
+  `colocated_clocks(a) × colocated_clocks(b)` is async (per-pair rules
+  above) **and** not unreachable — a crossing is synchronous only if it
+  is synchronous to every clock on the port. `is_unreachable_crossing`
+  is true only if **every** pair is unreachable, so the usual exclusive
+  group between the two modes removes just that pair.
+- `async_witness(a, b)` returns the first such pair, scanning `a`'s
+  clocks then `b`'s in declaration order — deterministic, and identical
+  on both SDC backends (they hand the handlers the same commands in the
+  same order). `filter_async` keeps a crossing iff it has a witness and
+  stamps `Crossing.async_via` when the witness is not `(a, b)` itself;
+  `rules.run_all` appends `[multi-clock port] asynchronous as X → Y` to
+  every finding on such a crossing, and the JSON report and domain map
+  carry `async_via`.
+
+For two single-clock names every predicate is exactly the per-pair
+answer, so a design without a multi-clock port is unaffected. Why this
+shape: a composite domain (`"clk_a|clk_a2"`) would have to be taught to
+every consumer that compares domain names or looks a clock up by name
+(sync-chain walks, period lookups, the JSON schema), while every async
+question in the analyzer already goes through `are_async` — making that
+one predicate port-aware gives all of them (rules, `clock_network`,
+`abstract`, the compositional pass, which copies `multi_clock_ports`
+into its sub-spec) the conservative answer at once. The costs: the
+primary's name in a message can be a clock the crossing is *not*
+asynchronous to (hence the suffix), a clock with several ports expands
+for all its flops if it is primary on any of them, and period-based
+rules (CDC-013 / CDC-014) still read only the primary's period.
+
+`create_generated_clock` follows the same replace/add rule on port
+targets. Internal-pin targets (`pin_clocks`) still hold one clock per
+pin: a replacement warns, and `-add` on a pin is not modelled (the first
+clock stays; warning). A generated clock's master comes from
+`-master_clock` only — `-source` (recorded on `Clock.source`) never
+infers one — so a `-master_clock` naming one co-located clock
+disambiguates exactly, and a multi-clock `-source` with no
+`-master_clock` (or one naming none of its clocks) is a G-11 warning
+(§8.14) rather than a silent pick.
 
 **Datapath-only max delay (issue #325).** `set_max_delay <v>
 -datapath_only -from [get_clocks A] -to [get_clocks B]` bounds the
@@ -1393,9 +1465,9 @@ that some SDC files in the wild use.
 ### 6.1 What the parser handles today
 
 ```text
-create_clock -name <name> -period <p> [get_ports <port> ...]
+create_clock -name <name> -period <p> [-add] [get_ports <port> ...]
 create_generated_clock -name <n> -master_clock <m> \
-    -source <pin-or-port> -divide_by N [get_pins <pin>]
+    -source <pin-or-port> -divide_by N [-add] [get_pins <pin>]
 set_clock_groups -asynchronous          -group {…} -group {…} …
 set_clock_groups -logically_exclusive   -group {…} -group {…} …
 set_clock_groups -physically_exclusive  -group {…} -group {…} …
@@ -1433,7 +1505,9 @@ specific pair). Exclusive groups drop crossings as unreachable in
 -datapath_only` between two clocks is an async hint that also
 overrides a same-root collapse and an exclusive group (§4.5).
 `set_case_analysis` on top-level ports resolves case-analysed clock
-muxes in the clock walker (§5.2). Bus bits must be braced
+muxes in the clock walker (§5.2). A second `create_clock` on a port
+replaces the first unless `-add` is given; with `-add` the port carries
+both (§4.5, "Multi-clock ports"). Bus bits must be braced
 (`[get_ports {sel[3]}]`): unbraced, the Tcl backend evaluates `[3]` as
 command substitution and the target becomes the whole bus, so the
 reader warns on any command whose name is a number.
@@ -2145,12 +2219,16 @@ the validator looks at the *collective* clock graph after every
 statement has been parsed and surfaces shapes that individually-
 valid statements compose into an inconsistent or undefined whole.
 
-Three checks:
+Four checks:
 
 1. **Same port in multiple clocks**: scan `Clock.ports` across every
    declared clock; flag any port that appears in ≥2 clocks.
    `clock_for_port` is deterministic (first match wins) but the
-   user's intent is ambiguous.
+   user's intent is ambiguous. Since #330 a parsed SDC only reaches
+   this shape through `-add`, which is legitimate and recorded in
+   `multi_clock_ports`, so it is skipped; an accidental redefinition
+   without `-add` is a *replacement*, warned inline by the handler. The
+   check still guards specs assembled without `parse()`.
 
 2. **Unresolved master**: for each generated clock with
    `Clock.master` set, check the master name exists in
@@ -2162,6 +2240,12 @@ Three checks:
    a per-walk visited list; if a name is revisited, the chain is
    cyclic. `ClockSpec.resolve` has a cycle guard, but the SDC is
    methodology-broken.
+
+4. **Generated clock on a multi-clock source** (#330): a
+   `create_generated_clock -source` port in `multi_clock_ports` with no
+   `-master_clock` (ambiguous — the generated clock is left without a
+   master, as for any `-source`-only declaration), or with a
+   `-master_clock` that names none of the port's clocks.
 
 Duplicate clock names are caught inline by the per-command
 handlers (`_handle_create_clock` / `_handle_create_generated_clock`):

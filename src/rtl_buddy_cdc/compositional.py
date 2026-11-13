@@ -245,6 +245,10 @@ def derive_sub_spec(
     # like the three above (#325); without it a subtree crossing between
     # such a pair would read as synchronous inside the per-module pass.
     sub.datapath_only_pairs = set(spec.datapath_only_pairs)
+    # Multi-clock ports (#330): only the values matter here — a primary
+    # clock name and the clocks co-located with it — so ``are_async``
+    # expands a subtree domain exactly as it does the parent's.
+    sub.multi_clock_ports = dict(spec.multi_clock_ports)
     return sub
 
 
