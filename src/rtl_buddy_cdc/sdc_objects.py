@@ -86,6 +86,7 @@ __all__ = [
     "crossing_key",
     "domain_map_exceptions",
     "resolve",
+    "resolve_port_delays",
 ]
 
 #: Rules an object-scoped false path acknowledges on a crossing it fully
@@ -538,6 +539,102 @@ def resolve(module: Module, spec: ClockSpec) -> Resolution:
             )
         )
     return Resolution(constraints=tuple(out), warnings=tuple(warnings), index=index)
+
+
+# Port directions each delay command's *glob* patterns may select.
+_DELAY_DIRECTIONS: dict[str, frozenset[str]] = {
+    "set_input_delay": frozenset({"input", "inout"}),
+    "set_output_delay": frozenset({"output", "inout"}),
+}
+
+
+def resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
+    """Resolve ``set_*_delay`` port targets against ``module``'s top-level
+    ports, rewriting :attr:`ClockSpec.port_clock` in place
+    (rtl-buddy-cdc#357). Returns the warnings.
+
+    The parser records each target as written (:class:`~rtl_buddy_cdc.sdc.PortDelay`);
+    an exact port name already keys ``port_clock`` correctly, so an SDC
+    naming only whole ports returns here untouched. Otherwise, in file
+    order (last write wins, as for exact names):
+
+    - A **bus index** (``d[3]``, braced in Tcl) types the **whole port**
+      ``d``. Port typing — every consumer of ``port_clock`` — is per
+      port, not per bit, so this over-approximates a partial selection;
+      when the bits of one port are given *different* clocks the port
+      takes the last one, and that is warned about.
+    - A **glob** (``d*``, ``a?``, ``d*[3]``) types every top-level port it
+      matches, through the same :class:`NameIndex` matcher as the object
+      patterns (``*`` / ``?`` never cross a hierarchy level). A glob only
+      selects ports of the command's direction (inputs / inouts for
+      ``set_input_delay``, outputs / inouts for ``set_output_delay``) and
+      never a port a ``create_clock`` declares a clock on: ``[get_ports
+      *]`` is not meant to re-type the clock pins.
+    - A target that matches nothing is warned about and kept as written,
+      which, as before, types nothing.
+    """
+    targets = [(d, t) for d in spec.port_delays for t in d.targets]
+    if all(t in module.ports for _d, t in targets):
+        return []
+    index = NameIndex(module)
+    clock_ports = {p for clk in spec.clocks.values() for p in clk.ports}
+    warnings: list[str] = []
+    rebuilt: dict[str, str] = {}
+    # Port → the (clock, target) assignments still in force on its bits:
+    # a whole-port typing replaces them all, a bit-select adds one.
+    in_force: dict[str, list[tuple[str, str]]] = {}
+    for d, target in targets:
+        if target in module.ports:
+            rebuilt[target] = d.clock
+            in_force[target] = [(d.clock, target)]
+            continue
+        where = f"{d.command} -clock {d.clock}{_at_line(d.line)}"
+        is_glob = _has_glob(target)
+        hits = index.ports(target)
+        if is_glob:
+            allowed = _DELAY_DIRECTIONS.get(d.command, frozenset())
+            hits = {
+                name: bits
+                for name, bits in hits.items()
+                if module.ports[name].direction in allowed and name not in clock_ports
+            }
+        if not hits:
+            what = (
+                f"no {'input' if d.command == 'set_input_delay' else 'output'} "
+                f"port that is not a clock source"
+                if is_glob
+                else "no top-level port"
+            )
+            warnings.append(
+                f"{where}: port pattern {target!r} matches {what} — constraint "
+                f"typo? (it types nothing)"
+            )
+            rebuilt[target] = d.clock
+            continue
+        for name in sorted(hits):
+            rebuilt[name] = d.clock
+            if len(hits[name]) < len(module.ports[name].bits):
+                in_force.setdefault(name, []).append((d.clock, target))
+            else:
+                in_force[name] = [(d.clock, target)]
+    # Entries that did not come from a recorded delay statement (a spec
+    # built by hand) are kept.
+    written = {t for _d, t in targets}
+    for name, clock in spec.port_clock.items():
+        if name not in written:
+            rebuilt.setdefault(name, clock)
+    for name, assigned in sorted(in_force.items()):
+        if len({clock for clock, _t in assigned}) < 2:
+            continue
+        named = ", ".join(f"{t} → {clock}" for clock, t in assigned)
+        warnings.append(
+            f"set_*_delay: bits of port '{name}' are typed to different clocks "
+            f"({named}); port typing is per port, so the whole port is typed "
+            f"to the last one, '{rebuilt[name]}'"
+        )
+    spec.port_clock.clear()
+    spec.port_clock.update(rebuilt)
+    return warnings
 
 
 def _no_match(where: str, obj: SdcObject, role: str) -> str:

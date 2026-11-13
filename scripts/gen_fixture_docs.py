@@ -10,6 +10,13 @@ Run from the repo root:
     uv run python scripts/gen_fixture_docs.py            # write all
     uv run python scripts/gen_fixture_docs.py --check    # diff-only
 
+Fixtures with a committed ``<name>.json`` are rendered from it with
+``analyze``, which needs no Yosys. The few without one are elaborated
+with ``lint --frontend yosys``; they are skipped when ``yosys`` is not
+on PATH, or always with ``--committed-netlists-only``, which is how CI
+runs the drift check (rtl-buddy-cdc#356): their READMEs depend on the
+local Yosys's cell naming, so only a Yosys-free check is reproducible.
+
 See issue rtl-buddy-cdc#164 for the design discussion.
 """
 
@@ -17,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,7 +49,16 @@ def main() -> int:
         default=[],
         help="Limit to specific fixture dir-names (repeatable).",
     )
+    ap.add_argument(
+        "--committed-netlists-only",
+        action="store_true",
+        help=(
+            "Skip fixtures without a committed netlist instead of "
+            "elaborating them with Yosys (the CI drift check)."
+        ),
+    )
     args = ap.parse_args()
+    elaborate = not args.committed_netlists_only and shutil.which("yosys") is not None
 
     fixtures = sorted(p for p in FIXTURES.iterdir() if p.is_dir())
     if args.only:
@@ -52,7 +69,7 @@ def main() -> int:
     written = 0
     for fix in fixtures:
         try:
-            body = _build_readme(fix)
+            body = _build_readme(fix, elaborate=elaborate)
         except _SkipFixture as e:
             print(f"skip  {fix.name}: {e}", file=sys.stderr)
             continue
@@ -88,7 +105,7 @@ class _SkipFixture(Exception):
     pass
 
 
-def _build_readme(fix: Path) -> str:
+def _build_readme(fix: Path, *, elaborate: bool = True) -> str:
     primary_sv = fix / f"{fix.name}.sv"
     sdc = fix / f"{fix.name}.sdc"
     netlist = fix / f"{fix.name}.json"
@@ -97,6 +114,12 @@ def _build_readme(fix: Path) -> str:
         raise _SkipFixture(f"missing {primary_sv.name}")
     if not sdc.exists():
         raise _SkipFixture(f"missing {sdc.name}")
+
+    if not netlist.exists() and not elaborate:
+        raise _SkipFixture(
+            "no committed netlist, and elaborating one needs yosys "
+            "(not on PATH, or --committed-netlists-only)"
+        )
 
     description = _leading_comment(primary_sv)
     netlist_arg = netlist if netlist.exists() else None
