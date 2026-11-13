@@ -114,22 +114,6 @@ back into clk_a, equals the toggle; clk_b synchronises the toggle
 through three flops and captures both registers when s2 ^ s3. CDC-001
 fires on the flag on both frontends; the 8-bit bus is accepted."""
 
-[gaps.cdc012-unrelated-feedback]
-kind = "false_negative"
-rules = ["CDC-012"]
-summary = """
-CDC-012 stays silent when _has_dst_to_src_feedback finds any path from
-a destination-clock flop into the source payload register's
-neighbourhood. That path need not be an acknowledge for this payload:
-an unrelated status bit synchronised from the destination domain and
-read by the payload's next-state logic silences the warning."""
-reproducer = """
-Toggle-pulse transfer of an 8-bit payload with no acknowledge (CDC-012
-fires). Make the payload's next-state logic read an unrelated clk_b
-status bit brought into clk_a through a 2FF synchroniser
-(data_a <= m2 ? ~data_in : data_in): CDC-012 goes silent on both
-frontends although nothing holds the payload."""
-
 [gaps.slang-concat-lvalue]
 kind = "frontend"
 rules = []
@@ -332,7 +316,7 @@ license_file = "COPYING"
 sources = ["rtl/ptp_clock_cdc.v"]
 top = "ptp_clock_cdc"
 sdc = "sdc/ptp_clock_cdc.sdc"
-expect = { clocks = ["input_clk", "output_clk", "sample_clk"], crossings = 9, rules = { "CDC-001" = 1, "CDC-012" = 2 } }
+expect = { clocks = ["input_clk", "output_clk", "sample_clk"], crossings = 9, rules = { "CDC-001" = 1, "CDC-012" = 3 } }
 slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-concat-lvalue" }
 
 [[design.finding]]
@@ -360,17 +344,18 @@ captures within about three output_clk cycles of the toggle. The hold
 is guaranteed by the update rate and the clock ratio, which the
 structural rule cannot see; CDC-012 is a warning for this reason."""
 
-[[design.missed]]
+[[design.finding]]
 rule = "CDC-012"
 count = 1
-gap = "cdc012-unrelated-feedback"
+classification = "outside_model"
 reason = """
 sample_acc_out_reg -> sample_acc_sync_reg (5-bit, sample_clk ->
 output_clk) has the same rate-limited, ack-less shape as the two
-CDC-012 findings above and should be reported the same way. It is
-silent because the payload's fanin reaches dest_sync_reg (output_clk)
-through the phase detector's own synchroniser, which the feedback
-heuristic takes for an acknowledge."""
+timestamp crossings above and is reported the same way. It was silent
+until rtl-buddy-cdc#369: the payload's data fanin reaches
+dest_sync_reg (output_clk) through the phase detector's own
+synchroniser, which the feedback walk used to take for an
+acknowledge."""
 
 [[design]]
 name = "cdc_utils_cc561"
