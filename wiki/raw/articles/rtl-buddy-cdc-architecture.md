@@ -2631,6 +2631,20 @@ current bottlenecks if scaled up:
   the parent's driver map once and pass it as `drivers=` to
   `_instance_clocks` and its callers. Rebuilding it per instance was
   O(cells × instances) (#320).
+- The reset-side views are `_RuleContext` cached properties built at
+  most once per run (#324): `reset_domains`
+  (`assign_reset_domains`), `reset_synchronizers`
+  (`find_reset_synchronizers` plus the `reset_sync` marks) and
+  `reset_sync_chains` (`iter_reset_sync_chains`), all from the
+  context's own flop list and driver map. RDC-002 / -004 / -005 /
+  -006 / -007 / -008 read them instead of rebuilding them, and
+  CDC-008 / CDC-010 share `clock_network_cells` the same way. The
+  public `reset_domain` helpers take the precomputed pieces as
+  optional keyword arguments and build them when omitted.
+- `Module.port_of_bit` is a dict lookup: the bit → port index is a
+  `cached_property` built on first use (first port in `ports` order
+  wins, as the old scan did). It is not a dataclass field, so `==`,
+  `hash` and `repr` are unchanged (#324).
 - The rule pack is `O(C)` in crossings for most rules, with two
   exceptions: CDC-005 (reconvergence detection) is `O(C²)` worst-
   case from the per-group cone walks (each chain's

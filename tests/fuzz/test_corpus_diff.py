@@ -19,8 +19,10 @@ Known-divergence allowlist
 The corpus surfaces structural-parity gaps in the slang frontend
 that the hand-authored fixtures don't reach. Each gap is tracked
 under :data:`_KNOWN_SLANG_PARITY_GAPS` and links back to
-rtl-buddy-cdc#224, the umbrella issue. The allowlist is **strict
-in both directions**:
+rtl-buddy-cdc#224, the umbrella issue. A row is keyed by a whole
+template family (``template_name``) or, when only some of a family's
+cases diverge, by a single ``case_id``; a case-id row wins over a
+family row. The allowlist is **strict in both directions**:
 
 - A divergence on an *allowlisted* template family produces an
   expected ``xfail`` — the slang gap is known, the corpus pins it.
@@ -78,7 +80,7 @@ _CASES = collect_cases()
 # that starts agreeing produces a hard failure (XPASS), forcing the
 # allowlist update — same semantics as ``pytest.mark.xfail(strict=True)``.
 #
-# Currently empty: the six rows that originally landed alongside this
+# History: the six rows that originally landed alongside this
 # oracle (``cdc006_comb_source``, ``cdc014_comb_between_stages``,
 # ``cdc016_opposite_edge``, ``rdc004_comb_driven_reset``,
 # ``rdc005_multi_source_reset``, ``gap_g4_onehot_decode_independent_sync``)
@@ -87,7 +89,40 @@ _CASES = collect_cases()
 # ``_emit_net_initializer``, ``CLK_POLARITY`` thread, and
 # ``_alias_indexed_assign`` for the three lowering additions.
 # rtl-buddy-cdc#224 closed alongside them.
-_KNOWN_SLANG_PARITY_GAPS: dict[str, str] = {}
+#
+# rtl-buddy-cdc#331 added the rows below with the per-rule templates.
+# Each value names the root cause; none is fixed by that test-only
+# change. Two are slang-frontend gaps; the case_n8 row is the reverse
+# (the Yosys path is the one that misses).
+_NO_BLACKBOX = (
+    "rtl-buddy-cdc#331: the pyslang frontend has no blackbox support "
+    "(frontend.elaborate_with_blackboxes returns no siblings for it); a "
+    "bodyless (* blackbox *) stub elaborates as an empty module, so the "
+    "instance, its parameters and every crossing through it vanish and "
+    "slang reports nothing"
+)
+_KNOWN_SLANG_PARITY_GAPS: dict[str, str] = {
+    # CDC-022 / CDC-BBX need the macro instance; slang drops it. The
+    # ``_ok`` families (Yosys silent too) agree vacuously and are not here.
+    "cdc022_primitive_sync_depth": _NO_BLACKBOX,
+    "cdc_bbx_blackbox_boundary": _NO_BLACKBOX,
+    # Plain Verilog-2001 ``always @(posedge clk)``: the pyslang frontend
+    # lowers only always_ff / always_comb / always_latch and silently
+    # drops a plain ``always`` block (frontends/slang.py
+    # _emit_procedural_block returns on any other procedure kind), so the
+    # flop is missing and the combined clock reads as clock-as-data.
+    "fuzz_cdc023_clock_combine_and_s1_v2001": (
+        "rtl-buddy-cdc#331: pyslang frontend drops plain `always` flops"
+    ),
+    # The reverse direction: slang is right, the Yosys path misses.
+    # Yosys proc lowers a full 8-entry constant case table to a ROM
+    # ($memrd_v2); CDC-019 accepts only a comb cell's Y port as the shared
+    # decoder driver. slang keeps the $pmux and fires.
+    "fuzz_cdc019_decoder_lanes_case_n8": (
+        "rtl-buddy-cdc#331: Yosys ROM-lowers the case decoder; CDC-019 "
+        "ignores a $memrd DATA driver"
+    ),
+}
 
 
 pytestmark = [
@@ -120,7 +155,9 @@ def test_frontends_agree(case) -> None:
     yosys_fired = yosys_result.fired
     slang_fired = slang_result.fired
     disagrees = yosys_fired != slang_fired
-    known_gap = _KNOWN_SLANG_PARITY_GAPS.get(case.template_name)
+    known_gap = _KNOWN_SLANG_PARITY_GAPS.get(
+        case.case_id
+    ) or _KNOWN_SLANG_PARITY_GAPS.get(case.template_name)
 
     if known_gap is not None:
         if disagrees:
@@ -131,7 +168,8 @@ def test_frontends_agree(case) -> None:
         pytest.fail(
             f"\ncase: {case.case_id}\n"
             f"template: {case.template_name}\n"
-            f"This template family is on _KNOWN_SLANG_PARITY_GAPS pointing at "
+            f"This case (or its template family) is on _KNOWN_SLANG_PARITY_GAPS "
+            f"pointing at "
             f"{known_gap}, but the frontends now agree. Remove the row from "
             f"the allowlist (and close {known_gap} if all its rows are gone)."
         )
@@ -150,6 +188,7 @@ def test_frontends_agree(case) -> None:
             f"params: {case.params}\n"
             "yosys vs slang per-rule disagreement:\n" + "\n".join(diff_rows) + "\n"
             "If this is a new slang-frontend gap, add "
-            f"'{case.template_name}' to _KNOWN_SLANG_PARITY_GAPS "
-            "and file (or extend) the slang-parity umbrella issue."
+            f"'{case.template_name}' (or just '{case.case_id}') to "
+            "_KNOWN_SLANG_PARITY_GAPS and file (or extend) the slang-parity "
+            "umbrella issue."
         )

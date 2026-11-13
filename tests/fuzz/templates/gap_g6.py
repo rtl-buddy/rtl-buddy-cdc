@@ -20,6 +20,11 @@ Asserts CDC-020 fires once per case on the (src_flop, dst_clock)
 group. Before the rule existed, ``run_all`` produced zero findings —
 CDC-004 silent because each lane is width=1, and CDC-019 silent
 because the driver is a flop, not a comb cell.
+
+The per-rule dimension sweep — bus width, slice pattern, destination
+split, attribute suppressions — lives in ``cdc020.py`` (rtl-buddy-
+cdc#331); this file stays the single-shape regression sentinel and its
+expectation already names the rule.
 """
 
 from __future__ import annotations
