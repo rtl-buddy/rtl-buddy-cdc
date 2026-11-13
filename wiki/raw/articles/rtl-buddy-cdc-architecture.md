@@ -127,6 +127,7 @@ without one the tool prints the structural summary and exits 0.
 | `abstract.py` | Detect + summarise single-clock subtrees to a port boundary (#256) | `is_single_clock_subtree`, `summarise_subtree` |
 | `hierarchy.py` | Compositional boundary walk: summarise each shared module once (#257) | `compose_boundaries`, `CompositionStats` |
 | `sdc.py` | Parse the CDC-relevant SDC subset | `ClockSpec`, `Clock` |
+| `sdc_objects.py` | Resolve SDC object patterns against the netlist; object-scoped false-path coverage and acknowledgement (#328, §6.4) | `NameIndex`, `resolve`, `coverage`, `acknowledge` |
 | `rules.py` | The CDC-001..-008 rule pack | `Violation`, `RULES`, `run_all` |
 | `waivers.py` | Per-violation suppression with regex | `Waiver`, `SuppressedViolation` |
 | `pragma.py` | Scan in-RTL `// rbcdc:` pragmas into `Waiver`s | `scan`, `scan_text` |
@@ -453,6 +454,7 @@ class ClockSpec:
     pin_clocks: dict[str, str]                     # internal-pin target → generated clock name
     datapath_only_delays: list[DatapathOnlyDelay]  # every set_max_delay -datapath_only (#325)
     datapath_only_pairs: set[frozenset[str]]       # …the clock-to-clock ones, as pairs
+    false_path_exceptions: list[FalsePathException]  # object-scoped / -through set_false_path (#328)
     case_analysis: dict[str, str]                  # set_case_analysis port → "0"/"1"/"rising"/"falling" (#325)
     multi_clock_ports: dict[str, tuple[str, ...]]  # port → its clocks, primary first, ports with ≥2 (#330)
     partial_warnings: list[str]                    # diagnostics surfaced once at end-of-parse
@@ -1472,6 +1474,7 @@ set_clock_groups -asynchronous          -group {…} -group {…} …
 set_clock_groups -logically_exclusive   -group {…} -group {…} …
 set_clock_groups -physically_exclusive  -group {…} -group {…} …
 set_false_path  -from [get_clocks A] -to [get_clocks B]
+set_false_path  -from <clocks|objects> -through <objects> -to <clocks|objects>
 set_input_delay  -clock <name> … [get_ports <port>]
 set_output_delay -clock <name> … [get_ports <port>]
 set_max_delay <v> -datapath_only -from <clocks|objects> -to <clocks|objects>
@@ -1500,7 +1503,9 @@ recorded in `ClockSpec.pin_clocks` and consumed by the clock walker
 (§5.1) — that's the integration point for SoC clock-forwarding
 chains. `set_false_path -from [get_clocks A] -to [get_clocks B]` is
 treated as a pairwise async hint (equivalent to async groups for that
-specific pair). Exclusive groups drop crossings as unreachable in
+specific pair). A `set_false_path` with any design-object endpoint or a
+`-through` is something else entirely — an acknowledged path, never a
+clock pair — and is §6.4's subject. Exclusive groups drop crossings as unreachable in
 `_filter_async` before any rule sees them. `set_max_delay
 -datapath_only` between two clocks is an async hint that also
 overrides a same-root collapse and an exclusive group (§4.5).
@@ -1524,9 +1529,7 @@ file without curating a CDC-only subset.
 The parser is also deliberately *not* a Tcl interpreter (see this
 section's intro). Constructs not supported: command substitution
 beyond `[get_clocks …]` / `[get_ports …]` / `[get_pins …]`, `set`
-variables, `expr`, `-filter` clauses inside collection commands,
-and `set_false_path -through` (path-specific, not a clock-pair
-hint). If any of these become real requirements, the right move is
+variables, `expr`, and `-filter` clauses inside collection commands. If any of these become real requirements, the right move is
 to switch to `tkinter.Tcl()` (the rejected alternative recorded on
 #144), not to grow them onto this tokenizer.
 
@@ -1534,9 +1537,12 @@ to switch to `tkinter.Tcl()` (the rejected alternative recorded on
 
 The silent-drop default is tempered by `ClockSpec.partial_warnings`:
 when the parser sees a CDC-relevant command it can't fully
-understand (e.g. `set_false_path -through`, `set_clock_groups`
-without a kind specifier, `[get_clocks -filter …]`, `set_false_path`
-with non-clock endpoints), it appends a one-line description. The
+understand (e.g. `set_clock_groups` without a kind specifier,
+`[get_clocks -filter …]`, a `-filter` inside an object-scoped
+`set_false_path`), it appends a one-line description. The CLI adds the
+netlist-side diagnostics to the same list before printing it: case
+analysis on a non-port, and an SDC object pattern that matches nothing
+(§6.4). The
 CLI surfaces these once at the end of parsing (in text mode, to
 stderr) rather than logging line-by-line — keeping the noise floor
 low for the common case while flagging cases where the user might
@@ -1545,6 +1551,137 @@ assume CDC coverage that isn't there.
 Truly unrecognised commands (`set_load`, `set_drive`, …) emit only
 a `logging.DEBUG` line so they're visible under `--verbose` but
 don't pollute normal output.
+
+### 6.4 Object-scoped exceptions (`set_false_path` objects / `-through`, issue #328)
+
+A clock-pair `set_false_path` makes a clock pair *asynchronous* — more
+checking. An object-scoped one (`-from [get_cells u_cfg/mode_q_reg*]`,
+`-through [get_pins u_cfg/mode_o]`) does something different: it removes
+the timing check on specific paths. It **does not add a synchroniser**,
+and it never says anything about the clocks as a whole. The analyzer
+therefore reads it as a *declared, reviewed exception* on the crossings
+it covers: those crossings stay in the report, and only the findings the
+exception actually answers are moved to the suppressed list, with the
+SDC statement as the justification.
+
+**Layering.** `sdc.py` stays a pure parser: `_handle_set_false_path`
+sends any statement with a `get_cells` / `get_pins` / `get_ports` /
+`get_nets` endpoint or a `-through` to
+`ClockSpec.false_path_exceptions` as a `FalsePathException`
+(`SdcObject(kind, name, hierarchical)` patterns per side, clock
+endpoints given alongside them, one tuple per `-through` flag, the edge
+/ check `qualifiers`, the source `line`, and a canonical `statement`
+rendered from the record so it is identical on both backends). A word
+with no object collection in it is read exactly as before (every name a
+clock), so clock-pair false paths are byte-for-byte unchanged, and a
+`FalsePathException` never feeds `are_async`. The netlist side lives in
+`sdc_objects.py`, called from `cli._analyze_module_and_report`:
+`resolve(module, spec)` right after the other SDC diagnostics,
+`coverage(...)` once the crossings exist, `acknowledge(...)` after the
+waivers. `set_max_delay -datapath_only` object endpoints
+(`DatapathOnlyDelay.from_objects` / `to_objects`) go through the same
+resolver.
+
+**Name matching** (`sdc_objects.NameIndex`, built once per design;
+tables are built lazily, every pattern is resolved once and cached, an
+exact name is a dict hit and a glob scans only the sorted-key slice
+sharing its literal prefix). An SDC name is normalised first: `\`
+escapes dropped, the `/` hierarchy separator becomes `.` (the separator
+both frontends use). `*` / `?` never cross a hierarchy level;
+`get_* -hierarchical` matches the pattern at any depth. `[…]` is a
+literal bus index.
+
+| Object | Matches | Does not match |
+|---|---|---|
+| register (`get_cells`, a pin's owner) | every non-internal (no `$`) netname on the flop's `Q` whose scope is the flop's own instance or a generate scope inside it — the cell is `$flatten\u_cfg.$procdff$8` (Yosys) or `u_cfg.$slang$dff$3` (slang), neither the register's name, while both name `Q` `u_cfg.mode_q`; each name bare and with `_reg` on its leaf (`u_cfg/mode_q_reg`, `u_sync/chain_reg[1]` for an unpacked element); `[i]` selects one bit, numbered by the net's declared range (`offset` / `upto`, now loaded on `Netname`); a cell whose own name is meaningful (a read-back gate-level netlist) | a parent's wire the flop drives through a port (`w` for `u_cfg.mode_q`), a child instance's port it feeds (`u_sub.d`); synthesis renames (`mode_q_reg_3_`, a generate scope flattened to `g_1__r`). An output port written straight from the register is the same net, so it is an alias (`u_cfg/mode_reg` names `u_cfg.mode_q`) — over-match by design |
+| pin (`get_pins`) | any pin of a register names that register (`…/Q`, `…/D`, `…/CK`); otherwise the hierarchical pin of a flattened instance, i.e. the net of that name (`u_cfg/mode_o` → `u_cfg.mode_o`) | pins of anonymous combinational cells |
+| port (`get_ports`) | top-level ports, `[i]` per bit | — |
+| net (`get_nets`) | netname bits; as `-from`, the flop / input port driving them; as `-to`, the flops whose `D` they feed | internal `$` names |
+| `-through` | net bits of nets, hierarchical pins, a register's `Q` / `D` pins, ports; a bare name tries net, pin, port | cells (statement inert, warning) |
+
+A pattern that resolves to nothing usable is a warning naming it
+(`set_false_path (line 12): -from cell pattern 'u_cfg/mode_qq_reg*'
+matches nothing usable in the netlist — constraint typo?`), once per
+distinct message.
+
+**Coverage** (`sdc_objects.coverage`). A crossing is covered when
+every (source bit, destination bit) pair it can carry is named by some
+statement's `-from` × `-to` — so a register constrained one bit per line,
+as synthesis-generated SDCs write it, is covered by the lines together,
+and three of four bits covers nothing. Bits are counted over the whole
+source / destination flop (conservative: the crossing record does not say
+which source bits reach the destination). A clock endpoint covers its
+side when every clock the side's domain stands for
+(`colocated_clocks`) is listed; an absent flag covers anything. A
+statement with `-through` must cover alone, and only when **every** path
+from source to destination passes each `-through` group: the crossing
+walk is re-run from the source (same cells, lane-precise edges, same
+4-hop budget) with the through bits as cut points, and the destination's
+`D` must become unreachable. A partial cover counts for nothing.
+False-path and datapath-only statements are evaluated separately.
+
+**Effect on findings.** A covered crossing is *acknowledged* only by a
+false path with no edge or check qualifier (a `-rise_from` or `-setup`
+false path leaves the other edge / check timed) that names the
+crossing's **source by object** — `-from [get_cells …]` /
+`[get_pins …]` / `[get_ports …]` / `[get_nets …]` — or pins the path
+with `-through`. That is the SDC-side equivalent of asserting the source
+quasi-static. A `-to`-only or clock-sourced object false path (the usual
+`set_false_path -to [get_cells */sync_reg[0]]`, which marks a capture
+point and says nothing about the source) covers the crossing for the
+domain map but acknowledges nothing. An acknowledged crossing loses
+exactly the findings `(* cdc_static *)` silences for its source:
+
+| Rule | Acknowledged? | Why |
+|---|---|---|
+| CDC-001 unsynchronised control | yes | a static source cannot be sampled mid-transition |
+| CDC-002 short synchroniser | yes | same — depth guards a toggling source |
+| CDC-003 comb before synchroniser | yes | the glitch needs a toggling input; per-crossing, so another, unacknowledged source through the same gate still fires on its own crossing |
+| CDC-004 multi-bit bus | yes | coherence of a bus that does not change |
+| CDC-019 one-hot decode | yes, only if **every** lane's crossing is acknowledged | stricter than `cdc_static`, which silences the group when any lane is static |
+| CDC-020 sliced bus | yes, only if every crossing out of the register is acknowledged | same |
+| CDC-005 reconvergence | **no** | the hazard is at the destination's recombination; a static source merged with a live one is still a coherency hazard (`cdc_static` keeps it too) |
+| CDC-006 port comb → sync, CDC-011 unconstrained input | **no** | `cdc_static` has no port form; CDC-011 is a missing-constraint finding whose fix is `set_input_delay` |
+| CDC-012 data-hold, CDC-013 fast→slow event loss, CDC-009 pulse width | **no** | protocol findings on gated / pulse crossings; not in `cdc_static`'s set |
+| CDC-014 / -015 / -016 / -017 / -018 / -022 | **no** | a broken or degraded synchroniser stays broken whatever the source does |
+| CDC-008 / -010 / -021 / -023 | **no** | clock-network findings, not data crossings |
+| RDC-* | **no** | a false path removes a timing check, not a reset synchroniser — `set_false_path -from [get_ports rst_n]` is routine and must not hide RDC findings |
+
+`DatapathOnlyDelay` object endpoints are resolved and covered the same
+way but acknowledge nothing: a bounded datapath still needs a
+synchroniser. They only annotate the domain map.
+
+**Representation.** An acknowledged finding is a `SuppressedViolation`
+— the waiver channel (§9), applied **after** the waiver file and pragmas
+so an existing waiver keeps the findings it already claimed. Its
+`Waiver` carries `sdc: SdcJustification(statement, line, file)`,
+`rule_pattern` = the rule id, `regex` = the escaped cell name,
+`reason` = `"SDC false path: <statement>"` (plus `(+N more)` when
+several statements cover it together), `source_line` = the SDC line
+(`0` on the tokenizer backend, which tracks none):
+
+- **text** — listed under the heading `Suppressed by waivers and SDC
+  exceptions` (the heading is unchanged when no SDC entry is present),
+  provenance `(sdc <file>:<line>)`;
+- **JSON** — a `suppressed[]` entry like any other, its `waiver` object
+  gaining `sdc: {statement, line, file}` (only on these entries); counted
+  in `summary.suppressed`;
+- **SARIF** — a result with `suppressions: [{kind: "external", status:
+  "accepted", justification: "SDC false path: …"}]`;
+- **exit code** — unaffected, as for any suppressed finding;
+- **domain map** (schema 1.3, additive) — top-level
+  `false_path_exceptions` (every record, sorted), and on each covered
+  crossing `sdc_exceptions: [{command, statement, line}]` plus
+  `sdc_acknowledged: bool`, both absent elsewhere. An acknowledged
+  finding is not in that crossing's `findings` (which lists raised
+  findings), exactly like a waived one.
+
+**Out of scope.** Findings lifted from inside an abstracted blackbox
+(#261) are not matched against SDC objects (their flops are not in the
+flat netlist). `-filter` inside an object collection drops the whole
+statement with a warning — dropping just the filter would widen its side
+to "any object". Ordering of several `-through` groups is not modelled
+(each must be passed; the order is not checked).
 
 ## 7. Crossing detection
 
@@ -2636,7 +2773,10 @@ wins, mirroring user expectation that waiver files are read top-
 down.
 
 Suppressed findings are kept in the report (with the matching reason
-and waiver-line number), not silently dropped. They appear in JSON
+and waiver-line number), not silently dropped. A third producer shares
+the channel without going through `apply`: an object-scoped
+`set_false_path` acknowledges findings on the crossings it covers, with
+the SDC statement as the reason (§6.4, `Waiver.sdc`). They appear in JSON
 output and in SARIF as `suppressions`. They don't drive the exit
 code, so a fully-waived run returns 0.
 
@@ -2786,13 +2926,19 @@ against the same inputs. `--no-findings` short-circuits rule
 evaluation when the map is the sole deliverable. Primary consumer
 today is [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view).
 
+Schema 1.3 also carries, additively, the object-scoped false-path
+records (`false_path_exceptions`) and the per-crossing
+`sdc_exceptions` / `sdc_acknowledged` annotation (#328, §6.4).
+
 Schema 1.3 (#325) adds, additively, the SDC constraints that carry CDC
 intent without declaring a clock: `datapath_only_pairs` (the clock
 pairs a `set_max_delay -datapath_only` marks async — sorted pairs, the
 same shape as `false_path_pairs`) and `max_delay_datapath_only` (every
 datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
 `to_objects` as `{kind, name}` exactly as written, `value`, and
-`clock_pair` saying whether it contributed a pair), plus `case_analysis`
+`clock_pair` saying whether it contributed a pair; object endpoints are
+resolved since #328 and the crossings they cover carry `sdc_exceptions`),
+plus `case_analysis`
 (`{port, value}` per `set_case_analysis` target, sorted by port — the
 `flop_domains` already reflect any clock mux it resolved). A consumer can
 match a crossing's `src_clock` / `dst_clock` against

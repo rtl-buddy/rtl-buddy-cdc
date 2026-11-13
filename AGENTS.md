@@ -44,6 +44,7 @@ src/rtl_buddy_cdc/
 ├── domain.py          # trace_clock_root + find_crossings (BFS) + Crossing
 ├── sdc.py             # SDC parser: Tcl safe-interp / tokenizer reader + arg-spec table
 ├── tcl_tokenizer.py   # stdlib-only Tcl word tokenizer (vendored verbatim by rtl-buddy)
+├── sdc_objects.py     # SDC object patterns → netlist; object-scoped false paths (#328)
 ├── rules.py           # CDC-001..-008 + RULES registry + run_all + helpers
 ├── abstract.py        # blackbox-boundary detector + summariser (#256/#257/#259)
 ├── hierarchy.py       # compose_boundaries: analyse each (module, clock ctx) once
@@ -252,8 +253,9 @@ When adding a new SDC command:
 4. Per the documented diagnostics policy: truly unrecognised commands
    are dropped at the `logging.DEBUG` level by the central dispatcher.
    Accumulate a `partial_warnings` entry when a CDC-relevant command
-   was present but couldn't be fully parsed (e.g.
-   `set_false_path -through`).
+   was present but couldn't be fully parsed (e.g. a `-filter`
+   clause). Anything that needs the netlist (object patterns,
+   coverage) belongs in `sdc_objects.py`, not in the parser.
 5. Add a `tests/test_sdc.py` case for the new command and a fixture
    exercising it end-to-end. Cover the three forms every
    collection-valued operand can take: bracket (`[get_ports x]`),

@@ -68,6 +68,14 @@ class Netname:
     name: str
     bits: tuple[Bit, ...]
     attributes: dict[str, str] = field(default_factory=dict)
+    # Source-level index of ``bits[0]`` and the declared direction, from
+    # Yosys' ``offset`` / ``upto`` netname keys: ``logic [8:1] x`` has
+    # ``offset == 1``, so ``bits[k]`` is ``x[k + 1]``; ``logic [0:7] x``
+    # has ``upto`` set, so ``bits[k]`` is ``x[offset + width - 1 - k]``.
+    # Only consulted where a bit-select name has to be matched (an SDC
+    # ``u/reg_q[3]`` object, rtl-buddy-cdc#328).
+    offset: int = 0
+    upto: bool = False
 
 
 @dataclass(frozen=True)
@@ -257,6 +265,8 @@ def _parse_raw_module(name: str, raw: dict, *, is_blackbox: bool) -> Module:
             name=nn,
             bits=_bits(nd["bits"]),
             attributes=dict(nd.get("attributes", {})),
+            offset=int(nd.get("offset", 0) or 0),
+            upto=bool(nd.get("upto", 0)),
         )
         for nn, nd in raw.get("netnames", {}).items()
     }

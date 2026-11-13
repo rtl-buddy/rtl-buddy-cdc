@@ -96,7 +96,7 @@ def test_plain_set_max_delay_stays_ignored(caplog, sdc_backend) -> None:
         assert skipped == []
 
 
-def test_object_endpoints_recorded_not_interpreted() -> None:
+def test_object_endpoints_recorded() -> None:
     spec = parse(
         f"{CLOCKS}set_max_delay 2 -datapath_only "
         "-from [get_cells u_a/q_reg] -to [get_pins {u_b/sync_reg[0]/D}]\n"
@@ -106,8 +106,9 @@ def test_object_endpoints_recorded_not_interpreted() -> None:
     assert rec.to_objects == (("pin", "u_b/sync_reg[0]/D"),)
     assert not rec.is_clock_pair
     assert spec.datapath_only_pairs == set()
-    assert len(spec.partial_warnings) == 1
-    assert "recorded but not interpreted" in spec.partial_warnings[0]
+    # Resolved against the netlist by ``sdc_objects`` since #328, so the
+    # parser no longer warns that they are ignored.
+    assert spec.partial_warnings == []
 
 
 def test_clock_to_object_is_not_a_clock_pair() -> None:

@@ -104,6 +104,7 @@ def test_top_level_keys() -> None:
         "false_path_pairs",
         "datapath_only_pairs",
         "max_delay_datapath_only",
+        "false_path_exceptions",
         "case_analysis",
         "flop_domains",
         "port_domains",

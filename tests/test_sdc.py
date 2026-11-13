@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rtl_buddy_cdc.sdc import parse
+from rtl_buddy_cdc.sdc import SdcObject, parse
 
 
 @pytest.fixture(autouse=True)
@@ -268,7 +268,9 @@ def test_false_path_clock_pair_is_treated_as_async() -> None:
     assert spec.are_async("b", "a")
 
 
-def test_false_path_through_is_partial_warning() -> None:
+def test_false_path_through_is_recorded_not_a_clock_pair() -> None:
+    """``-through`` narrows the false path to specific paths (#328): it is
+    recorded as an exception and never makes the clock pair async."""
     spec = parse(
         """
         create_clock -name a -period 10 [get_ports a]
@@ -277,17 +279,27 @@ def test_false_path_through_is_partial_warning() -> None:
         """
     )
     assert not spec.are_async("a", "b")
-    assert any("through" in w for w in spec.partial_warnings)
+    assert spec.false_path_pairs == set()
+    (exc,) = spec.false_path_exceptions
+    assert exc.from_clocks == ("a",)
+    assert exc.to_clocks == ("b",)
+    assert exc.through == ((SdcObject("pin", "x"),),)
+    assert spec.partial_warnings == []
 
 
-def test_false_path_pin_endpoint_is_partial_warning() -> None:
+def test_false_path_pin_endpoint_is_recorded() -> None:
+    """An object endpoint is recorded for netlist resolution (#328)."""
     spec = parse(
         """
         create_clock -name a -period 10 [get_ports a]
         set_false_path -from [get_pins inst/Q] -to [get_clocks a]
         """
     )
-    assert any("non-clock endpoints" in w for w in spec.partial_warnings)
+    (exc,) = spec.false_path_exceptions
+    assert exc.from_objects == (SdcObject("pin", "inst/Q"),)
+    assert exc.to_clocks == ("a",)
+    assert spec.false_path_pairs == set()
+    assert spec.partial_warnings == []
 
 
 def test_false_path_rise_from_fall_to_recognized() -> None:

@@ -10,6 +10,7 @@ Supported commands:
     set_clock_groups -logically_exclusive   -group {…} -group {…} …
     set_clock_groups -physically_exclusive  -group {…} -group {…} …
     set_false_path  -from [get_clocks A] -to [get_clocks B]
+    set_false_path  -from <clocks|objects> -through <objects> -to <…>
     set_input_delay  -clock <name> … [get_ports <port>]
     set_output_delay -clock <name> … [get_ports <port>]
     set_max_delay <v> -datapath_only -from <clocks|objects> -to <…>
@@ -120,6 +121,8 @@ __all__ = [
     "Clock",
     "ClockSpec",
     "DatapathOnlyDelay",
+    "FalsePathException",
+    "SdcObject",
     "TclReadError",
     "TclResourceLimitError",
     "UNCONSTRAINED_SENTINEL",
@@ -184,6 +187,10 @@ class DatapathOnlyDelay:
     to_clocks: tuple[str, ...] = ()
     from_objects: tuple[tuple[str, str], ...] = ()
     to_objects: tuple[tuple[str, str], ...] = ()
+    # Source line of the statement (Tcl backend only; the tokenizer
+    # tracks none). Diagnostic, so it takes no part in equality: the two
+    # backends must produce equal records (rtl-buddy-cdc#328).
+    line: int | None = field(default=None, compare=False)
 
     @property
     def is_clock_pair(self) -> bool:
@@ -194,6 +201,130 @@ class DatapathOnlyDelay:
             and not self.from_objects
             and not self.to_objects
         )
+
+    @property
+    def statement(self) -> str:
+        """The constraint re-rendered canonically, for reports.
+
+        Built from the parsed record rather than the source words, so it
+        is the same text on both SDC backends.
+        """
+        value = "" if self.value is None else f" {self.value:g}"
+        return (
+            f"set_max_delay{value} -datapath_only"
+            f"{_render_side('-from', self.from_clocks, _as_objects(self.from_objects))}"
+            f"{_render_side('-to', self.to_clocks, _as_objects(self.to_objects))}"
+        )
+
+
+@dataclass(frozen=True)
+class SdcObject:
+    """One design-object pattern from a ``get_*`` collection (#328).
+
+    ``kind`` is the collection noun — ``"cell"``, ``"pin"``, ``"port"``,
+    ``"net"`` — or ``"any"`` for a bare name in a ``-through`` list,
+    which a timer would look up as a pin, net or port. ``name`` keeps
+    the SDC spelling (``/`` hierarchy separator, ``*`` / ``?`` globs,
+    ``[3]`` bus index). ``hierarchical`` records ``get_* -hierarchical``:
+    the pattern then matches at any depth of the hierarchy.
+    """
+
+    kind: str
+    name: str
+    hierarchical: bool = False
+
+    def render(self) -> str:
+        """``[get_cells {u/q_reg[3]}]`` — the pattern as SDC text."""
+        return _render_collection(self.kind, (self.name,), self.hierarchical)
+
+
+def _render_collection(kind: str, names: tuple[str, ...], hierarchical: bool) -> str:
+    # Brace a name carrying a bus index: unbraced, Tcl would read ``[3]``
+    # as command substitution.
+    body = " ".join(f"{{{n}}}" if "[" in n else n for n in names)
+    if kind == "any":
+        return f"{{{body}}}"
+    flag = " -hierarchical" if hierarchical else ""
+    return f"[get_{kind}s{flag} {body}]"
+
+
+@dataclass(frozen=True)
+class FalsePathException:
+    """One ``set_false_path`` that is not a pure clock pair (#328).
+
+    Recorded when any endpoint is a design object (``[get_cells …]``,
+    ``[get_pins …]``, ``[get_ports …]``, ``[get_nets …]``) or the
+    statement carries ``-through``. Clock endpoints given alongside —
+    ``-from [get_cells u/q_reg] -to [get_clocks B]`` — stay in
+    ``from_clocks`` / ``to_clocks`` and constrain that side's domain.
+
+    Unlike a clock-pair false path (:attr:`ClockSpec.false_path_pairs`,
+    which makes the pair *asynchronous* — more checking), this record
+    never changes :meth:`ClockSpec.are_async`. It names specific paths
+    whose timing check the constraints author removed; the netlist
+    resolution and its effect on findings live outside the parser, in
+    :mod:`rtl_buddy_cdc.sdc_objects`.
+
+    ``through`` holds one tuple per ``-through`` flag (a path must pass
+    every group, and any one object within a group). ``qualifiers`` are
+    the flags that narrow the exception to part of the timing check —
+    ``-rise_from`` / ``-fall_to`` / … (one edge) and ``-setup`` /
+    ``-hold`` (one check) — edge flags in ``-from`` / ``-to`` /
+    ``-through`` order, then the check flags. A statement with any
+    qualifier never acknowledges findings (see ``sdc_objects``).
+    """
+
+    from_clocks: tuple[str, ...] = ()
+    to_clocks: tuple[str, ...] = ()
+    from_objects: tuple[SdcObject, ...] = ()
+    to_objects: tuple[SdcObject, ...] = ()
+    through: tuple[tuple[SdcObject, ...], ...] = ()
+    qualifiers: tuple[str, ...] = ()
+    line: int | None = field(default=None, compare=False)
+
+    @property
+    def statement(self) -> str:
+        """The constraint re-rendered canonically (same on both backends).
+
+        Each side is rendered under the first flag spelling it was given
+        with (``-from`` unless only ``-rise_from`` / ``-fall_from`` was
+        used, and so on); ``-setup`` / ``-hold`` lead.
+        """
+
+        def flag(side: str) -> str:
+            return next(
+                (q for q in self.qualifiers if q.endswith(f"_{side}")), f"-{side}"
+            )
+
+        checks = "".join(f" {q}" for q in self.qualifiers if "_" not in q)
+        through = "".join(
+            _render_side(flag("through"), (), group) for group in self.through
+        )
+        return (
+            f"set_false_path{checks}"
+            f"{_render_side(flag('from'), self.from_clocks, self.from_objects)}"
+            f"{through}"
+            f"{_render_side(flag('to'), self.to_clocks, self.to_objects)}"
+        )
+
+
+def _as_objects(pairs: tuple[tuple[str, str], ...]) -> tuple[SdcObject, ...]:
+    return tuple(SdcObject(kind, name) for kind, name in pairs)
+
+
+def _render_side(
+    flag: str, clocks: tuple[str, ...], objects: tuple[SdcObject, ...]
+) -> str:
+    """`` -from [get_clocks a] [get_cells u/q*]`` — empty when nothing given."""
+    words: list[str] = []
+    if clocks:
+        words.append(f"[get_clocks {' '.join(clocks)}]")
+    by_kind: dict[tuple[str, bool], list[str]] = {}
+    for obj in objects:
+        by_kind.setdefault((obj.kind, obj.hierarchical), []).append(obj.name)
+    for (kind, hier), names in by_kind.items():
+        words.append(_render_collection(kind, tuple(names), hier))
+    return f" {flag} {' '.join(words)}" if words else ""
 
 
 #: ``set_case_analysis`` value spellings → the normalised value stored on
@@ -259,6 +390,12 @@ class ClockSpec:
     # lets it override a generated→master collapse and an exclusive
     # group — the more-reporting reading (see ``are_async``).
     datapath_only_pairs: set[frozenset[str]] = field(default_factory=set)
+    # Every ``set_false_path`` that is not a pure clock pair — an object
+    # endpoint or a ``-through`` — in file order (rtl-buddy-cdc#328).
+    # Never feeds ``are_async``: such a statement acknowledges specific
+    # paths, it does not declare a clock pair asynchronous. Resolved
+    # against the netlist by :mod:`rtl_buddy_cdc.sdc_objects`.
+    false_path_exceptions: list[FalsePathException] = field(default_factory=list)
     # Top-level port → normalised ``set_case_analysis`` value ("0", "1",
     # "rising", "falling"; see ``CASE_ANALYSIS_VALUES``). A bus bit is
     # keyed in its SDC spelling, ``"sel[3]"``; a whole-bus key applies
@@ -622,7 +759,7 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             continue
         if any("$" in w for w in words):
             note_tokenizer_skip(f"{cmd}: kept a literal $-word unevaluated")
-        parsed = _slice(args, spec_for_cmd)
+        parsed = dataclasses.replace(_slice(args, spec_for_cmd), line=command.line)
         _DISPATCH[cmd](spec, parsed)
     spec.multi_clock_ports = _index_multi_clock_ports(spec.clocks)
     return spec
@@ -1245,6 +1382,9 @@ class Parsed:
 
     flags: dict[str, list[Any]]
     tail: list[str]
+    # Source line of the command, when the reader knows it (Tcl backend).
+    # Handlers that record a constraint for reporting keep it (#328).
+    line: int | None = None
 
     def present(self, flag: str) -> bool:
         """Return True if ``flag`` appeared at least once."""
@@ -1632,63 +1772,123 @@ def _handle_set_clock_groups(spec: ClockSpec, p: Parsed) -> None:
 
 
 def _handle_set_false_path(spec: ClockSpec, p: Parsed) -> None:
-    """Parse ``set_false_path -from [get_clocks A] -to [get_clocks B]``.
+    """Parse ``set_false_path``.
 
-    Treated as a pairwise async declaration when both endpoints are
-    clock collections. ``-through`` makes this path-specific (not a
-    clock-pair hint) — we drop those with a partial-parse warning.
+    A statement whose endpoints are all clocks
+    (``-from [get_clocks A] -to [get_clocks B]``, or bare / braced
+    names) is a pairwise async declaration: the pairs land in
+    :attr:`ClockSpec.false_path_pairs`. That path is unchanged from
+    before rtl-buddy-cdc#328, byte for byte.
+
+    Anything narrower — a design-object endpoint (``[get_cells …]``,
+    ``[get_pins …]``, ``[get_ports …]``, ``[get_nets …]``) on either
+    side, or a ``-through`` — is recorded as a
+    :class:`FalsePathException` on
+    :attr:`ClockSpec.false_path_exceptions` instead, with any clock
+    endpoints given alongside it. It never adds a clock pair: an
+    object-scoped false path acknowledges specific paths, it does not
+    make the clocks asynchronous. Resolving the objects against the
+    netlist is :mod:`rtl_buddy_cdc.sdc_objects`'s job (the parser stays
+    netlist-free).
     """
-    if (
-        p.present("-through")
-        or p.present("-rise_through")
-        or p.present("-fall_through")
-    ):
-        spec.partial_warnings.append(
-            "set_false_path: -through clauses are path-specific and "
-            "not interpreted as clock-pair async hints"
-        )
-        return
-
     from_clocks: list[str] = []
     to_clocks: list[str] = []
-    saw_non_clock_endpoint = False
+    from_objects: list[SdcObject] = []
+    to_objects: list[SdcObject] = []
+    qualifiers: list[str] = []
+    saw_filter = False
+    saw_object = False
 
-    for flag, sink in (
-        ("-from", from_clocks),
-        ("-rise_from", from_clocks),
-        ("-fall_from", from_clocks),
-        ("-to", to_clocks),
-        ("-rise_to", to_clocks),
-        ("-fall_to", to_clocks),
+    for flag, clocks, objects in (
+        ("-from", from_clocks, from_objects),
+        ("-rise_from", from_clocks, from_objects),
+        ("-fall_from", from_clocks, from_objects),
+        ("-to", to_clocks, to_objects),
+        ("-rise_to", to_clocks, to_objects),
+        ("-fall_to", to_clocks, to_objects),
     ):
         for slurped in p.all(flag):
-            blob = " ".join(slurped)
-            if "get_pins" in blob or "get_cells" in blob or "get_ports" in blob:
-                saw_non_clock_endpoint = True
-                continue
-            names: list[str] = []
+            if flag not in ("-from", "-to") and flag not in qualifiers:
+                qualifiers.append(flag)
             for word in slurped:
-                ns, _ = _extract_names(word)
-                names.extend(ns)
-            sink.extend(names)
+                cs, objs, sf, so = _classify_endpoint(word)
+                clocks.extend(cs)
+                objects.extend(objs)
+                saw_filter = saw_filter or sf
+                saw_object = saw_object or so
 
-    if saw_non_clock_endpoint:
+    through: list[tuple[SdcObject, ...]] = []
+    for flag in ("-through", "-rise_through", "-fall_through"):
+        for slurped in p.all(flag):
+            if flag != "-through" and flag not in qualifiers:
+                qualifiers.append(flag)
+            group: list[SdcObject] = []
+            for word in slurped:
+                for item in _endpoint_items(word):
+                    kind, names, sf, hier = _split_endpoint_item(item)
+                    saw_filter = saw_filter or sf
+                    if kind is None:
+                        group.extend(SdcObject("any", n) for n in names)
+                    elif kind in _OBJECT_KINDS:
+                        group.extend(SdcObject(kind, n, hier) for n in names)
+                    else:
+                        spec.partial_warnings.append(
+                            f"set_false_path{_at_line(p.line)}: -through "
+                            f"{item} is not a pin, net or port — ignored"
+                        )
+            if group:
+                through.append(tuple(dict.fromkeys(group)))
+            else:
+                # An empty -through group cannot be matched; dropping it
+                # silently would widen the exception to every path.
+                spec.partial_warnings.append(
+                    f"set_false_path{_at_line(p.line)}: -through names no "
+                    f"pin, net or port — statement ignored"
+                )
+                return
+
+    if saw_object and not from_objects and not to_objects and not through:
         spec.partial_warnings.append(
-            "set_false_path: non-clock endpoints (get_pins/get_cells/"
-            "get_ports) are path-specific and not interpreted"
+            f"set_false_path{_at_line(p.line)}: object endpoint names no usable "
+            f"pattern (unsupported -filter?) — statement ignored"
         )
         return
-
-    if not from_clocks or not to_clocks:
-        spec.partial_warnings.append(
-            "set_false_path: incomplete -from/-to clock list, ignored"
-        )
+    if not from_objects and not to_objects and not through:
+        # Pure clock-pair form — the pre-#328 path, unchanged.
+        if not from_clocks or not to_clocks:
+            spec.partial_warnings.append(
+                "set_false_path: incomplete -from/-to clock list, ignored"
+            )
+            return
+        for a in from_clocks:
+            for b in to_clocks:
+                if a != b:
+                    spec.false_path_pairs.add(frozenset({a, b}))
         return
 
-    for a in from_clocks:
-        for b in to_clocks:
-            if a != b:
-                spec.false_path_pairs.add(frozenset({a, b}))
+    if saw_filter:
+        # A -filter clause drops the names it would have selected, so the
+        # side it sat on would read as "any object" — a wider exception
+        # than the author wrote. Drop the statement instead.
+        spec.partial_warnings.append(
+            f"set_false_path{_at_line(p.line)}: unsupported -filter clause in "
+            f"an object-scoped false path — statement ignored"
+        )
+        return
+    for flag in ("-setup", "-hold"):
+        if p.present(flag):
+            qualifiers.append(flag)
+    spec.false_path_exceptions.append(
+        FalsePathException(
+            from_clocks=tuple(dict.fromkeys(from_clocks)),
+            to_clocks=tuple(dict.fromkeys(to_clocks)),
+            from_objects=tuple(dict.fromkeys(from_objects)),
+            to_objects=tuple(dict.fromkeys(to_objects)),
+            through=tuple(through),
+            qualifiers=tuple(qualifiers),
+            line=p.line,
+        )
+    )
 
 
 def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
@@ -1756,8 +1956,12 @@ def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:
     Endpoints are split per collection: ``[get_clocks …]`` and bare /
     braced names are clocks (as for ``set_false_path``); any other
     ``get_*`` collection is recorded as a ``(kind, name)`` object
-    endpoint and **not** interpreted — resolving cells / pins against
-    the netlist is rtl-buddy-cdc#328's job. ``-through`` narrows the
+    endpoint. Object endpoints never mark a clock pair async; they are
+    resolved against the netlist later, by
+    :mod:`rtl_buddy_cdc.sdc_objects` (rtl-buddy-cdc#328), which
+    associates the record with the crossings it constrains (an
+    annotation only — a bounded datapath still needs a synchroniser,
+    so nothing is suppressed on its account). ``-through`` narrows the
     constraint to specific paths, so it is never a clock-pair hint.
     The delay value is the numeric operand wherever it sits — before
     the flags, or after them, where a GREEDY ``-to`` slurps it.
@@ -1826,17 +2030,12 @@ def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:
         to_clocks=tuple(dict.fromkeys(to_clocks)),
         from_objects=tuple(dict.fromkeys(from_objects)),
         to_objects=tuple(dict.fromkeys(to_objects)),
+        line=p.line,
     )
     spec.datapath_only_delays.append(record)
     if not record.is_clock_pair:
-        objs = sorted(
-            {f"{k} {n}" for k, n in (*record.from_objects, *record.to_objects)}
-        )
-        spec.partial_warnings.append(
-            f"set_max_delay -datapath_only: object endpoints ({', '.join(objs)}) "
-            "are recorded but not interpreted — only a clock-to-clock "
-            "constraint marks a clock pair as an intended async crossing"
-        )
+        # Object endpoints: resolved against the netlist and associated
+        # with crossings by ``sdc_objects`` (#328); never a clock pair.
         return
     for a in record.from_clocks:
         for b in record.to_clocks:
@@ -1971,6 +2170,98 @@ def _split_collection(word: str) -> tuple[str | None, list[str], bool]:
             continue
         names.append(tok)
     return kind, names, saw_filter
+
+
+#: Collection kinds that name design objects rather than clocks.
+_OBJECT_KINDS: frozenset[str] = frozenset({"cell", "pin", "port", "net"})
+
+
+def _endpoint_items(word: str) -> list[str]:
+    """Split one endpoint word into its top-level items (#328).
+
+    A word is usually one item — ``[get_cells u/q*]``, ``clk`` — but a
+    braced or quoted list can mix collections:
+    ``{[get_cells a] [get_clocks b]}`` (tokenizer) or
+    ``[get_cells a] [get_clocks b]`` (the Tcl backend after
+    substitution). Splits on whitespace outside ``[…]`` / ``{…}``; a
+    bus index inside a bare name (``u/q[3]``) stays attached.
+    """
+    text = word.strip()
+    if text.startswith("{") and _closing_brace(text) == len(text) - 1:
+        text = text[1:-1]
+    items: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for ch in text:
+        if ch in "[{":
+            depth += 1
+        elif ch in "]}" and depth:
+            depth -= 1
+        if ch.isspace() and depth == 0:
+            if cur:
+                items.append("".join(cur))
+                cur = []
+            continue
+        cur.append(ch)
+    if cur:
+        items.append("".join(cur))
+    return items
+
+
+def _closing_brace(text: str) -> int:
+    """Index of the brace closing ``text[0] == '{'``, or -1."""
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _split_endpoint_item(item: str) -> tuple[str | None, list[str], bool, bool]:
+    """:func:`_split_collection` plus the ``-hierarchical`` flag (#328)."""
+    kind, names, saw_filter = _split_collection(item)
+    hierarchical = False
+    if kind is not None:
+        words = item.replace("[", " ").replace("]", " ").split()
+        hierarchical = any(w in ("-hierarchical", "-hier") for w in words)
+    return kind, names, saw_filter, hierarchical
+
+
+def _classify_endpoint(
+    word: str,
+) -> tuple[list[str], list[SdcObject], bool, bool]:
+    """Split a ``-from`` / ``-to`` word into its clocks and objects.
+
+    Returns ``(clocks, objects, saw_filter, saw_object)``; ``saw_object``
+    is True when the word held a design-object collection at all, even
+    one whose names were all dropped (``[get_cells -filter …]``).
+
+    A word with no design-object collection in it is read exactly as the
+    pre-#328 parser read it — every name a clock, via
+    :func:`_extract_names` — so clock-only false paths keep their
+    meaning byte for byte. Otherwise each item is classified on its own:
+    ``get_cells`` / ``get_pins`` / ``get_ports`` / ``get_nets`` become
+    :class:`SdcObject` patterns, everything else is read as clocks.
+    """
+    items = [(item, _split_endpoint_item(item)) for item in _endpoint_items(word)]
+    if not any(parts[0] in _OBJECT_KINDS for _, parts in items):
+        names, saw_filter = _extract_names(word)
+        return names, [], saw_filter, False
+    clocks: list[str] = []
+    objects: list[SdcObject] = []
+    saw_filter = False
+    for item, (kind, names, sf, hier) in items:
+        saw_filter = saw_filter or sf
+        if kind in _OBJECT_KINDS:
+            assert kind is not None
+            objects.extend(SdcObject(kind, n, hier) for n in names)
+        else:
+            clocks.extend(_extract_names(item)[0])
+    return clocks, objects, saw_filter, True
 
 
 def _looks_numeric(word: str) -> bool:
