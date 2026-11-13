@@ -110,6 +110,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -354,6 +355,27 @@ def _yosys_version() -> str:
     return proc.stdout.strip()
 
 
+def _run_yosys(script: str) -> subprocess.CompletedProcess[str]:
+    """Run ``script`` through yosys from a script file, not ``-p``.
+
+    Some Yosys releases (0.52, the one GitHub's ``ubuntu-latest`` apt
+    installs) split a ``-p`` argument on commas, so
+    ``abc -g AND,OR,XOR,MUX`` became the commands ``OR``, ``XOR`` …
+    ("No such command: OR"). 0.33 and 0.64 do not. A script file is read
+    the same way by all of them.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        ys = Path(d) / "flow.ys"
+        ys.write_text(script + "\n")
+        return subprocess.run(
+            ["yosys", "-q", "-s", str(ys)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
 def build(fx: Fixture, leg: str) -> Path:
     """Build ``fx`` on ``leg`` and return the cached netlist path."""
     h = hashlib.sha256()
@@ -369,13 +391,7 @@ def build(fx: Fixture, leg: str) -> Path:
     # Write beside the entry and rename, so an interrupted build never
     # leaves a truncated netlist under the final name.
     tmp = out.with_name(f"{digest}.partial.json")
-    proc = subprocess.run(
-        ["yosys", "-q", "-p", yosys_script(fx, leg, tmp.as_posix())],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc = _run_yosys(yosys_script(fx, leg, tmp.as_posix()))
     if proc.returncode != 0:
         raise RuntimeError(
             f"yosys failed for {fx.name} ({leg}):\n"
@@ -538,11 +554,7 @@ def _regenerate(pairs: list[str]) -> None:
         name, leg = pair.split(":")
         fx = _BY_NAME[name]
         out = fx.netlist.with_name(f"{name}.{leg}.json").relative_to(REPO_ROOT)
-        subprocess.run(
-            ["yosys", "-q", "-p", yosys_script(fx, leg, out.as_posix())],
-            cwd=REPO_ROOT,
-            check=True,
-        )
+        _run_yosys(yosys_script(fx, leg, out.as_posix())).check_returncode()
         print(f"wrote {out}")
 
 
