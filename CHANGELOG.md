@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Gate-level fixture corpus** (#331) — *test-only, no output change.*
+  `tests/test_gate_level_corpus.py` rebuilds every fixture through two
+  Yosys gate flows (`techmap`, and `opt_dff; techmap; abc`) and asserts
+  the analyzer's per-rule verdict matches the committed RTL netlist.
+  It runs in CI's yosys job. Eight fixtures also commit a gate-level
+  netlist, so the default job exercises `$_DFF_*` / `$_DFFE_*` /
+  `$_SDFF_*` / `$_DLATCH_*` / `$_MUX_` netlists without Yosys. The new
+  `flop_zoo_crossing` fixture covers `$aldff`, `$dffsr`, `$sdffce`,
+  `$adffe` and `$dffe`, which no fixture produced before. Known
+  gate-level divergences are listed with their root causes in a
+  strict allowlist; the analyzer gaps behind them (reset pin `R`,
+  `$_DFF_NN0_` clock polarity, `$_MUX_`, gate-level clock gating,
+  bit-blasted buses) are tracked separately.
+
+### Changed
+
+- **Faster analysis on large flat netlists** (#324) — *patch: no
+  output change.* Text, JSON, SARIF, domain-map and reset-domain-map
+  outputs are byte-identical. On a synthetic 44k-cell, 8-clock
+  netlist `analyze` drops from 6.0 s to 3.1 s.
+  - The RDC rules each rebuilt the per-flop reset classification, the
+    reset-synchroniser set and the flop list / driver map under them:
+    one run classified every flop's reset 11 times. They are now
+    built once per run in the shared rule context. CDC-008 and CDC-010
+    likewise share one clock-network walk.
+  - `Module.port_of_bit` scanned every port's bits on each call; it is
+    now a dict lookup built once per module.
+  - The JSON and SARIF reports are serialised with `json.dumps`, which
+    can use the C encoder, instead of `json.dump`.
+
 ### Internal
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
