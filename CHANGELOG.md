@@ -283,6 +283,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`set_input_delay` / `set_output_delay` silently ignored a typo'd
+  clock and glob port targets** (rtl-buddy-cdc#357).
+  - A `-clock` naming no `create_clock` / `create_generated_clock` now
+    raises an SDC warning. It is decided at the end of the file, so a
+    clock declared later counts, and a virtual clock (`create_clock
+    -name V -period P` with no port) is a declared clock. The typing
+    itself is kept, as before.
+  - Port targets are resolved against the top-level ports with the
+    object-pattern matcher of `sdc_objects.py`. A glob (`[get_ports
+    d*]`, `{d?}`, bare `d*`) types every matching port of the command's
+    direction that carries no declared clock; before, it was stored
+    literally and typed nothing. A bus index (`{d[3]}`) types the whole
+    port `d`, as it already did by accident (the name was split into
+    `d` and a stray `3`); port typing is per port, and a port whose
+    bits are given different clocks is now warned about. A target that
+    matches no port is warned about.
+  - `ClockSpec` gains `port_delays` (one `PortDelay` per statement,
+    targets as written); `sdc_objects.resolve_port_delays` rewrites
+    `port_clock`, and the CLI calls it right after parsing. No
+    committed fixture changes verdict.
+
 - **Text report printed an empty title for 13 rules** (rtl-buddy-cdc#355).
   `CDC-009` … `CDC-013`, `CDC-018` … `CDC-021`, `RDC-006` … `RDC-008`
   and `CDC-BBX` had no entry in the reporter's rule-title table, so the
