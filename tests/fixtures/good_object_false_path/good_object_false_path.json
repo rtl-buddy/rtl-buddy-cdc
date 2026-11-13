@@ -1,0 +1,581 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_object_false_path": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:35.1-64.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "we": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "wdata": {
+          "direction": "input",
+          "bits": [ 6, 7, 8, 9, 10, 11, 12, 13 ]
+        },
+        "mode_out": {
+          "direction": "output",
+          "bits": [ 14, 15, 16, 17, 18, 19, 20, 21 ]
+        },
+        "en_out": {
+          "direction": "output",
+          "bits": [ 22 ]
+        }
+      },
+      "cells": {
+        "$auto$proc_dff.cc:220:proc_dff$14": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 23 ]
+          }
+        },
+        "$auto$proc_dff.cc:220:proc_dff$9": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 24 ]
+          }
+        },
+        "$flatten\\u_cfg.$auto$proc_dff.cc:220:proc_dff$19": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 25 ]
+          }
+        },
+        "$flatten\\u_cfg.$auto$proc_dff.cc:220:proc_dff$24": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 26 ]
+          }
+        },
+        "$flatten\\u_cfg.$logic_not$tests/fixtures/good_object_false_path/good_object_false_path.sv:23$2": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:23.13-23.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 27 ]
+          }
+        },
+        "$flatten\\u_cfg.$procdff$23": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "00000000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:22.5-30.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 28, 29, 30, 31, 32, 33, 34, 35 ],
+            "Q": [ 36, 37, 38, 39, 40, 41, 42, 43 ]
+          }
+        },
+        "$flatten\\u_cfg.$procdff$28": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:22.5-30.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 44 ],
+            "Q": [ 45 ]
+          }
+        },
+        "$flatten\\u_cfg.$procmux$5": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:26.22-26.24|tests/fixtures/good_object_false_path/good_object_false_path.sv:26.18-29.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 45 ],
+            "B": [ 6 ],
+            "S": [ 5 ],
+            "Y": [ 44 ]
+          }
+        },
+        "$flatten\\u_cfg.$procmux$7": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:26.22-26.24|tests/fixtures/good_object_false_path/good_object_false_path.sv:26.18-29.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 36, 37, 38, 39, 40, 41, 42, 43 ],
+            "B": [ 6, 7, 8, 9, 10, 11, 12, 13 ],
+            "S": [ 5 ],
+            "Y": [ 28, 29, 30, 31, 32, 33, 34, 35 ]
+          }
+        },
+        "$logic_not$tests/fixtures/good_object_false_path/good_object_false_path.sv:54$4": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:54.13-54.19"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "Y": [ 46 ]
+          }
+        },
+        "$procdff$13": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "00000000",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000001000"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:53.5-61.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 36, 37, 38, 39, 40, 41, 42, 43 ],
+            "Q": [ 14, 15, 16, 17, 18, 19, 20, 21 ]
+          }
+        },
+        "$procdff$18": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:53.5-61.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 45 ],
+            "Q": [ 22 ]
+          }
+        },
+        "u_cfg": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_module_not_derived": "00000000000000000000000000000001",
+            "cell_src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:46.14-49.6",
+            "module": "cfg_regs",
+            "module_src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:12.1-33.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        }
+      },
+      "netnames": {
+        "$0\\en_dst[0:0]": {
+          "hide_name": 1,
+          "bits": [ 45 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:53.5-61.8"
+          }
+        },
+        "$0\\mode_dst[7:0]": {
+          "hide_name": 1,
+          "bits": [ 36, 37, 38, 39, 40, 41, 42, 43 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:53.5-61.8"
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$10": {
+          "hide_name": 1,
+          "bits": [ 24 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3255:Not$15": {
+          "hide_name": 1,
+          "bits": [ 23 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$12": {
+          "hide_name": 1,
+          "bits": [ 24 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3259:ReduceOr$17": {
+          "hide_name": 1,
+          "bits": [ 23 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_cfg.$0\\enable_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 44 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:22.5-30.8"
+          }
+        },
+        "$flatten\\u_cfg.$0\\mode_q[7:0]": {
+          "hide_name": 1,
+          "bits": [ 28, 29, 30, 31, 32, 33, 34, 35 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:22.5-30.8"
+          }
+        },
+        "$flatten\\u_cfg.$auto$rtlil.cc:3255:Not$20": {
+          "hide_name": 1,
+          "bits": [ 25 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_cfg.$auto$rtlil.cc:3255:Not$25": {
+          "hide_name": 1,
+          "bits": [ 26 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_cfg.$auto$rtlil.cc:3259:ReduceOr$22": {
+          "hide_name": 1,
+          "bits": [ 25 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_cfg.$auto$rtlil.cc:3259:ReduceOr$27": {
+          "hide_name": 1,
+          "bits": [ 26 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_cfg.$logic_not$tests/fixtures/good_object_false_path/good_object_false_path.sv:23$2_Y": {
+          "hide_name": 1,
+          "bits": [ 27 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:23.13-23.19"
+          }
+        },
+        "$flatten\\u_cfg.$procmux$5_Y": {
+          "hide_name": 1,
+          "bits": [ 44 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_cfg.$procmux$6_CMP": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_cfg.$procmux$7_Y": {
+          "hide_name": 1,
+          "bits": [ 28, 29, 30, 31, 32, 33, 34, 35 ],
+          "attributes": {
+          }
+        },
+        "$flatten\\u_cfg.$procmux$8_CMP": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+          }
+        },
+        "$logic_not$tests/fixtures/good_object_false_path/good_object_false_path.sv:54$4_Y": {
+          "hide_name": 1,
+          "bits": [ 46 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:54.13-54.19"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:37.24-37.31"
+          }
+        },
+        "en_dst": {
+          "hide_name": 0,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:52.17-52.23"
+          }
+        },
+        "en_out": {
+          "hide_name": 0,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:42.24-42.30"
+          }
+        },
+        "enable": {
+          "hide_name": 0,
+          "bits": [ 45 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:45.17-45.23"
+          }
+        },
+        "mode": {
+          "hide_name": 0,
+          "bits": [ 36, 37, 38, 39, 40, 41, 42, 43 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:44.17-44.21"
+          }
+        },
+        "mode_dst": {
+          "hide_name": 0,
+          "bits": [ 14, 15, 16, 17, 18, 19, 20, 21 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:51.17-51.25"
+          }
+        },
+        "mode_out": {
+          "hide_name": 0,
+          "bits": [ 14, 15, 16, 17, 18, 19, 20, 21 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:41.24-41.32"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:38.24-38.29"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:36.24-36.31"
+          }
+        },
+        "u_cfg.clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "u_cfg clk",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:13.24-13.27"
+          }
+        },
+        "u_cfg.enable": {
+          "hide_name": 0,
+          "bits": [ 45 ],
+          "attributes": {
+            "hdlname": "u_cfg enable",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:18.24-18.30"
+          }
+        },
+        "u_cfg.enable_q": {
+          "hide_name": 0,
+          "bits": [ 45 ],
+          "attributes": {
+            "hdlname": "u_cfg enable_q",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:21.17-21.25"
+          }
+        },
+        "u_cfg.mode": {
+          "hide_name": 0,
+          "bits": [ 36, 37, 38, 39, 40, 41, 42, 43 ],
+          "attributes": {
+            "hdlname": "u_cfg mode",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:17.24-17.28"
+          }
+        },
+        "u_cfg.mode_q": {
+          "hide_name": 0,
+          "bits": [ 36, 37, 38, 39, 40, 41, 42, 43 ],
+          "attributes": {
+            "hdlname": "u_cfg mode_q",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:20.17-20.23"
+          }
+        },
+        "u_cfg.rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "hdlname": "u_cfg rst_n",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:14.24-14.29"
+          }
+        },
+        "u_cfg.wdata": {
+          "hide_name": 0,
+          "bits": [ 6, 7, 8, 9, 10, 11, 12, 13 ],
+          "attributes": {
+            "hdlname": "u_cfg wdata",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:16.24-16.29"
+          }
+        },
+        "u_cfg.we": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "hdlname": "u_cfg we",
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:15.24-15.26"
+          }
+        },
+        "wdata": {
+          "hide_name": 0,
+          "bits": [ 6, 7, 8, 9, 10, 11, 12, 13 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:40.24-40.29"
+          }
+        },
+        "we": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_object_false_path/good_object_false_path.sv:39.24-39.26"
+          }
+        }
+      }
+    }
+  }
+}

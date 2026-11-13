@@ -1,0 +1,818 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_gray_counter_crossing": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:10.1-67.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "incr": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "dst_gray": {
+          "direction": "output",
+          "bits": [ 6, 7, 8, 9 ]
+        }
+      },
+      "cells": {
+        "$abc$241$auto$blifparse.cc:397:parse_blif$242": {
+          "hide_name": 1,
+          "type": "$_NOT_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 10 ],
+            "Y": [ 11 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$243": {
+          "hide_name": 1,
+          "type": "$_NOT_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 12 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$244": {
+          "hide_name": 1,
+          "type": "$_AND_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 10 ],
+            "B": [ 12 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$245": {
+          "hide_name": 1,
+          "type": "$_AND_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 15 ],
+            "B": [ 14 ],
+            "Y": [ 16 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$246": {
+          "hide_name": 1,
+          "type": "$_XOR_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 17 ],
+            "B": [ 16 ],
+            "Y": [ 18 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$247": {
+          "hide_name": 1,
+          "type": "$_OR_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 15 ],
+            "B": [ 14 ],
+            "Y": [ 19 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$248": {
+          "hide_name": 1,
+          "type": "$_XOR_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 15 ],
+            "B": [ 14 ],
+            "Y": [ 20 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$249": {
+          "hide_name": 1,
+          "type": "$_XOR_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 10 ],
+            "B": [ 12 ],
+            "Y": [ 21 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$250": {
+          "hide_name": 1,
+          "type": "$_XOR_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 17 ],
+            "B": [ 19 ],
+            "Y": [ 22 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$251": {
+          "hide_name": 1,
+          "type": "$_XOR_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 20 ],
+            "B": [ 21 ],
+            "Y": [ 23 ]
+          }
+        },
+        "$abc$241$auto$blifparse.cc:397:parse_blif$252": {
+          "hide_name": 1,
+          "type": "$_XOR_",
+          "parameters": {
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 17 ],
+            "B": [ 16 ],
+            "Y": [ 24 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$132": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:60.5-63.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 25 ],
+            "E": [ 26 ],
+            "Q": [ 6 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$133": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:60.5-63.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 27 ],
+            "E": [ 26 ],
+            "Q": [ 7 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$134": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:60.5-63.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 28 ],
+            "E": [ 26 ],
+            "Q": [ 8 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$135": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:60.5-63.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 29 ],
+            "E": [ 26 ],
+            "Q": [ 9 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$136": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:24.5-33.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 11 ],
+            "E": [ 5 ],
+            "Q": [ 30 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$137": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:24.5-33.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 23 ],
+            "E": [ 5 ],
+            "Q": [ 31 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$138": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:24.5-33.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 22 ],
+            "E": [ 5 ],
+            "Q": [ 32 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$139": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:24.5-33.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 24 ],
+            "E": [ 5 ],
+            "Q": [ 33 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$140": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:24.5-33.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 13 ],
+            "E": [ 5 ],
+            "Q": [ 12 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$141": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:24.5-33.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 21 ],
+            "E": [ 5 ],
+            "Q": [ 10 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$142": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:24.5-33.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 20 ],
+            "E": [ 5 ],
+            "Q": [ 15 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$143": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:24.5-33.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 18 ],
+            "E": [ 5 ],
+            "Q": [ 17 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$144": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:54.5-57.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 30 ],
+            "E": [ 26 ],
+            "Q": [ 25 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$145": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:54.5-57.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 31 ],
+            "E": [ 26 ],
+            "Q": [ 27 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$146": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:54.5-57.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 32 ],
+            "E": [ 26 ],
+            "Q": [ 28 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$147": {
+          "hide_name": 1,
+          "type": "$_DFFE_PN0P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:54.5-57.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "E": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 33 ],
+            "E": [ 26 ],
+            "Q": [ 29 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$171": {
+          "hide_name": 1,
+          "type": "$_DFF_PN0_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:42.5-50.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 34 ],
+            "Q": [ 35 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$172": {
+          "hide_name": 1,
+          "type": "$_DFF_PN0_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:42.5-50.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 35 ],
+            "Q": [ 26 ],
+            "R": [ 4 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$173": {
+          "hide_name": 1,
+          "type": "$_DFF_PN0_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:36.5-39.8"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 34 ],
+            "R": [ 4 ]
+          }
+        }
+      },
+      "netnames": {
+        "$abc$241$new_n29": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+          }
+        },
+        "$abc$241$new_n30": {
+          "hide_name": 1,
+          "bits": [ 16 ],
+          "attributes": {
+          }
+        },
+        "$abc$241$new_n32": {
+          "hide_name": 1,
+          "bits": [ 19 ],
+          "attributes": {
+          }
+        },
+        "$abc$241$xor$tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:31$5_Y[0]": {
+          "hide_name": 1,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:31.21-31.47"
+          }
+        },
+        "$abc$241$xor$tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:31$5_Y[1]": {
+          "hide_name": 1,
+          "bits": [ 23 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:31.21-31.47"
+          }
+        },
+        "$abc$241$xor$tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:31$5_Y[2]": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:31.21-31.47"
+          }
+        },
+        "$abc$241$xor$tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:31$5_Y[3]": {
+          "hide_name": 1,
+          "bits": [ 24 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:31.21-31.47"
+          }
+        },
+        "bin": {
+          "hide_name": 0,
+          "bits": [ 12, 10, 15, 17 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:18.17-18.20"
+          }
+        },
+        "bin_next": {
+          "hide_name": 0,
+          "bits": [ 13, 21, 20, 18 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:20.17-20.25"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:12.25-12.32"
+          }
+        },
+        "dst_gray": {
+          "hide_name": 0,
+          "bits": [ 6, 7, 8, 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:15.25-15.33"
+          }
+        },
+        "gray": {
+          "hide_name": 0,
+          "bits": [ 30, 31, 32, 33 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:19.17-19.21"
+          }
+        },
+        "incr": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:14.25-14.29"
+          }
+        },
+        "incr_meta": {
+          "hide_name": 0,
+          "bits": [ 35 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:41.11-41.20"
+          }
+        },
+        "incr_q": {
+          "hide_name": 0,
+          "bits": [ 34 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:35.11-35.17"
+          }
+        },
+        "incr_sync": {
+          "hide_name": 0,
+          "bits": [ 26 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:41.22-41.31"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:13.25-13.30"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:11.25-11.32"
+          }
+        },
+        "sync_meta": {
+          "hide_name": 0,
+          "bits": [ 25, 27, 28, 29 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:53.17-53.26"
+          }
+        },
+        "sync_q": {
+          "hide_name": 0,
+          "bits": [ 6, 7, 8, 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gray_counter_crossing/good_gray_counter_crossing.sv:59.17-59.23"
+          }
+        }
+      }
+    }
+  }
+}

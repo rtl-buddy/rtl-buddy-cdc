@@ -150,6 +150,13 @@ class CompositionStats:
     # module as single-clock and abstracts its internal crossing away
     # silently; the compositional pass is the only thing that can see it.
     unresolved_internal_modules: frozenset[str] = field(default_factory=frozenset)
+    # (rtl-buddy-cdc#344) Module types registered as synchroniser primitives (XPM or
+    # ``--sync-primitive``) whose destination clock pin could not be
+    # identified, so the primitive path refused to vouch for them and they
+    # fell through to the generic summariser. When that declines them too,
+    # the CDC-BBX message says it was the missing destination clock, not
+    # the generic "not provably single-clock".
+    undirected_primitive_modules: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def shared_subtree_reused(self) -> bool:
@@ -272,6 +279,7 @@ def compose_boundaries(
     analysed_modules: set[str] = set()
     ambiguous_input_modules: set[str] = set()
     unresolved_internal_modules: set[str] = set()
+    undirected_primitive_modules: set[str] = set()
 
     # Clock-output decline (#273), decided per MODULE before anything is
     # summarised: a candidate whose output drives a clock generates or
@@ -354,7 +362,9 @@ def compose_boundaries(
                 continue
             # Destination clock unidentifiable — fall through to the
             # generic path so the instance is declined (and reported)
-            # rather than silently vouched for.
+            # rather than silently vouched for. Remember why, so a
+            # decline below can say so (rtl-buddy-cdc#344).
+            undirected_primitive_modules.add(cell.type)
         # Clock CONTEXT is the instance's clock-PIN -> root MAPPING (FIX 1
         # + #261) — not a single root, so a dual-clock IP keys distinctly
         # from a single-clock one, two instances of one module wired in
@@ -448,6 +458,7 @@ def compose_boundaries(
         lifted=tuple(lifted),
         ambiguous_input_modules=frozenset(ambiguous_input_modules),
         unresolved_internal_modules=frozenset(unresolved_internal_modules),
+        undirected_primitive_modules=frozenset(undirected_primitive_modules),
     )
     return out, stats
 

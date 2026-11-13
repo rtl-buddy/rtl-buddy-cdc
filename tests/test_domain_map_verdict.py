@@ -69,10 +69,11 @@ def _async(payload: dict[str, Any]) -> list[dict[str, Any]]:
 # --- schema ------------------------------------------------------------------
 
 
-def test_schema_version_is_1_2(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == "1.2"
+def test_schema_version_is_1_3(tmp_path: Path) -> None:
+    """1.2 added the verdict keys (#307); 1.3 (#325) is additive on top."""
+    assert SCHEMA_VERSION == "1.3"
     payload = _analyze_map("ip_cdc_handshake", tmp_path)
-    assert payload["schema_version"] == "1.2"
+    assert payload["schema_version"] == "1.3"
 
 
 def test_every_crossing_carries_both_keys(tmp_path: Path) -> None:

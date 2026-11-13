@@ -324,6 +324,7 @@ class _FakeSpec:
     """Minimal ClockSpec stand-in for the synthetic netlist."""
 
     pin_clocks: dict[str, str] = {}
+    case_analysis: dict[str, str] = {}
 
     @staticmethod
     def clock_for_port(name: str) -> str | None:

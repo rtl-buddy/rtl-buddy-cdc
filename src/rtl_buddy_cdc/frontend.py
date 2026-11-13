@@ -92,10 +92,10 @@ def elaborate(
 
     ``blackbox`` names modules to treat as CDC boundary cells (the P1
     ``--blackbox`` surface) and ``greybox`` names modules to keep as
-    boundary cells *with* their internals (#261). Both are threaded into
-    the Yosys invocation; the slang (pyslang) frontend supports neither
-    yet. ``incdirs`` are the `` `include `` search directories; both
-    frontends take them.
+    boundary cells *with* their internals (#261). Both frontends take
+    them (the slang frontend natively since rtl-buddy-cdc#345, the Yosys
+    one through the invocation it builds), as they do ``incdirs``, the
+    `` `include `` search directories.
     """
     module, _blackboxes = elaborate_with_blackboxes(
         sources,
@@ -132,7 +132,8 @@ def elaborate_with_blackboxes(
     boundary siblings the Yosys ``--blackbox`` / ``--greybox`` surfaces
     produce so the ``lint`` path can auto-abstract them (#257) and, for a
     greybox, analyse their internals compositionally (#261). The slang
-    frontend has no blackbox support yet and returns an empty sibling map.
+    frontend produces the same siblings, for ``(* blackbox *)`` modules as
+    well as the two CLI surfaces (rtl-buddy-cdc#345).
     """
     if frontend is Frontend.auto:
         frontend = resolve_auto()
@@ -153,5 +154,7 @@ def elaborate_with_blackboxes(
     if frontend is Frontend.slang:
         from rtl_buddy_cdc.frontends import slang as slang_fe
 
-        return slang_fe.elaborate(sources, top, incdirs=incdirs), {}
+        return slang_fe.elaborate_with_blackboxes(
+            sources, top, incdirs=incdirs, blackbox=blackbox, greybox=greybox
+        )
     raise ValueError(f"unknown frontend: {frontend!r}")

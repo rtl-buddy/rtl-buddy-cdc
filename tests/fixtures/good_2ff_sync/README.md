@@ -57,6 +57,7 @@ flowchart LR
 
 ## Files
 
+- `good_2ff_sync.gates.json`
 - `good_2ff_sync.json`
 - `good_2ff_sync.sdc`
 - `good_2ff_sync.sv`

@@ -51,6 +51,7 @@ flowchart LR
 ## Files
 
 - `clock_combine_latch.json`
+- `clock_combine_latch.noclean.json`
 - `clock_combine_latch.sdc`
 - `clock_combine_latch.sv`
 

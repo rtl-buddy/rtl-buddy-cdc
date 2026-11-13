@@ -129,8 +129,9 @@ jobs:
       - name: Run pytest
         run: uv run pytest -q
 
-  # Fuzz + sim + fuzz_diff suites. Gated behind ``@pytest.mark.fuzz`` /
-  # ``@pytest.mark.sim`` / ``@pytest.mark.fuzz_diff`` and skipped by
+  # Fuzz + sim + fuzz_diff + gate_level suites. Gated behind
+  # ``@pytest.mark.fuzz`` / ``@pytest.mark.sim`` /
+  # ``@pytest.mark.fuzz_diff`` / ``@pytest.mark.gate_level`` and skipped by
   # every other job because they require yosys / iverilog on PATH.
   # The ``fuzz_diff`` selection additionally needs the ``[slang]``
   # extra for the cross-frontend differential oracle (Stage-3 Layer C
@@ -214,6 +215,13 @@ jobs:
 
       - name: Run fuzz_grammar suite (Stage-4 grammar topologies)
         run: uv run pytest -m fuzz_grammar -q
+
+      # Gate-level corpus (rtl-buddy-cdc#331): every fixture rebuilt
+      # through a techmap / opt_dff+abc gate flow and compared with the
+      # committed RTL verdict. Needs only yosys; known divergences are
+      # strict-both-ways xfails in tests/test_gate_level_corpus.py.
+      - name: Run gate-level corpus
+        run: uv run pytest -m gate_level -q
 
       - name: Run sim suite
         run: uv run pytest -m sim -q
