@@ -370,6 +370,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   context; the boundary clock-pin walk also makes the same leg choice
   and names a pin's clock canonically.
 
+- **CDC-012 took any destination signal reaching the payload for an
+  acknowledge** (rtl-buddy-cdc#369). A destination-domain bit
+  synchronised into the source and feeding only the payload's value
+  (`data <= mode ? ~d : d`) silenced the rule although nothing held the
+  payload. The acknowledge path is now defined once, for this and the
+  relayed acknowledge above: a register path from a destination register
+  to the payload register's load / hold control — its enable, or the
+  select of the mux that holds it — then register to register through
+  `D` / enable / synchronous-reset pins (source domain first, then other
+  domains). New fixture `bad_datahold_dst_mode_bit`. Every committed
+  CDC-012 good fixture keeps its verdict. The domain map's `"handshake"`
+  verdict uses the same walk, so a relayed acknowledge now reads
+  `"handshake"` there too.
+
 - **CDC-006 fired on a typed input wired straight into a synchroniser**
   (rtl-buddy-cdc#360). Any foreign-clock port in the first stage's `D`
   fanin was reported as a "combinational source", including a port that

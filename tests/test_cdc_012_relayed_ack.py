@@ -1,5 +1,9 @@
-"""CDC-012 recognises an acknowledge relayed through a third clock domain
-(rtl-buddy-cdc#359).
+"""CDC-012's acknowledge path (rtl-buddy-cdc#359, #369).
+
+An acknowledge is a register path from the destination domain to the
+payload register's load / hold *control* (its enable, or the select of
+the mux that holds it) — possibly relayed through a third domain
+(#359), never merely into the payload's *value* (#369).
 
 ``good_handshake_ack_via_third_domain``: the payload crosses clk_a →
 clk_b (gated), and clk_b's acknowledge returns clk_b → clk_c (2FF,
@@ -85,9 +89,41 @@ def test_relay_that_never_hears_the_destination_is_not_an_ack(
     assert "CDC-012" in _run(tmp_path, raw)
 
 
+def test_destination_signal_on_the_payload_value_is_not_an_ack(
+    tmp_path: Path,
+) -> None:
+    """rtl-buddy-cdc#369: a clk_b mode bit, synchronised into clk_a,
+    inverts the payload as it loads. That reaches the payload's ``D`` but
+    holds nothing: CDC-012 fires, and nothing else does."""
+    name = "bad_datahold_dst_mode_bit"
+    assert _run(tmp_path, _raw(name), name) == ["CDC-012"]
+
+
+def test_same_destination_signal_on_the_load_enable_is_an_ack(
+    tmp_path: Path,
+) -> None:
+    """Control for the test above: the very same synchronised clk_b bit,
+    moved from the value mux's select onto the hold mux's select (the
+    payload now loads only when it allows), is an acknowledge."""
+    name = "bad_datahold_dst_mode_bit"
+    raw = copy.deepcopy(_raw(name))
+    mod = raw["modules"][name]
+    m2 = mod["netnames"]["m2"]["bits"]
+    data_q = mod["netnames"]["data_a"]["bits"]
+    hold = [
+        c
+        for c in mod["cells"].values()
+        if c["type"] == "$mux" and c["connections"]["A"] == data_q
+    ]
+    assert len(hold) == 1
+    hold[0]["connections"]["S"] = m2
+    assert "CDC-012" not in _run(tmp_path, raw, name)
+
+
 @pytest.mark.parametrize(
     "fixture",
     [
+        "bad_datahold_dst_mode_bit",
         "bad_handshake_ack_missing",
         "bad_functional_datahold_enable",
         "bad_mixed_handshake_datahold",

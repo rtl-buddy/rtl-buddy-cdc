@@ -2588,11 +2588,8 @@ value — not the payload that motivated the original request.
 
 The textbook fix is a req/ack handshake: source holds the payload
 (and the request) until a synced-back ack proves the destination
-has sampled. The handshake's structural marker — and the rule's
-detection signal — is a src-clock flop with `D`-pin fanin from a
-dst-clock flop's `Q`: the `ack_sync` register. CDC-012 stays
-silent whenever that feedback path is reachable from *this
-crossing's* source flop.
+has sampled. The rule's detection signal is that ack, as an
+**acknowledge path** reachable from *this crossing's* source flop.
 
 The detection is per-crossing:
 
@@ -2606,45 +2603,57 @@ The detection is per-crossing:
    via `ctx.user_grays`). Gray-coded sources guarantee at most one
    bit changes per src cycle, so any dst-side sample is coherent
    regardless of the enable's sync-chain latency.
-4. The crossing's source flop has no register-neighbourhood path
-   back to a `dst_clock` flop (`_has_dst_to_src_feedback`).
+4. The crossing's source flop has no acknowledge path
+   (`_has_dst_to_src_feedback`).
 
-`_has_dst_to_src_feedback` walks the register-neighbourhood of
-`crossing.src_flop`: from the payload register it hops flop → its
-full input fanin (`D` plus enable / set / reset, via
-`_flop_input_fanin_bits`) → flop, staying inside the src domain,
-and reports feedback the moment the walk reaches a dst-domain flop
-(bounded to a handful of flop hops — enough to clear a 2–3FF ack
-synchroniser plus the enable flop(s) gating the payload load). The
-feedback result is cached per `c.src_flop.cell.name`, one entry
-per source flop.
+**The acknowledge path** (rtl-buddy-cdc#359, #369) is a chain of
+registers from a `dst_clock` register to the payload register's
+**load / hold control**. `_has_dst_to_src_feedback` walks it backward
+from the payload register (`crossing.src_flop`):
 
-**Relayed acknowledge (rtl-buddy-cdc#359).** The acknowledge need not
-come straight back: it can go destination → a third domain → source
-(`good_handshake_ack_via_third_domain`: clk_b's ack is synchronised
-into clk_c, re-registered, and synchronised into clk_a). When the
-source-domain walk finds no dst flop, `_has_relayed_feedback` walks
-again from the same source flop, letting the path pass through
-registers of any other known domain: at most 6 source-domain hops (as
-above) and then at most 6 relay hops, with one visited set. Whether
-each hop of the relay is itself synchronised is CDC-001's job — an
-unsynchronised hop is reported there
-(`bad_handshake_ack_via_third_domain`: CDC-001 on the C → A capture,
-no CDC-012). So that a relay is an acknowledge and not a coincidence,
-the relayed walk is narrower than the source-domain one:
+1. **Entry: the hold control only.** `_hold_control_bits` is the
+   payload register's clock enable (`EN` / gate-level `E`) plus the
+   select of every *hold mux* — a mux on a mux-data-leg path from `D`
+   back to the register's own `Q` (`if (load) q <= x` lowers to
+   `$mux(A=q, B=x, S=load)`). The walk starts from those bits'
+   combinational fanin, never from the `D` value. A destination signal
+   that only changes *what* is loaded — a mode bit synchronised into
+   the source and steering `q <= m ? ~x : x` — holds nothing, and is
+   not an acknowledge (`bad_datahold_dst_mode_bit`; before #369 any
+   path into `D` silenced the rule).
+2. **Then register to register** through `_flop_functional_fanin_bits`
+   — `D`, the clock enable, a synchronous reset — never an asynchronous
+   reset, set or load, so a register that hears the destination only
+   through a shared reset carries no acknowledge. At most 6
+   source-domain registers: the ack synchroniser and the request /
+   busy flops the load condition reads. That is also how the request
+   (or toggle) generator counts: when the payload's load is derived
+   from the generator's state, the generator is in the hold-control
+   cone and its own control is walked; a generator that is gated by
+   the ack while the payload loads freely does not hold the payload,
+   and CDC-012 fires.
+3. **Then, if needed, through other domains.** An ack relayed
+   destination → a third domain → source
+   (`good_handshake_ack_via_third_domain`: clk_b's ack is synchronised
+   into clk_c, re-registered, and synchronised into clk_a) is followed
+   through at most 6 registers of domains other than `src_clock`.
+   Whether each relay hop is itself synchronised is CDC-001's job
+   (`bad_handshake_ack_via_third_domain`: CDC-001 on the C → A capture,
+   no CDC-012).
 
-- every hop follows only the pins a register's next *value* flows
-  through — `D`, the clock enable, a synchronous reset
-  (`_flop_functional_fanin_bits`) — never an asynchronous reset, set or
-  load, so a third-domain register that hears the destination only
-  through a shared reset carries no acknowledge;
-- clock-network registers (dividers) and recognised reset
-  synchronisers are never traversed or accepted;
-- a relay register whose own fanin never reaches the destination (a
-  free-running register in the third domain) ends that path.
-
-`tests/test_cdc_012_relayed_ack.py` pins the reset-only and
-free-running relays as still firing.
+The walk reports feedback on reaching a `dst_clock` register, with one
+visited set. Clock-network registers (dividers) and recognised reset
+synchronisers (`_ack_walk_excluded`) are never traversed or accepted; a
+register whose own fanin never reaches the destination (a free-running
+register) ends its path. The feedback result is cached per
+`c.src_flop.cell.name`, and each register's functional fanin is
+computed once per run (`fanin_cache`). The domain map's `"handshake"`
+verdict (`crossing_synchronizer`) uses the same walk.
+`tests/test_cdc_012_relayed_ack.py` pins the relayed ack (clean), the
+mode-bit reproducer (fires), the same bit moved onto the hold mux's
+select (clean), and the reset-only and free-running relays (fire). Every
+committed CDC-012 good fixture holds its payload through its load
+control; none relied on a data-only path.
 
 Feedback presence is a **crossing-level** property, not a
 domain-level one. Scoping the walk to the crossing's own source

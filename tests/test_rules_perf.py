@@ -181,9 +181,11 @@ def test_cdc_012_feedback_walk_computes_each_fanin_once(monkeypatch) -> None:
     which dominated runtime on large datapaths. With the shared
     ``fanin_cache`` each register's fanin is computed once per run.
 
-    Two source flops ``s1`` / ``s2`` (clk_a) both read register ``p``
-    (clk_a), which reads ``q`` (clk_a). Walking from both must compute
-    ``p``'s and ``q``'s fanin once each.
+    Two source flops ``s1`` / ``s2`` (clk_a) both load on an enable
+    that reads register ``p`` (clk_a), which reads ``q`` (clk_a). Walking
+    from both must compute ``p``'s and ``q``'s fanin once each. (The walk
+    enters a source flop through its load control only,
+    rtl-buddy-cdc#369, so the enable is what reaches ``p``.)
     """
     from collections import Counter
 
@@ -200,8 +202,16 @@ def test_cdc_012_feedback_walk_computes_each_fanin_once(monkeypatch) -> None:
         "g": Cell(
             name="g", type="$and", connections={"A": (11,), "B": (10,), "Y": (12,)}
         ),
-        "s1": ff("s1", 2, (12,), (13,)),
-        "s2": ff("s2", 2, (12,), (14,)),
+        "s1": Cell(
+            name="s1",
+            type="$dffe",
+            connections={"CLK": (2,), "EN": (12,), "D": (21,), "Q": (13,)},
+        ),
+        "s2": Cell(
+            name="s2",
+            type="$dffe",
+            connections={"CLK": (2,), "EN": (12,), "D": (22,), "Q": (14,)},
+        ),
         "d1": ff("d1", 3, (13,), (15,)),
         "d2": ff("d2", 3, (14,), (16,)),
     }
@@ -214,19 +224,19 @@ def test_cdc_012_feedback_walk_computes_each_fanin_once(monkeypatch) -> None:
             q=c.connections["Q"],
         )
         for n, c in cells.items()
-        if c.type == "$dff"
+        if c.type in ("$dff", "$dffe")
     }
     domains = {n: ("clk_b" if n.startswith("d") else "clk_a") for n in cells}
     drivers = rules._bit_drivers(module)
 
     computed: Counter[str] = Counter()
-    real = rules._flop_input_fanin_bits
+    real = rules._flop_functional_fanin_bits
 
     def counting(flop: Flop):
         computed[flop.cell.name] += 1
         return real(flop)
 
-    monkeypatch.setattr(rules, "_flop_input_fanin_bits", counting)
+    monkeypatch.setattr(rules, "_flop_functional_fanin_bits", counting)
     cache: dict[str, set[str]] = {}
     for src, dst in (("s1", "d1"), ("s2", "d2")):
         c = Crossing(
