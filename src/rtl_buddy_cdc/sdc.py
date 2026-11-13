@@ -12,9 +12,12 @@ Supported commands:
     set_false_path  -from [get_clocks A] -to [get_clocks B]
     set_input_delay  -clock <name> … [get_ports <port>]
     set_output_delay -clock <name> … [get_ports <port>]
+    set_max_delay <v> -datapath_only -from <clocks|objects> -to <…>
 
 Numeric delays, slack, drive, load — all silently dropped. The parser
 only cares about clock topology and async-partitioning, not timing.
+``set_max_delay`` *without* ``-datapath_only`` is still dropped as STA
+noise; with it, the constraint is CDC intent (rtl-buddy-cdc#325).
 
 The implementation has two layers (issue #144 for the original design
 discussion, rtl-buddy-cdc#298 for the reader split). Layer 1 *reads*
@@ -81,6 +84,7 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -96,7 +100,7 @@ from rtl_buddy_cdc.tcl_tokenizer import _extract_names, _tokenize
 # (see this module's docstring for why). That module imports
 # ``tkinter`` lazily inside its own ``main()``, so naming it here costs
 # nothing and, critically, does not pull ``_tkinter`` into this process.
-from rtl_buddy_cdc.tcl_worker import WORKER_MODULE
+from rtl_buddy_cdc.tcl_worker import WORKER_MODULE, _strip_collection_wrappers
 
 if TYPE_CHECKING:
     from rtl_buddy_cdc.netlist import Module
@@ -108,6 +112,7 @@ __all__ = [
     "BACKEND_ENV_VAR",
     "Clock",
     "ClockSpec",
+    "DatapathOnlyDelay",
     "TclReadError",
     "TclResourceLimitError",
     "UNCONSTRAINED_SENTINEL",
@@ -146,6 +151,41 @@ class Clock:
     is_generated: bool = False
 
 
+@dataclass(frozen=True)
+class DatapathOnlyDelay:
+    """One ``set_max_delay -datapath_only`` constraint (rtl-buddy-cdc#325).
+
+    ``from_clocks`` / ``to_clocks`` hold the endpoints given as clocks
+    (``[get_clocks A]``, or a bare / braced name — the same reading
+    ``set_false_path`` gives a bare endpoint). Every other collection
+    (``[get_cells …]``, ``[get_pins …]``, ``[get_ports …]``,
+    ``[get_nets …]``) lands in ``from_objects`` / ``to_objects`` as a
+    ``(kind, name)`` pair — ``kind`` is the collection noun (``"cell"``,
+    ``"pin"``, ``"port"``, ``"net"``) and ``name`` keeps the SDC ``/``
+    hierarchy separator. Objects are **recorded, not resolved** against
+    the netlist: object-scoped endpoints are rtl-buddy-cdc#328's seam.
+
+    ``value`` is the max-delay bound in SDC time units, or ``None`` when
+    the command carried no numeric operand.
+    """
+
+    value: float | None
+    from_clocks: tuple[str, ...] = ()
+    to_clocks: tuple[str, ...] = ()
+    from_objects: tuple[tuple[str, str], ...] = ()
+    to_objects: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def is_clock_pair(self) -> bool:
+        """True when both sides are clocks only — a clock-pair constraint."""
+        return bool(
+            self.from_clocks
+            and self.to_clocks
+            and not self.from_objects
+            and not self.to_objects
+        )
+
+
 @dataclass
 class ClockSpec:
     """The fully parsed CDC-relevant view of an SDC file."""
@@ -179,6 +219,18 @@ class ClockSpec:
     # chain. The pin path uses SDC convention (``/`` separator); the
     # consumer normalises to Yosys' flattened netname (``.`` separator).
     pin_clocks: dict[str, str] = field(default_factory=dict)
+    # Every ``set_max_delay -datapath_only`` constraint, in file order
+    # (rtl-buddy-cdc#325). Recorded whatever its endpoints are; only
+    # the clock-pair ones feed ``datapath_only_pairs``.
+    datapath_only_delays: list[DatapathOnlyDelay] = field(default_factory=list)
+    # Unordered ``{from, to}`` clock pairs carrying a clock-to-clock
+    # ``set_max_delay -datapath_only``. A datapath-only bound exists
+    # only where the launch and capture clocks are not timed against
+    # each other, so the pair is an intended asynchronous crossing:
+    # ``are_async`` treats it as async and, unlike ``false_path_pairs``,
+    # lets it override a generated→master collapse and an exclusive
+    # group — the more-reporting reading (see ``are_async``).
+    datapath_only_pairs: set[frozenset[str]] = field(default_factory=set)
     # Diagnostics accumulated during parse. Each entry is a single
     # human-readable sentence describing a CDC-relevant command the
     # parser couldn't fully understand. Surfaced once at the end of
@@ -241,6 +293,17 @@ class ClockSpec:
            masters and compare. Same-root → sync. Otherwise check
            ``false_path_pairs`` and async groups against the
            resolved roots too.
+
+        A clock-pair ``set_max_delay -datapath_only``
+        (``datapath_only_pairs``, rtl-buddy-cdc#325) is an async hint
+        like a false path, but it is also an explicit override in step
+        1: it wins over the same-root collapse of step 2. Bounding only
+        the datapath is what a constraints author does when the two
+        clocks are *not* timed against each other, so when that
+        contradicts a generated→master relationship (or two clocks
+        sharing one ``-group``, which ``are_async`` already reads as
+        synchronous) the analyzer takes the reading that reports more:
+        the crossing is checked for a synchroniser.
         """
         if a == b:
             return False
@@ -258,6 +321,8 @@ class ClockSpec:
             gb = next((g for g in groups if b in g), None)
             if ga is not None and gb is not None and ga is not gb:
                 return True
+        if self._is_datapath_only_pair(a, b):
+            return True
         # Step 2: resolved-root comparison.
         ra = self.resolve(a)
         rb = self.resolve(b)
@@ -282,8 +347,15 @@ class ClockSpec:
         ``ck0`` or ``ck1``). A flop→flop "crossing" between them is a
         static-analysis artifact, not a real path, and should be
         dropped before any rule sees it.
+
+        A pair carrying a clock-pair ``set_max_delay -datapath_only`` is
+        never unreachable (rtl-buddy-cdc#325): bounding a path's delay
+        says its author believes the path is live, and dropping it would
+        hide the crossing — the less-reporting reading.
         """
         if a == b:
+            return False
+        if self._is_datapath_only_pair(a, b):
             return False
         ra = self.resolve(a)
         rb = self.resolve(b)
@@ -295,6 +367,21 @@ class ClockSpec:
             if ga is not None and gb is not None and ga is not gb:
                 return True
         return False
+
+    def _is_datapath_only_pair(self, a: str, b: str) -> bool:
+        """True when a clock-pair ``-datapath_only`` bound links ``a`` and ``b``.
+
+        Checked on the names as given and on their resolved roots, so a
+        constraint written between two masters also covers crossings
+        between clocks generated from them.
+        """
+        if not self.datapath_only_pairs:
+            return False
+        if frozenset({a, b}) in self.datapath_only_pairs:
+            return True
+        ra = self.resolve(a)
+        rb = self.resolve(b)
+        return ra != rb and frozenset({ra, rb}) in self.datapath_only_pairs
 
 
 # ---- parser entry points ----------------------------------------------------
@@ -376,6 +463,12 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             )
             continue
         spec_for_cmd = ARG_SPECS.get(cmd)
+        gate = _COMMAND_GATES.get(cmd)
+        if gate is not None and not gate(args):
+            # A command that is CDC-relevant only in one form (plain
+            # ``set_max_delay`` is STA noise; ``-datapath_only`` is CDC
+            # intent) is dropped exactly like an unrecognised one.
+            spec_for_cmd = None
         if spec_for_cmd is None:
             # Drop noise (set_max_delay, set_load, set_drive, …) at
             # DEBUG level so users can see what was skipped via
@@ -1081,6 +1174,35 @@ ARG_SPECS: dict[str, ArgSpec] = {
     ),
     "set_input_delay": _DELAY_SPEC,
     "set_output_delay": _DELAY_SPEC,
+    "set_max_delay": ArgSpec(
+        flags={
+            "-datapath_only": Arity.ZERO,
+            "-from": Arity.GREEDY,
+            "-to": Arity.GREEDY,
+            "-rise_from": Arity.GREEDY,
+            "-fall_from": Arity.GREEDY,
+            "-rise_to": Arity.GREEDY,
+            "-fall_to": Arity.GREEDY,
+            "-through": Arity.GREEDY,
+            "-rise_through": Arity.GREEDY,
+            "-fall_through": Arity.GREEDY,
+            "-rise": Arity.ZERO,
+            "-fall": Arity.ZERO,
+            "-reset_path": Arity.ZERO,
+            "-ignore_clock_latency": Arity.ZERO,
+            "-comment": Arity.ONE,
+        },
+    ),
+}
+
+# Commands in ``ARG_SPECS`` that are CDC-relevant only in some forms.
+# The predicate sees the raw argument words; a False answer sends the
+# command down the unrecognised-command path (DEBUG log, tokenizer-skip
+# note), exactly as if it had no ``ARG_SPECS`` entry.
+_COMMAND_GATES: dict[str, Callable[[list[str]], bool]] = {
+    # Plain set_max_delay is STA noise and stays ignored; only the
+    # -datapath_only form carries CDC intent (rtl-buddy-cdc#325).
+    "set_max_delay": lambda args: "-datapath_only" in args,
 }
 
 
@@ -1348,6 +1470,106 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
         spec.port_clock[port] = clock
 
 
+def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:
+    """Parse ``set_max_delay <v> -datapath_only -from … -to …`` (#325).
+
+    Only reached for the ``-datapath_only`` form (see
+    :data:`_COMMAND_GATES`). Every such constraint is recorded on
+    :attr:`ClockSpec.datapath_only_delays`; a clock-to-clock one also
+    adds its pairs to :attr:`ClockSpec.datapath_only_pairs`, which
+    ``are_async`` reads as an intended asynchronous crossing.
+
+    Endpoints are split per collection: ``[get_clocks …]`` and bare /
+    braced names are clocks (as for ``set_false_path``); any other
+    ``get_*`` collection is recorded as a ``(kind, name)`` object
+    endpoint and **not** interpreted — resolving cells / pins against
+    the netlist is rtl-buddy-cdc#328's job. ``-through`` narrows the
+    constraint to specific paths, so it is never a clock-pair hint.
+    The delay value is the numeric operand wherever it sits — before
+    the flags, or after them, where a GREEDY ``-to`` slurps it.
+    """
+    if (
+        p.present("-through")
+        or p.present("-rise_through")
+        or p.present("-fall_through")
+    ):
+        spec.partial_warnings.append(
+            "set_max_delay -datapath_only: -through clauses are path-specific "
+            "and not interpreted as clock-pair async hints"
+        )
+        return
+
+    value: float | None = None
+    from_clocks: list[str] = []
+    to_clocks: list[str] = []
+    from_objects: list[tuple[str, str]] = []
+    to_objects: list[tuple[str, str]] = []
+    saw_filter = False
+
+    def take_value(word: str) -> bool:
+        nonlocal value
+        if not _looks_numeric(word):
+            return False
+        if value is None:
+            value = float(word)
+        return True
+
+    for word in p.tail:
+        take_value(word)
+
+    for flag, clocks, objects in (
+        ("-from", from_clocks, from_objects),
+        ("-rise_from", from_clocks, from_objects),
+        ("-fall_from", from_clocks, from_objects),
+        ("-to", to_clocks, to_objects),
+        ("-rise_to", to_clocks, to_objects),
+        ("-fall_to", to_clocks, to_objects),
+    ):
+        for slurped in p.all(flag):
+            for word in slurped:
+                if take_value(word):
+                    continue
+                kind, names, sf = _split_collection(word)
+                saw_filter = saw_filter or sf
+                if kind is None or kind == "clock":
+                    clocks.extend(names)
+                else:
+                    objects.extend((kind, n) for n in names)
+
+    if saw_filter:
+        spec.partial_warnings.append(
+            "set_max_delay -datapath_only: ignored unsupported -filter clause"
+        )
+    if not (from_clocks or from_objects) or not (to_clocks or to_objects):
+        spec.partial_warnings.append(
+            "set_max_delay -datapath_only: incomplete -from/-to endpoint list, ignored"
+        )
+        return
+
+    record = DatapathOnlyDelay(
+        value=value,
+        from_clocks=tuple(dict.fromkeys(from_clocks)),
+        to_clocks=tuple(dict.fromkeys(to_clocks)),
+        from_objects=tuple(dict.fromkeys(from_objects)),
+        to_objects=tuple(dict.fromkeys(to_objects)),
+    )
+    spec.datapath_only_delays.append(record)
+    if not record.is_clock_pair:
+        objs = sorted(
+            {f"{k} {n}" for k, n in (*record.from_objects, *record.to_objects)}
+        )
+        spec.partial_warnings.append(
+            f"set_max_delay -datapath_only: object endpoints ({', '.join(objs)}) "
+            "are recorded but not interpreted — only a clock-to-clock "
+            "constraint marks a clock pair as an intended async crossing"
+        )
+        return
+    for a in record.from_clocks:
+        for b in record.to_clocks:
+            if a != b:
+                spec.datapath_only_pairs.add(frozenset({a, b}))
+
+
 _DISPATCH = {
     "create_clock": _handle_create_clock,
     "create_generated_clock": _handle_create_generated_clock,
@@ -1355,6 +1577,7 @@ _DISPATCH = {
     "set_false_path": _handle_set_false_path,
     "set_input_delay": _handle_set_delay,
     "set_output_delay": _handle_set_delay,
+    "set_max_delay": _handle_set_max_delay,
 }
 
 
@@ -1371,6 +1594,61 @@ def _extract_clock_list(token: str) -> list[str]:
     """Turn ``"{src_clk dst_clk}"`` / ``"src_clk"`` into a name list."""
     names, _ = _extract_names(token)
     return names
+
+
+#: ``get_*`` collection command → the object kind recorded for it.
+_COLLECTION_KINDS: dict[str, str] = {
+    "get_clocks": "clock",
+    "get_ports": "port",
+    "get_pins": "pin",
+    "get_cells": "cell",
+    "get_nets": "net",
+}
+
+
+def _split_collection(word: str) -> tuple[str | None, list[str], bool]:
+    """Split one endpoint / target word into ``(kind, names, saw_filter)``.
+
+    ``kind`` is ``None`` for a bare or braced name list (``clk``,
+    ``{a b}`` — or ``a b`` once the Tcl backend has evaluated the
+    braces away), else the collection's noun from
+    :data:`_COLLECTION_KINDS` (an unlisted head such as
+    ``all_registers`` is kept verbatim). Unlike
+    :func:`~rtl_buddy_cdc.tcl_tokenizer._extract_names` this keeps a
+    bus index on the name (``{sel[3]}`` → ``sel[3]``) and recognises
+    every ``get_*`` head, which is what an object endpoint needs; the
+    tokenizer module stays untouched because rtl-buddy vendors it.
+
+    Works on both backends' word shapes: the tokenizer hands through
+    ``[get_ports {sel[3]}]`` verbatim, the Tcl reader hands back
+    ``[get_ports sel[3]]`` (braces evaluated, collection re-wrapped),
+    and a nested ``[get_pins [get_cells u]/C]`` from the tokenizer is
+    peeled to ``u/C`` the way the Tcl worker already does.
+    """
+    text = word.strip()
+    kind: str | None = None
+    if text.startswith("[") and text.endswith("]"):
+        inner = _strip_collection_wrappers(text[1:-1])
+        parts = inner.replace("{", " ").replace("}", " ").split()
+        if parts:
+            head, parts = parts[0], parts[1:]
+            kind = _COLLECTION_KINDS.get(head, head)
+    else:
+        parts = text.replace("{", " ").replace("}", " ").split()
+    names: list[str] = []
+    saw_filter = False
+    for tok in parts:
+        if tok == "-filter":
+            # The filter expression is everything after the flag in
+            # practice; drop it (and say so via ``saw_filter``).
+            saw_filter = True
+            break
+        if tok.startswith("-"):
+            # Vendor flags inside a get_* expression (-hierarchical,
+            # -quiet, -of_objects …) carry no name we can use.
+            continue
+        names.append(tok)
+    return kind, names, saw_filter
 
 
 def _looks_numeric(word: str) -> bool:

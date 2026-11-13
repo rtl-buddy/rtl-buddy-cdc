@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`set_max_delay -datapath_only` is read as CDC intent** (#325) — the
+  constraint that bounds an intentional async crossing's datapath was
+  dropped as STA noise, so a pair related only by it looked synchronous
+  and its crossings were never checked. A clock-to-clock
+  `set_max_delay <v> -datapath_only -from [get_clocks A] -to [get_clocks B]`
+  now marks the pair as an intended asynchronous crossing, exactly like
+  `set_false_path -from/-to` — and, unlike a false path, also wins over
+  a generated→master relationship or an exclusive group for that pair
+  (the more-reporting reading). Object endpoints (`[get_cells …]`,
+  `[get_pins …]`, `[get_ports …]`) are recorded but not interpreted
+  (warning; object resolution is #328's job); `-through` is not
+  interpreted (warning). Plain `set_max_delay` stays ignored exactly as
+  before. Both SDC backends.
+- **Domain map schema 1.3** (#325), additive: top-level
+  `datapath_only_pairs` (sorted clock pairs, same shape as
+  `false_path_pairs`) and `max_delay_datapath_only` (every
+  datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
+  `to_objects` as `{kind, name}`, `value`, `clock_pair`).
+
 ## [0.7.3] — 2026-10-31
 
 ### Changed
