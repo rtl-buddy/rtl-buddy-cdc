@@ -59,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are not normalised, so CDC-021 still sees raw port names.
   `set_input_delay`-typed data ports never count as clocks.
 
+- **CDC-013 recognises a toggle folded into an enable flop** (#338).
+  `opt_dff` (so any synthesis-shaped flow) turns `if (en) q <= ~q;`
+  into an enable flop with `D = ~Q` and `en` on the enable pin, instead
+  of the hold mux `D = en ? ~Q : Q` that `proc` leaves. The toggle
+  classifier knew only the mux, so CDC-013 (and the domain map's
+  `pulse` synchroniser label) was lost on optimised netlists. It now
+  accepts both shapes, on coarse (`$dffe` / `$adffe` / `$sdffe` /
+  `$sdffce` …) and gate-level (`$_DFFE_*` / `$_SDFFE_*` …, `$_NOT_`)
+  cells and either enable polarity. `D = ~Q` without an enable (or
+  with a constant one) is a divider, not a toggle, and stays silent.
+  The slang frontend never emits enable flops, so it was not affected.
 - **Verdicts no longer depend on dead cells** (#338). Without
   `opt_clean` in the netlist flow, an unloaded `$not` of a clock fired
   CDC-008, and the `for`-loop counter register `proc` leaves in a reset

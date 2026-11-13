@@ -22,8 +22,8 @@ from __future__ import annotations
 from typing import Literal
 
 from rtl_buddy_cdc.cells import MUX2_TYPES
-from rtl_buddy_cdc.flops import is_ff_cell
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.flops import flop_enable_pin, is_ff_cell
+from rtl_buddy_cdc.netlist import Bit, Cell, Module
 
 PulseShape = Literal["pulse", "other"]
 
@@ -127,32 +127,41 @@ def classify_toggle_d_pin(
     src_q_bit: Bit,
     module: Module,
     bit_drivers: dict[Bit, tuple[str, str, int]],
+    *,
+    flop: Cell | None = None,
 ) -> ToggleShape:
     """Classify whether ``d_bit`` is a toggle-with-enable pattern.
 
-    Returns ``"toggle"`` iff ``d_bit`` is the ``Y`` of a ``$mux`` (or
-    gate-level ``$_MUX_``) whose
-    two data inputs (``A``, ``B``) are ``(src_q_bit, ~src_q_bit)`` in
-    either order — where ``~src_q_bit`` is the ``Y`` of a cell in
-    :data:`_NOT_TYPES` whose ``A`` is ``src_q_bit``. The mux's ``S``
-    pin can be anything: the load-enable for the toggle.
+    ``always_ff @(posedge clk) if (en) q <= ~q;`` reaches the netlist in
+    one of two shapes, and both return ``"toggle"``:
 
-    This is the structural shape of ``always_ff @(posedge clk)
-    if (en) q <= ~q;`` after Yosys' ``proc`` pass — Yosys synthesises
-    the conditional as ``D = en ? ~Q : Q`` (or the mirror), which
-    materialises as the ``$mux(A=Q, B=~Q, S=en)`` cell shape.
+    - **Hold mux.** After ``proc``, ``D = en ? ~Q : Q``: ``d_bit`` is the
+      ``Y`` of a ``$mux`` (or gate-level ``$_MUX_``) whose two data
+      inputs (``A``, ``B``) are ``(src_q_bit, ~src_q_bit)`` in either
+      order. The select can be anything: the load-enable.
+    - **Folded enable** (rtl-buddy-cdc#338). ``opt_dff`` (and any synthesis
+      flow that runs it) folds the hold mux into the flop: ``flop`` is an
+      enable flop (``$dffe`` / ``$adffe`` / ``$sdffe`` / ``$sdffce`` /
+      ``$dffsre`` / ``$aldffe``, gate-level ``$_DFFE_*`` / ``$_SDFFE_*``
+      / …) whose ``D`` is ``~Q`` directly and whose enable pin carries a
+      signal, not a constant. Either enable polarity: the flop toggles
+      while the enable is active, whichever level that is. Needs
+      ``flop`` — without it only the hold-mux shape is recognised.
 
-    The classifier is shape-only; it does not look at the select pin
-    and does not check the post-sync side of the crossing. CDC-013's
-    rule body composes this with the fast-to-slow clock-ratio
-    condition (parallel to how CDC-009 composes
+    ``~src_q_bit`` is the ``Y`` of a cell in :data:`_NOT_TYPES` whose
+    ``A`` is ``src_q_bit``.
+
+    The classifier is shape-only; it does not check the post-sync side
+    of the crossing. CDC-013's rule body composes this with the
+    fast-to-slow clock-ratio condition (parallel to how CDC-009 composes
     :func:`classify_d_pin_shape` with the same ratio check).
 
     Returns ``"other"`` for handshake / req-ack patterns whose ``D``
     is a priority-encoded ``$mux`` nest with non-``Q`` data inputs,
     for counter / pulse-stretcher patterns whose ``D`` is a reduction
-    or adder, and for ``$dffe``-style enable flops whose ``D`` is just
-    ``~Q`` (no mux — the enable is on a separate pin).
+    or adder, for an enable flop whose ``D`` inverts some other signal,
+    and for ``D = ~Q`` on a flop with no enable (or a constant one): a
+    free-running divider, not an event toggle.
     """
     if not isinstance(d_bit, int) or not isinstance(src_q_bit, int):
         return "other"
@@ -161,7 +170,13 @@ def classify_toggle_d_pin(
         return "other"
     cell_name, port, _ = drv
     cell = module.cells.get(cell_name)
-    if cell is None or cell.type not in MUX2_TYPES or port != "Y":
+    if cell is None or port != "Y":
+        return "other"
+    if cell.type in _NOT_TYPES:
+        if flop is not None and _is_not_of(cell, src_q_bit) and _has_live_enable(flop):
+            return "toggle"
+        return "other"
+    if cell.type not in MUX2_TYPES:
         return "other"
     a_bits = cell.connections.get("A", ())
     b_bits = cell.connections.get("B", ())
@@ -181,10 +196,25 @@ def classify_toggle_d_pin(
         not_cell = module.cells.get(not_cell_name)
         if not_cell is None or not_cell.type not in _NOT_TYPES or not_port != "Y":
             continue
-        not_a = not_cell.connections.get("A", ())
-        if len(not_a) == 1 and not_a[0] == src_q_bit:
+        if _is_not_of(not_cell, src_q_bit):
             return "toggle"
     return "other"
+
+
+def _is_not_of(not_cell: Cell, bit: Bit) -> bool:
+    """``not_cell`` (an inverter) inverts exactly ``bit``."""
+    not_a = not_cell.connections.get("A", ())
+    return len(not_a) == 1 and not_a[0] == bit
+
+
+def _has_live_enable(flop: Cell) -> bool:
+    """``flop`` has a clock-enable pin driven by a signal, not a
+    constant (a constant enable is a plain flop or a stuck one)."""
+    pin = flop_enable_pin(flop)
+    if pin is None:
+        return False
+    bits = flop.connections.get(pin, ())
+    return len(bits) == 1 and isinstance(bits[0], int)
 
 
 def _src_flop_d_pin(
