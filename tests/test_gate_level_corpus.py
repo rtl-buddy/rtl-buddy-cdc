@@ -154,18 +154,14 @@ _FRONT_HALF_CLEANUP: dict[str, str] = {
 # at all) and the rule's structural definition does not reach it.
 
 # rtl-buddy-cdc#336 (reset pin R, gate-flop clock polarity, $_MUX_,
-# gate-level clock gating) and rtl-buddy-cdc#338 (the enable-flop toggle
-# opt_dff folds) are fixed; their rows are gone. The causes below are
+# gate-level clock gating), rtl-buddy-cdc#338 (the enable-flop toggle
+# opt_dff folds) and rtl-buddy-cdc#354 (the constant-leg reset mux abc
+# rewrites into a $_NOT_) are fixed; their rows are gone. The causes below are
 # what remains.
 
 _R_OPT_CONST_FLOP = (
     "inherent: opt_dff removes the stuck-at-0 `meta` flop that is the "
     "bug under test (optimisation changes the design, not the lowering)"
-)
-_R_ABC_RESET_INVERTER = (
-    "lowering: abc rewrites the constant-leg $mux (rst_n ? 0 : 1) that "
-    "drives the clear pin into a $_NOT_; RDC-006 (muxed async reset) "
-    "keys on a mux driving the reset pin, and an inverter is not one"
 )
 
 
@@ -176,7 +172,6 @@ def _both(reason: str) -> dict[str, str]:
 _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     # Lowering / optimisation changes the structure under test.
     "bad_reset_sync_deassert_polarity": {"synth": _R_OPT_CONST_FLOP},
-    "flop_zoo_crossing": {"synth": _R_ABC_RESET_INVERTER},
 }
 
 

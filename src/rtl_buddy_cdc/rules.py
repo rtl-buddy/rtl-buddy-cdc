@@ -3297,9 +3297,16 @@ def check_rdc_005(
         if isinstance(rst_bit, int):
             drv = ctx.bit_drivers.get(rst_bit)
             if drv is not None:
-                drv_cell_name, _, _ = drv
+                drv_cell_name, _, drv_idx = drv
                 drv_cell = module.cells.get(drv_cell_name)
-                if drv_cell is not None and drv_cell.type in MUX_PINS:
+                # A constant-leg mux selects no reset source; it is an
+                # inverter / buffer of its select, so it gets no
+                # exemption (rtl-buddy-cdc#354).
+                if (
+                    drv_cell is not None
+                    and drv_cell.type in MUX_PINS
+                    and not _is_constant_leg_mux_bit(drv_cell, drv_idx)
+                ):
                     continue
         # RDC-004 already owns the "fanin reaches flops" case.
         fanin_flops = _backward_flop_fanin(module, rst_bits, ctx.bit_drivers)
@@ -3381,6 +3388,27 @@ def _backward_port_fanin(
     return ports
 
 
+def _is_constant_leg_mux_bit(cell: Cell, out_idx: int) -> bool:
+    """Whether output bit ``out_idx`` of mux ``cell`` selects only
+    between constants, i.e. is a Boolean function of the select pins
+    alone (rtl-buddy-cdc#354).
+
+    Every data pin of a :data:`MUX_PINS` cell is a whole number of
+    ``len(Y)``-bit words (``$pmux`` ``B`` holds one word per case; the
+    gate-level muxes are 1 bit wide), so lane ``out_idx`` of each word
+    is the bit that can reach output bit ``out_idx``. Yosys writes
+    constants as string bits (``"0"`` / ``"1"`` / ``"x"`` / ``"z"``).
+    """
+    width = len(cell.connections.get("Y", ()))
+    if width == 0:
+        return False
+    lanes: list[Bit] = []
+    for pin in MUX_PINS[cell.type][0]:
+        bits = cell.connections.get(pin, ())
+        lanes.extend(bits[out_idx::width])
+    return bool(lanes) and all(not isinstance(b, int) for b in lanes)
+
+
 def check_rdc_006(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -3439,9 +3467,16 @@ def check_rdc_006(
         drv = ctx.bit_drivers.get(rst_bit)
         if drv is None:
             continue
-        drv_cell_name, _, _ = drv
+        drv_cell_name, _, drv_idx = drv
         drv_cell = module.cells.get(drv_cell_name)
         if drv_cell is None or drv_cell.type not in MUX_PINS:
+            continue
+        # A mux whose data legs are all constants is combinational logic
+        # of its select — ``rst_n ? 1'b0 : 1'b1`` is an inverter — not a
+        # choice between reset sources (rtl-buddy-cdc#354). A comb-driven
+        # select is RDC-004's / RDC-005's to report, as it is once a
+        # synthesis flow rewrites the mux into the ``$_NOT_`` it is.
+        if _is_constant_leg_mux_bit(drv_cell, drv_idx):
             continue
         # Walk only the mux's *data* legs for the message — the
         # select pin is a control signal, not a reset source, and

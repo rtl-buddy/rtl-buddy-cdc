@@ -7,7 +7,7 @@ icg_port_enable — the COMMON, safe ICG shape and the regression guard for the 
 - **Status:** auxiliary
 - **Top module:** `icg_port_enable`
 - **Clocks:** `clk` (10.0 ns)
-- **Crossings:** 0 structural (0 async-per-SDC, 0 sync)
+- **Crossings:** 1 structural (1 async-per-SDC, 0 sync)
 
 ## Clock-domain map
 
@@ -16,7 +16,9 @@ icg_port_enable — the COMMON, safe ICG shape and the regression guard for the 
 flowchart LR
   subgraph clk_clk["clk · 10.0 ns"]
     direction TB
+    f_8a83aee3["$procdff$17<br/><i>sv:17</i>"]:::ckcls_clk
   end
+  p_in_d -. "⚠ async · 1b" .-> f_8a83aee3
   style clk_clk fill:none,stroke:#cbd5e1
   classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a
   classDef port_unassigned fill:#f4f4f5,stroke:#71717a,color:#0f172a

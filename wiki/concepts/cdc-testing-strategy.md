@@ -35,6 +35,37 @@ Each CDC rule has at least one **bad fixture** (designed to fire it) and one **g
 | `test_rules_perf.py` | Synthetic 500-flop micro-benchmark — regression sentinel for the `_RuleContext` memoisation |
 | `test_gate_level_corpus.py` | Every fixture rebuilt through a Yosys gate flow; per-rule verdict must match the committed RTL netlist (see [Gate-level corpus](#gate-level-corpus)) |
 | `test_flop_zoo_crossing.py` | `flop_zoo_crossing`: one `$aldff` / `$dffsr` / `$sdffce` / `$adffe` / `$dffe` capture each, the flop families no other fixture produces |
+| `test_sdc_clock_variety_fixtures.py` | The SDC-variety and three-to-five-clock fixtures (see [SDC and clock-structure fixtures](#sdc-and-clock-structure-fixtures)): one verdict table checked through `analyze -f json` on both SDC backends, plus the parsed `ClockSpec` for each SDC form |
+
+### SDC and clock-structure fixtures
+
+Until rtl-buddy-cdc#331 nearly every fixture had two clocks, one
+`set_clock_groups -asynchronous` and period-only `create_clock`. 27
+fixtures now cover the rest of the SDC subset and clock structures that
+need more than two domains. Each fixture's leading comment derives its
+expected verdict from the rule definitions; the table in
+`test_sdc_clock_variety_fixtures.py` holds it as `(rule, source
+register, destination register)` triples, so a finding that moves to
+another crossing fails as well as one that appears or disappears.
+
+| Subject | Fixtures | What they pin |
+|---|---|---|
+| Generated clocks | `good_gen_clock_chain`, `bad_gen_clock_async_to_master`, `*_gen_clock_edges_invert`, `*_four_clock_mixed` | `-divide_by` of a `-divide_by` on pins, `-edges`, `-invert`, `-combinational`, `-multiply_by` on a port; a group naming a root covers its generated clocks; an explicit override (`-group {clk} -group {ck_div2}`) covers the named clocks only |
+| Clock groups | `*_clock_groups_two_statements`, `*_four_clock_mixed`, `*_five_clock_exclusive` | two statements (a pair no single statement separates stays synchronous), several clocks per group, five groups, `-physically_exclusive` and `-logically_exclusive` beside `-asynchronous` |
+| False paths | `*_false_path_one_direction`, `good_false_path_through_bus`, `bad_false_path_through_partial` | a one-way clock-pair false path covers the pair; `-through [get_pins …]` acknowledges only the bus whose paths pass the pin |
+| Datapath-only | `*_datapath_only_overrides` | `-datapath_only` beats a generated relation and an exclusive group |
+| Case analysis | `good_case_analysis_mode_sel0`, `bad_case_analysis_mode_sel1` | one RTL, two modes on a braced bus bit behind an inverter: the crossing disappears in one and appears in the other |
+| Virtual clocks | `*_virtual_clock_io` | `set_input_delay` / `set_output_delay` against virtual clocks; port-sourced CDC-001, CDC-024 |
+| Tcl | `tcl_generated_constraints` | variables, `expr`, lists, `dict`, `foreach`, `{*}` on the `tcl` backend; on `tokenizer` nothing is declared and three CDC-021 fire |
+| Three to five clocks | `*_three_domain_chain`, `*_four_clock_mixed`, `*_five_clock_exclusive`, `good_reconvergence_two_source_domains`, `bad_reconvergence_three_domains`, `*_handshake_ack_via_third_domain` | relays, a crossing for every clock pair, unreachable crossings, CDC-005 only for one source resolved twice, an acknowledge relayed through a third domain |
+
+Four strict `xfail`s record analyzer gaps these fixtures found:
+`good_gen_clock_chain` (the rule context assigns domains without
+`pin_clocks`, so a 2FF synchroniser clocked by a pin-declared generated
+clock reads as depth 1), `*_handshake_ack_via_third_domain` (CDC-012's
+feedback walk stays in the source domain), and `good_virtual_clock_io`
+(CDC-006 fires on a typed port wired straight into a 2FF synchroniser).
+All 27 agree across the gate-level legs.
 
 ### JSON Fixtures
 

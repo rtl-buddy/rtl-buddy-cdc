@@ -13,7 +13,7 @@ When `leaf` is blackboxed via `read_slang --blackboxed-module leaf`, it survives
 - **Status:** auxiliary
 - **Top module:** `blackbox_leaf_crossing`
 - **Clocks:** `clk_a` (10.0 ns), `clk_b` (7.0 ns)
-- **Crossings:** 0 structural (0 async-per-SDC, 0 sync)
+- **Crossings:** 1 structural (1 async-per-SDC, 0 sync)
 
 ## Clock-domain map
 

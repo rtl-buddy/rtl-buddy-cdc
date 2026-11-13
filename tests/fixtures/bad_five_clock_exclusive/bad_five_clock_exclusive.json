@@ -1,0 +1,787 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_five_clock_exclusive": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:20.1-100.10"
+      },
+      "ports": {
+        "clk_sys": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_m0": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "clk_m1": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "clk_io": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "clk_dbg": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 7 ]
+        },
+        "d_m0": {
+          "direction": "input",
+          "bits": [ 8 ]
+        },
+        "d_m1": {
+          "direction": "input",
+          "bits": [ 9 ]
+        },
+        "d_io": {
+          "direction": "input",
+          "bits": [ 10 ]
+        },
+        "d_dbg": {
+          "direction": "input",
+          "bits": [ 11 ]
+        },
+        "q_sys": {
+          "direction": "output",
+          "bits": [ 12 ]
+        },
+        "q_m1": {
+          "direction": "output",
+          "bits": [ 13 ]
+        },
+        "q_dbg": {
+          "direction": "output",
+          "bits": [ 14 ]
+        }
+      },
+      "cells": {
+        "$procdff$27": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:85.5-97.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 15 ],
+            "Q": [ 16 ]
+          }
+        },
+        "$procdff$32": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:85.5-97.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 16 ],
+            "Q": [ 17 ]
+          }
+        },
+        "$procdff$37": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:85.5-97.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 18 ],
+            "Q": [ 19 ]
+          }
+        },
+        "$procdff$42": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:85.5-97.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 19 ],
+            "Q": [ 20 ]
+          }
+        },
+        "$procdff$47": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:85.5-97.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 21 ],
+            "Q": [ 22 ]
+          }
+        },
+        "$procdff$52": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:85.5-97.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 22 ],
+            "Q": [ 23 ]
+          }
+        },
+        "$procdff$57": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:85.5-97.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 24 ],
+            "Q": [ 25 ]
+          }
+        },
+        "$procdff$62": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:72.5-78.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 6 ],
+            "D": [ 18 ],
+            "Q": [ 26 ]
+          }
+        },
+        "$procdff$67": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:65.5-68.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 6 ],
+            "D": [ 24 ],
+            "Q": [ 27 ]
+          }
+        },
+        "$procdff$72": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:57.5-60.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 4 ],
+            "D": [ 15 ],
+            "Q": [ 28 ]
+          }
+        },
+        "$procdff$77": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:50.5-53.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 6 ],
+            "D": [ 11 ],
+            "Q": [ 21 ]
+          }
+        },
+        "$procdff$82": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:46.5-49.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 5 ],
+            "D": [ 10 ],
+            "Q": [ 24 ]
+          }
+        },
+        "$procdff$87": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:42.5-45.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 4 ],
+            "D": [ 9 ],
+            "Q": [ 18 ]
+          }
+        },
+        "$procdff$92": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:38.5-41.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 3 ],
+            "D": [ 8 ],
+            "Q": [ 15 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:61$11": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:61.19-61.32"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 28 ],
+            "B": [ 18 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:79$16": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:79.20-79.35"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 27 ],
+            "B": [ 21 ],
+            "Y": [ 29 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:79$17": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:79.20-79.47"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 29 ],
+            "B": [ 26 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98$20": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98.20-98.41"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 17 ],
+            "B": [ 20 ],
+            "Y": [ 30 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98$21": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98.20-98.54"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 30 ],
+            "B": [ 23 ],
+            "Y": [ 31 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98$22": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98.20-98.66"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 31 ],
+            "B": [ 25 ],
+            "Y": [ 12 ]
+          }
+        }
+      },
+      "netnames": {
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:79$16_Y": {
+          "hide_name": 1,
+          "bits": [ 29 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:79.20-79.35"
+          }
+        },
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98$20_Y": {
+          "hide_name": 1,
+          "bits": [ 30 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98.20-98.41"
+          }
+        },
+        "$xor$tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98$21_Y": {
+          "hide_name": 1,
+          "bits": [ 31 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:98.20-98.54"
+          }
+        },
+        "clk_dbg": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:25.18-25.25"
+          }
+        },
+        "clk_io": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:24.18-24.24"
+          }
+        },
+        "clk_m0": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:22.18-22.24"
+          }
+        },
+        "clk_m1": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:23.18-23.24"
+          }
+        },
+        "clk_sys": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:21.18-21.25"
+          }
+        },
+        "d_dbg": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:30.18-30.23"
+          }
+        },
+        "d_io": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:29.18-29.22"
+          }
+        },
+        "d_m0": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:27.18-27.22"
+          }
+        },
+        "d_m1": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:28.18-28.22"
+          }
+        },
+        "dbg_cap": {
+          "hide_name": 0,
+          "bits": [ 27 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:64.11-64.18"
+          }
+        },
+        "dbg_m1_s1": {
+          "hide_name": 0,
+          "bits": [ 26 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:71.11-71.20"
+          }
+        },
+        "dbg_q": {
+          "hide_name": 0,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:37.29-37.34"
+          }
+        },
+        "io_q": {
+          "hide_name": 0,
+          "bits": [ 24 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:37.23-37.27"
+          }
+        },
+        "m0_q": {
+          "hide_name": 0,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:37.11-37.15"
+          }
+        },
+        "m1_cap": {
+          "hide_name": 0,
+          "bits": [ 28 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:56.11-56.17"
+          }
+        },
+        "m1_q": {
+          "hide_name": 0,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:37.17-37.21"
+          }
+        },
+        "q_dbg": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:33.18-33.23"
+          }
+        },
+        "q_m1": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:32.18-32.22"
+          }
+        },
+        "q_sys": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:31.18-31.23"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:26.18-26.23"
+          }
+        },
+        "sys_dbg_s1": {
+          "hide_name": 0,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:84.11-84.21"
+          }
+        },
+        "sys_dbg_s2": {
+          "hide_name": 0,
+          "bits": [ 23 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:84.23-84.33"
+          }
+        },
+        "sys_io_s1": {
+          "hide_name": 0,
+          "bits": [ 25 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:84.35-84.44"
+          }
+        },
+        "sys_m0_s1": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:83.11-83.20"
+          }
+        },
+        "sys_m0_s2": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:83.22-83.31"
+          }
+        },
+        "sys_m1_s1": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:83.33-83.42"
+          }
+        },
+        "sys_m1_s2": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_five_clock_exclusive/bad_five_clock_exclusive.sv:83.44-83.53"
+          }
+        }
+      }
+    }
+  }
+}
