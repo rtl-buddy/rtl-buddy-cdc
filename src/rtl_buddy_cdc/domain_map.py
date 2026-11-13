@@ -24,6 +24,7 @@ from typing import Any
 
 from rtl_buddy_cdc.clock_network import ClockNetworkCrossing
 from rtl_buddy_cdc.domain import Crossing, FlopDomain
+from rtl_buddy_cdc.memory import find_memories
 from rtl_buddy_cdc.netlist import Module
 from rtl_buddy_cdc.reporter import (
     TOOL_NAME,
@@ -35,8 +36,11 @@ from rtl_buddy_cdc.rules import (
     Violation,
     _build_context,
     _RuleContext,
+    cdc_026_groups,
     clock_network_synchronizer,
     crossing_synchronizer,
+    memory_crossings,
+    memory_synchronizer,
 )
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
@@ -60,6 +64,10 @@ _SOURCE_GROUP_RULES: frozenset[str] = frozenset({"CDC-005"})
 # Rules that report one finding per unconstrained input port, anchored on
 # a representative destination flop (CDC-011).
 _PORT_RULES: frozenset[str] = frozenset({"CDC-011"})
+# Rules about a memory's storage path (#326), anchored on a read-port
+# cell. They belong to ``memory_crossings[]`` entries only — never to a
+# data crossing that happens to touch the same port cell.
+_MEMORY_RULES: frozenset[str] = frozenset({"CDC-026"})
 # Yosys is the only frontend whose ``Module`` we serialize today (the
 # slang frontend lowers to the same shape, so it lands here unchanged).
 _FRONTEND = "yosys"
@@ -108,12 +116,19 @@ def build_domain_map(
       run (no SDC, or ``--no-findings``); every entry then carries
       ``findings: null`` — "not checked", which ``[]`` ("checked,
       clean") must not be confused with.
+
+    Memory crossings (#326) — when the design contains inferred memory
+    cells, an additive ``memory_crossings`` list carries one entry per
+    write-clock → read-clock storage path (see
+    :func:`_serialize_memory_crossings`). The key is absent when the
+    design has no memory cells, so every memory-free map is unchanged;
+    present-but-empty means "has memories, none crosses a clock".
     """
     if rule_context is None:
         rule_context = _build_context(module, spec)
     index = _FindingIndex.build(findings, crossings) if findings is not None else None
     async_keys = _crossing_keys(async_crossings or [])
-    return {
+    payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generator": {"name": TOOL_NAME, "version": TOOL_VERSION},
         "design": {"top": module.name, "frontend": _FRONTEND},
@@ -130,6 +145,15 @@ def build_domain_map(
             module, clock_network_crossings or [], rule_context, index
         ),
     }
+    if find_memories(module):
+        payload["memory_crossings"] = _serialize_memory_crossings(
+            module,
+            async_crossings if async_crossings is not None else crossings,
+            spec,
+            rule_context,
+            index,
+        )
+    return payload
 
 
 # --- helpers ----------------------------------------------------------------
@@ -358,6 +382,71 @@ def _serialize_clock_network_crossings(
     return out
 
 
+def _serialize_memory_crossings(
+    module: Module,
+    crossings: list[Crossing],
+    spec: ClockSpec | None,
+    rule_context: _RuleContext,
+    index: _FindingIndex | None,
+) -> list[dict[str, Any]]:
+    """One entry per inferred-memory storage path between two clocks (#326).
+
+    ``write_ports`` / ``read_port`` name the memory ports (hier paths of
+    the port cells; ``<cell>[wr<i>]`` / ``<cell>[rd<i>]`` for a packed
+    ``$mem_v2``). ``control`` lists the destination flops of the
+    write-clock → read-clock crossings feeding the read port's
+    address/enable logic — empty when nothing does, which is what
+    CDC-026 reports. ``synchronizer`` is ``"fifo"`` when one of those
+    control crossings is itself a recognised synchroniser
+    (:func:`rules.memory_synchronizer`), else ``null``. ``findings`` is
+    ``["CDC-026"]`` when that finding was raised (and survived waivers)
+    for the entry's memory and read clock, ``null`` when rules did not
+    run.
+    """
+    records = memory_crossings(module, crossings, spec, rule_context)
+    reported = {
+        key: group[0].read_cell for key, group in cdc_026_groups(records).items()
+    }
+    out: list[dict[str, Any]] = []
+    for mc in records:
+        findings: list[str] | None = None
+        if index is not None:
+            anchor = reported.get((mc.memory, mc.read_clock))
+            raised = (
+                anchor is not None
+                and not mc.control
+                and "CDC-026" in index.by_memory_cell.get(anchor, set())
+            )
+            findings = ["CDC-026"] if raised else []
+        out.append(
+            {
+                "memory": mc.memory,
+                "write_clock": mc.write_clock,
+                "read_clock": mc.read_clock,
+                "write_ports": [_hier_path(module, p) for p in mc.write_ports],
+                "read_port": _hier_path(module, mc.read_port),
+                "read_source_instance_path": _source_instance_path(
+                    module, mc.read_cell
+                ),
+                "async_per_sdc": mc.async_per_sdc,
+                "control": sorted(
+                    {_hier_path(module, c.dst_flop.cell.name) for c in mc.control}
+                ),
+                "synchronizer": memory_synchronizer(module, mc, rule_context),
+                "findings": findings,
+            }
+        )
+    out.sort(
+        key=lambda e: (
+            str(e["memory"]),
+            str(e["write_clock"]),
+            str(e["read_clock"]),
+            str(e["read_port"]),
+        )
+    )
+    return out
+
+
 def _crossing_key(c: Crossing) -> _CrossingKey:
     """Identity of a data crossing, built from raw cell names.
 
@@ -416,6 +505,10 @@ class _FindingIndex:
        has such a crossing into the anchor flop — so all of a port's
        destinations show it, not just the alphabetically-first one.
 
+    5. **CDC-026 is about a memory**, anchored on its read-port cell; it
+       is indexed apart (``by_memory_cell``) and appears only on the
+       ``memory_crossings[]`` entries it reports.
+
     A finding that matches none of these (a blackbox-coverage
     ``CDC-BBX``, a clock-combine report on a net) is simply not about
     any listed crossing and appears on none.
@@ -429,6 +522,9 @@ class _FindingIndex:
     )
     by_cell: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     by_port: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    by_memory_cell: dict[str, set[str]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
 
     @classmethod
     def build(
@@ -446,7 +542,9 @@ class _FindingIndex:
             if c is None:
                 if v.cell_name is None or not v.rule_id.startswith("CDC-"):
                     continue
-                if v.rule_id in _PORT_RULES:
+                if v.rule_id in _MEMORY_RULES:
+                    index.by_memory_cell[v.cell_name].add(v.rule_id)
+                elif v.rule_id in _PORT_RULES:
                     for port in ports_into.get(v.cell_name, ()):
                         index.by_port[port].add(v.rule_id)
                 else:

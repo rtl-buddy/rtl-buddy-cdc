@@ -289,7 +289,17 @@ def _facts_line(map_data: dict) -> str:
         f"- **Crossings:** {len(crossings)} structural "
         f"({async_count} async-per-SDC, {sync_count} sync)"
     )
-    return f"{clk_line}\n{cross_line}"
+    lines = [clk_line, cross_line]
+    # Additive (#326): only maps of designs with inferred memories carry
+    # the key, so every other fixture README is unchanged.
+    memory = map_data.get("memory_crossings")
+    if memory is not None:
+        async_mem = sum(1 for m in memory if m.get("async_per_sdc"))
+        lines.append(
+            f"- **Memory crossings:** {len(memory)} write→read storage path(s) "
+            f"({async_mem} async-per-SDC)"
+        )
+    return "\n".join(lines)
 
 
 def _period(clk: dict) -> str:

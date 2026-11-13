@@ -16,10 +16,12 @@ from typing import Callable, Iterable, Literal
 from rtl_buddy_cdc.domain import (
     Crossing,
     assign_domains,
+    bit_clock_resolver,
     find_clock_combines,
     find_scan_mode_flops,
 )
 from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell, is_latch_cell
+from rtl_buddy_cdc.memory import MemPort, find_memories
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.primitives import (
     is_sync_primitive,
@@ -5330,6 +5332,294 @@ def check_cdc_023(
     return violations
 
 
+# --- memory crossings (CDC-026, issue #326) ---------------------------------
+
+
+@dataclass(frozen=True)
+class MemoryCrossing:
+    """The storage path of one inferred memory between two clock domains.
+
+    One record per (memory, read port, read clock, write clock) whose
+    clocks differ: words written on ``write_clock`` through
+    ``write_ports`` are read on ``read_clock`` through ``read_port``.
+    ``read_cell`` is the cell carrying the read port; its ``src`` is
+    where a finding points.
+
+    ``control`` holds the crossings from ``write_clock`` into
+    ``read_clock`` whose destination flop lies in the read port's
+    **control cone** — the read-clock-domain logic its address and
+    enable are computed from (:func:`_memory_control_cone`). In the
+    async-FIFO shape that is the write pointer's synchroniser feeding
+    the empty flag that gates the read pointer. An empty tuple means
+    nothing written on ``write_clock`` influences when or where the port
+    reads — CDC-026's finding.
+    """
+
+    memory: str
+    write_clock: str
+    read_clock: str
+    write_ports: tuple[str, ...]
+    read_port: str
+    read_cell: str
+    async_per_sdc: bool
+    control: tuple[Crossing, ...]
+
+
+# Flop pins the control-cone walk steps back through: data and load
+# enable carry the read pointer's next value and its "advance" decision.
+# Reset pins are deliberately not followed — a reset synchronised from
+# the write domain is not a read/write handshake.
+_MEMORY_CONE_FLOP_PINS: frozenset[str] = frozenset({"D", "EN", "E"})
+
+
+def _memory_control_cone(
+    module: Module,
+    port: MemPort,
+    read_clock: str,
+    flop_clock: Callable[[str], str | None],
+    ctx: _RuleContext,
+) -> set[str]:
+    """Flops in the transitive fanin of ``port``'s address + enable,
+    walking back through combinational cells and through flops clocked
+    on ``read_clock`` (their ``D`` / enable) — but not through flops of
+    any other domain, which are recorded and left as leaves.
+
+    The read pointer, the empty flag it is gated by and the synchroniser
+    stages feeding that flag are all ``read_clock`` flops, so the walk
+    reaches the synchroniser's first stage — the destination of the
+    pointer crossing. Bounded by the visited-bit set: linear in the
+    read-domain control logic, independent of the memory's size.
+    """
+    cone: set[str] = set()
+    seen: set[Bit] = set()
+    stack: list[Bit] = list(port.control_bits)
+    while stack:
+        bit = stack.pop()
+        if bit in seen:
+            continue
+        seen.add(bit)
+        drv = ctx.bit_drivers.get(bit)
+        if drv is None:
+            continue
+        cell = module.cells[drv[0]]
+        follow: frozenset[str] | None = None
+        if is_ff_cell(cell.type):
+            cone.add(cell.name)
+            if flop_clock(cell.name) != read_clock:
+                continue
+            follow = _MEMORY_CONE_FLOP_PINS
+        for pin, bits in cell.connections.items():
+            if pin in _OUTPUT_PINS or pin == "CLK":
+                continue
+            if follow is not None and pin not in follow:
+                continue
+            stack.extend(b for b in bits if isinstance(b, int))
+    return cone
+
+
+def _memory_read_domains(
+    module: Module,
+    port: MemPort,
+    clock_of: Callable[[Bit], str | None],
+    flop_clock: Callable[[str], str | None],
+    clock_spec: ClockSpec | None,
+    ctx: _RuleContext,
+) -> set[str]:
+    """The clock domain(s) a read port's data is read in.
+
+    A clocked port reads on its own ``CLK``. An asynchronous port reads
+    in whatever domain registers its data: the flops its read data
+    reaches through combinational logic. When the data reaches no flop
+    (a FWFT FIFO's ``assign rdata = mem[raddr]`` straight to an output
+    port), the port is read in the domain its address is computed in —
+    the flops and SDC-typed input ports that drive it.
+    """
+    if port.clocked:
+        clock = clock_of(port.clk)
+        return {clock} if clock is not None else set()
+    data = tuple(b for b in port.data if isinstance(b, int))
+    captured = _forward_reachable_flops(module, data, ctx.bit_consumers)
+    domains = {c for name in captured if (c := flop_clock(name)) is not None}
+    if domains:
+        return domains
+    flops, ports = _backward_fanin(module, port.control_bits, ctx.bit_drivers)
+    domains = {c for name in flops if (c := flop_clock(name)) is not None}
+    typed_ports = clock_spec.port_clock if clock_spec is not None else {}
+    for p in ports:
+        typed = typed_ports.get(p)
+        if typed is not None and typed != UNCONSTRAINED_SENTINEL:
+            domains.add(typed)
+    return domains
+
+
+def memory_crossings(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None,
+    ctx: _RuleContext | None = None,
+) -> list[MemoryCrossing]:
+    """Every write-clock → read-clock storage path of every inferred
+    memory, with the control crossings that gate it (issue #326).
+
+    ``crossings`` is the list the rule pack runs on; only those from the
+    write clock into the read clock whose destination is in the read
+    port's control cone become ``control``. Port clocks are resolved by
+    :func:`~rtl_buddy_cdc.domain.bit_clock_resolver` with the SDC's
+    generated-clock pins and canonical names — the same view the
+    crossing walk assigns domains with — so the clock names here and on
+    the crossings agree.
+
+    Returns ``[]`` without touching the netlist further when the design
+    has no memory cells. A memory whose write and read clocks are all
+    the same produces no record. Ports whose clock does not resolve are
+    left out, like a domain-unknown flop. Without an SDC (``clock_spec``
+    None — the domain map of a no-SDC run) clocks are raw root names and
+    no record is ``async_per_sdc``.
+    """
+    memories = find_memories(module)
+    if not memories:
+        return []
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    clock_of = bit_clock_resolver(
+        module,
+        clock_spec.pin_clocks if clock_spec is not None else None,
+        clock_for_port=clock_spec.clock_for_port if clock_spec is not None else None,
+        max_depth=ctx.max_depth,
+    )
+    flops_by_name = {f.cell.name: f for f in ctx.flops}
+
+    def flop_clock(name: str) -> str | None:
+        f = flops_by_name.get(name)
+        return clock_of(f.clk) if f is not None else None
+
+    by_pair: dict[tuple[str, str], list[Crossing]] = defaultdict(list)
+    for c in crossings:
+        by_pair[(c.src_clock, c.dst_clock)].append(c)
+
+    out: list[MemoryCrossing] = []
+    for mem in memories:
+        writers: dict[str, list[str]] = {}
+        for wp in mem.write_ports:
+            if not wp.clocked:
+                continue
+            w = clock_of(wp.clk)
+            if w is not None:
+                writers.setdefault(w, []).append(wp.endpoint)
+        if not writers:
+            continue
+        for rp in mem.read_ports:
+            read_domains = _memory_read_domains(
+                module, rp, clock_of, flop_clock, clock_spec, ctx
+            )
+            for r in sorted(read_domains):
+                foreign = [w for w in sorted(writers) if w != r]
+                if not foreign:
+                    continue
+                cone = _memory_control_cone(module, rp, r, flop_clock, ctx)
+                for w in foreign:
+                    out.append(
+                        MemoryCrossing(
+                            memory=mem.memid,
+                            write_clock=w,
+                            read_clock=r,
+                            write_ports=tuple(writers[w]),
+                            read_port=rp.endpoint,
+                            read_cell=rp.cell,
+                            async_per_sdc=(
+                                clock_spec is not None
+                                and not clock_spec.is_unreachable_crossing(w, r)
+                                and clock_spec.are_async(w, r)
+                            ),
+                            control=tuple(
+                                c
+                                for c in by_pair.get((w, r), ())
+                                if c.dst_flop.cell.name in cone
+                            ),
+                        )
+                    )
+    return out
+
+
+def cdc_026_groups(
+    records: list[MemoryCrossing],
+) -> dict[tuple[str, str], list[MemoryCrossing]]:
+    """The memory crossings CDC-026 reports, one group per (memory, read
+    clock): asynchronous per the SDC and with no control crossing. Each
+    group is one finding anchored on its first record's read cell."""
+    groups: dict[tuple[str, str], list[MemoryCrossing]] = {}
+    for mc in records:
+        if mc.async_per_sdc and not mc.control:
+            groups.setdefault((mc.memory, mc.read_clock), []).append(mc)
+    return groups
+
+
+def check_cdc_026(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None = None,
+    *,
+    ctx: _RuleContext | None = None,
+) -> list[Violation]:
+    """CDC-026 — dual-clock memory read with no synchronised control.
+
+    An inferred memory written on one clock and read on an asynchronous
+    one is a crossing through the storage array that no flop-level rule
+    sees. It is safe only when *when and where* the read side reads is
+    decided from information that crossed from the write domain through
+    a synchroniser — the async-FIFO shape: gray-coded write pointer →
+    multi-flop synchroniser in the read domain → empty flag → read
+    pointer → read address. CDC-026 fires when the read port's address /
+    enable cone (:func:`_memory_control_cone`) receives **no** crossing
+    from the write clock at all: the reader cannot know which words are
+    stable, so it can sample one mid-write.
+
+    The rule proves a structural dependence, not the protocol. A control
+    crossing that is itself broken (binary pointer, single flop) is
+    reported by the ordinary crossing rules (CDC-004 / CDC-001), not
+    here. Nothing structural shows that the read never addresses the
+    word being written — that is the FIFO's full/empty arithmetic.
+
+    Severity ``error``: with no control path inside the analysed design
+    the hazard is as unambiguous as an unsynchronised flop crossing
+    (CDC-001). A memory whose reads are separated from writes by a
+    protocol outside the netlist (a quasi-static table written only
+    during configuration, an external handshake) is waived by memory
+    name.
+    """
+    if clock_spec is None:
+        return []
+    if ctx is None:
+        ctx = _build_context(module, clock_spec)
+    groups = cdc_026_groups(memory_crossings(module, crossings, clock_spec, ctx))
+    violations: list[Violation] = []
+    for (memory, read_clock), records in groups.items():
+        write_clocks = ", ".join(
+            f"`{w}`" for w in sorted({m.write_clock for m in records})
+        )
+        violations.append(
+            Violation(
+                rule_id="CDC-026",
+                severity="error",
+                message=(
+                    f"dual-clock memory `{memory}` is written on {write_clocks} "
+                    f"and read on `{read_clock}` (asynchronous), but no "
+                    f"crossing from the write clock "
+                    f"reaches the read port's address/enable logic — nothing "
+                    f"tells the reader which words are stable, so a read can "
+                    f"sample a word while it is being written. Gate the read "
+                    f"side on a pointer synchronised from the write domain "
+                    f"(the async-FIFO shape: gray-coded pointer through a "
+                    f">=2-flop synchroniser into `{read_clock}`), or waive "
+                    f"CDC-026 for `{memory}` if reads are separated from "
+                    f"writes by a protocol outside this netlist."
+                ),
+                cell_name=records[0].read_cell,
+            )
+        )
+    return violations
+
+
 RULES: dict[str, RuleFn] = {
     "CDC-001": check_cdc_001,
     "CDC-002": check_cdc_002,
@@ -5361,6 +5651,7 @@ RULES: dict[str, RuleFn] = {
     "CDC-021": check_cdc_021,
     "CDC-022": check_cdc_022,
     "CDC-023": check_cdc_023,
+    "CDC-026": check_cdc_026,
 }
 
 
@@ -5536,6 +5827,8 @@ def run_all(
 # domain map's ``crossings[].synchronizer`` /
 # ``clock_network_crossings[].synchronizer`` (schema 1.2), so the set is
 # part of the public JSON contract: add values freely, never rename one.
+# ``"fifo"`` is returned only by :func:`memory_synchronizer`, for the
+# domain map's ``memory_crossings[]`` (#326).
 SYNCHRONIZER_SCHEMES: tuple[str, ...] = (
     "2ff",
     "pulse",
@@ -5544,6 +5837,7 @@ SYNCHRONIZER_SCHEMES: tuple[str, ...] = (
     "mux",
     "static",
     "glitchless",
+    "fifo",
 )
 
 
@@ -5674,4 +5968,23 @@ def clock_network_synchronizer(
     bits = cell.connections.get(control_pin, ())
     if any(isinstance(b, int) and b in ctx.user_glitchless_mux_bits for b in bits):
         return "glitchless"
+    return None
+
+
+def memory_synchronizer(
+    module: Module,
+    mc: MemoryCrossing,
+    ctx: _RuleContext,
+) -> str | None:
+    """The scheme the rule pack recognises on a memory crossing (#326).
+
+    ``"fifo"`` when at least one of its control crossings (the write-
+    domain information gating the read port) is itself recognised by
+    :func:`crossing_synchronizer` — the async-FIFO shape. ``None``
+    otherwise: either no control crossing at all (CDC-026 fires) or
+    only unrecognised ones (the ordinary crossing rules fire on those).
+    """
+    for c in mc.control:
+        if crossing_synchronizer(module, c, ctx) is not None:
+            return "fifo"
     return None

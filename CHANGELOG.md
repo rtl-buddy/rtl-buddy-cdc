@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dual-port memory crossings: CDC-026** (#326) — *minor: new rule,
+  new report content on designs with inferred RAMs only.* Inferred
+  memories (Yosys `$memwr_v2` / `$memrd` / `$memrd_v2` after `proc`,
+  i.e. the `lint` flow, and a collected `$mem_v2`) are no longer
+  invisible to the crossing walker. Memory ports are crossing endpoints
+  for every rule: a write port is a sink in its write clock, a clocked
+  read port a sink and a source in its read clock, and an asynchronous
+  read port passes its address through to whatever registers the data
+  — so a wrong-domain write address fires CDC-004 like any other
+  unsynchronised bus. The write → read storage path itself is the new
+  **CDC-026** (`error`): a RAM written on one clock and read on an
+  asynchronous one whose read address/enable logic receives *no*
+  crossing from the write clock. The async-FIFO shape (gray pointer
+  synchronised into the read domain gating the read pointer) is
+  recognised and silent. The `unsupported_dualport_ram_crossing`
+  sentinel (#176) is now the `bad_dualport_ram_crossing` fixture.
+- **Domain map: `memory_crossings`** (#326) — one entry per memory
+  write-clock → read-clock path with its `control` crossings,
+  `synchronizer` (new scheme value `"fifo"`) and `findings`. Additive:
+  the key is present only when the design has memory cells, so
+  memory-free maps are byte-identical and the schema version is
+  unchanged.
+
+### Fixed
+
+- **slang frontend: memories and forward-referenced assigns** (#326) —
+  a run-time-indexed write to an unpacked array was silently dropped
+  and the read became an opaque `$_UNKNOWN_`; they now lower to the
+  `$memwr_v2` / `$memrd_v2` cells Yosys emits, so both frontends reach
+  the same verdict on memories. A procedural read of a net placed above
+  its continuous `assign` (the usual position of async-FIFO
+  `empty` / `full` flags) read undriven placeholder bits; it now reads
+  the assign's driver.
+
 ## [0.7.3] — 2026-10-31
 
 ### Changed

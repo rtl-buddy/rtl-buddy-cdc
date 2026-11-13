@@ -46,9 +46,10 @@ Helper features that compose with rules:
 - Reset-synchroniser chain recognition with constant-fed-head requirement
 - Reconvergence phase-2 forward-cone filter
 
-The only explicitly-unsupported pattern documented in the README is
+The only explicitly-unsupported pattern documented in the README was
 **dual-port RAM crossings** (pinned by
-`tests/fixtures/unsupported_dualport_ram_crossing/`).
+`tests/fixtures/unsupported_dualport_ram_crossing/`; since covered by
+CDC-026, rtl-buddy-cdc#326, fixture `bad_dualport_ram_crossing/`).
 
 ## 2. Gap analysis
 
@@ -360,7 +361,8 @@ Verified against the implementation, not gaps:
   (`src/rtl_buddy_cdc/reset_domain.py:316`); chains with port- or
   flop-fed heads are correctly rejected.
 - **Dual-port RAM crossings.** Pinned as unsupported by
-  `tests/fixtures/unsupported_dualport_ram_crossing/`.
+  `tests/fixtures/unsupported_dualport_ram_crossing/` at the time of this
+  survey; covered since by CDC-026 (rtl-buddy-cdc#326).
 
 ## 3. Prioritised roadmap
 
