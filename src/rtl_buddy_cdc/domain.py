@@ -1040,7 +1040,12 @@ def assign_domains(
     agree), and is ignored when ``clock_for_port`` is given.
     """
     resolve = flop_domain_resolver(
-        module, pin_clocks, clock_for_port=clock_for_port, max_depth=max_depth
+        module,
+        pin_clocks,
+        clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_for_port,
+        max_depth=max_depth,
+        case_analysis=case_analysis,
     )
     return [FlopDomain(flop=f, clock=resolve(f)) for f in find_flops(module)]
 
@@ -1050,8 +1055,10 @@ def flop_domain_resolver(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     drivers: dict[Bit, tuple[str, str]] | None = None,
+    case_analysis: Mapping[str, str] | None = None,
 ) -> Callable[[Flop], str | None]:
     """Return the per-flop domain function :func:`assign_domains` applies.
 

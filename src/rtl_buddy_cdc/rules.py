@@ -5824,6 +5824,7 @@ def check_cdc_024(
                     clock_for_port=clock_spec.clock_for_port,
                     max_depth=ctx.max_depth,
                     drivers={b: (c, p) for b, (c, p, _i) in ctx.bit_drivers.items()},
+                    case_analysis=clock_spec.case_analysis,
                 )
             domain_of[f.cell.name] = resolve(f)
         return domain_of[f.cell.name]
