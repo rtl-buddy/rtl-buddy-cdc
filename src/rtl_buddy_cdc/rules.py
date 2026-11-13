@@ -4974,6 +4974,7 @@ def _bit_vector_names(module: Module) -> dict[Bit, str]:
                     best[b] = rank
     return {b: name for b, (_n, name) in best.items()}
 
+
 # Memory read-port cell types. ``proc`` lowers a constant ``case`` table
 # that covers every select value (a full one-hot decoder, a lookup table)
 # to a ROM: a ``$meminit`` plus an asynchronous ``$memrd_v2`` whose
