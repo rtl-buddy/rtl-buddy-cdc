@@ -27,10 +27,10 @@ Silent variants:
 - ``cdc_gray`` / ``cdc_static`` / ``cdc_sync`` on the source lane
   flops — the rule's three documented attribute suppressions.
 
-**Pinned gap** (``gap_note`` on ``case_n8``): Yosys ``proc`` lowers a
-full 8-entry ``case`` table to a ROM (``$memrd_v2``), whose ``DATA``
-port CDC-019 does not accept as a decoder driver — a miss on the Yosys
-path that the slang frontend (which keeps the mux) does not have.
+``case_n8``: Yosys ``proc`` lowers a full 8-entry ``case`` table to a
+ROM (``$memrd_v2``). CDC-019 accepts an asynchronous read port's
+``DATA`` as the shared decoder (rtl-buddy-cdc#344), so it fires there
+as it does on the slang frontend, which keeps the mux.
 
 **Pinned gap** (``gap_note`` on the ``perbit`` cases): the same decode
 written bit by bit (``assign oh[i] = (sel == i)``) lowers to one 1-bit
@@ -178,19 +178,6 @@ endmodule
     return sv, _SDC.format(sel_port="sel")
 
 
-# Yosys ``proc`` (its ``proc_rom`` step) turns a full 8-entry constant
-# ``case`` table into a ROM: the lanes' D pins are driven by a
-# ``$memrd_v2`` ``DATA`` port instead of a ``$pmux`` ``Y``, and CDC-019
-# only accepts a ``Y``-port driver. The slang frontend keeps the mux and
-# fires, so this case is also on the cross-frontend allowlist.
-_ROM_LOWERED = {("case", 8)}
-_ROM_GAP = (
-    "rtl-buddy-cdc#331: Yosys lowers the full 8-way case table to a ROM "
-    "($memrd_v2 DATA drives the lanes); CDC-019 only recognises a comb "
-    "cell's Y port as a shared driver, so it misses the decode on the "
-    "Yosys path. Correct verdict is CDC-019 x1 (slang fires it)."
-)
-
 _FIRES = (ExpectedFinding("CDC-019", Op.EQ, 1),)
 _SILENT = (ExpectedFinding("CDC-019", Op.ZERO),)
 # Each lane is a structurally 1-bit, properly 2FF-synced crossing.
@@ -212,7 +199,6 @@ class DecoderLanesIndependentSync:
             for lanes in _LANES:
                 top = f"fuzz_{cls.name}_{shape}_n{lanes}"
                 sv, sdc = _render(top, shape, lanes)
-                rom = (shape, lanes) in _ROM_LOWERED
                 yield RenderedCase(
                     template_name=cls.name,
                     case_id=top,
@@ -220,9 +206,8 @@ class DecoderLanesIndependentSync:
                     sdc=sdc,
                     top=top,
                     params={"shape": shape, "lanes": lanes},
-                    expected=() if rom else _FIRES,
-                    forbidden=_QUIET + (_SILENT if rom else ()),
-                    gap_note=_ROM_GAP if rom else None,
+                    expected=_FIRES,
+                    forbidden=_QUIET,
                 )
 
         for lanes in (2, 4):

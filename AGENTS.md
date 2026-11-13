@@ -37,7 +37,6 @@ src/rtl_buddy_cdc/
 │   └── slang.py       # slang frontend (Yosys-parity in 0.2.0) — lazy pyslang import
 ├── netlist.py         # Yosys write_json loader (Module / Cell / Port / Netname)
 ├── liveness.py        # drop cells no output can observe (opt_clean-equivalent)
-
 ├── regroup.py         # loader pass: regroup bit-blasted gate flops into registers
 ├── gate_eval.py       # truth tables of small gate cones (gate-level gray check)
 ├── cells.py           # Yosys cell-type decoding: gate-level flop names, mux / gate families
