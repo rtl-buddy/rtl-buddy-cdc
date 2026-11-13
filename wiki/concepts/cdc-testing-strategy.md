@@ -3,7 +3,7 @@ title: CDC Testing Strategy
 created: 2026-05-11
 updated: 2026-11-14
 type: concept
-tags: [testing, cdc, architecture, extension-point, frontend, fuzz, integration]
+tags: [testing, cdc, architecture, extension-point, frontend, fuzz, sim, integration]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
 confidence: high
 ---
@@ -36,6 +36,37 @@ Each CDC rule has at least one **bad fixture** (designed to fire it) and one **g
 | `test_gate_level_corpus.py` | Every fixture rebuilt through a Yosys gate flow; per-rule verdict must match the committed RTL netlist (see [Gate-level corpus](#gate-level-corpus)) |
 | `test_flop_zoo_crossing.py` | `flop_zoo_crossing`: one `$aldff` / `$dffsr` / `$sdffce` / `$adffe` / `$dffe` capture each, the flop families no other fixture produces |
 | `integration/test_integration_corpus.py` | Real open-source multi-clock designs fetched at pinned commits, with reviewed per-rule expectations on both frontends (opt-in marker `integration`; see [Open-source integration corpus](#open-source-integration-corpus)) |
+| `test_sdc_clock_variety_fixtures.py` | The SDC-variety and three-to-five-clock fixtures (see [SDC and clock-structure fixtures](#sdc-and-clock-structure-fixtures)): one verdict table checked through `analyze -f json` on both SDC backends, plus the parsed `ClockSpec` for each SDC form |
+
+### SDC and clock-structure fixtures
+
+Until rtl-buddy-cdc#331 nearly every fixture had two clocks, one
+`set_clock_groups -asynchronous` and period-only `create_clock`. 27
+fixtures now cover the rest of the SDC subset and clock structures that
+need more than two domains. Each fixture's leading comment derives its
+expected verdict from the rule definitions; the table in
+`test_sdc_clock_variety_fixtures.py` holds it as `(rule, source
+register, destination register)` triples, so a finding that moves to
+another crossing fails as well as one that appears or disappears.
+
+| Subject | Fixtures | What they pin |
+|---|---|---|
+| Generated clocks | `good_gen_clock_chain`, `bad_gen_clock_async_to_master`, `*_gen_clock_edges_invert`, `*_four_clock_mixed` | `-divide_by` of a `-divide_by` on pins, `-edges`, `-invert`, `-combinational`, `-multiply_by` on a port; a group naming a root covers its generated clocks; an explicit override (`-group {clk} -group {ck_div2}`) covers the named clocks only |
+| Clock groups | `*_clock_groups_two_statements`, `*_four_clock_mixed`, `*_five_clock_exclusive` | two statements (a pair no single statement separates stays synchronous), several clocks per group, five groups, `-physically_exclusive` and `-logically_exclusive` beside `-asynchronous` |
+| False paths | `*_false_path_one_direction`, `good_false_path_through_bus`, `bad_false_path_through_partial` | a one-way clock-pair false path covers the pair; `-through [get_pins …]` acknowledges only the bus whose paths pass the pin |
+| Datapath-only | `*_datapath_only_overrides` | `-datapath_only` beats a generated relation and an exclusive group |
+| Case analysis | `good_case_analysis_mode_sel0`, `bad_case_analysis_mode_sel1` | one RTL, two modes on a braced bus bit behind an inverter: the crossing disappears in one and appears in the other |
+| Virtual clocks | `*_virtual_clock_io` | `set_input_delay` / `set_output_delay` against virtual clocks; port-sourced CDC-001, CDC-024 |
+| Tcl | `tcl_generated_constraints` | variables, `expr`, lists, `dict`, `foreach`, `{*}` on the `tcl` backend; on `tokenizer` nothing is declared and three CDC-021 fire |
+| Three to five clocks | `*_three_domain_chain`, `*_four_clock_mixed`, `*_five_clock_exclusive`, `good_reconvergence_two_source_domains`, `bad_reconvergence_three_domains`, `*_handshake_ack_via_third_domain` | relays, a crossing for every clock pair, unreachable crossings, CDC-005 only for one source resolved twice, an acknowledge relayed through a third domain |
+
+Four strict `xfail`s record analyzer gaps these fixtures found:
+`good_gen_clock_chain` (the rule context assigns domains without
+`pin_clocks`, so a 2FF synchroniser clocked by a pin-declared generated
+clock reads as depth 1), `*_handshake_ack_via_third_domain` (CDC-012's
+feedback walk stays in the source domain), and `good_virtual_clock_io`
+(CDC-006 fires on a typed port wired straight into a 2FF synchroniser).
+All 27 agree across the gate-level legs.
 
 ### JSON Fixtures
 
@@ -278,6 +309,56 @@ sources by manifest hash.
    analyzer false positive — say which. Pin the counts, classify each
    finding, and file every analyzer gap as a `[gaps.*]` entry with a
    reproducer of your own (never a copy of the upstream code).
+
+## Simulation Oracle
+
+`tests/sim/` (marker `sim`) simulates small DUTs under Icarus with a
+behavioural metastability model (`meta_flop_lib.sv`: a flop whose `D`
+changed since the previous edge may capture a random bit) and checks
+that the functional failure the analyzer predicts shows up, or does
+not. CI runs it in the `fuzz + sim oracle` job (apt `iverilog`); every
+other job skips it.
+
+| Test file | DUTs | Pairs with |
+|---|---|---|
+| `test_oracle.py` | unsynced crossing vs 2FF; latch "synchroniser" | CDC-001; gap G-1 |
+| `test_glitch_oracle.py` | combinational clock mux; clock sampled as data | CDC-010; CDC-008 |
+| `test_reset_oracle.py` | foreign-domain async reset vs reset sync (smoke only) | RDC-001 |
+| `test_multibit_oracle.py` | binary / gray / handshake bus; reconvergent fan-out, one-hot per-bit sync, and their fixes | CDC-004; CDC-005 (+ CDC-020) |
+
+The first three pair a DUT with a rule only in prose. The multi-bit
+oracle (rtl-buddy-cdc#331) checks both halves on **one source**: each
+DUT includes `meta_flop_lib.sv` for simulation, or, under
+`SIM_ORACLE_SYNTH`, the plain-flop stand-ins in `meta_flop_synth.sv`
+for the Yosys build (`runner.build_netlist`, a `-s` script). The
+netlists are committed under `tests/sim/netlists/` (regenerate with
+`uv run python -m tests.sim.runner`), so the analyzer half — exact
+per-rule counts from `rtl-buddy-cdc analyze` — runs without Yosys or
+Icarus; a Yosys-gated test checks each committed netlist still gives
+its source's verdict. The simulation half runs eight fixed seed /
+clock-ratio / phase configurations per DUT (plusargs, one compiled
+image), and the test asserts the analyzer fires exactly when every
+run fails, and is silent exactly when every run is clean.
+
+**Scoreboard property** (`tb_bus_crossing.sv`): at each destination
+edge, `q_out` must equal a value the source's `src_data` held at some
+instant in the last `WINDOW_DST_CYCLES` (6) destination periods. A
+correct crossing only delays values; an incoherent bus sample (lanes
+from two source values) or a reconvergent pair whose halves come from
+different source instants is a value the source never held. The
+window must cover the DUT's latency; widening it can only hide errors.
+A liveness count (`updates`) rejects a DUT that passes by never moving.
+
+**Model limit.** The injection aperture is a whole destination period,
+not the few picoseconds of silicon, so a lane that changed long before
+the edge still counts as uncertain. The multi-bit runs therefore keep
+src_clk slower than dst_clk: a gray counter advancing twice in one
+destination period would show two uncertain lanes, a model artifact.
+
+**Disagreements.** A bad DUT that never fails, or a good DUT that
+fails, is a finding, not something to tune away: record it as a
+strict `xfail` with a reproducer and leave `src/` alone in the oracle
+change. None is open today.
 
 ## Extension Points
 

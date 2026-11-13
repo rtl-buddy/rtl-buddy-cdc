@@ -43,8 +43,9 @@ def test_every_family_is_a_crossing_destination() -> None:
     assert result.exit_code == 1, result.output
     report = json.loads(result.stdout)
     fired = Counter(v["rule_id"] for v in report["violations"])
-    # One CDC-001 per family, plus RDC-006 on q_dffsr, whose SET/CLR
-    # are derived from rst_n and set_n.
-    assert fired == {"CDC-001": 5, "RDC-006": 1}
+    # One CDC-001 per family. q_dffsr's CLR is the constant-leg mux
+    # ``rst_n ? 0 : 1``, an inverter of one reset rather than a reset mux,
+    # so RDC-006 stays silent (rtl-buddy-cdc#354).
+    assert fired == {"CDC-001": 5}
     dst_flops = {c["dst_flop"] for c in report["crossings"]}
     assert len(dst_flops) == 5

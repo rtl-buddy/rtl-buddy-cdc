@@ -36,6 +36,7 @@ from .gap_g9 import GapG9GlitchlessMuxMarked, GapG9GlitchlessMuxUnmarked
 from .gap_g10 import GapG10FlopClkUndeclaredPort
 from .gap_g12 import GapG12GateLevelSilent
 from .good import GoodTwoFF
+from .inst_array import InstanceArraySync
 from .rdc001 import AsyncResetCrossing
 from .rdc002 import ResetPolarityMismatch
 from .rdc003 import SyncResetCrossing
@@ -71,6 +72,8 @@ ALL_TEMPLATES: list[type[Template]] = [
     XpmShallowSyncDepth,
     ClockCombine,
     BlackboxBoundary,
+    # rtl-buddy-cdc#353: instance arrays (lowered by the slang frontend).
+    InstanceArraySync,
     AsyncResetCrossing,
     ResetPolarityMismatch,
     SyncResetCrossing,
@@ -123,6 +126,7 @@ __all__ = [
     "GapG9GlitchlessMuxMarked",
     "GapG9GlitchlessMuxUnmarked",
     "GoodTwoFF",
+    "InstanceArraySync",
     "LatchInCdcPath",
     "MultiSourceReset",
     "Op",

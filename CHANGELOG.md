@@ -9,24 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Open-source integration corpus** (rtl-buddy-cdc#331) — *test-only, no output
-  change.* `tests/integration/` runs the analyzer on seven real
-  multi-clock designs written by other people (three async FIFOs, two
-  bus clock-domain bridges, a three-clock PTP time transfer and a CDC
-  primitive library), each fetched on demand at a pinned upstream
-  commit under a permissive licence — no third-party RTL is vendored.
-  The manifest (`corpus.toml`) pins, per design, the crossing count and
-  per-rule finding counts on the Yosys path and the `lint --frontend
-  slang` verdict, and classifies every finding (true positive, false
-  positive, outside the structural model) with its reasoning. The six
-  analyzer gaps the review found (four false positives, one false
-  negative, and slang dropping concatenation l-values) are pinned as
-  today's behaviour and described with self-written reproducers. The
-  tests carry the new `integration` marker and are opt-in (`pytest -m
-  integration` or `RB_CDC_INTEGRATION=1`); a default `pytest` only
-  validates the manifest and never touches the network. CI runs them
-  in a separate `integration.yml` workflow (after merges to `main`,
-  weekly, and on demand), not on pull requests.
+- **SDC-variety and multi-clock fixtures** (rtl-buddy-cdc#331) —
+  *test-only, no output change.* 27 new fixtures, checked end to end
+  through `analyze` on both SDC backends by
+  `tests/test_sdc_clock_variety_fixtures.py`. SDC forms: generated
+  clocks with `-multiply_by`, `-edges`, `-invert`, `-combinational`, a
+  generated clock of a generated clock, and one declared asynchronous
+  to its own master; two `set_clock_groups` statements; a one-way
+  clock-pair `set_false_path`; `set_false_path -through` on a bus;
+  `set_max_delay -datapath_only` beating a generated relation and an
+  exclusive group; `set_case_analysis` on a braced bus bit selecting
+  either mux leg; virtual clocks on `set_input_delay` /
+  `set_output_delay`; and constraints generated with Tcl variables,
+  `expr`, lists and `foreach` (the `tokenizer` fallback's verdict is
+  pinned). Clock structures: a three-domain relay, four clocks (two
+  synchronous, two asynchronous, a crossing for every pair), five
+  clocks mixing asynchronous and exclusive groups, reconvergence into a
+  third domain, and a handshake whose acknowledge returns through a
+  third domain. Four fixtures expose analyzer gaps and carry strict
+  `xfail`s: a 2FF synchroniser clocked by a pin-declared generated
+  clock reads as depth 1 (false CDC-001), CDC-012 misses an
+  acknowledge relayed through a third domain, and CDC-006 fires on a
+  typed input port wired straight into a 2FF synchroniser. All 27 agree
+  across the gate-level legs (no new allowlist rows).
 
 - **Gate-level fixture corpus** (#331) — *test-only, no output change.*
   `tests/test_gate_level_corpus.py` rebuilds every fixture through two
@@ -284,6 +289,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory-free maps are byte-identical and the schema version is
   unchanged.
 
+- **Simulation oracle for CDC-004 and CDC-005** (rtl-buddy-cdc#331) — *test-only,
+  no output change.* `tests/sim/test_multibit_oracle.py` adds seven
+  DUTs, each checked on one source file by both the analyzer and an
+  Icarus run with per-lane metastability injection: a binary counter
+  through an ungated 4-bit 2FF (CDC-004 fires, simulation sees samples
+  the counter never held), its gray-coded and req/ack-handshake fixes
+  (silent, never incoherent), one bit fanned out to two recombined 2FF
+  chains and a one-hot state crossing one bit per 2FF (CDC-005, plus
+  CDC-020 for the one-hot register; simulation sees pairs the source
+  never presented), and their sync-once / encode-to-one-bit fixes. The
+  new `tb_bus_crossing.sv` scoreboard counts destination values not
+  held by the source within a latency window; eight fixed seed / clock
+  configurations per DUT. The analyzer half reads committed netlists
+  (built with plain-flop stand-ins, `meta_flop_synth.sv`), so it runs
+  without Yosys or Icarus. Analyzer and simulation agree on all seven.
+
+- **Open-source integration corpus** (rtl-buddy-cdc#331) — *test-only, no output
+  change.* `tests/integration/` runs the analyzer on seven real
+  multi-clock designs written by other people (three async FIFOs, two
+  bus clock-domain bridges, a three-clock PTP time transfer and a CDC
+  primitive library), each fetched on demand at a pinned upstream
+  commit under a permissive licence — no third-party RTL is vendored.
+  The manifest (`corpus.toml`) pins, per design, the crossing count and
+  per-rule finding counts on the Yosys path and the `lint --frontend
+  slang` verdict, and classifies every finding (true positive, false
+  positive, outside the structural model) with its reasoning. The six
+  analyzer gaps the review found (four false positives, one false
+  negative, and slang dropping concatenation l-values) are pinned as
+  today's behaviour and described with self-written reproducers. The
+  tests carry the new `integration` marker and are opt-in (`pytest -m
+  integration` or `RB_CDC_INTEGRATION=1`); a default `pytest` only
+  validates the manifest and never touches the network. CI runs them
+  in a separate `integration.yml` workflow (after merges to `main`,
+  weekly, and on demand), not on pull requests.
+
 ### Changed
 
 - **Faster analysis on large flat netlists** (#324) — *patch: no
@@ -301,6 +341,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     can use the C encoder, instead of `json.dump`.
 
 ### Fixed
+
+- **`set_input_delay` / `set_output_delay` silently ignored a typo'd
+  clock and glob port targets** (rtl-buddy-cdc#357).
+  - A `-clock` naming no `create_clock` / `create_generated_clock` now
+    raises an SDC warning. It is decided at the end of the file, so a
+    clock declared later counts, and a virtual clock (`create_clock
+    -name V -period P` with no port) is a declared clock. The typing
+    itself is kept, as before.
+  - Port targets are resolved against the top-level ports with the
+    object-pattern matcher of `sdc_objects.py`. A glob (`[get_ports
+    d*]`, `{d?}`, bare `d*`) types every matching port of the command's
+    direction that carries no declared clock; before, it was stored
+    literally and typed nothing. A bus index (`{d[3]}`) types the whole
+    port `d`, as it already did by accident (the name was split into
+    `d` and a stray `3`); port typing is per port, and a port whose
+    bits are given different clocks is now warned about. A target that
+    matches no port is warned about.
+  - `ClockSpec` gains `port_delays` (one `PortDelay` per statement,
+    targets as written); `sdc_objects.resolve_port_delays` rewrites
+    `port_clock`, and the CLI calls it right after parsing. No
+    committed fixture changes verdict.
+
+- **Text report printed an empty title for 13 rules** (rtl-buddy-cdc#355).
+  `CDC-009` … `CDC-013`, `CDC-018` … `CDC-021`, `RDC-006` … `RDC-008`
+  and `CDC-BBX` had no entry in the reporter's rule-title table, so the
+  text report's group header read `CDC-018 —` and the SARIF rule
+  `shortDescription` fell back to the bare rule id. Every rule now has
+  a one-line title in the README's wording, and a test fails if a rule
+  is registered without one.
+
+- **RDC-006 fired on a constant-leg mux driving an async reset**
+  (rtl-buddy-cdc#354). A `$mux` / `$_MUX_` (or `$pmux`) whose data legs
+  are all constants, such as the `rst_n ? 1'b0 : 1'b1` Yosys builds for
+  a `$dffsr` clear pin, is an inverter or buffer of its select, not a
+  selection between reset sources. RDC-006 now skips it, judged per
+  output lane, so the RTL netlist and the synthesised one (where `abc`
+  turns the mux into a `$_NOT_`) agree. RDC-005's explicit-mux
+  exemption no longer covers such a mux either: two resets combined on
+  its select converge as they would through the inverter. Verdict
+  change: `flop_zoo_crossing` loses its RDC-006 (now 5 × CDC-001 only),
+  and its gate-level allowlist row is removed.
 
 - **CDC-001 missed a synchroniser stage exported straight to an output
   port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
@@ -490,7 +571,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `empty` / `full` flags) read undriven placeholder bits; it now reads
   the assign's driver.
 
+- **slang frontend: arrays of instances** (rtl-buddy-cdc#353) —
+  `sync2 u_sync[1:0] (...)` produced no cells at all on the pyslang
+  path, so the instances, their flops and every crossing through them
+  were missing with no diagnostic; the Yosys path reported them.
+  - Each element is now lowered as its own instance, named `u_sync[0]`,
+    `u_sync[1]` as Yosys `flatten` names it, so cell names, netnames,
+    `instance_path` and `inst:` waivers read the same on both
+    frontends. This covers inlined modules and blackbox / greybox
+    boundary cells (one cell per element, with pin directions and
+    parameters), arrays inside child modules and inside `for`-generate
+    entries, and multi-dimensional arrays (`u[1:0][0:1]` → `u[1][0]` …,
+    which Yosys' parser rejects).
+  - Connections follow IEEE 1800-2017 23.3.3.5: a connection as wide as
+    the port goes to every element; one `port width × elements` wide is
+    split with the leftmost index of the range taking the leftmost bits.
+    Yosys `read_verilog` does the same for a descending range
+    (`[1:0]`); for an ascending one (`[0:1]`) it gives the lowest index
+    the least significant slice, so on such an array the two frontends
+    attach the same bits to opposite element names (verdicts and the
+    set of instance paths are unaffected).
+  - A bit- or part-select of a vector not declared `[N-1:0]`
+    (`a[1]` of `logic [4:1] a`, `b[0]` of `logic [0:3] b`) picked the
+    wrong bits, or an `$_UNKNOWN_` driver, and an indexed part-select
+    (`c[4 +: 2]`, `c[4 -: 2]`) was read as a plain range. Both now
+    honour the declared range, as Yosys does; slang slices array
+    connections this way, so the array lowering depends on it.
+  - A child output bound to part of a parent net (`.q(dst[0])`, and every
+    sliced array output) left the parent's port / netname on stale bits;
+    they now follow the driver, as on the Yosys path. A cell whose
+    connections were rewritten by a forward-referenced `assign` no
+    longer loses its pin directions.
+  - An array element that is not a module instance (a gate-primitive
+    array such as `and g[1:0] (...)`), and a lone gate primitive, are
+    still not lowered; both are now reported as a warning on stderr
+    with their source location instead of vanishing.
+  - New fuzz template `inst_array_sync` (both range directions, 1- and
+    2-stage elements) runs through the cross-frontend oracle.
+
 ### Internal
+
+- **Fixture READMEs regenerated and drift-checked in CI**
+  (rtl-buddy-cdc#356). Thirteen generated fixture READMEs were stale or
+  missing (header comments, netlists and companion gate netlists had
+  changed since they were written); they are regenerated. The lint
+  workflow gains a `fixture-docs` job running
+  `scripts/gen_fixture_docs.py --check --committed-netlists-only`, and
+  now also triggers on `tests/fixtures/**`. The new flag skips the four
+  fixtures with no committed netlist, which would need Yosys to
+  elaborate (and whose READMEs depend on its cell naming); without the
+  flag they are also skipped, with a clear message, when `yosys` is not
+  on PATH.
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
   work item 2) — *test-only: no analyzer change.* CDC-022, CDC-023 and

@@ -456,6 +456,7 @@ class ClockSpec:
     exclusive_groups: list[list[set[str]]]         # -logically_exclusive / -physically_exclusive
     false_path_pairs: set[frozenset[str]]          # set_false_path -from -to clock pairs
     port_clock: dict[str, str]                     # set_input_delay / set_output_delay → port→clock
+    port_delays: list[PortDelay]                   # those statements, targets as written (#357)
     pin_clocks: dict[str, str]                     # internal-pin target → generated clock name
     datapath_only_delays: list[DatapathOnlyDelay]  # every set_max_delay -datapath_only (#325)
     datapath_only_pairs: set[frozenset[str]]       # …the clock-to-clock ones, as pairs
@@ -1509,6 +1510,36 @@ typed *input* is a crossing source in `find_crossings`; a typed
 *output* is an external-capture contract checked by CDC-024 (§8.21); an
 *untyped* output is CDC-025's (§8.22).
 
+Delay targets are kept as written — a bus index stays on its name
+(`{d[3]}` → `d[3]`) and globs stay unexpanded — in
+`ClockSpec.port_delays` (one `PortDelay` per statement, file order) as
+well as in `port_clock`. The parser has no netlist, so the CLI calls
+`sdc_objects.resolve_port_delays(module, spec)` right after parsing,
+before `synthesize_unconstrained_inputs`, and it rewrites `port_clock`
+in place (rtl-buddy-cdc#357):
+
+- An exact port name is unchanged; an SDC naming only whole ports is
+  not touched at all.
+- A **bus index** types the **whole port**. Port typing is per port
+  in every consumer (crossing sources, CDC-006 / -011 / -024 / -025,
+  the domain map), so per-bit typing would be a change to all of them;
+  instead the selection is over-approximated, and a port whose bits
+  end up on *different* clocks (`{d[0]}` on `clk_a`, `{d[1]}` on
+  `clk_b`, or a bit retyped after a whole-port typing) gets a warning
+  naming them and takes the last clock.
+- A **glob** (`*`, `?`) is matched with the object-pattern matcher
+  (`NameIndex.ports`, so `*` never crosses a hierarchy level and `d*[3]`
+  works) and selects only ports of the command's direction (inputs /
+  inouts for `set_input_delay`, outputs / inouts for
+  `set_output_delay`) that no `create_clock` declares a clock on.
+- A target matching nothing is warned about and kept as written, so it
+  types nothing, as before.
+
+At the end of parsing, each delay whose `-clock` names no declared
+clock (`create_clock`, virtual or not, or `create_generated_clock`) gets
+a `partial_warnings` entry; deciding after the whole file lets a clock
+be declared below the delay that uses it.
+
 Generated clocks fold back into their master via `ClockSpec.resolve`
 unless an explicit `set_clock_groups -asynchronous` overrides the
 relationship. When a `create_generated_clock` target is a `[get_pins
@@ -2143,7 +2174,14 @@ Detection is intentionally narrow in v1:
    itself is fine; its own ARST is the muxed source by design)
    and flops marked `(* reset_sync *)`.
 2. Require `ResetDomain.reset.source == "comb"` and that the
-   immediate driver of the reset bit is `$mux` / `$pmux`.
+   immediate driver of the reset bit is `$mux` / `$pmux` (or a
+   gate-level `$_MUX_` family cell) with at least one *non-constant*
+   data lane behind that bit. A mux whose data legs are all
+   constants (`rst_n ? 1'b0 : 1'b1`) is an inverter or buffer of its
+   select, not a choice between reset sources, and is skipped
+   (rtl-buddy-cdc#354) — synthesis rewrites it into the `$_NOT_` it
+   is, which RDC-006 never matched, so both netlists agree. The same
+   cell gets no RDC-005 mux exemption either: it selects nothing.
 3. Walk the mux's *data* legs (`A`, `B`) — not its select pin
    (`S`) — via `_backward_port_fanin` so the message lists the
    reset sources without conflating the control signal.

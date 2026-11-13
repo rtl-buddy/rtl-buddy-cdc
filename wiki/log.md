@@ -110,3 +110,6 @@
 - Version bumped to `0.2.0` in lockstep in both sources: `pyproject.toml [project].version` and `src/rtl_buddy_cdc/reporter.py:TOOL_VERSION` (the latter is the string SARIF puts in `runs[0].tool.driver.version`).
 - New `tests/test_reporter.py::test_tool_version_matches_pyproject` — asserts `TOOL_VERSION == importlib.metadata.version("rtl-buddy-cdc")`. Sentinel for the dual-bump rule already in AGENTS.md.
 - `AGENTS.md` § Commit / branch / release conventions — Versioning bullet extended: references the new sentinel test by full pytest path and adds the CHANGELOG.md `[Unreleased]` → versioned rename procedure.
+
+## [2026-11-13] update | multi-bit simulation oracle for CDC-004 / CDC-005 (rtl-buddy-cdc#331)
+- `concepts/cdc-testing-strategy.md` — new "Simulation Oracle" section: the four `tests/sim/` test files and the rules they pair with, the one-source analyzer + simulation check of `test_multibit_oracle.py` (committed netlists built with `meta_flop_synth.sv`), the `tb_bus_crossing.sv` coherent-sample property, the full-period injection aperture and why the multi-bit runs keep src_clk slower than dst_clk, and the strict-xfail policy for disagreements.

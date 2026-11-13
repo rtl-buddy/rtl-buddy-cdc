@@ -1,0 +1,533 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_gen_clock_chain": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:19.1-84.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_ext": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "d_a": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "d_ext": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "q_div4": {
+          "direction": "output",
+          "bits": [ 7 ]
+        },
+        "q_ext": {
+          "direction": "output",
+          "bits": [ 8 ]
+        }
+      },
+      "cells": {
+        "$not$tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:33$3": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:33.31-33.38"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 9 ],
+            "Y": [ 10 ]
+          }
+        },
+        "$not$tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:37$6": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:37.31-37.38"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 11 ],
+            "Y": [ 12 ]
+          }
+        },
+        "$procdff$23": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:71.5-79.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 13 ],
+            "Q": [ 14 ]
+          }
+        },
+        "$procdff$28": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:71.5-79.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 14 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$procdff$33": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:57.5-67.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 11 ],
+            "D": [ 15 ],
+            "Q": [ 13 ]
+          }
+        },
+        "$procdff$38": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:57.5-67.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 11 ],
+            "D": [ 16 ],
+            "Q": [ 17 ]
+          }
+        },
+        "$procdff$43": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:57.5-67.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 11 ],
+            "D": [ 17 ],
+            "Q": [ 18 ]
+          }
+        },
+        "$procdff$48": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:49.5-52.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 3 ],
+            "D": [ 6 ],
+            "Q": [ 16 ]
+          }
+        },
+        "$procdff$53": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:45.5-48.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 9 ],
+            "D": [ 19 ],
+            "Q": [ 20 ]
+          }
+        },
+        "$procdff$58": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:41.5-44.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 19 ]
+          }
+        },
+        "$procdff$63": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:35.5-38.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 9 ],
+            "D": [ 12 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$procdff$68": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:31.5-34.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 4 ],
+            "CLK": [ 2 ],
+            "D": [ 10 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$xor$tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:63$15": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:63.23-63.33"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 19 ],
+            "B": [ 20 ],
+            "Y": [ 15 ]
+          }
+        },
+        "$xor$tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:81$18": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:81.21-81.35"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 13 ],
+            "B": [ 18 ],
+            "Y": [ 7 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\d4_cap[0:0]": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:57.5-67.8"
+          }
+        },
+        "$0\\div2_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:31.5-34.8"
+          }
+        },
+        "$0\\div4_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:35.5-38.8"
+          }
+        },
+        "a_q": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:40.11-40.14"
+          }
+        },
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:20.18-20.21"
+          }
+        },
+        "clk_ext": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:21.18-21.25"
+          }
+        },
+        "d2_q": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:40.16-40.20"
+          }
+        },
+        "d4_cap": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:56.11-56.17"
+          }
+        },
+        "d4_s1": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:56.19-56.24"
+          }
+        },
+        "d4_s2": {
+          "hide_name": 0,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:56.26-56.31"
+          }
+        },
+        "d_a": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:23.18-23.21"
+          }
+        },
+        "d_ext": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:24.18-24.23"
+          }
+        },
+        "div2_q": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:30.11-30.17"
+          }
+        },
+        "div4_q": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:30.19-30.25"
+          }
+        },
+        "e_s1": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:70.11-70.15"
+          }
+        },
+        "e_s2": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:70.17-70.21"
+          }
+        },
+        "ext_q": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:40.22-40.27"
+          }
+        },
+        "q_div4": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:25.18-25.24"
+          }
+        },
+        "q_ext": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:26.18-26.23"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_gen_clock_chain/good_gen_clock_chain.sv:22.18-22.23"
+          }
+        }
+      }
+    }
+  }
+}

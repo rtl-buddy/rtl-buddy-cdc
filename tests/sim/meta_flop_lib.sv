@@ -72,6 +72,101 @@ module safe_flop #(
 endmodule
 
 
+// Multi-bit meta_flop (rtl-buddy-cdc#331): a WIDTH-bit register whose
+// lanes resolve independently, as the WIDTH separate flops of a real
+// register do. Each lane follows `meta_flop`'s rule on its own: if
+// its `d` bit changed since the previous edge, it rolls the dice and
+// may capture a random bit (so a changing lane lands either on time
+// or one cycle late, never in step with the other lanes by design).
+// One `$dist_uniform` stream is shared by the lanes, drawn in lane
+// order.
+//
+// The seed is `SEED`, XOR'd with the `+META_SEED=<n>` plusarg when
+// given, so a test can rerun one compiled image under several
+// injection sequences. `meta_flop` itself ignores the plusarg, which
+// keeps the older oracle tests bit-for-bit unchanged.
+//
+// `meta_flop_synth.sv` defines the same module names as plain flops;
+// the DUTs include it instead of this file when Yosys builds the
+// netlist the analyzer reads, so both sides see one source.
+module meta_flop_bus #(
+    parameter int unsigned WIDTH    = 2,
+    parameter int unsigned RATE_PCT = 80,
+    parameter int unsigned SEED     = 32'hC0FFEE02
+) (
+    input  logic             clk,
+    input  logic [WIDTH-1:0] d,
+    output logic [WIDTH-1:0] q
+);
+    logic [WIDTH-1:0] d_prev;
+    integer seed_state;
+    integer plus_seed;
+
+    initial begin
+        seed_state = SEED;
+        if ($value$plusargs("META_SEED=%d", plus_seed))
+            seed_state = SEED ^ plus_seed;
+        q      = '0;
+        d_prev = '0;
+    end
+
+    always_ff @(posedge clk) begin
+        for (int i = 0; i < WIDTH; i++) begin
+            if (d[i] !== d_prev[i] &&
+                $dist_uniform(seed_state, 0, 99) < RATE_PCT)
+                q[i] <= $dist_uniform(seed_state, 0, 1);
+            else
+                q[i] <= d[i];
+        end
+        d_prev <= d;
+    end
+endmodule
+
+
+// `meta_flop_bus` with a load enable: a capture register that loads
+// `d` only while `en` is high and holds otherwise. Injection applies
+// only to a lane that loads a value which changed since the previous
+// edge — with `en` low the flop recirculates its own `q`, which is
+// synchronous and cannot go metastable. `d_prev` tracks `d` on every
+// edge, enabled or not, so a load of a payload that has been stable
+// for a full destination period is always clean.
+module meta_flop_bus_en #(
+    parameter int unsigned WIDTH    = 2,
+    parameter int unsigned RATE_PCT = 80,
+    parameter int unsigned SEED     = 32'hC0FFEE03
+) (
+    input  logic             clk,
+    input  logic             en,
+    input  logic [WIDTH-1:0] d,
+    output logic [WIDTH-1:0] q
+);
+    logic [WIDTH-1:0] d_prev;
+    integer seed_state;
+    integer plus_seed;
+
+    initial begin
+        seed_state = SEED;
+        if ($value$plusargs("META_SEED=%d", plus_seed))
+            seed_state = SEED ^ plus_seed;
+        q      = '0;
+        d_prev = '0;
+    end
+
+    always_ff @(posedge clk) begin
+        if (en) begin
+            for (int i = 0; i < WIDTH; i++) begin
+                if (d[i] !== d_prev[i] &&
+                    $dist_uniform(seed_state, 0, 99) < RATE_PCT)
+                    q[i] <= $dist_uniform(seed_state, 0, 1);
+                else
+                    q[i] <= d[i];
+            end
+        end
+        d_prev <= d;
+    end
+endmodule
+
+
 // Reset-aware meta_flop. `arst_n` is an active-low async reset.
 //
 // `ARST_IS_ASYNC` is an explicit parameter set by the DUT:
