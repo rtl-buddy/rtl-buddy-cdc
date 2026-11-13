@@ -172,6 +172,8 @@ def _both(reason: str) -> dict[str, str]:
 _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     # Lowering / optimisation changes the structure under test.
     "bad_reset_sync_deassert_polarity": {"synth": _R_OPT_CONST_FLOP},
+    # Its backwards-polarity chain (`w0`) is the same stuck-at-0 flop.
+    "bad_reset_sync_foreign_reg": {"synth": _R_OPT_CONST_FLOP},
 }
 
 

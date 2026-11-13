@@ -3091,6 +3091,22 @@ def check_cdc_010(
     return violations
 
 
+def _deasserting_reset_sync_members(ctx: _RuleContext) -> frozenset[str]:
+    """Members of ``ctx.reset_synchronizers`` that synchronise a reset
+    correctly: user-marked ``(* reset_sync *)`` flops, and the flops of
+    every structural chain whose head ``D`` is the deassertion value of
+    the chain's reset polarity (the test RDC-007 applies; a chain that
+    fails it is a one-shot, not a synchroniser). RDC-001 exempts these
+    from the foreign-domain reset check (rtl-buddy-cdc#367).
+    """
+    good: set[str] = set(ctx.reset_sync_flop_names)
+    for chain in ctx.reset_sync_chains:
+        deassert_bit = "0" if chain.polarity == "high" else "1"
+        if _trailing_bit(chain.head_d_constant) == deassert_bit:
+            good.update(chain.flops)
+    return frozenset(good & ctx.reset_synchronizers)
+
+
 def check_rdc_001(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -3117,10 +3133,23 @@ def check_rdc_001(
     Reset signals coming from top-level ports are intentionally
     accepted (they're the user's responsibility to drive correctly,
     e.g. the reset synchronizer's ARST input).
+
+    The flops of a reset synchroniser are exempt (rtl-buddy-cdc#367):
+    taking a foreign-domain reset on their own async pin is exactly what
+    an async-assert / sync-deassert synchroniser is for, and the reset
+    it produces is what the rest of the destination domain should use.
+    "Synchroniser" means a member of ``ctx.reset_synchronizers`` (the set
+    RDC-002..-006 / -008 skip) that is either user-marked
+    ``(* reset_sync *)`` or in a structural chain whose head loads the
+    *deassertion* value (:func:`_deasserting_reset_sync_members`). A
+    single flop, a chain whose head reloads the asserted value (RDC-007's
+    shape) and ordinary flops on the same foreign reset still fire, and
+    the finding is reported on, and lists, only the non-exempt flops.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
+    exempt = _deasserting_reset_sync_members(ctx)
 
     def _async(a: str, b: str) -> bool:
         # If the user supplied an SDC, defer to its clock-groups
@@ -3142,6 +3171,8 @@ def check_rdc_001(
         arst_bits = flop_reset_bits(f.cell, "arst")
         if not arst_bits:
             continue
+        if f.cell.name in exempt:
+            continue  # reset-synchroniser stage: synchronising this reset (#367)
         my_clk = ctx.domains.get(f.cell.name)
         if my_clk is None:
             continue
