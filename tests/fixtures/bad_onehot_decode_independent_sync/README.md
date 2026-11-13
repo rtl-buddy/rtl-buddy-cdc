@@ -69,6 +69,7 @@ flowchart LR
 
 ## Files
 
+- `bad_onehot_decode_independent_sync.gates.json`
 - `bad_onehot_decode_independent_sync.json`
 - `bad_onehot_decode_independent_sync.sdc`
 - `bad_onehot_decode_independent_sync.sv`

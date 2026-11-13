@@ -23,7 +23,6 @@ flowchart LR
   subgraph clk_clk_a["clk_a · 10.0 ns"]
     direction TB
     p_in_d[/"d⟨in⟩"/]:::ckcls_clk_a
-    f_81f9c4bd["$procdff$10<br/><i>sv:42</i>"]:::ckcls_clk_a
   end
   subgraph clk_clk_b["clk_b · 7.5 ns"]
     direction TB

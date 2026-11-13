@@ -493,6 +493,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **Fixture READMEs regenerated and drift-checked in CI**
+  (rtl-buddy-cdc#356). Thirteen generated fixture READMEs were stale or
+  missing (header comments, netlists and companion gate netlists had
+  changed since they were written); they are regenerated. The lint
+  workflow gains a `fixture-docs` job running
+  `scripts/gen_fixture_docs.py --check --committed-netlists-only`, and
+  now also triggers on `tests/fixtures/**`. The new flag skips the four
+  fixtures with no committed netlist, which would need Yosys to
+  elaborate (and whose READMEs depend on its cell naming); without the
+  flag they are also skipped, with a clear message, when `yosys` is not
+  on PATH.
+
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
   work item 2) — *test-only: no analyzer change.* CDC-022, CDC-023 and
   CDC-BBX had no fuzz template; CDC-018/019/020/021 and RDC-007/008 had
