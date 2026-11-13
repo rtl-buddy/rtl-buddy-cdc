@@ -434,9 +434,10 @@ def test_cli_bad_inst_regex_fails_like_a_bad_object_regex(tmp_path: Path) -> Non
 @pytest.mark.skipif(not PYSLANG_INSTALLED, reason="pyslang not installed")
 def test_cli_lint_slang_names_top_and_nested(tmp_path: Path) -> None:
     """The slang frontend names cells ``u_sync_ack.$slang$adff$N`` (no
-    ``$flatten\\``) and also raises a top-level CDC-012 here: the same
-    ``inst:`` lines select the same instances, and ``inst:^$`` takes
-    only the top-level finding."""
+    ``$flatten\\``): the same ``inst:`` lines select the same instances.
+    Since the forward continuous-assign fix (#326) slang raises no
+    top-level finding here, as on the Yosys path, so ``inst:^$`` matches
+    nothing and must not swallow the nested ones."""
     wf = tmp_path / "cdc.waivers"
     wf.write_text("waive * inst:^$ top only\nwaive CDC-002 inst:^u_sync_ack(/|$) ack\n")
     code, out = _run(
@@ -467,7 +468,6 @@ def test_cli_lint_slang_names_top_and_nested(tmp_path: Path) -> None:
     )
     assert sup == [
         ("CDC-002", ["u_sync_ack"], "ack"),
-        ("CDC-012", [], "top only"),
     ]
     assert not any(s["cell_name"].startswith("$flatten") for s in rep["suppressed"])
 
