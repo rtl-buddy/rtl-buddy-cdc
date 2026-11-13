@@ -36,10 +36,11 @@ Silent for CDC-BBX:
 - the multi-clock stub with ``// rbcdc: disable-rule CDC-BBX`` on the
   instantiation (the in-RTL form of ``waive CDC-BBX <instance>``).
 
-Pinned gaps (``gap_note``): ``clock_output`` also fires a CDC-008 on
-the stub's own clock *output* pin, and a registered primitive with
-``wr_clk`` / ``rd_clk`` pins is still declined (no src/dest hint to
-find its destination clock from).
+``clock_output``: the stub's own clock *output* pin is a driver, not a
+reader, so CDC-008 stays silent (rtl-buddy-cdc#344). A registered
+primitive with ``wr_clk`` / ``rd_clk`` pins is still declined (no
+src/dest hint to find its destination clock from); the CDC-BBX message
+says so.
 
 Cross-frontend: the slang frontend has no blackbox support, so the
 stub elaborates as an empty module, the instance vanishes and slang
@@ -203,16 +204,9 @@ class BlackboxBoundary:
         yield case(
             "clock_output",
             {"clock_pins": ("clk",), "pin_clocks": ("clk_a",), "clk_out": True},
-            (bbx, ExpectedFinding("CDC-008", Op.EQ, 1)),
-            (),
+            (bbx,),
+            (ExpectedFinding("CDC-008", Op.ZERO),),
             {"reason": "clock_output"},
-            gap_note=(
-                "rtl-buddy-cdc#331: when the forwarded clock clocks a flop in "
-                "the parent (not another blackbox, the case "
-                "test_blackbox_clock_output pins), CDC-008 also reports the "
-                "clock as 'used as data' on the stub's own clk_out OUTPUT pin "
-                "- the driver, not a reader. Correct verdict is CDC-BBX alone."
-            ),
         )
 
         # Abstracted: the crossing into the single-clock stub survives as
@@ -250,13 +244,6 @@ class BlackboxBoundary:
                 "pins": ["wr_clk", "rd_clk"],
                 "sync_primitives": ["ip_core"],
             },
-            gap_note=(
-                "rtl-buddy-cdc#331: --sync-primitive promises 'no CDC-BBX', but a "
-                "registered module whose clock pins carry no src/dest hint has "
-                "no identifiable destination clock and is still declined with "
-                "the generic 'not provably single-clock' message. Declining is "
-                "the safe outcome; the help text and message do not say why."
-            ),
         )
 
         yield case(
