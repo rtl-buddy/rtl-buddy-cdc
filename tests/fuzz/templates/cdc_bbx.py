@@ -42,11 +42,11 @@ primitive with ``wr_clk`` / ``rd_clk`` pins is still declined (no
 src/dest hint to find its destination clock from); the CDC-BBX message
 says so.
 
-Cross-frontend: the slang frontend has no blackbox support, so the
-stub elaborates as an empty module, the instance vanishes and slang
-reports nothing for it. Cases where the Yosys path reports anything are
-family ``cdc_bbx_blackbox_boundary`` (on the cross-frontend allowlist);
-the cases where it reports nothing are ``cdc_bbx_blackbox_boundary_ok``.
+Cross-frontend: both frontends keep the stub as a boundary cell with a
+bodyless sibling module (the slang frontend since rtl-buddy-cdc#345), so
+the two agree on every case. Cases where the Yosys path reports anything
+are family ``cdc_bbx_blackbox_boundary``; the cases where it reports
+nothing are ``cdc_bbx_blackbox_boundary_ok``.
 """
 
 from __future__ import annotations

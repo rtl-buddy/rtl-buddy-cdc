@@ -161,6 +161,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   analysed whole. The design summary's cell count is the observable
   count. No committed fixture verdict changes.
 
+- **slang frontend: plain `always` blocks and blackbox instances**
+  (#345) — two gaps that made `lint --frontend slang` report nothing
+  where the Yosys frontend reports findings.
+  - A Verilog-2001 `always` block was silently dropped. An
+    edge-triggered `always @(posedge clk …)` now lowers like `always_ff`
+    (async reset, `negedge` clocks, enables, blocking or nonblocking
+    writes); `always @*` / `always @(*)` / a level-sensitive list that
+    assigns every target on every path lowers like `always_comb`; one
+    that infers a latch in the `if (en) q = d;` shape becomes a
+    `$dlatch`. Any procedural block still not lowered (mixed edge and
+    level events, delays, event controls inside the body, a clock that
+    is not a plain signal) is now reported as a warning on stderr with
+    its source location instead of vanishing. An edge-triggered block
+    that reads a variable it writes with a blocking `=` is warned about
+    too (the read is modelled as the registered value).
+  - The async-reset event may be listed first
+    (`@(negedge rst_n or posedge clk)`), for `always_ff` too; it used to
+    be taken as the clock.
+  - A `(* blackbox *)` module elaborated as an empty body, so its
+    instance and every crossing through it disappeared: CDC-BBX, CDC-022
+    and `--sync-primitive` never fired on the slang path. The instance is
+    now a boundary cell (module-name `type`, port connections, the
+    overridden parameters in Yosys' encoding) with a bodyless sibling
+    module, the shape the Yosys netlist has. `--blackbox` and
+    `--greybox` work with `--frontend slang` too, natively (previously
+    ignored on this path); naming one module in both is rejected, as on
+    the Yosys path.
+  - The cross-frontend fuzz allowlist loses the CDC-022 and CDC-BBX
+    families and `fuzz_cdc023_clock_combine_and_s1_v2001` (24 cases).
+    The slang fuzz cache now pickles `(module, blackboxes)` under a new
+    file suffix.
+
 ### Internal
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,

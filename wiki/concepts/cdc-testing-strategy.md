@@ -114,7 +114,10 @@ The suite records two kinds of known-wrong result:
   ids. The list is strict both ways: an allowlisted case that agrees
   fails as well. When only some of a family's cases diverge, either key
   those cases by id or split the family by verdict (`cdc022_*` /
-  `cdc022_*_ok`).
+  `cdc022_*_ok`). The CDC-022, CDC-BBX and plain-`always` rows #331
+  added were closed by #345 (pyslang blackbox support and plain `always`
+  lowering), and the CDC-019 `case_n8` row, where the Yosys path was the
+  one that missed, by #344. The list is empty today.
 
 ### Gate-level corpus
 

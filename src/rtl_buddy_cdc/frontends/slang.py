@@ -71,6 +71,14 @@ What currently works
 
   emit ``$adff`` cells with ``CLK``/``D``/``Q``/``ARST`` connections.
   Plain ``always_ff @(posedge clk) q <= d;`` emits ``$dff``.
+- Verilog-2001 ``always`` blocks (rtl-buddy-cdc#345), by what they
+  infer: edge-triggered → the ``always_ff`` lowering; ``@*`` or a
+  complete level-sensitive body → ``always_comb``; a latch of the
+  ``if (en) q = d;`` shape → ``$dlatch``. Anything else is reported
+  with a ``WARNING`` (see :meth:`_ModuleBuilder._warn_dropped`).
+- Blackbox boundaries (rtl-buddy-cdc#345): ``(* blackbox *)`` modules
+  and ``--blackbox`` / ``--greybox`` names stay as one cell per
+  instance, with a sibling module — see :func:`elaborate_with_blackboxes`.
 - Direct ``port = var`` continuous assigns are aliased into the
   source variable's bits (matches Yosys post-``opt_clean``). The
   aliasing is propagated globally: every entry in the bit-id maps
@@ -273,7 +281,40 @@ def elaborate(
     """Elaborate ``sources`` via pyslang and produce a :class:`Module`.
 
     ``incdirs`` are the `` `include `` search directories, searched after
-    the including file's own directory."""
+    the including file's own directory. Blackbox boundary siblings are
+    dropped; use :func:`elaborate_with_blackboxes` to receive them."""
+    module, _blackboxes = elaborate_with_blackboxes(sources, top, incdirs=incdirs)
+    return module
+
+
+def elaborate_with_blackboxes(
+    sources: list[Path],
+    top: str,
+    *,
+    incdirs: list[Path] | None = None,
+    blackbox: list[str] | None = None,
+    greybox: list[str] | None = None,
+) -> tuple[Module, dict[str, Module]]:
+    """Elaborate ``sources`` into the flat top :class:`Module` plus its
+    blackbox boundary siblings, keyed by module name (rtl-buddy-cdc#345).
+
+    Same shape :func:`rtl_buddy_cdc.netlist.load_with_blackboxes` returns
+    for a Yosys netlist. An instance of a module that carries a truthy
+    ``(* blackbox *)`` attribute, or is named in ``blackbox``, is not
+    inlined: it becomes one cell whose ``type`` is the module name, with
+    its port connections and the instance's overridden parameters, and
+    the module itself becomes a bodyless ``is_blackbox`` sibling. A
+    ``greybox`` module gets the same boundary cell, but its sibling keeps
+    the lowered body so it can be analysed compositionally (#261).
+    """
+    overlap = sorted(set(blackbox or ()) & set(greybox or ()))
+    if overlap:
+        raise SlangElaborationError(
+            "--blackbox and --greybox name the same module(s): "
+            f"{', '.join(overlap)}. --blackbox discards the body (nothing "
+            "left to analyse); --greybox keeps it so the subtree can be "
+            "analysed once on its own internals. Pick one."
+        )
     pyslang = _import_pyslang()
 
     # Relax two defaults that are too strict for a *standalone block*
@@ -340,10 +381,37 @@ def elaborate(
             f"top module {top!r} not found among elaborated instances: {available}"
         )
 
-    return _ModuleBuilder(matching[0], comp, pyslang).build()
+    siblings: dict[str, Module] = {}
+    builder = _ModuleBuilder(
+        matching[0],
+        comp,
+        pyslang,
+        blackbox_names=frozenset(blackbox or ()),
+        greybox_names=frozenset(greybox or ()),
+        siblings=siblings,
+    )
+    module = builder.build()
+    for name in sorted(set(blackbox or ()) | set(greybox or ())):
+        if name not in siblings:
+            _log.warning(
+                "slang frontend: --blackbox/--greybox module %r is not "
+                "instantiated under top %r; the option has no effect",
+                name,
+                top,
+            )
+    return module, siblings
 
 
 # --- internal: build a Yosys-shape Module from a pyslang InstanceSymbol -----
+
+
+def _port_direction(port: Any) -> str:
+    """Yosys port direction for a pyslang ``PortSymbol``.
+
+    ``PortSymbol.direction`` is an ``ArgumentDirection`` enum. ``ref``
+    ports are uncommon at a boundary; they read as inputs for CDC."""
+    d = str(getattr(port, "direction", "")).rsplit(".", 1)[-1]
+    return {"In": "input", "Out": "output", "InOut": "inout"}.get(d, "input")
 
 
 def _param_int32(val: int) -> str:
@@ -360,6 +428,40 @@ def _param_bits(val: int, width: int) -> str:
     where the string length equals the ``$adff``'s ``WIDTH``)."""
     w = max(int(width), 1)
     return format(val & ((1 << w) - 1), f"0{w}b")
+
+
+def _encode_param(value: Any) -> str | None:
+    """Encode an elaborated parameter value the way Yosys ``write_json``
+    does: an integral value as an MSB-first bit string of its own width
+    (``integer`` → 32 bits, ``x`` / ``z`` digits kept), a real as its
+    decimal text. ``None`` when the value cannot be read."""
+    inner = getattr(value, "value", value)
+    if isinstance(inner, float):
+        return repr(inner)
+    width = getattr(inner, "bitWidth", None)
+    if width is None:
+        return None
+    width = max(int(width), 1)
+    # ``SVInt.hasUnknown`` is a property on some pyslang builds and a
+    # method on others.
+    has_unknown = getattr(inner, "hasUnknown", False)
+    if callable(has_unknown):
+        has_unknown = has_unknown()
+    if has_unknown:
+        try:
+            return str(inner.toString(_literal_base_binary(), False)).rjust(width, "0")
+        except Exception:
+            return None
+    try:
+        return _param_bits(int(inner), width)
+    except (TypeError, ValueError):
+        return None
+
+
+def _literal_base_binary() -> Any:
+    import pyslang  # type: ignore[import-not-found]
+
+    return pyslang.LiteralBase.Binary
 
 
 class _ModuleBuilder:
@@ -380,10 +482,29 @@ class _ModuleBuilder:
     collide with a real net — same convention Yosys uses in its JSON.
     """
 
-    def __init__(self, top_inst: Any, compilation: Any, pyslang: Any) -> None:
+    def __init__(
+        self,
+        top_inst: Any,
+        compilation: Any,
+        pyslang: Any,
+        *,
+        blackbox_names: frozenset[str] = frozenset(),
+        greybox_names: frozenset[str] = frozenset(),
+        siblings: dict[str, Module] | None = None,
+    ) -> None:
         self.top = top_inst
         self.comp = compilation
         self.pyslang = pyslang
+        # Blackbox boundaries (rtl-buddy-cdc#345): module names the CLI
+        # asked to keep as boundary cells, and the shared map the bodyless
+        # (or, for a greybox, separately lowered) sibling modules land in.
+        self._blackbox_names = blackbox_names
+        self._greybox_names = greybox_names
+        self._siblings: dict[str, Module] = siblings if siblings is not None else {}
+        # True while lowering a plain Verilog-2001 ``always`` block, which,
+        # unlike ``always_ff`` / ``always_comb``, carries no style rule
+        # about blocking vs nonblocking writes (rtl-buddy-cdc#345).
+        self._plain_always = False
         self._next_bit_id = 2
         # Map canonical pyslang VariableSymbol → tuple of bit refs.
         # PortSymbols are normalised to their internal Variable before
@@ -704,15 +825,7 @@ class _ModuleBuilder:
     def _collect_port(self, member: Any) -> None:
         if self._kind_name(member) != "PortSymbol":
             return
-        # PortSymbol.direction is an ``ArgumentDirection`` enum.
-        d = str(getattr(member, "direction", "")).rsplit(".", 1)[-1]
-        direction = {
-            "In": "input",
-            "Out": "output",
-            "InOut": "inout",
-            "Ref": "input",  # ref ports are uncommon at the boundary;
-            # treat as input for CDC purposes.
-        }.get(d, "input")
+        direction = _port_direction(member)
         internal = getattr(member, "internalSymbol", None)
         if internal is None:
             return  # nothing to wire to
@@ -747,7 +860,10 @@ class _ModuleBuilder:
         elif kind == "ContinuousAssignSymbol":
             self._emit_continuous_assign(member)
         elif kind == "InstanceSymbol":
-            self._emit_child_instance(member, hier_prefix)
+            if self._is_boundary_instance(member):
+                self._emit_boundary_instance(member, hier_prefix)
+            else:
+                self._emit_child_instance(member, hier_prefix)
         elif kind == "NetSymbol":
             # ``wire foo = <expr>;`` lowers as a NetSymbol whose
             # ``initializer`` carries the RHS. pyslang doesn't emit a
@@ -863,6 +979,124 @@ class _ModuleBuilder:
             return None
         return self._bits_of_expression(ex)
 
+    # -- blackbox boundaries (rtl-buddy-cdc#345) --------------------------
+
+    def _is_boundary_instance(self, inst: Any) -> bool:
+        """True iff ``inst`` stays a boundary cell instead of being inlined.
+
+        The pyslang counterparts of what the Yosys path keys on: a truthy
+        ``(* blackbox *)`` attribute on the module declaration (what
+        ``read_verilog`` honours), or the module named in ``--blackbox`` /
+        ``--greybox`` (``read_slang --blackboxed-module`` / ``setattr -mod
+        -set blackbox 1``). An undefined module is not a blackbox on
+        either path: both fail elaboration.
+        """
+        defn = getattr(inst, "definition", None)
+        name = getattr(defn, "name", None)
+        if name is None:
+            return False
+        if name in self._blackbox_names or name in self._greybox_names:
+            return True
+        for attr in self.comp.getAttributes(defn) or []:
+            if getattr(attr, "name", None) != "blackbox":
+                continue
+            val = getattr(attr, "value", None)
+            is_true = getattr(val, "isTrue", None)
+            return bool(is_true()) if callable(is_true) else True
+        return False
+
+    def _emit_boundary_instance(self, inst: Any, parent_prefix: str) -> None:
+        """Emit ``inst`` as one boundary cell, Yosys-shaped (#345).
+
+        Mirrors what ``read_verilog`` + ``flatten`` leave for an instance
+        of a blackbox module: a cell named by its hierarchical instance
+        path whose ``type`` is the module name, ``connections`` keyed by
+        port name with the parent-side bits, and ``parameters`` holding
+        only the parameters the instantiation overrides (so CDC-022 falls
+        back to the XPM default for an omitted ``DEST_SYNC_FF``, exactly
+        as on the Yosys path). The module itself is recorded once as a
+        sibling :class:`Module` with ``is_blackbox`` set: port directions
+        and widths only, or for a ``--greybox`` module its lowered body.
+        """
+        defn_name = inst.definition.name
+        connections: dict[str, tuple[Bit, ...]] = {}
+        for pc in getattr(inst, "portConnections", []) or []:
+            # An empty ``.io()`` stays as a zero-width connection, as in
+            # the Yosys netlist.
+            bits = self._port_connection_bits(pc)
+            connections[pc.port.name] = bits if bits is not None else ()
+        parameters: dict[str, str] = {}
+        for member in inst.body:
+            if self._kind_name(member) != "ParameterSymbol":
+                continue
+            if not getattr(member, "isOverridden", False):
+                continue
+            encoded = _encode_param(getattr(member, "value", None))
+            if encoded is not None:
+                parameters[member.name] = encoded
+        attrs: dict[str, str] = {}
+        src = self._src_attr(inst)
+        if src is not None:
+            attrs["src"] = src
+        # Pin directions, as ``write_json`` records them: a boundary
+        # cell's output pins are drivers, not readers (rtl-buddy-cdc#344).
+        port_directions = {
+            member.name: _port_direction(member)
+            for member in inst.body
+            if self._kind_name(member) == "PortSymbol" and member.name in connections
+        }
+        cell_name = f"{parent_prefix}{inst.name}"
+        self._cells[cell_name] = Cell(
+            name=cell_name,
+            type=defn_name,
+            connections=connections,
+            parameters=parameters,
+            attributes=attrs,
+            port_directions=port_directions,
+        )
+        if defn_name in self._siblings:
+            return
+        if defn_name in self._greybox_names:
+            body = _ModuleBuilder(
+                inst,
+                self.comp,
+                self.pyslang,
+                blackbox_names=self._blackbox_names,
+                greybox_names=self._greybox_names,
+                siblings=self._siblings,
+            ).build()
+            self._siblings[defn_name] = Module(
+                name=defn_name,
+                ports=body.ports,
+                cells=body.cells,
+                netnames=body.netnames,
+                is_blackbox=True,
+            )
+            return
+        # Bodyless: the port list is the whole module. Bits are local to
+        # the sibling (Yosys numbers each module's nets from 2 too).
+        ports: dict[str, Port] = {}
+        netnames: dict[str, Netname] = {}
+        next_bit = 2
+        for member in inst.body:
+            if self._kind_name(member) != "PortSymbol":
+                continue
+            target = getattr(member, "internalSymbol", None) or member
+            width = self._width_of(target)
+            port_bits: tuple[Bit, ...] = tuple(range(next_bit, next_bit + width))
+            next_bit += width
+            ports[member.name] = Port(
+                name=member.name, direction=_port_direction(member), bits=port_bits
+            )
+            netnames[member.name] = Netname(name=member.name, bits=port_bits)
+        self._siblings[defn_name] = Module(
+            name=defn_name,
+            ports=ports,
+            cells={},
+            netnames=netnames,
+            is_blackbox=True,
+        )
+
     # -- always_ff lowering ----------------------------------------------
 
     def _emit_procedural_block(self, block: Any, hier_prefix: str = "") -> None:
@@ -878,17 +1112,29 @@ class _ModuleBuilder:
         if kind_name == "AlwaysLatch":
             self._emit_always_latch(block)
             return
+        if kind_name == "Always":
+            self._emit_plain_always(block)
+            return
         if kind_name != "AlwaysFF":
             return  # initial / final — not modelled
+        self._emit_always_ff(block)
+
+    def _emit_always_ff(self, block: Any) -> None:
         body = block.body
         # Expected shape: TimedStatement(timing=EventListControl, stmt=...)
         if self._kind_name(body) != "TimedStatement":
+            self._warn_dropped(block, "no leading event control")
             return
         clk_sym, reset_sym, reset_active_low, clk_negedge = self._analyse_event_list(
             body.timing
         )
         if clk_sym is None:
-            return  # can't identify clock — skip rather than crash
+            # can't identify clock — skip rather than crash
+            self._warn_dropped(block, "clock is not a plain signal")
+            return
+        clk_sym, reset_sym, reset_active_low, clk_negedge = self._order_clock_and_reset(
+            body.stmt, clk_sym, reset_sym, reset_active_low, clk_negedge
+        )
         # Stash the clock edge as instance state so ``_emit_flop_cell``
         # can read it without threading a polarity parameter through
         # every ``_emit_assignments_*`` helper. The save/restore in the
@@ -986,6 +1232,289 @@ class _ModuleBuilder:
             self._proc_resets = {}
             self._clk_negedge = prev_clk_negedge
 
+    def _order_clock_and_reset(
+        self,
+        stmt: Any,
+        clk_sym: Any,
+        reset_sym: Any | None,
+        reset_active_low: bool,
+        clk_negedge: bool,
+    ) -> tuple[Any, Any | None, bool, bool]:
+        """Swap the provisional clock / reset pick when the reset event
+        is listed first (``@(negedge rst_n or posedge clk)``).
+
+        :meth:`_analyse_event_list` takes the first event as the clock.
+        The body decides: when its outer ``if`` tests the first event's
+        signal, that signal is the reset and the other one is the clock,
+        which is how synthesis reads the block in either order.
+        """
+        if reset_sym is None:
+            return clk_sym, reset_sym, reset_active_low, clk_negedge
+        inner = stmt
+        while self._kind_name(inner) == "BlockStatement":
+            inner = inner.body
+        if self._kind_name(inner) != "ConditionalStatement":
+            return clk_sym, reset_sym, reset_active_low, clk_negedge
+        conds = getattr(inner, "conditions", None)
+        if not conds:
+            return clk_sym, reset_sym, reset_active_low, clk_negedge
+        if self._extract_condition_symbol(conds[0].expr) is clk_sym:
+            # The reset polarity is its event's edge, and vice versa.
+            return reset_sym, clk_sym, clk_negedge, reset_active_low
+        return clk_sym, reset_sym, reset_active_low, clk_negedge
+
+    # -- plain ``always`` (Verilog-2001) lowering, rtl-buddy-cdc#345 -------
+
+    def _warn_dropped(self, block: Any, reason: str) -> None:
+        """Report a procedural block this frontend cannot lower.
+
+        Its flops / logic are missing from the netlist, so the run would
+        otherwise come back clean on a design it never saw. Logged at
+        ``WARNING`` (stderr) with the source location, like the frontend's
+        other non-fatal diagnostics."""
+        where = self._src_attr(block) or "<unknown location>"
+        _log.warning(
+            "slang frontend: %s: procedural block not lowered (%s); its "
+            "registers and logic are missing from the CDC netlist",
+            where,
+            reason,
+        )
+
+    def _emit_plain_always(self, block: Any) -> None:
+        """Lower a plain ``always`` block by what it infers.
+
+        - every event edge-qualified (``@(posedge clk)``, ``@(posedge clk
+          or negedge rst_n)``, ``negedge`` clocks) → the ``always_ff``
+          lowering, async reset and enables included;
+        - ``@*`` / ``@(*)`` or a level-sensitive list (``@(a or b)``) whose
+          body assigns every target on every path → ``always_comb``. Like
+          synthesis, the list itself is not checked for completeness;
+        - level-sensitive with a target left unassigned on some path (an
+          inferred latch) → the ``always_latch`` lowering when the body is
+          the ``if (en) q = d;`` shape it models.
+
+        Anything else (mixed edge / level lists, ``edge``, delays, event
+        controls inside the body) is reported by :meth:`_warn_dropped`.
+        Blocking and nonblocking writes are both accepted.
+        """
+        body = block.body
+        form = self._plain_always_form(body)
+        prev = self._plain_always
+        self._plain_always = True
+        try:
+            if form == "ff":
+                self._emit_always_ff(block)
+                self._warn_blocking_temporaries(block, body.stmt)
+            elif form == "level":
+                written, always_written = self._assigned_symbols(body.stmt)
+                if not (written - always_written):
+                    self._walk_comb_statement(body.stmt)
+                elif self._is_latch_shape(body.stmt):
+                    self._walk_latch_statement(body.stmt)
+                else:
+                    self._warn_dropped(
+                        block,
+                        "level-sensitive `always` infers a latch in a shape "
+                        "other than `if (en) q = d;`",
+                    )
+            else:
+                self._warn_dropped(
+                    block,
+                    "`always` is not edge-triggered on every event, nor "
+                    "`@*` / level-sensitive",
+                )
+        finally:
+            self._plain_always = prev
+
+    def _plain_always_form(self, body: Any) -> str | None:
+        """``"ff"`` / ``"level"`` / ``None`` (not lowerable) for the
+        timing control at the head of a plain ``always`` body."""
+        if self._kind_name(body) != "TimedStatement":
+            return None
+        timing = body.timing
+        kind = self._kind_name(timing)
+        if kind == "ImplicitEventControl":
+            return "level"
+        if kind == "SignalEventControl":
+            events = [timing]
+        elif kind == "EventListControl":
+            events = list(getattr(timing, "events", []) or [])
+        else:
+            return None
+        if not events or any(
+            self._kind_name(ev) != "SignalEventControl" for ev in events
+        ):
+            return None
+        edges = {str(getattr(ev, "edge", "")).rsplit(".", 1)[-1] for ev in events}
+        if edges <= {"PosEdge", "NegEdge"}:
+            return "ff"
+        if edges <= {"None_", "None"}:
+            return "level"
+        return None
+
+    def _assigned_symbols(self, stmt: Any) -> tuple[set[Any], set[Any]]:
+        """``(written, always_written)``: the variables ``stmt`` assigns
+        on some path, and those it assigns on every path.
+
+        A variable in the first set but not the second holds its value on
+        some path, which is a latch. Tracked per variable, not per bit;
+        a ``case`` without ``default`` counts as incomplete."""
+        none: tuple[set[Any], set[Any]] = (set(), set())
+        if stmt is None:
+            return none
+        kind = self._kind_name(stmt)
+        if kind == "BlockStatement":
+            return self._assigned_symbols(stmt.body)
+        if kind in {"StatementList", "ListStatement"}:
+            written: set[Any] = set()
+            always: set[Any] = set()
+            for s in getattr(stmt, "list", []) or []:
+                w, a = self._assigned_symbols(s)
+                written |= w
+                always |= a
+            return written, always
+        if kind == "ExpressionStatement":
+            expr = stmt.expr
+            if type(expr).__name__ != "AssignmentExpression":
+                return none
+            syms = self._lvalue_symbols(expr.left)
+            return set(syms), set(syms)
+        if kind == "ConditionalStatement":
+            conds = getattr(stmt, "conditions", None)
+            const = self._const_int(conds[0].expr) if conds else None
+            if const is not None:
+                return self._assigned_symbols(
+                    stmt.ifTrue if const != 0 else stmt.ifFalse
+                )
+            tw, ta = self._assigned_symbols(stmt.ifTrue)
+            if stmt.ifFalse is None:
+                return tw, set()
+            fw, fa = self._assigned_symbols(stmt.ifFalse)
+            return tw | fw, ta & fa
+        if kind == "CaseStatement":
+            arms = [
+                self._assigned_symbols(getattr(it, "stmt", None))
+                for it in (getattr(stmt, "items", []) or [])
+            ]
+            default = getattr(stmt, "defaultCase", None)
+            written = set().union(*(w for w, _ in arms)) if arms else set()
+            if default is None:
+                return written, set()
+            dw, da = self._assigned_symbols(default)
+            always = set(da)
+            for _, a in arms:
+                always &= a
+            return written | dw, always
+        if kind == "ForLoopStatement":
+            return self._assigned_symbols(getattr(stmt, "body", None))
+        return none
+
+    def _lvalue_symbols(self, expr: Any) -> list[Any]:
+        """Root variable symbols an assignment target writes."""
+        kind = type(expr).__name__
+        if kind == "NamedValueExpression":
+            return [self._canonical_var(expr.symbol)]
+        if kind in {
+            "ElementSelectExpression",
+            "RangeSelectExpression",
+            "MemberAccessExpression",
+        }:
+            return self._lvalue_symbols(getattr(expr, "value", None))
+        if kind == "ConcatenationExpression":
+            out: list[Any] = []
+            for op in getattr(expr, "operands", []) or []:
+                out.extend(self._lvalue_symbols(op))
+            return out
+        return []
+
+    def _is_latch_shape(self, stmt: Any) -> bool:
+        """Every statement is the single-arm ``if (en) lhs = rhs;`` shape
+        :meth:`_walk_latch_statement` lowers to a ``$dlatch``."""
+        kind = self._kind_name(stmt)
+        if kind == "BlockStatement":
+            return self._is_latch_shape(stmt.body)
+        if kind in {"StatementList", "ListStatement"}:
+            items = getattr(stmt, "list", []) or []
+            return bool(items) and all(self._is_latch_shape(s) for s in items)
+        if kind != "ConditionalStatement" or stmt.ifFalse is not None:
+            return False
+        arm = stmt.ifTrue
+        while arm is not None and self._kind_name(arm) == "BlockStatement":
+            arm = arm.body
+        return (
+            arm is not None
+            and self._kind_name(arm) == "ExpressionStatement"
+            and type(arm.expr).__name__ == "AssignmentExpression"
+        )
+
+    def _warn_blocking_temporaries(self, block: Any, stmt: Any) -> None:
+        """Warn when an edge-triggered plain ``always`` reads a variable
+        after writing it with a blocking ``=`` earlier in the same block.
+
+        Each written variable lowers to a register, so such a read sees
+        the registered value, where synthesis forwards the value written
+        earlier in the block (``t = a; q = t;`` makes ``q`` a copy of
+        ``a``, not of ``t``). The netlist can then show more flop stages
+        than the hardware has. Reading before writing (``n = n + 1``)
+        is exact and not reported."""
+        written: set[Any] = set()
+        late_reads: set[Any] = set()
+
+        def reads(node: Any) -> set[Any]:
+            found: set[Any] = set()
+
+            def visit(n: Any) -> bool:
+                if type(n).__name__ == "NamedValueExpression":
+                    found.add(self._canonical_var(n.symbol))
+                return True
+
+            if node is not None:
+                node.visit(visit)
+            return found
+
+        def walk(st: Any) -> None:
+            if st is None:
+                return
+            kind = self._kind_name(st)
+            if kind == "BlockStatement":
+                walk(st.body)
+            elif kind in {"StatementList", "ListStatement"}:
+                for s in getattr(st, "list", []) or []:
+                    walk(s)
+            elif kind == "ExpressionStatement":
+                expr = st.expr
+                if type(expr).__name__ != "AssignmentExpression":
+                    late_reads.update(reads(expr) & written)
+                    return
+                late_reads.update(reads(expr.right) & written)
+                if not getattr(expr, "isNonBlocking", False):
+                    written.update(self._lvalue_symbols(expr.left))
+            elif kind == "ConditionalStatement":
+                for cond in getattr(st, "conditions", []) or []:
+                    late_reads.update(reads(cond.expr) & written)
+                walk(st.ifTrue)
+                walk(st.ifFalse)
+            elif kind == "CaseStatement":
+                late_reads.update(reads(getattr(st, "expr", None)) & written)
+                for item in getattr(st, "items", []) or []:
+                    walk(getattr(item, "stmt", None))
+                walk(getattr(st, "defaultCase", None))
+            elif kind == "ForLoopStatement":
+                # Twice: a write in one iteration precedes the next one's reads.
+                walk(getattr(st, "body", None))
+                walk(getattr(st, "body", None))
+
+        walk(stmt)
+        if late_reads:
+            _log.warning(
+                "slang frontend: %s: blocking-assigned %s read later in the "
+                "same edge-triggered `always`; modelled as register(s), so "
+                "the read sees the registered value rather than the one "
+                "written earlier in the block",
+                self._src_attr(block) or "<unknown location>",
+                ", ".join(f"`{getattr(s, 'name', '?')}`" for s in late_reads),
+            )
+
     def _collect_reset_assignments(self, stmt: Any) -> None:
         """Walk an ``always_ff`` reset arm (``if (!rst_n) <stmt>``) and
         record per-LHS reset values into ``self._proc_resets``.
@@ -1013,7 +1542,7 @@ class _ModuleBuilder:
         expr = stmt.expr
         if type(expr).__name__ != "AssignmentExpression":
             return
-        if not getattr(expr, "isNonBlocking", False):
+        if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
             return
         q_bits = self._lvalue_bits(expr.left)
         if q_bits is None:
@@ -1199,7 +1728,7 @@ class _ModuleBuilder:
                 # Non-assignment ExpressionStatement (e.g. function
                 # call) — not a reset assign; bail conservatively.
                 return False
-            if not getattr(expr, "isNonBlocking", False):
+            if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
                 return False
             return self._const_int(expr.right) is not None
         if kind == "VariableDeclStatement":
@@ -1632,9 +2161,10 @@ class _ModuleBuilder:
         del clk_sym, reset_sym, reset_active_low  # captured at block level
         if type(expr).__name__ != "AssignmentExpression":
             return
-        if not getattr(expr, "isNonBlocking", False):
+        if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
             # Blocking inside always_ff is a SV style violation; skip
-            # rather than try to model it.
+            # rather than try to model it. A plain ``always`` has no such
+            # rule and synthesis registers both kinds (#345).
             return
         lhs = expr.left
         rhs = expr.right
@@ -2564,7 +3094,7 @@ class _ModuleBuilder:
         # Latch bodies should use blocking assigns (``=``); a
         # nonblocking write here would be a SV style violation that
         # we'd rather surface as "latch dropped" than silently model.
-        if getattr(expr, "isNonBlocking", False):
+        if getattr(expr, "isNonBlocking", False) and not self._plain_always:
             return
         q_bits = self._lvalue_bits(expr.left)
         if q_bits is None:
@@ -2887,7 +3417,7 @@ class _ModuleBuilder:
         the continuous-assign path uses."""
         if type(expr).__name__ != "AssignmentExpression":
             return
-        if getattr(expr, "isNonBlocking", False):
+        if getattr(expr, "isNonBlocking", False) and not self._plain_always:
             return  # nonblocking in always_comb is a SV style violation
         lhs_kind = type(expr.left).__name__
         if lhs_kind == "ElementSelectExpression":

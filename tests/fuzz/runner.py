@@ -211,7 +211,7 @@ def run_case_slang(case: RenderedCase) -> CaseResult:
     if not slang_available():
         raise RuntimeError("pyslang not importable")
     cached = build_slang(case)
-    fired, failures = _analyze(case, cached.module)
+    fired, failures = _analyze(case, cached.module, cached.blackboxes)
     return CaseResult(
         case=case,
         fired=fired,

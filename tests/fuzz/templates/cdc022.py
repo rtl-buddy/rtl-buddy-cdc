@@ -23,11 +23,10 @@ instantiation; CDC-022 has no attribute suppression.
 
 Cases the Yosys path reports on are family
 ``cdc022_primitive_sync_depth``; silent ones are
-``cdc022_primitive_sync_depth_ok``. The slang frontend has no blackbox
-support (``frontend.elaborate_with_blackboxes`` returns no siblings for
-it), so the stub elaborates as an empty body, the instance and its
-parameters vanish, and slang reports nothing: the first family is on
-the cross-frontend allowlist, the second agrees vacuously.
+``cdc022_primitive_sync_depth_ok``. Until rtl-buddy-cdc#345 the slang
+frontend had no blackbox support, so the first family was on the
+cross-frontend allowlist; both frontends now keep the macro instance and
+its overridden parameters, and agree on every case.
 
 The macros are bodyless ``(* blackbox *)`` stubs in the same source,
 the way a filelist without the vendor tree presents them, so every case
@@ -254,11 +253,10 @@ def _case(
 ) -> RenderedCase:
     top = f"fuzz_{name}_{tag}"
     # Cases where the Yosys path reports something live in ``name``;
-    # silent ones in ``<name>_ok``. The split is for the cross-frontend
-    # oracle: the slang frontend has no blackbox support, so on every
-    # case the macro instance vanishes and slang reports nothing. That
-    # is a divergence exactly on the ``name`` family (allowlisted in
-    # test_corpus_diff) and vacuous agreement on ``_ok``.
+    # silent ones in ``<name>_ok``. The split was for the cross-frontend
+    # oracle while the slang frontend had no blackbox support (the
+    # ``name`` family diverged, ``_ok`` agreed vacuously); since
+    # rtl-buddy-cdc#345 both agree, and the split just groups by verdict.
     family = name if (findings or not quiet) else f"{name}_ok"
     params: dict = {
         "analysis": "cli",

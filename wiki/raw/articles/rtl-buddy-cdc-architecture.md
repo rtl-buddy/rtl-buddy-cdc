@@ -227,6 +227,32 @@ Every emitted cell carries an `attributes["src"]` string formatted
 as Yosys' `"file:line.col-line.col"` convention, so the JSON /
 SARIF reporters surface clickable source locations without a
 frontend-specific branch.
+
+Procedural blocks are lowered by what they infer, not by keyword
+(#345): `always_ff` and an edge-triggered plain `always` take the flop
+path; `always_comb`, `always @*` and a level-sensitive `always` that
+assigns every target on every path take the combinational path;
+`always_latch` and a latch-inferring level-sensitive `always` of the
+`if (en) q = d;` shape become `$dlatch`. A procedural block the
+builder cannot lower (mixed edge/level event list, delays, event
+controls inside the body, an unrecognised clock expression) is
+reported with a `WARNING` naming its source range instead of
+vanishing silently; `initial` / `final` are not modelled.
+
+Blackbox boundaries (#345): an instance of a module with a truthy
+`(* blackbox *)` attribute, or one named by `lint --blackbox` /
+`--greybox`, is not inlined. It becomes one cell named by its
+flattened instance path, `type` = module name, `connections` keyed by
+port name, and `parameters` holding only the parameters the
+instantiation overrides, encoded as Yosys' `write_json` does — the
+same cell a Yosys netlist carries, so CDC-022's XPM-default fallback
+and `--sync-primitive` recognition behave identically.
+`frontends.slang.elaborate_with_blackboxes` returns the module as an
+`is_blackbox` sibling, the `(top, blackboxes)` pair
+`netlist.load_with_blackboxes` returns (§4.8). The sibling's port
+widths come from the first instance's parameters (Yosys sizes them
+from the module defaults; the analysis reads widths off the
+connections). A greybox sibling carries its lowered body.
 Reaches parity with the Yosys frontend on every SDC-equipped
 fixture in the regression suite; the per-fixture matrix lives in
 the `frontends/slang.py` module docstring.
@@ -638,7 +664,8 @@ leaves it standing and the parent keeps an ordinary instance cell) **and**
 its cells. Yosys produces one with
 `setattr -mod -set blackbox 1 <module>` between `proc` and `flatten`;
 `lint --greybox MODULE` is the CLI surface (a plain Yosys pass — no plugin
-needed, unlike `--blackbox`). Nothing in the loader changes: `is_blackbox`
+needed, unlike `--blackbox`; the slang frontend builds the same sibling
+natively, #345). Nothing in the loader changes: `is_blackbox`
 still comes from the attribute, and a zero-cell sibling still takes the
 pre-#261 path exactly as before. The whole of §4.9's compositional
 machinery is gated on `sub.cells` being non-empty.
