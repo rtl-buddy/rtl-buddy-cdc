@@ -24,6 +24,12 @@ class Port:
     bits: tuple[Bit, ...]
 
 
+# Output pin names of the Yosys cell library the rule pack relies on when a
+# cell carries no ``port_directions`` (hand-built netlists, the slang
+# frontend): combinational ``Y`` and flop ``Q``.
+DEFAULT_OUTPUT_PINS: frozenset[str] = frozenset({"Y", "Q"})
+
+
 @dataclass(frozen=True)
 class Cell:
     name: str
@@ -31,6 +37,24 @@ class Cell:
     connections: dict[str, tuple[Bit, ...]]
     parameters: dict[str, str] = field(default_factory=dict)
     attributes: dict[str, str] = field(default_factory=dict)
+    # ``write_json``'s per-cell ``port_directions`` ("input" / "output" /
+    # "inout"). Yosys emits it for every cell, including blackbox
+    # instances, whose output pins carry arbitrary names (``clk_out``,
+    # ``dout``). Empty when the producer did not supply it.
+    port_directions: dict[str, str] = field(default_factory=dict)
+
+    def is_output_pin(self, port: str) -> bool:
+        """True iff ``port`` is driven *by* this cell rather than read by it.
+
+        Uses ``port_directions`` when the netlist carries it, so a
+        blackbox instance's ``clk_out`` or a ``$memrd`` ``DATA`` port is
+        an output; falls back to the ``Y`` / ``Q`` names otherwise. An
+        ``inout`` pin is not an output here: it reads the net too.
+        """
+        direction = self.port_directions.get(port)
+        if direction is not None:
+            return direction == "output"
+        return port in DEFAULT_OUTPUT_PINS
 
 
 @dataclass(frozen=True)
@@ -189,6 +213,7 @@ def _parse_module(name: str, raw: dict, *, is_blackbox: bool) -> Module:
             connections={pn: _bits(pb) for pn, pb in cd.get("connections", {}).items()},
             parameters=dict(cd.get("parameters", {})),
             attributes=dict(cd.get("attributes", {})),
+            port_directions=dict(cd.get("port_directions", {})),
         )
         for cn, cd in raw.get("cells", {}).items()
     }

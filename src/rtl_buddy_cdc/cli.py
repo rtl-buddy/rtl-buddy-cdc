@@ -151,7 +151,10 @@ _SYNC_PRIMITIVE_OPT = typer.Option(
     "crossing landing in an instance of it is safe by construction, the "
     "instance is summarised at its destination clock instead of being "
     "declined as a multi-clock blackbox (no CDC-BBX), and its "
-    "`DEST_SYNC_FF` parameter is checked by CDC-022. Repeatable. The "
+    "`DEST_SYNC_FF` parameter is checked by CDC-022. The destination clock "
+    "is found from the clock pin names: with two or more clock pins, one "
+    "must contain `dest` or `dst` (a `src` pin is the source side), or the "
+    "instance is still declined with CDC-BBX. Repeatable. The "
     "Xilinx XPM CDC family (xpm_cdc_single / _array_single / _gray / "
     "_handshake / _pulse / _sync_rst / _async_rst) is recognised "
     "built-in — use this only for an in-house or other-vendor macro. "
@@ -991,6 +994,20 @@ def _analyze_module_and_report(
                         "port is captured in more than one internal clock domain, "
                         "which a single boundary sink cannot represent. Flatten it "
                         "or split the port "
+                        f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                    )
+                elif cell.type in comp_stats.undirected_primitive_modules:
+                    # rtl-buddy-cdc#344: registered as a synchroniser primitive, but the
+                    # primitive path needs to know which clock pin is the
+                    # destination and could not tell. Declining is the
+                    # safe outcome; say why so the promise of
+                    # ``--sync-primitive`` ("no CDC-BBX") is not a mystery.
+                    reason = (
+                        "left opaque — registered as a synchroniser primitive, "
+                        "but its destination clock pin could not be identified: "
+                        "with more than one clock pin, one must carry a `dest` / "
+                        "`dst` name hint, and it must trace to a declared clock. "
+                        "Rename the destination clock pin, or flatten it "
                         f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
                     )
                 else:

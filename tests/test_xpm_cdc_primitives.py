@@ -541,6 +541,25 @@ def test_unidentifiable_destination_falls_through_to_the_generic_path() -> None:
     assert boundaries == {}
     assert stats.primitive_modules == frozenset()
     assert stats.declined_modules == frozenset({"afifo"})
+    assert stats.undirected_primitive_modules == frozenset({"afifo"})
+
+
+def test_unidentifiable_destination_decline_says_why() -> None:
+    """The CDC-BBX message for a registered primitive the analyzer could
+    not orient names the missing destination clock (rtl-buddy-cdc#344),
+    instead of the generic "not provably single-clock" — the help text
+    promises a registered module gets no CDC-BBX, so the exception must
+    explain itself. Unregistered, the generic message stands."""
+    report, _code = _run("multi_clock_blackbox", "--sync-primitive", "afifo")
+    (bbx,) = [v for v in report["violations"] if v["rule_id"] == "CDC-BBX"]
+    assert "registered as a synchroniser primitive" in bbx["message"]
+    assert "destination clock pin could not be identified" in bbx["message"]
+    assert "not provably single-clock" not in bbx["message"]
+
+    report, _code = _run("multi_clock_blackbox")
+    (bbx,) = [v for v in report["violations"] if v["rule_id"] == "CDC-BBX"]
+    assert "not provably single-clock" in bbx["message"]
+    assert "synchroniser primitive" not in bbx["message"]
 
 
 def test_inout_clock_pin_is_never_emitted_as_a_boundary_source() -> None:
