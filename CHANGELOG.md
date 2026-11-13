@@ -39,6 +39,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The JSON and SARIF reports are serialised with `json.dumps`, which
     can use the C encoder, instead of `json.dump`.
 
+### Fixed
+
+- **CDC-001 missed a synchroniser stage exported straight to an output
+  port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
+  walk counted cell input pins only, so a first stage whose `Q` drove a
+  top-level output *and* a second flop looked like a clean two-stage
+  chain. A module output (or inout) port is now a reader, so the
+  exported stage ends the chain and CDC-001 fires — the same verdict as
+  when the tap goes through a gate. The last stage of a synchroniser
+  still drives outputs freely.
+
+- **CDC-018 over-counted a cascade behind an exported stage** (rtl-buddy-cdc#344).
+  Same cause: a 2FF synchroniser whose output is exported and also
+  pipelined was reported as a 4-or-more-flop cascade. The tap now ends
+  the chain at the synchroniser.
+
+- **CDC-008 reported a blackbox's clock output pin as clock-as-data**
+  (rtl-buddy-cdc#344). When a blackbox's forwarded clock clocked a flop in the
+  parent, the stub's own `clk_out` pin — the clock's driver — was
+  listed as a reader. Cell pins are now classified by the netlist's
+  `port_directions`, so output pins are never readers (CDC-008, and the
+  reader counts above). The CDC-BBX finding for the clock output is
+  unchanged.
+
+- **CDC-019 missed a one-hot decoder that Yosys lowers to a ROM**
+  (rtl-buddy-cdc#344). `proc` turns a full constant `case` table into an
+  asynchronous `$memrd_v2`; the rule only accepted a comb cell's `Y` as
+  the shared driver. An asynchronous memory read port's `DATA` is now
+  accepted too, matching the slang frontend, which keeps the mux.
+
+- **`--sync-primitive` decline now says why** (rtl-buddy-cdc#344). A registered
+  module whose destination clock pin cannot be identified (two or more
+  clock pins, none named `dest` / `dst`) is still declined, which is the
+  safe outcome, but the CDC-BBX message now names that cause instead of
+  the generic "not provably single-clock", and the option's help text
+  says a destination pin hint is needed.
+
 ### Internal
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,

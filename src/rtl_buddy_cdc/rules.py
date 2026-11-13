@@ -26,6 +26,7 @@ from rtl_buddy_cdc.primitives import (
     is_sync_primitive,
     is_xpm_primitive,
     normalise_type as normalise_primitive_type,
+    parse_param_int,
     sync_depths as primitive_sync_depths,
 )
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
@@ -298,11 +299,15 @@ def _build_context(
     # Forward index: same shape as ``bit_drivers`` but for *inputs*.
     # CLK is excluded (clock pins are walked separately by the clock-
     # network tracer); other pin names — D, A, B, S, SEL, EN, ARST, … —
-    # all count as data consumers.
+    # all count as data consumers. Output pins are excluded by the same
+    # test ``_bit_reader_count`` uses, so a blackbox's ``dout`` is not
+    # listed as a consumer of the net it drives. Module output ports are
+    # readers too but are not *cell* sites, so they are counted in
+    # ``reader_counts`` and not listed here.
     consumers_builder: dict[Bit, list[tuple[str, str, int]]] = {}
     for cell in module.cells.values():
         for port_name, bits in cell.connections.items():
-            if port_name in _OUTPUT_PINS or port_name == "CLK":
+            if port_name == "CLK" or cell.is_output_pin(port_name):
                 continue
             for idx, b in enumerate(bits):
                 if isinstance(b, int):
@@ -313,14 +318,7 @@ def _build_context(
         bit: tuple(entries) for bit, entries in consumers_builder.items()
     }
 
-    reader_counts: dict[Bit, int] = {}
-    for cell in module.cells.values():
-        for port_name, bits in cell.connections.items():
-            if port_name in {"Y", "Q", "CLK"}:
-                continue
-            for b in bits:
-                if isinstance(b, int):
-                    reader_counts[b] = reader_counts.get(b, 0) + 1
+    reader_counts = _bit_reader_count(module)
 
     d_bit_to_single_bit_flop: dict[Bit, Flop] = {}
     for f in flops:
@@ -997,24 +995,41 @@ def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str, int]]:
 
 
 def _bit_reader_count(module: Module) -> dict[Bit, int]:
-    """Count every (cell, port-bit) site that reads each net bit.
+    """Count every site that reads each net bit.
 
-    Both flop D and combinational inputs count; flop CLK is excluded
-    because clock connections aren't part of the data fanout. Two reads
-    of the same bit by the same cell on different ports count
+    This is the one definition of "who reads this bit" behind every
+    single-reader test in the rule pack (the synchroniser-chain walks,
+    the reset-mux look-through, the compositional port proofs). A
+    reader is:
+
+    - a cell **input** pin bit — flop ``D``, combinational inputs, and
+      the input pins of a blackbox / hierarchical instance. Flop ``CLK``
+      is excluded because clock connections aren't part of the data
+      fanout. A cell's *output* pins (``Y`` / ``Q``, or any pin
+      ``port_directions`` marks ``output``, such as a blackbox's
+      ``clk_out``) drive the bit and are not readers.
+    - a module **output** (or ``inout``) port bit. The value leaves the
+      module there and is used outside it, so it is a load like any
+      other: a synchroniser stage exported straight to a port has a
+      second reader exactly as it would through a buffer (rtl-buddy-cdc#344).
+
+    Two reads of the same bit by the same cell on different ports count
     independently — both are real loads.
     """
     counts: dict[Bit, int] = {}
     for cell in module.cells.values():
-        # Outputs of $-prefixed primitives use the ``Y`` port; flop Q is
-        # also an output. Both are intentionally ignored: we want input
-        # readers, not drivers.
         for port_name, bits in cell.connections.items():
-            if port_name in {"Y", "Q", "CLK"}:
+            if port_name == "CLK" or cell.is_output_pin(port_name):
                 continue
             for b in bits:
                 if isinstance(b, int):
                     counts[b] = counts.get(b, 0) + 1
+    for port in module.ports.values():
+        if port.direction not in ("output", "inout"):
+            continue
+        for b in port.bits:
+            if isinstance(b, int):
+                counts[b] = counts.get(b, 0) + 1
     return counts
 
 
@@ -1269,8 +1284,10 @@ def _sync_chain_depth(
     A chain extends to the next flop iff:
 
     - the head's Q bit has *exactly one* reader anywhere in the
-      module (any extra reader — combinational or otherwise — means
-      the synchronized value is already in use; the chain ends),
+      module (any extra reader — combinational, a module output port
+      the stage is exported on, or otherwise — means the synchronized
+      value is already in use; the chain ends; see
+      :func:`_bit_reader_count`),
     - that reader is a 1-bit flop on its D pin in the same clock
       domain — either directly, or through that flop's constant-leg
       synchronous-reset ``$mux`` (#304): a sync reset is part of the
@@ -2454,7 +2471,10 @@ def check_cdc_008(
         # netlist (see rtl-buddy-cdc#194).
         ff_cell = is_ff_cell(cell.type)
         for port_name, bits in cell.connections.items():
-            if port_name == "CLK" or port_name in _OUTPUT_PINS:
+            # An output pin drives the clock net rather than reading it —
+            # a blackbox's forwarded ``clk_out`` is the clock's source, not
+            # a use of it as data (rtl-buddy-cdc#344).
+            if port_name == "CLK" or cell.is_output_pin(port_name):
                 continue
             if ff_cell and port_name == "C":
                 continue
@@ -4785,6 +4805,36 @@ def check_cdc_017(
     return violations
 
 
+# Memory read-port cell types. ``proc`` lowers a constant ``case`` table
+# that covers every select value (a full one-hot decoder, a lookup table)
+# to a ROM: a ``$meminit`` plus an asynchronous ``$memrd_v2`` whose
+# ``DATA`` is the decoded vector (``$memrd`` on older netlists).
+_MEMRD_CELL_TYPES: frozenset[str] = frozenset({"$memrd", "$memrd_v2"})
+
+
+def _async_rom_read_drivers(module: Module) -> dict[Bit, str]:
+    """Map each ``DATA`` bit of an *asynchronous* memory read port to the
+    read-port cell (rtl-buddy-cdc#344).
+
+    :func:`_bit_drivers` only knows ``Y`` / ``Q``, so a decoder Yosys
+    turned into a ROM has no driver there and CDC-019 cannot see the
+    lanes share it. An asynchronous read (``CLK_ENABLE`` = 0) is
+    combinational logic of its address, exactly like the ``$pmux`` the
+    slang frontend keeps for the same source. A clocked read port is a
+    register stage, not a decoder, and is left out.
+    """
+    out: dict[Bit, str] = {}
+    for cell in module.cells.values():
+        if cell.type not in _MEMRD_CELL_TYPES:
+            continue
+        if parse_param_int(cell.parameters.get("CLK_ENABLE", "0")) != 0:
+            continue
+        for b in cell.connections.get("DATA", ()):
+            if isinstance(b, int):
+                out[b] = cell.name
+    return out
+
+
 def check_cdc_019(
     module: Module,
     crossings: list[Crossing],
@@ -4841,6 +4891,7 @@ def check_cdc_019(
     # multiple crossings to the same dst clock.
     groups: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
     suppressed_groups: set[tuple[str, str]] = set()
+    rom_drivers: dict[Bit, str] | None = None
 
     for crossing in crossings:
         if crossing.src_flop is None:
@@ -4852,9 +4903,16 @@ def check_cdc_019(
             continue  # multi-bit source is CDC-004's domain
         drv = ctx.bit_drivers.get(src_d[0])
         if drv is None:
-            continue
+            # A full ``case`` decoder the yosys frontend lowered to a ROM
+            # drives the lanes from an async ``$memrd`` ``DATA`` port.
+            if rom_drivers is None:
+                rom_drivers = _async_rom_read_drivers(module)
+            rom_cell = rom_drivers.get(src_d[0])
+            if rom_cell is None:
+                continue
+            drv = (rom_cell, "DATA", 0)
         drv_cell_name, drv_port, _drv_idx = drv
-        if drv_port != "Y":
+        if drv_port not in ("Y", "DATA"):
             continue  # only true comb-cell outputs count
         drv_cell = module.cells.get(drv_cell_name)
         if drv_cell is None:
@@ -4864,7 +4922,7 @@ def check_cdc_019(
         # Decoder shape requires the driver cell to have ≥2 output bits
         # — a WIDTH=1 gate fanning out to multiple flops is just normal
         # fan-out, not a one-hot decode.
-        y_bits = drv_cell.connections.get("Y", ())
+        y_bits = drv_cell.connections.get(drv_port, ())
         int_y_bits = [b for b in y_bits if isinstance(b, int)]
         if len(int_y_bits) < 2:
             continue
