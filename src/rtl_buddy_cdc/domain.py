@@ -999,6 +999,28 @@ def _clock_identity_fn(
     return clock_identity
 
 
+def _identity_source(
+    clock_for_port: Callable[[str], str | None] | None,
+    declared_clock_for_port: Callable[[str], str | None] | None,
+) -> Callable[[str], str | None] | None:
+    """Which port→clock map the combine-leg choice asks (rtl-buddy-cdc#358).
+
+    ``declared_clock_for_port`` (``ClockSpec.declared_clock_for_port``:
+    ``create_clock`` ports only) when the caller has it, else
+    ``clock_for_port``. A ``set_input_delay``-typed data port is not a
+    clock: counting it as one made an ICG whose enable is typed to a
+    foreign clock look like a two-clock combine (a false CDC-023, and the
+    flop domain-unknown). Every resolver below goes through here, so the
+    crossing walk, the rule context and the CDC-023 / scan-mode walks
+    pick the same leg.
+    """
+    return (
+        declared_clock_for_port
+        if declared_clock_for_port is not None
+        else clock_for_port
+    )
+
+
 def assign_domains(
     module: Module,
     pin_clocks: dict[str, str] | None = None,
@@ -1033,12 +1055,18 @@ def assign_domains(
     clock-root walk on a run must be handed the same map, or two views
     of one flop's domain disagree.
 
-    ``declared_clock_for_port`` is for callers that must keep raw root
-    names (no ``clock_for_port`` normalisation) but still know which
-    ports are clocks: it feeds only the combine-leg choice of
-    :func:`_pick_combining_root`, so a clock gate resolves to its clock
-    leg whichever input that leg is on (``clk & en`` and ``en & clk``
-    agree), and is ignored when ``clock_for_port`` is given.
+    ``declared_clock_for_port`` (``ClockSpec.declared_clock_for_port``)
+    feeds only the combine-leg choice of :func:`_pick_combining_root`:
+    the ports that carry a declared clock, so a clock gate resolves to
+    its clock leg whichever input that leg is on (``clk & en`` and
+    ``en & clk`` agree) and a typed data port on the enable never counts
+    as a second clock. Without it the leg choice falls back to
+    ``clock_for_port`` (see :func:`_identity_source`). The normalised
+    name always comes from ``clock_for_port``.
+
+    Every view of a flop's domain on a run must be built from the same
+    four inputs — ``ClockSpec.clock_root_inputs()`` bundles them —
+    or the views disagree (rtl-buddy-cdc#358).
     """
     resolve = flop_domain_resolver(
         module,
@@ -1064,24 +1092,72 @@ def flop_domain_resolver(
     """Return the per-flop domain function :func:`assign_domains` applies.
 
     Split out (#323) so a caller that needs the domain of only a *few*
-    flops — CDC-024 resolves just the flops that launch a top-level
-    output — gets exactly the answer :func:`assign_domains` (and so
+    flops gets exactly the answer :func:`assign_domains` (and so
     :func:`find_crossings`) would give, without tracing every flop in the
     design. The shared bit→driver / pin-clock maps are built once, when
     the resolver is made; ``drivers`` lets a caller that already holds
     one skip that pass.
+
+    The domain is :func:`flop_clock_root_resolver`'s raw root put
+    through ``clock_for_port`` — the one normalisation every view
+    applies.
+    """
+    root_of = flop_clock_root_resolver(
+        module,
+        pin_clocks,
+        clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_for_port,
+        max_depth=max_depth,
+        drivers=drivers,
+        case_analysis=case_analysis,
+    )
+    if clock_for_port is None:
+        return root_of
+
+    def resolve(f: Flop) -> str | None:
+        root = root_of(f)
+        if root is not None:
+            resolved = clock_for_port(root)
+            if resolved is not None:
+                root = resolved
+        return root
+
+    return resolve
+
+
+def flop_clock_root_resolver(
+    module: Module,
+    pin_clocks: dict[str, str] | None = None,
+    *,
+    clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
+    drivers: dict[Bit, tuple[str, str]] | None = None,
+    case_analysis: Mapping[str, str] | None = None,
+) -> Callable[[Flop], str | None]:
+    """The per-flop *raw* clock root: :func:`flop_domain_resolver`
+    before the ``clock_for_port`` normalisation.
+
+    Same walk, same leg choice, same pin clocks and case constants — so
+    ``clock_for_port(raw) or raw`` is exactly the flop's domain. The raw
+    root is the top-level port (or generated clock, or undeclared
+    internal net) the walk stopped at; CDC-021 needs it to name an
+    undeclared clock port, which normalisation would replace with the
+    ``<unconstrained>`` sentinel (rtl-buddy-cdc#358). ``clock_for_port``
+    is used here only as the fallback identity source (see
+    :func:`_identity_source`).
     """
     if drivers is None:
         drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
     clock_identity = _clock_identity_fn(
-        clock_for_port if clock_for_port is not None else declared_clock_for_port,
+        _identity_source(clock_for_port, declared_clock_for_port),
         set(bit_to_clock.values()),
     )
     case_bits = _build_case_bits(module, case_analysis)
 
     def resolve(f: Flop) -> str | None:
-        root = trace_clock_root(
+        return trace_clock_root(
             module,
             f.clk,
             drivers,
@@ -1090,11 +1166,6 @@ def flop_domain_resolver(
             clock_identity=clock_identity,
             case_bits=case_bits,
         )
-        if root is not None and clock_for_port is not None:
-            resolved = clock_for_port(root)
-            if resolved is not None:
-                root = resolved
-        return root
 
     return resolve
 
@@ -1104,6 +1175,7 @@ def bit_clock_resolver(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
 ) -> Callable[[Bit], str | None]:
@@ -1117,7 +1189,10 @@ def bit_clock_resolver(
     """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
-    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+    clock_identity = _clock_identity_fn(
+        _identity_source(clock_for_port, declared_clock_for_port),
+        set(bit_to_clock.values()),
+    )
     case_bits = _build_case_bits(module, case_analysis)
     cache: dict[Bit, str | None] = {}
 
@@ -1328,6 +1403,7 @@ def find_clock_combines(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
 ) -> list[ClockCombine]:
@@ -1361,7 +1437,10 @@ def find_clock_combines(
     skipped entirely.
     """
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
-    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+    clock_identity = _clock_identity_fn(
+        _identity_source(clock_for_port, declared_clock_for_port),
+        set(bit_to_clock.values()),
+    )
     ports = [p.name for p in module.ports.values() if p.direction == "input"]
     declared = {c for c in (clock_identity(p) for p in ports) if c is not None}
     declared |= set(bit_to_clock.values())
@@ -1423,6 +1502,7 @@ def find_scan_mode_flops(
     is_scan_control: Callable[[tuple[Bit, ...]], bool],
     pin_clocks: dict[str, str] | None = None,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
 ) -> set[str]:
@@ -1463,7 +1543,10 @@ def find_scan_mode_flops(
     """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
-    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+    clock_identity = _clock_identity_fn(
+        _identity_source(clock_for_port, declared_clock_for_port),
+        set(bit_to_clock.values()),
+    )
     case_bits = _build_case_bits(module, case_analysis)
 
     out: set[str] = set()
@@ -1609,6 +1692,7 @@ def find_crossings(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     boundaries: dict[str, "BoundarySummary"] | None = None,
     max_depth: int = 16,
     scan_mode_flops: frozenset[str] = frozenset(),
@@ -1662,7 +1746,11 @@ def find_crossings(
     write→read storage path is not walked — CDC-026 owns it. A design
     without memory cells walks exactly as before.
 
-    ``case_analysis`` is forwarded to :func:`assign_domains` (#325).
+    ``case_analysis`` is forwarded to :func:`assign_domains` (#325), and
+    ``declared_clock_for_port`` with it (rtl-buddy-cdc#358); a caller
+    holding a :class:`~rtl_buddy_cdc.sdc.ClockSpec` passes all four clock
+    inputs as ``**spec.clock_root_inputs()``, the same bundle the rule
+    context is built from.
     """
     memories = find_memories(module)
     mem_view = crossing_view(module, memories) if memories else None
@@ -1674,6 +1762,7 @@ def find_crossings(
             module,
             pin_clocks,
             clock_for_port=clock_for_port,
+            declared_clock_for_port=declared_clock_for_port,
             max_depth=max_depth,
             case_analysis=case_analysis,
         )
@@ -1683,6 +1772,7 @@ def find_crossings(
             module,
             pin_clocks,
             clock_for_port=clock_for_port,
+            declared_clock_for_port=declared_clock_for_port,
             max_depth=max_depth,
             case_analysis=case_analysis,
         )

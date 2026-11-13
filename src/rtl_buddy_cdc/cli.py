@@ -910,12 +910,11 @@ def _analyze_module_and_report(
         if spec.partial_warnings and fmt is OutputFormat.text and not no_findings:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)
+        # Every clock-root walk below takes the same SDC inputs
+        # (``spec.clock_root_inputs()``) — the rule context builds its
+        # domains from the same bundle (rtl-buddy-cdc#358).
         domains = assign_domains(
-            module,
-            pin_clocks=spec.pin_clocks,
-            clock_for_port=spec.clock_for_port,
-            max_depth=clock_trace_depth,
-            case_analysis=spec.case_analysis,
+            module, max_depth=clock_trace_depth, **spec.clock_root_inputs()
         )
         # Auto-abstract single-clock subtrees (#256/#257): summarise each
         # blackbox sibling whose whole clock set sits in one async-safe
@@ -943,22 +942,16 @@ def _analyze_module_and_report(
         # explicit decision below.
         scan_mode_flops = frozenset(
             scan_mode_clock_select_flops(
-                module,
-                pin_clocks=spec.pin_clocks,
-                clock_for_port=spec.clock_for_port,
-                max_depth=clock_trace_depth,
-                case_analysis=spec.case_analysis,
+                module, max_depth=clock_trace_depth, **spec.clock_root_inputs()
             )
         )
         crossings = find_crossings(
             module,
             port_clock=spec.port_clock,
-            pin_clocks=spec.pin_clocks,
-            clock_for_port=spec.clock_for_port,
             boundaries=boundaries,
             max_depth=clock_trace_depth,
             scan_mode_flops=scan_mode_flops,
-            case_analysis=spec.case_analysis,
+            **spec.clock_root_inputs(),
         )
         # FIX 3 (reconvergence gate): a single-clock block that IS
         # abstracted but has >=2 distinct foreign-domain crossings entering
@@ -1008,12 +1001,10 @@ def _analyze_module_and_report(
             crossings = find_crossings(
                 module,
                 port_clock=spec.port_clock,
-                pin_clocks=spec.pin_clocks,
-                clock_for_port=spec.clock_for_port,
                 boundaries=boundaries,
                 max_depth=clock_trace_depth,
                 scan_mode_flops=scan_mode_flops,
-                case_analysis=spec.case_analysis,
+                **spec.clock_root_inputs(),
             )
         # FIX 2 (now an error): every declined/opaque blackbox (multi-clock /
         # unresolved per FIX 1) is a coverage gap — its zero-cell internals

@@ -302,16 +302,9 @@ GOOD_FIXTURES = [
     # --- rtl-buddy-cdc#331: SDC forms ---
     # Generated clock of a generated clock on internal pins; clk_ext
     # crosses into ck_div4 through a 2FF synchroniser.
-    pytest.param(
-        "good_gen_clock_chain",
-        2,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="false CDC-001: the rule context assigns domains without "
-            "pin_clocks, so a 2FF synchroniser clocked by a pin-declared "
-            "generated clock reads as depth 1",
-        ),
-    ),
+    # The rule context names the synchroniser's domain as the crossing
+    # walk does (rtl-buddy-cdc#358).
+    ("good_gen_clock_chain", 2),
     # -edges / -invert / -combinational generated clocks: every path among
     # them is synchronous; only clk_x → clk (2FF) is async.
     ("good_gen_clock_edges_invert", 1),
@@ -349,8 +342,10 @@ def test_good_fixture_has_no_violations(name: str, expected_async: int) -> None:
     module = netlist.load(json_path)
     spec = sdc_mod.parse_file(sdc_path)
     sdc_mod.synthesize_unconstrained_inputs(spec, module)
+    # The clock inputs the CLI hands the crossing walk — the rule context
+    # builds its domains from the same bundle (rtl-buddy-cdc#358).
     crossings = find_crossings(
-        module, port_clock=spec.port_clock, pin_clocks=spec.pin_clocks
+        module, port_clock=spec.port_clock, **spec.clock_root_inputs()
     )
     async_crossings = []
     for c in crossings:

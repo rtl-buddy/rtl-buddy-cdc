@@ -201,13 +201,6 @@ EXPECTED: dict[str, Verdict] = {
 # a finding for an issue; the test flips to XPASS (a failure, strict) the
 # day the analyzer is fixed, and the entry must then be removed.
 _XFAIL: dict[str, str] = {
-    "good_gen_clock_chain": (
-        "false CDC-001 on clk_ext → ck_div4: rules._build_context calls "
-        "assign_domains without pin_clocks, so the rule context puts the "
-        "second synchroniser stage (clocked by the ck_div4 pin) in the root "
-        "domain clk while the crossing says ck_div4; the sync-chain walk sees "
-        "a domain change and reports depth 1"
-    ),
     "good_handshake_ack_via_third_domain": (
         "false CDC-012: _has_dst_to_src_feedback walks only inside the "
         "source domain, so an acknowledge relayed clk_b → clk_c → clk_a "

@@ -17,10 +17,10 @@ from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping
 from rtl_buddy_cdc.domain import (
     Crossing,
     _lane_targets,
-    assign_domains,
     bit_clock_resolver,
     find_clock_combines,
     find_scan_mode_flops,
+    flop_clock_root_resolver,
     flop_domain_resolver,
 )
 from rtl_buddy_cdc.cells import MUX2_TYPES, MUX_PINS, parse_gate_storage_cell
@@ -108,7 +108,18 @@ class _RuleContext:
     # lane-aligned chain in O(1) instead of rescanning every cell once per
     # crossing.
     flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]]
+    # Per-flop clock domain: exactly the name ``find_crossings`` gives
+    # the flop (same pin clocks, case constants, leg choice and canonical
+    # normalisation — ``ClockSpec.clock_root_inputs()``), so a rule
+    # comparing ``domains[f]`` with a crossing's ``src_clock`` /
+    # ``dst_clock`` compares like with like (rtl-buddy-cdc#358).
     domains: dict[str, str | None]
+    # The same walk's *raw* root, before ``clock_for_port`` renames it:
+    # the top-level port (or generated clock, or undeclared internal
+    # net) the trace stopped at. Only CDC-021 reads it, to name an
+    # undeclared clock port the normalisation turns into the
+    # ``<unconstrained>`` sentinel.
+    clock_roots: dict[str, str | None]
     bit_drivers: dict[Bit, tuple[str, str, int]]
     # Forward index: maps each bit to every (cell_name, input_port_name,
     # index) consuming it. Symmetric to ``bit_drivers``. Used by
@@ -295,7 +306,6 @@ def _build_context(
     boundary_sync_depth: dict[str, int] | None = None,
     boundary_reconvergence: dict[str, frozenset[frozenset[str]]] | None = None,
     boundary_user_syncs: frozenset[str] = frozenset(),
-    clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
@@ -310,31 +320,39 @@ def _build_context(
     walk uses so ``ctx.domains`` — the rule-context per-flop domain
     view, consulted by CDC-010 and the domain-map path — agrees with
     the crossings list at any depth. See issue #263.
+
+    The other clock inputs come from ``clock_spec`` itself
+    (``clock_spec.clock_root_inputs()``): generated-clock pins, the
+    canonical-name normaliser, the declared-clock leg choice and the
+    case constants — the bundle the CLI hands ``find_crossings``. A
+    context built with fewer of them than the crossing walk disagrees
+    with the crossings about a flop's domain: a synchroniser clocked by
+    a pin-declared generated clock read as depth 1, and so did every
+    synchroniser on a clock whose ``-name`` differs from its port
+    (rtl-buddy-cdc#358). Callers that build crossings without an SDC
+    bundle (unit tests) pass the same spec's bundle to ``find_crossings``.
     """
     flops = tuple(find_flops(module))
     flops_by_d = _index_flops_by_d(flops)
-    # Without ``clock_for_port`` the domains keep raw root names (CDC-021
-    # needs the port name of an undeclared clock), but the tracer still
-    # needs to know which ports ARE clocks to pick the clock leg of a
-    # clock gate: otherwise first-leg-wins makes ``en & clk`` resolve to
-    # the enable port (found by the gate-level corpus, where abc swaps
-    # the legs of $_AND_; rtl-buddy-cdc#336). Only ``create_clock``
-    # ports count — not ``set_input_delay``-typed data ports.
-    declared_clock_ports: dict[str, str] = {}
-    if clock_spec is not None:
-        for clk in clock_spec.clocks.values():
-            for port in clk.ports:
-                declared_clock_ports.setdefault(port, clk.name)
-    flop_domains = assign_domains(
-        module,
-        clock_for_port=clock_for_port,
-        declared_clock_for_port=declared_clock_ports.get,
-        max_depth=max_depth,
-        case_analysis=clock_spec.case_analysis if clock_spec is not None else None,
-    )
-    domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
-
     bit_drivers = _bit_drivers(module)
+    # One trace per flop gives both views: the raw root (CDC-021 needs
+    # the port name of an undeclared clock) and, through the same
+    # ``clock_for_port`` the crossing walk applies, the domain.
+    normalise: Callable[[str], str | None] | None = None
+    if clock_spec is not None:
+        clock_inputs = clock_spec.clock_root_inputs()
+        root_of = flop_clock_root_resolver(module, max_depth=max_depth, **clock_inputs)
+        normalise = clock_inputs["clock_for_port"]
+    else:
+        root_of = flop_clock_root_resolver(module, max_depth=max_depth)
+    clock_roots: dict[str, str | None] = {}
+    domains: dict[str, str | None] = {}
+    for f in flops:
+        root = root_of(f)
+        clock_roots[f.cell.name] = root
+        if root is not None and normalise is not None:
+            root = normalise(root) or root
+        domains[f.cell.name] = root
 
     # Forward index: same shape as ``bit_drivers`` but for *inputs*.
     # CLK is excluded (clock pins are walked separately by the clock-
@@ -374,6 +392,7 @@ def _build_context(
         flops=flops,
         flops_by_d=flops_by_d,
         domains=domains,
+        clock_roots=clock_roots,
         bit_drivers=bit_drivers,
         bit_consumers=bit_consumers,
         reader_counts=reader_counts,
@@ -700,6 +719,7 @@ def scan_mode_clock_select_flops(
     *,
     pin_clocks: dict[str, str] | None = None,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
 ) -> set[str]:
@@ -745,6 +765,7 @@ def scan_mode_clock_select_flops(
         is_scan_control=is_scan_control,
         pin_clocks=pin_clocks,
         clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_for_port,
         max_depth=max_depth,
         case_analysis=case_analysis,
     )
@@ -5360,7 +5381,10 @@ def check_cdc_021(
 
     undeclared: dict[str, list[str]] = defaultdict(list)
     for f in ctx.flops:
-        domain = ctx.domains.get(f.cell.name)
+        # The raw root, not the canonical domain: on the CLI path an
+        # undeclared clock port is normalised to the ``<unconstrained>``
+        # sentinel, which names no port.
+        domain = ctx.clock_roots.get(f.cell.name)
         if domain is None:
             continue
         port = module.ports.get(domain)
@@ -5628,11 +5652,7 @@ def check_cdc_023(
     max_depth = ctx.max_depth if ctx is not None else 16
     violations: list[Violation] = []
     for combine in find_clock_combines(
-        module,
-        clock_spec.pin_clocks,
-        clock_for_port=clock_spec.clock_for_port,
-        max_depth=max_depth,
-        case_analysis=clock_spec.case_analysis,
+        module, max_depth=max_depth, **clock_spec.clock_root_inputs()
     ):
         shown = combine.sinks[:_CDC_023_SINK_SAMPLE]
         sample = ", ".join(f"`{name}`" for name in shown)
@@ -5787,12 +5807,12 @@ class _OutputLaunchIndex:
 
     * :meth:`cone` — :func:`_output_cone` of one output port, walked at
       most once per port per run.
-    * :meth:`launch_domain` — the launching flop's domain, from
-      :func:`~rtl_buddy_cdc.domain.flop_domain_resolver` (the function
-      ``assign_domains`` applies, with pin-declared generated clocks and
-      canonical names — exactly what ``find_crossings`` sees; the rule
-      context's ``domains`` is built without either). The resolver is
-      built on first use and memoised per flop.
+    * :meth:`launch_domain` — the launching flop's domain: the rule
+      context's ``domains``, which is exactly what ``find_crossings``
+      sees (pin-declared generated clocks, canonical names;
+      rtl-buddy-cdc#358). Only a context built for another spec falls
+      back to a :func:`~rtl_buddy_cdc.domain.flop_domain_resolver` of
+      this one, built on first use and memoised per flop.
     * :meth:`canonical` / :meth:`is_async` — the normalisation and the
       async predicate ``filter_async`` applies to a crossing, so "is this
       output asynchronous?" has one answer across the tool.
@@ -5830,17 +5850,17 @@ class _OutputLaunchIndex:
 
     def launch_domain(self, f: Flop) -> str | None:
         name = f.cell.name
+        if self.ctx.clock_spec is self.clock_spec and self.ctx.module is self.module:
+            return self.ctx.domains.get(name)
         if name not in self._domain_of:
             if self._resolve is None:
                 self._resolve = flop_domain_resolver(
                     self.module,
-                    self.clock_spec.pin_clocks,
-                    clock_for_port=self.clock_spec.clock_for_port,
                     max_depth=self.ctx.max_depth,
                     drivers={
                         b: (c, p) for b, (c, p, _i) in self.ctx.bit_drivers.items()
                     },
-                    case_analysis=self.clock_spec.case_analysis,
+                    **self.clock_spec.clock_root_inputs(),
                 )
             self._domain_of[name] = self._resolve(f)
         return self._domain_of[name]
@@ -6456,13 +6476,12 @@ def memory_crossings(
         return []
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    clock_of = bit_clock_resolver(
-        module,
-        clock_spec.pin_clocks if clock_spec is not None else None,
-        clock_for_port=clock_spec.clock_for_port if clock_spec is not None else None,
-        max_depth=ctx.max_depth,
-        case_analysis=clock_spec.case_analysis if clock_spec is not None else None,
-    )
+    if clock_spec is not None:
+        clock_of = bit_clock_resolver(
+            module, max_depth=ctx.max_depth, **clock_spec.clock_root_inputs()
+        )
+    else:
+        clock_of = bit_clock_resolver(module, max_depth=ctx.max_depth)
     flops_by_name = {f.cell.name: f for f in ctx.flops}
 
     def flop_clock(name: str) -> str | None:
