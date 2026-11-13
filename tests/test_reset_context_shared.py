@@ -75,7 +75,10 @@ def _write_design(tmp: Path, blocks: int) -> tuple[Path, Path]:
             "connections": conn,
         }
 
+    observed: list[int] = []
+
     def adff(name: str, clk: int, d: list, q: list, rst: int) -> None:
+        observed.extend(q)
         cell(
             name,
             "$adff",
@@ -128,6 +131,9 @@ def _write_design(tmp: Path, blocks: int) -> tuple[Path, Path]:
             adff(f"{p}.raw_b", clk[j], s2, bits(), rst[j])
 
     ports["dout"] = {"direction": "output", "bits": prev[0]}
+    # Every register is observable, so the liveness pass
+    # (rtl-buddy-cdc#338) keeps the whole design.
+    ports["obs"] = {"direction": "output", "bits": observed}
     design = {
         "creator": "test_reset_context_shared",
         "modules": {
