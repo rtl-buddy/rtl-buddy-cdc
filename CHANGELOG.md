@@ -59,6 +59,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are not normalised, so CDC-021 still sees raw port names.
   `set_input_delay`-typed data ports never count as clocks.
 
+- **Verdicts no longer depend on dead cells** (#338). Without
+  `opt_clean` in the netlist flow, an unloaded `$not` of a clock fired
+  CDC-008, and the `for`-loop counter register `proc` leaves in a reset
+  branch (read by nothing but itself) fired CDC-004 and CDC-011 as a
+  crossing destination. `analyze` / `lint` now drop every cell whose
+  outputs reach no output / inout port, `keep` net, or instance /
+  memory / formal-cell pin before analysis. A crossing into a flop
+  whose `Q` reaches none of those is not reported. Unknown cell types
+  are never dropped, and a module with no observation point at all is
+  analysed whole. The design summary's cell count is the observable
+  count. No committed fixture verdict changes.
+
 ## [0.7.3] — 2026-10-31
 
 ### Changed

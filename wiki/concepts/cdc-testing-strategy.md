@@ -88,6 +88,14 @@ crossing, clock mux, latch, sync-reset chain, opposite-edge chain), so
 the default no-Yosys job exercises real `$_DFF_*` netlists against
 the same allowlist.
 
+The same module also rebuilds every fixture with the front half's
+`opt_clean` dropped and asserts the verdict is unchanged
+(`test_verdict_invariant_under_opt_clean`, rtl-buddy-cdc#338): the
+analyzer drops unobservable cells itself, so dead logic cannot add or
+remove a finding. The three fixtures whose verdict used to change also
+commit that `<name>.noclean.json` for the no-Yosys job
+(`tests/test_liveness.py`).
+
 ## Extension Points
 
 Where the analyzer is designed to be extended without architectural churn:

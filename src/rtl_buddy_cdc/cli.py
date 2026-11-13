@@ -28,6 +28,7 @@ from rtl_buddy_cdc.domain import (
     find_crossings,
     find_inferred_clock_candidates,
 )
+from rtl_buddy_cdc.liveness import prune_dead_cells
 from rtl_buddy_cdc.hierarchy import (
     compose_boundaries,
     reconvergence_unsafe_instances,
@@ -807,6 +808,18 @@ def _analyze_module_and_report(
     rule evaluation is skipped, the normal report is suppressed, and
     the exit code is 0 on successful map emission (elaboration failure
     still exits 2 from the lint wrapper before we get here)."""
+    # Drop the cells no observation point can see (rtl-buddy-cdc#338), so
+    # the verdict is the same whether or not the netlist flow ran
+    # ``opt_clean``: an unloaded ``$not`` of a clock is not clock-as-data,
+    # and a register nothing reads is not a crossing destination. Greybox
+    # bodies get the same treatment against their own ports, since the
+    # compositional pass analyses them.
+    module = prune_dead_cells(module, blackboxes)
+    if blackboxes:
+        blackboxes = {
+            name: prune_dead_cells(body, blackboxes) if body.cells else body
+            for name, body in blackboxes.items()
+        }
     # Load --reset-hints early so an unreadable / malformed file
     # fails the run before any analysis cost — same pattern the SDC
     # loader uses. Loud failure with file:line context; see #129.
