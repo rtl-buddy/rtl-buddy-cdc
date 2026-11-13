@@ -241,12 +241,11 @@ endmodule
 # --- procedural-block dispatch guards (lines 743-759) ----------------------
 
 
-def test_plain_always_star_block_is_not_modelled(tmp_path: Path) -> None:
-    """A bare ``always @(*)`` (``procedureKind == Always``, neither
-    ``AlwaysFF`` nor ``AlwaysComb`` nor ``AlwaysLatch``) falls through
-    the dispatch and emits no cell — the continuous-assign aliasing on
-    ``b`` is what carries the signal. Pins that the unmodelled-kind
-    guard doesn't crash and doesn't fabricate a flop."""
+def test_plain_always_star_block_is_comb(tmp_path: Path) -> None:
+    """A bare ``always @(*)`` (``procedureKind == Always``) lowers as
+    ``always_comb`` since rtl-buddy-cdc#345: a plain alias, no flop and no
+    latch. The other plain-``always`` forms are covered in
+    ``tests/test_slang_plain_always_blackbox.py``."""
     src = """module m (
     input  logic a,
     output logic b

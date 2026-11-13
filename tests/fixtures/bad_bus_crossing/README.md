@@ -55,6 +55,7 @@ flowchart LR
 
 ## Files
 
+- `bad_bus_crossing.gates.json`
 - `bad_bus_crossing.json`
 - `bad_bus_crossing.sdc`
 - `bad_bus_crossing.sv`

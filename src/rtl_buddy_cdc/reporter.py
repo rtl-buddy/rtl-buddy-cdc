@@ -541,7 +541,11 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             _violation_to_dict(v, result.module) for v in result.baseline_carryover
         ],
     }
-    json.dump(payload, out, indent=2)
+    # ``dumps`` + one write, not ``dump``: ``json.dump`` always takes the
+    # pure-Python encoder, while ``dumps`` uses the C encoder whenever the
+    # interpreter's C encoder handles ``indent`` (it does on the 3.13 this
+    # repo pins). The bytes are the same either way (#324).
+    out.write(json.dumps(payload, indent=2))
     out.write("\n")
 
 
@@ -705,7 +709,7 @@ def render_sarif(result: AnalysisResult, out: IO[str]) -> None:
             }
         ],
     }
-    json.dump(sarif, out, indent=2)
+    out.write(json.dumps(sarif, indent=2))  # see render_json
     out.write("\n")
 
 
