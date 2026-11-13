@@ -41,6 +41,9 @@ GOOD_FIXTURES = [
     # set_false_path is equivalent to set_clock_groups -asynchronous
     # for CDC; 1 async crossing landing in a 2FF synchronizer.
     ("good_false_path_pair", 1),
+    # set_max_delay -datapath_only between two clocks marks the pair as an
+    # intended async crossing (#325); 1 crossing landing in a 2FF sync.
+    ("good_datapath_only_pair", 1),
     # set_input_delay -clock dst_clk types the data ports as same-
     # domain as the destination — CDC-006 must not fire.
     ("good_input_delay_domain", 0),

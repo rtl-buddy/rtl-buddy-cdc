@@ -23,6 +23,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$_DFF_NN0_` clock polarity, `$_MUX_`, gate-level clock gating,
   bit-blasted buses) are tracked separately.
 
+- **`set_max_delay -datapath_only` is read as CDC intent** (#325) — the
+  constraint that bounds an intentional async crossing's datapath was
+  dropped as STA noise, so a pair related only by it looked synchronous
+  and its crossings were never checked. A clock-to-clock
+  `set_max_delay <v> -datapath_only -from [get_clocks A] -to [get_clocks B]`
+  now marks the pair as an intended asynchronous crossing, exactly like
+  `set_false_path -from/-to` — and, unlike a false path, also wins over
+  a generated→master relationship or an exclusive group for that pair
+  (the more-reporting reading). Object endpoints (`[get_cells …]`,
+  `[get_pins …]`, `[get_ports …]`) are recorded but not interpreted
+  (warning; object resolution is #328's job); `-through` is not
+  interpreted (warning). Plain `set_max_delay` stays ignored exactly as
+  before. Both SDC backends.
+
+- **`set_case_analysis` resolves clock muxes** (#325) — a clock mux
+  whose select is a case-analysed mode port still presented both clocks
+  to the tracer, which took the first resolving leg, so flops behind it
+  could be filed under a clock the constrained mode never selects (and
+  real crossings into the selected clock went unreported).
+  `set_case_analysis <0|1|zero|one> [get_ports p]` now pins the port
+  for clock-root tracing: a `$mux` / `$pmux` / `$_MUX_` whose select is
+  that constant — directly or through buffers / inverters — resolves to
+  the selected leg only, everywhere the clock tracer runs (domains,
+  crossings, CDC-023, scan-mode tagging, blackbox clock pins).
+  `rising` / `falling` are recorded, not constant. Bus bits use the
+  braced form `{p[3]}`; an unbraced `p[3]`, which Tcl evaluates as
+  command substitution, now raises a warning. Pin / cell targets and
+  targets naming no input port are reported and ignored. CDC-010 is
+  unaffected: a port-driven select never fired it. Narrow by design —
+  no general constant propagation.
+
+- **Domain map schema 1.3** (#325), additive: top-level
+  `datapath_only_pairs` (sorted clock pairs, same shape as
+  `false_path_pairs`), `max_delay_datapath_only` (every
+  datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
+  `to_objects` as `{kind, name}`, `value`, `clock_pair`) and
+  `case_analysis` (`{port, value}` per `set_case_analysis` target).
+
 ### Changed
 
 - **Faster analysis on large flat netlists** (#324) — *patch: no

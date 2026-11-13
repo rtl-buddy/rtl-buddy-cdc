@@ -24,6 +24,7 @@ from rtl_buddy_cdc.domain import (
     Crossing,
     _bit_drivers,
     assign_domains,
+    case_analysis_warnings,
     filter_async as domain_filter_async,
     find_crossings,
     find_inferred_clock_candidates,
@@ -858,6 +859,9 @@ def _analyze_module_and_report(
         # master, master cycles. Merged into partial_warnings so
         # they flow through the existing CLI warning surface.
         spec.partial_warnings.extend(sdc_mod.validate_clock_graph(spec))
+        # set_case_analysis targets that name no input port (#325) — the
+        # tracer ignores them, so say so through the same channel.
+        spec.partial_warnings.extend(case_analysis_warnings(module, spec.case_analysis))
         if spec.partial_warnings and fmt is OutputFormat.text and not no_findings:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)
@@ -866,6 +870,7 @@ def _analyze_module_and_report(
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
             max_depth=clock_trace_depth,
+            case_analysis=spec.case_analysis,
         )
         # Auto-abstract single-clock subtrees (#256/#257): summarise each
         # blackbox sibling whose whole clock set sits in one async-safe
@@ -897,6 +902,7 @@ def _analyze_module_and_report(
                 pin_clocks=spec.pin_clocks,
                 clock_for_port=spec.clock_for_port,
                 max_depth=clock_trace_depth,
+                case_analysis=spec.case_analysis,
             )
         )
         crossings = find_crossings(
@@ -907,6 +913,7 @@ def _analyze_module_and_report(
             boundaries=boundaries,
             max_depth=clock_trace_depth,
             scan_mode_flops=scan_mode_flops,
+            case_analysis=spec.case_analysis,
         )
         # FIX 3 (reconvergence gate): a single-clock block that IS
         # abstracted but has >=2 distinct foreign-domain crossings entering
@@ -961,6 +968,7 @@ def _analyze_module_and_report(
                 boundaries=boundaries,
                 max_depth=clock_trace_depth,
                 scan_mode_flops=scan_mode_flops,
+                case_analysis=spec.case_analysis,
             )
         # FIX 2 (now an error): every declined/opaque blackbox (multi-clock /
         # unresolved per FIX 1) is a coverage gap — its zero-cell internals

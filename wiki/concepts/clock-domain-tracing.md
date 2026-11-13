@@ -1,7 +1,7 @@
 ---
 title: Clock Domain Tracing
 created: 2026-05-11
-updated: 2026-05-11
+updated: 2026-11-13
 type: concept
 tags: [algorithm, clock-domain, cdc, netlist, flops]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
@@ -21,6 +21,7 @@ The walker recognizes four categories of clock-network cells:
 | **Buffer / inverter** | `$not`, `$logic_not`, `$buf`, `$pos`, `$reduce_bool`, `$_BUF_`, `$_NOT_` | Transparent: trace the single `A` input |
 | **Two-input gate (ICG)** | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side resolving to a clock is the root, the other is the gate's enable |
 | **Mux** | `$mux`, `$pmux` | Trace each candidate input; first to resolve wins (can't statically know `S`) |
+| **Case-analysed mux** | `$mux`, `$pmux`, `$_MUX_` with every `S` bit a `set_case_analysis` constant | Follow only the selected leg, exactly (see below) |
 | **FF (clock divider)** | any `FF_CELL_TYPES` via `Q` output | Recurse on the source flop's CLK pin; divided clock inherits domain from upstream root |
 
 ## Walk Mechanics
@@ -38,6 +39,10 @@ This is what models SoC clock-forwarding chains where each block declares its fo
 `_build_bit_to_clock` normalises the SDC pin convention (`u_a/clk_out`, `/`-separated) to Yosys' flattened netname convention (`u_a.clk_out`, `.`-separated) before looking up the netname's bits. If two generated clocks target the same net, first-writer-wins via `setdefault` — the SDC is internally inconsistent and we don't try to repair it.
 
 The returned clock name is a generated-clock identity (e.g. `ck_b0`), not a top-level port. Downstream consumers (`_filter_async`, `are_async`) handle this transparently because `ClockSpec.resolve()` already collapses generated clocks back to their root master.
+
+## Case-Analysed Clock Muxes
+
+`set_case_analysis <0|1> [get_ports sel]` (rtl-buddy-cdc#325) reaches the walker as `case_bits` (`domain._build_case_bits` over `ClockSpec.case_analysis`). When every select bit of a mux is such a constant — directly or through the buffers / inverters above, inversions counted — the walk follows **only** the selected leg, with no fallback to the other one. Not constant propagation: any other driver on the select leaves the mux to the first-resolves-wins row. Every clock-root walk on a run gets the same map (domains, crossings, CDC-023, scan-mode tagging, blackbox clock pins). Full rules and the CDC-010 / CDC-023 interactions: architecture article §5.2.
 
 ## Role in CDC-008
 
