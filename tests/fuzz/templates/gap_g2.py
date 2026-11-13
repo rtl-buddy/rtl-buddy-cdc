@@ -15,6 +15,11 @@ multiplier per the issue's Layer-A guidance.
 
 Asserts CDC-018 fires once per case on the 4-deep chain. Before the
 rule existed, ``run_all`` produced zero findings on this shape.
+
+The per-rule dimension sweep — chain depth vs ``--cdc-018-depth-
+threshold``, mid-chain taps, ``(* cdc_sync *)`` — lives in
+``cdc018.py`` (rtl-buddy-cdc#331); this file stays the single-shape
+regression sentinel and its expectation already names the rule.
 """
 
 from __future__ import annotations
