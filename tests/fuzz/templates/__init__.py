@@ -17,6 +17,13 @@ from .cdc014 import CombBetweenStages
 from .cdc015 import SyncChainForeignReset
 from .cdc016 import OppositeEdgeChain
 from .cdc017 import LatchInCdcPath
+from .cdc018 import CascadedChainDepth
+from .cdc019 import DecoderLanesIndependentSync
+from .cdc020 import SlicedBusLanes
+from .cdc021 import UndeclaredClockPort
+from .cdc022 import XpmShallowSyncDepth
+from .cdc023 import ClockCombine
+from .cdc_bbx import BlackboxBoundary
 from .gap_g1 import GapG1LatchInSyncChain
 from .gap_g2 import GapG2CascadedSynchroniser
 from .gap_g3 import GapG3PulseSyncFalsePositive
@@ -35,6 +42,8 @@ from .rdc003 import SyncResetCrossing
 from .rdc004 import CombDrivenReset
 from .rdc005 import MultiSourceReset
 from .rdc006 import DerivedAsyncResetUnsync
+from .rdc007 import ResetSyncHeadPolarity
+from .rdc008 import PrimaryResetAsymmetricSync
 
 ALL_TEMPLATES: list[type[Template]] = [
     UnsyncedSingleBit,
@@ -53,12 +62,23 @@ ALL_TEMPLATES: list[type[Template]] = [
     SyncChainForeignReset,
     OppositeEdgeChain,
     LatchInCdcPath,
+    # rtl-buddy-cdc#331: per-rule dimension sweeps for the rules that
+    # only had a single-shape gap_g* sentinel (or nothing at all).
+    CascadedChainDepth,
+    DecoderLanesIndependentSync,
+    SlicedBusLanes,
+    UndeclaredClockPort,
+    XpmShallowSyncDepth,
+    ClockCombine,
+    BlackboxBoundary,
     AsyncResetCrossing,
     ResetPolarityMismatch,
     SyncResetCrossing,
     CombDrivenReset,
     MultiSourceReset,
     DerivedAsyncResetUnsync,
+    ResetSyncHeadPolarity,
+    PrimaryResetAsymmetricSync,
     GapG1LatchInSyncChain,
     GapG2CascadedSynchroniser,
     GapG3PulseSyncFalsePositive,
@@ -78,17 +98,21 @@ __all__ = [
     "ALL_TEMPLATES",
     "AsyncClockMux",
     "AsyncResetCrossing",
+    "BlackboxBoundary",
+    "CascadedChainDepth",
     "ClockAsData",
+    "ClockCombine",
     "CombBeforeSync",
     "CombBetweenStages",
     "CombDrivenReset",
     "CombSource",
+    "DecoderLanesIndependentSync",
     "DerivedAsyncResetUnsync",
     "ExpectedFinding",
     "FunctionalDataHoldEnable",
-    "GapG1LatchInSyncChain",
     "GapG10FlopClkUndeclaredPort",
     "GapG12GateLevelSilent",
+    "GapG1LatchInSyncChain",
     "GapG2CascadedSynchroniser",
     "GapG3PulseSyncFalsePositive",
     "GapG4OneHotDecodeIndependentSync",
@@ -103,16 +127,21 @@ __all__ = [
     "MultiSourceReset",
     "Op",
     "OppositeEdgeChain",
+    "PrimaryResetAsymmetricSync",
     "PulseWidthFastToSlow",
     "ReconvergentSync",
     "RenderedCase",
     "ResetPolarityMismatch",
+    "ResetSyncHeadPolarity",
     "ShortChain",
+    "SlicedBusLanes",
     "SyncChainForeignReset",
     "SyncResetCrossing",
     "Template",
     "ToggleNoXorTail",
-    "UnconstrainedInput",
     "UncodedBus",
+    "UnconstrainedInput",
+    "UndeclaredClockPort",
     "UnsyncedSingleBit",
+    "XpmShallowSyncDepth",
 ]
