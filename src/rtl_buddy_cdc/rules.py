@@ -222,8 +222,23 @@ def _build_context(
     """
     flops = tuple(find_flops(module))
     flops_by_d = _index_flops_by_d(flops)
+    # Without ``clock_for_port`` the domains keep raw root names (CDC-021
+    # needs the port name of an undeclared clock), but the tracer still
+    # needs to know which ports ARE clocks to pick the clock leg of a
+    # clock gate: otherwise first-leg-wins makes ``en & clk`` resolve to
+    # the enable port (found by the gate-level corpus, where abc swaps
+    # the legs of $_AND_; rtl-buddy-cdc#336). Only ``create_clock``
+    # ports count — not ``set_input_delay``-typed data ports.
+    declared_clock_ports: dict[str, str] = {}
+    if clock_spec is not None:
+        for clk in clock_spec.clocks.values():
+            for port in clk.ports:
+                declared_clock_ports.setdefault(port, clk.name)
     flop_domains = assign_domains(
-        module, clock_for_port=clock_for_port, max_depth=max_depth
+        module,
+        clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_ports.get,
+        max_depth=max_depth,
     )
     domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
 

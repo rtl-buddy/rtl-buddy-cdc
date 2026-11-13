@@ -785,6 +785,7 @@ def assign_domains(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
 ) -> list[FlopDomain]:
     """Build per-flop ``FlopDomain`` records from clock-network tracing.
@@ -805,10 +806,20 @@ def assign_domains(
     without a code change; it only ever resolves MORE flops, never
     fewer, so the default keeps results identical to a fixed-16 walk.
     Surfaced as ``--clock-trace-depth`` on the CLI. See issue #263.
+
+    ``declared_clock_for_port`` is for callers that must keep raw root
+    names (no ``clock_for_port`` normalisation) but still know which
+    ports are clocks: it feeds only the combine-leg choice of
+    :func:`_pick_combining_root`, so a clock gate resolves to its clock
+    leg whichever input that leg is on (``clk & en`` and ``en & clk``
+    agree), and is ignored when ``clock_for_port`` is given.
     """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
-    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+    clock_identity = _clock_identity_fn(
+        clock_for_port if clock_for_port is not None else declared_clock_for_port,
+        set(bit_to_clock.values()),
+    )
 
     out: list[FlopDomain] = []
     for f in find_flops(module):

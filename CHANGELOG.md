@@ -47,9 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$_DLATCHSR_`, `$_SR_`) in one place. A test checks the decoder
   against the local Yosys's cell descriptions. `flops.flop_reset` /
   `flop_enable_pin` / `flop_clk_polarity` read coarse and gate-level
-  flops the same way, and the rules go through them. 42 of the 99
+  flops the same way, and the rules go through them. 43 of the 99
   gate-level corpus allowlist rows are gone. No RTL-level fixture
   verdict changes.
+- **A clock gate's domain no longer depends on which input carries the
+  clock** (found via #336). The rule context traced flop clocks without
+  the SDC's clock set, so in `en & clk` first-leg-wins picked the
+  enable port, and CDC-021 reported it as an undeclared clock (`clk &
+  en` was fine). The rule context now tells the tracer which ports are
+  `create_clock` ports. It does this for leg choice only; root names
+  are not normalised, so CDC-021 still sees raw port names.
+  `set_input_delay`-typed data ports never count as clocks.
 
 ## [0.7.3] — 2026-10-31
 

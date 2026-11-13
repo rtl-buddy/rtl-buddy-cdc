@@ -175,13 +175,6 @@ _R_ENABLE_TOGGLE = (
     "(D=~Q on EN) and CDC-013 only recognises a toggle through a hold "
     "$mux, so an enable-flop toggle is missed at RTL level too"
 )
-_R_GATE_LEG_ORDER = (
-    "analyzer bug (RTL-level): the rule context traces clocks without "
-    "the SDC's clock set, so a clock gate whose FIRST input is an enable "
-    "port resolves to that port (first-leg-wins) and CDC-021 calls it an "
-    "undeclared clock. RTL `en & clk` fires the same way; abc emits "
-    "$_AND_(A=en_b, B=$_AND_(clk, en_a)) where the RTL has $and(clk, en)"
-)
 _R_ABC_RESET_INVERTER = (
     "lowering: abc rewrites the constant-leg $mux (rst_n ? 0 : 1) that "
     "drives the clear pin into a $_NOT_; RDC-006 (muxed async reset) "
@@ -197,9 +190,8 @@ _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     # Lowering / optimisation changes the structure under test.
     "bad_reset_sync_deassert_polarity": {"synth": _R_OPT_CONST_FLOP},
     "flop_zoo_crossing": {"synth": _R_ABC_RESET_INVERTER},
-    # RTL-level analyzer bugs that the gate flows happen to expose.
+    # RTL-level analyzer bug that the synth flow happens to expose.
     "bad_toggle_no_xor_tail": {"synth": _R_ENABLE_TOGGLE},
-    "bad_clock_gating": {"synth": _R_GATE_LEG_ORDER},
     # Bit-blasted buses.
     "bad_async_fifo_binary_ptrs": _both(_R_BIT_BLAST),
     "bad_bus_crossing": _both(_R_BIT_BLAST),
