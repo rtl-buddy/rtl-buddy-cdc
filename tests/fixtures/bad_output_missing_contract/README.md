@@ -25,7 +25,7 @@ flowchart LR
     f_1dfefa17["$procdff$13<br/><i>sv:41</i>"]:::ckcls_clk_a
     f_fd4fa9dd["$procdff$14<br/><i>sv:41</i>"]:::ckcls_clk_a
     f_40fed564["$procdff$15<br/><i>sv:41</i>"]:::ckcls_clk_a
-    f_348188a2["$procdff$8<br/><i>sv:56</i>"]:::ckcls_clk_a
+    f_348188a2["$procdff$8<br/><i>sv:57</i>"]:::ckcls_clk_a
   end
   subgraph clk_clk_b["clk_b · 13.0 ns"]
     direction TB
@@ -33,7 +33,7 @@ flowchart LR
     p_in_en_b[/"en_b⟨in⟩"/]:::ckcls_clk_b
     f_6554755b["$procdff$10<br/><i>sv:48</i>"]:::ckcls_clk_b
     f_389222d6["$procdff$11<br/><i>sv:48</i>"]:::ckcls_clk_b
-    f_21be33c5["$procdff$7<br/><i>sv:57</i>"]:::ckcls_clk_b
+    f_21be33c5["$procdff$7<br/><i>sv:58</i>"]:::ckcls_clk_b
     f_4b488dbd["$procdff$9<br/><i>sv:48</i>"]:::ckcls_clk_b
   end
   subgraph rb_legend["Legend"]

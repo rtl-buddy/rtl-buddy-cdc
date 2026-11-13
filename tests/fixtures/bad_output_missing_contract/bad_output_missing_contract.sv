@@ -35,8 +35,8 @@ module bad_output_missing_contract (
     logic pb;
     logic en_q;
     logic div_q;
-    logic slow_q;
-    logic gated_q;
+    (* keep *) logic slow_q;
+    (* keep *) logic gated_q;
 
     always_ff @(posedge clk_a) begin
         q_a   <= d_a;
@@ -52,7 +52,8 @@ module bad_output_missing_contract (
     end
 
     // Flops clocked by the divider and by the gated clock, so both drive
-    // the clock network as well as an output.
+    // the clock network as well as an output. `keep` stops dead-logic
+    // pruning (and opt_clean) from removing these two unread flops.
     always_ff @(posedge div_q) slow_q <= d_a;
     always_ff @(posedge clk_gated) gated_q <= d_b;
 
