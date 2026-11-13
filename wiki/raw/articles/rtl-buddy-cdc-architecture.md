@@ -337,6 +337,7 @@ class ClockSpec:
     pin_clocks: dict[str, str]                     # internal-pin target → generated clock name
     datapath_only_delays: list[DatapathOnlyDelay]  # every set_max_delay -datapath_only (#325)
     datapath_only_pairs: set[frozenset[str]]       # …the clock-to-clock ones, as pairs
+    case_analysis: dict[str, str]                  # set_case_analysis port → "0"/"1"/"rising"/"falling" (#325)
     partial_warnings: list[str]                    # diagnostics surfaced once at end-of-parse
 ```
 
@@ -1035,6 +1036,7 @@ Cell-type categories the walker recognizes:
 | Buffer / inverter | `$not`, `$logic_not`, `$buf`, `$pos`, `$reduce_bool`, `$_BUF_`, `$_NOT_` | Transparent: trace the single `A` input |
 | Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline and are reported as CDC-023 (see below) |
 | Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline, and never produces a CDC-023 finding |
+| Case-analysed mux | `$mux`, `$pmux`, `$_MUX_` whose every `S` bit is a `set_case_analysis` constant | Follow **only** the selected leg (§5.2) — the mode fixes `S`. Replaces the first-resolves-wins row above for that cell |
 | FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root |
 | Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline and are reported as CDC-023 (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
 
@@ -1157,6 +1159,75 @@ attribute-kept primitive) on the forwarding path keeps each forwarded
 clock at a distinct bit identity. The `good_source_sync_internal`
 fixture uses `$_BUF_` primitives for this reason.
 
+### 5.2 Case-analysed clock muxes
+
+`set_case_analysis <0|1> [get_ports sel]` (issue #325) pins a mode port
+to a constant. Without it, a clock mux presents both clocks and the
+walker takes the first leg that resolves, so a flop behind the mux can
+be filed under a clock the constrained mode never selects — and a real
+crossing into the clock it *does* select goes unreported.
+
+`domain._build_case_bits(module, ClockSpec.case_analysis)` expands the
+port targets to constant net bits (`"0"` / `"1"` only — `"rising"` /
+`"falling"` toggle and are left out; a bus bit `sel[3]` is bit 3 from
+the LSB, since the netlist carries no declared range). The map rides
+into `trace_clock_root` as `case_bits`, and the mux clause becomes
+exact for any `$mux`, `$pmux` or `$_MUX_` whose **every** select bit is
+a case constant:
+
+- the select is evaluated by `_case_constant`, which follows the bit
+  back through exactly the `_BUFFER_TYPES` the walker already treats as
+  transparent, counting inversions (`$not`, `$logic_not`, `$_NOT_`);
+  `$logic_not` / `$reduce_bool` count only on a one-bit operand. Any
+  other driver stops it — this is select resolution, not constant
+  propagation;
+- `$mux` / `$_MUX_` pass `B` when `S=1` and `A` when `S=0`; a `$pmux`
+  passes the `B` slice whose one-hot `S` bit is set, or `A` when none
+  is, and is left unresolved when two are hot. The leg is lane-exact
+  (`Y[k]` ← `A[k]` / `B[i*WIDTH+k]`);
+- **only the selected leg is followed**, and followed exactly: if it
+  does not resolve (a constant, an undeclared net), neither does the
+  mux. There is no fallback to the other leg — in that mode the other
+  leg's clock never reaches the flop.
+
+`$_MUX_` is resolved here although the un-analysed walk does not follow
+it (it is not in `_MUX_TYPES`): with a constant select the answer is
+exact, and the change is invisible to any design without case analysis.
+
+Every clock-root walk on a run is handed the same map — `assign_domains`
+(and through it `find_crossings`), `find_clock_combines` (CDC-023),
+`find_scan_mode_flops`, the rule context (`_build_context`), the
+clock-network surface (`find_clock_network_crossings`) and the
+boundary clock-pin classification (`abstract._instance_clocks`,
+`summarise_sync_primitive`) — for the same reason `max_depth` is
+threaded everywhere: two views of one flop's domain must not disagree.
+Interactions, each pinned by `tests/test_sdc_case_analysis.py`:
+
+- **CDC-023** — the combine walk follows only the selected leg, so a
+  combine on the unselected leg is unreachable in that mode and not
+  reported; a combine on the selected leg is reported and leaves the
+  flop `domain_unknown` (it no longer falls through to the other leg).
+- **CDC-010** — unchanged, and it never fired on these selects: a
+  case-analysed select comes from a top-level port, and CDC-010 only
+  fires when a control pin's backward fan-in reaches a *flop*. The
+  case-resolved mux is still a clock-network cell for CDC-008 / CDC-010.
+- **Scan-mode tagging (#45)** — a case-resolved select is not reported
+  to `on_clock_control`: a constant select steers nothing in that mode,
+  so the flop is not tagged as clocked through a scan structure
+  (`set_case_analysis 0 scan_en` analyses functional mode, and its
+  crossings are reported).
+- **`find_inferred_clock_candidates`** — unaffected; it counts CLK
+  fan-out by driver and never traces through a mux.
+
+`domain.case_analysis_warnings` reports, through the end-of-parse
+`partial_warnings` channel, every target that names no input port, an
+out-of-range bit, or a non-input port — the same `_case_target_bits`
+resolution the tracer uses, so "warned" and "ignored" are one decision.
+Pin / cell / net targets are reported at parse time and ignored (a
+case-analysed internal pin could be flop-driven, which CDC-010 would
+then need to honour; out of scope). Data-path use of the constant is
+out of scope too.
+
 CDC-008 ("clock signal used as data") asks a closely related
 question — *which cells form the legitimate clock-distribution
 network?* — and answers it with its own helper,
@@ -1224,6 +1295,7 @@ set_false_path  -from [get_clocks A] -to [get_clocks B]
 set_input_delay  -clock <name> … [get_ports <port>]
 set_output_delay -clock <name> … [get_ports <port>]
 set_max_delay <v> -datapath_only -from <clocks|objects> -to <clocks|objects>
+set_case_analysis <0|1|zero|one|rising|falling> [get_ports <port>]
 ```
 
 Every collection-valued operand on every supported command accepts
@@ -1252,13 +1324,18 @@ specific pair). Exclusive groups drop crossings as unreachable in
 `_filter_async` before any rule sees them. `set_max_delay
 -datapath_only` between two clocks is an async hint that also
 overrides a same-root collapse and an exclusive group (§4.5).
+`set_case_analysis` on top-level ports resolves case-analysed clock
+muxes in the clock walker (§5.2). Bus bits must be braced
+(`[get_ports {sel[3]}]`): unbraced, the Tcl backend evaluates `[3]` as
+command substitution and the target becomes the whole bus, so the
+reader warns on any command whose name is a number.
 
 ### 6.2 What it deliberately ignores
 
 STA-only commands (plain `set_max_delay` — only the
 `-datapath_only` form carries CDC intent — `set_min_delay`,
-`set_load`, `set_drive`, `set_disable_timing`, `set_case_analysis`,
-…) are silently dropped at the `logging.DEBUG` level. This is by design:
+`set_load`, `set_drive`, `set_disable_timing`, …) are silently
+dropped at the `logging.DEBUG` level. This is by design:
 users should be able to point the tool at their existing constraint
 file without curating a CDC-only subset.
 
@@ -2514,7 +2591,9 @@ pairs a `set_max_delay -datapath_only` marks async — sorted pairs, the
 same shape as `false_path_pairs`) and `max_delay_datapath_only` (every
 datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
 `to_objects` as `{kind, name}` exactly as written, `value`, and
-`clock_pair` saying whether it contributed a pair). A consumer can
+`clock_pair` saying whether it contributed a pair), plus `case_analysis`
+(`{port, value}` per `set_case_analysis` target, sorted by port — the
+`flop_domains` already reflect any clock mux it resolved). A consumer can
 match a crossing's `src_clock` / `dst_clock` against
 `datapath_only_pairs` to see which crossings are constrained.
 

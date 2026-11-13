@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Literal
+from typing import Callable, Iterable, Literal, Mapping
 
 from rtl_buddy_cdc.domain import (
     Crossing,
@@ -213,7 +213,10 @@ def _build_context(
     flops = tuple(find_flops(module))
     flops_by_d = _index_flops_by_d(flops)
     flop_domains = assign_domains(
-        module, clock_for_port=clock_for_port, max_depth=max_depth
+        module,
+        clock_for_port=clock_for_port,
+        max_depth=max_depth,
+        case_analysis=clock_spec.case_analysis if clock_spec is not None else None,
     )
     domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
 
@@ -587,6 +590,7 @@ def scan_mode_clock_select_flops(
     pin_clocks: dict[str, str] | None = None,
     clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
+    case_analysis: Mapping[str, str] | None = None,
 ) -> set[str]:
     """Cell names of flops whose ``CLK`` network is steered by a
     scan-mode port (issue #45).
@@ -631,6 +635,7 @@ def scan_mode_clock_select_flops(
         pin_clocks=pin_clocks,
         clock_for_port=clock_for_port,
         max_depth=max_depth,
+        case_analysis=case_analysis,
     )
 
 
@@ -5297,6 +5302,7 @@ def check_cdc_023(
         clock_spec.pin_clocks,
         clock_for_port=clock_spec.clock_for_port,
         max_depth=max_depth,
+        case_analysis=clock_spec.case_analysis,
     ):
         shown = combine.sinks[:_CDC_023_SINK_SAMPLE]
         sample = ", ".join(f"`{name}`" for name in shown)

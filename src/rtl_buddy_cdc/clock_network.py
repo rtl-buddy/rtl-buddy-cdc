@@ -103,6 +103,7 @@ def find_clock_network_crossings(
         pin_clocks=pin_clocks,
         clock_for_port=clock_for_port,
         max_depth=max_depth,
+        case_analysis=clock_spec.case_analysis if clock_spec is not None else None,
     )
     flop_by_name = {fd.flop.cell.name: fd.flop for fd in flop_domains}
     domain_by_name = {fd.flop.cell.name: fd.clock for fd in flop_domains}

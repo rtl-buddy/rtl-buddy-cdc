@@ -22,11 +22,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (warning; object resolution is #328's job); `-through` is not
   interpreted (warning). Plain `set_max_delay` stays ignored exactly as
   before. Both SDC backends.
+- **`set_case_analysis` resolves clock muxes** (#325) — a clock mux
+  whose select is a case-analysed mode port still presented both clocks
+  to the tracer, which took the first resolving leg, so flops behind it
+  could be filed under a clock the constrained mode never selects (and
+  real crossings into the selected clock went unreported).
+  `set_case_analysis <0|1|zero|one> [get_ports p]` now pins the port
+  for clock-root tracing: a `$mux` / `$pmux` / `$_MUX_` whose select is
+  that constant — directly or through buffers / inverters — resolves to
+  the selected leg only, everywhere the clock tracer runs (domains,
+  crossings, CDC-023, scan-mode tagging, blackbox clock pins).
+  `rising` / `falling` are recorded, not constant. Bus bits use the
+  braced form `{p[3]}`; an unbraced `p[3]`, which Tcl evaluates as
+  command substitution, now raises a warning. Pin / cell targets and
+  targets naming no input port are reported and ignored. CDC-010 is
+  unaffected: a port-driven select never fired it. Narrow by design —
+  no general constant propagation.
 - **Domain map schema 1.3** (#325), additive: top-level
   `datapath_only_pairs` (sorted clock pairs, same shape as
-  `false_path_pairs`) and `max_delay_datapath_only` (every
+  `false_path_pairs`), `max_delay_datapath_only` (every
   datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
-  `to_objects` as `{kind, name}`, `value`, `clock_pair`).
+  `to_objects` as `{kind, name}`, `value`, `clock_pair`) and
+  `case_analysis` (`{port, value}` per `set_case_analysis` target).
 
 ## [0.7.3] — 2026-10-31
 

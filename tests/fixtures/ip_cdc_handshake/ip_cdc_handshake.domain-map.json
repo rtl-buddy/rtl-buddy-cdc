@@ -43,6 +43,7 @@
   "false_path_pairs": [],
   "datapath_only_pairs": [],
   "max_delay_datapath_only": [],
+  "case_analysis": [],
   "flop_domains": [
     {
       "instance_path": "ip_cdc_handshake.$procdff$42",

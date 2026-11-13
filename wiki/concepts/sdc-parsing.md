@@ -52,6 +52,7 @@ set_false_path  -from [get_clocks A] -to [get_clocks B]
 set_input_delay  -clock <name> … [get_ports <port>]
 set_output_delay -clock <name> … [get_ports <port>]
 set_max_delay <v> -datapath_only -from <clocks|objects> -to <clocks|objects>
+set_case_analysis <0|1|zero|one|rising|falling> [get_ports <port>]
 ```
 
 Plus: `#` comments, `\` line continuation, and permissive flag-skipping for unrecognised options on otherwise-known commands (vendor-specific dialects don't choke).
@@ -64,11 +65,12 @@ Plus: `#` comments, `\` line continuation, and permissive flag-skipping for unre
 - **Interface-member ports** are addressed by their **dotted name** — `[get_ports i_axi.clk]`, *not* the Yosys escaped-id form `[get_ports {\i_axi.clk }]`. The escaped-id spelling parses but no longer matches the flattened port, so the SDC silently fails to type it (the usual symptom is an `<unconstrained>` input driving a `CDC-021`/`CDC-011` cascade). Use the canonical dotted name. (See rtl-buddy-cdc#245.)
 - **`set_false_path`** between clocks is treated as a pairwise async hint
 - **`set_max_delay -datapath_only`** between clocks (rtl-buddy-cdc#325) is an async hint too — a datapath-only bound exists only where the two clocks are not timed against each other. It is stronger than a false path: it also wins over a generated→master collapse, a shared `-group`, and an exclusive group, because the more-reporting reading keeps the crossing checked. Records land in `ClockSpec.datapath_only_delays`, clock pairs in `datapath_only_pairs`; object endpoints (`get_cells` / `get_pins` / `get_ports` / `get_nets`) are recorded as `(kind, name)` but not resolved (warning — #328 owns object resolution); `-through` is not interpreted (warning). Plain `set_max_delay` is gated off (`_COMMAND_GATES`) and dropped exactly as before
+- **`set_case_analysis`** on top-level ports (rtl-buddy-cdc#325) lands in `ClockSpec.case_analysis` (port → `"0"`/`"1"`/`"rising"`/`"falling"`, last write wins) and is consumed by the clock walker: a `$mux` / `$pmux` / `$_MUX_` whose select is a `0`/`1` case constant — directly or through buffers / inverters — follows only the selected leg ([[clock-domain-tracing]]). Bus bits must be braced (`{sel[3]}`): unbraced, the Tcl backend substitutes `[3]` as a command and the reader warns about the numeric command name. Pin / cell targets warn and are ignored; port targets that do not exist warn at analysis time (`domain.case_analysis_warnings`)
 - **Exclusive groups** (`-logically_exclusive`, `-physically_exclusive`) drop crossings as unreachable in `_filter_async` before any rule sees them
 
 ## Deliberately Ignored
 
-- **STA-only commands** (plain `set_max_delay`, `set_min_delay`, `set_load`, `set_drive`, `set_disable_timing`, `set_case_analysis`, …) — silently dropped at `logging.DEBUG` level. Users can point the tool at their existing constraint file without curating a CDC-only subset
+- **STA-only commands** (plain `set_max_delay`, `set_min_delay`, `set_load`, `set_drive`, `set_disable_timing`, …) — silently dropped at `logging.DEBUG` level. Users can point the tool at their existing constraint file without curating a CDC-only subset
 - **`-filter` clauses** and `set_false_path -through` — on both backends; these are path/property-specific, not clock-topology facts
 - **`set` variables / `expr` / command substitution** — evaluated by the `tcl` backend, *not* by the `tokenizer` fallback. On the fallback the first drop per file raises a `sdc.tokenizer_skipped` warning, and a worker that reports `kind: "unavailable"` raises one `sdc.tcl_unavailable` warning per run naming the fix (uv-managed Python, `python3-tkinter`, or Homebrew `python-tk@X.Y`)
 

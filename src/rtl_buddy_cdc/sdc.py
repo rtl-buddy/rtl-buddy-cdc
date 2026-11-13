@@ -13,6 +13,7 @@ Supported commands:
     set_input_delay  -clock <name> … [get_ports <port>]
     set_output_delay -clock <name> … [get_ports <port>]
     set_max_delay <v> -datapath_only -from <clocks|objects> -to <…>
+    set_case_analysis <0|1|zero|one|rising|falling> [get_ports <port>]
 
 Numeric delays, slack, drive, load — all silently dropped. The parser
 only cares about clock topology and async-partitioning, not timing.
@@ -110,6 +111,7 @@ __all__ = [
     "ARG_SPECS",
     "BACKENDS",
     "BACKEND_ENV_VAR",
+    "CASE_ANALYSIS_VALUES",
     "Clock",
     "ClockSpec",
     "DatapathOnlyDelay",
@@ -186,6 +188,24 @@ class DatapathOnlyDelay:
         )
 
 
+#: ``set_case_analysis`` value spellings → the normalised value stored on
+#: :attr:`ClockSpec.case_analysis`. ``"0"`` / ``"1"`` are constants the
+#: clock tracer resolves a mux select with; ``"rising"`` / ``"falling"``
+#: are recorded but are not constants (the pin still toggles).
+CASE_ANALYSIS_VALUES: dict[str, str] = {
+    "0": "0",
+    "1": "1",
+    "zero": "0",
+    "one": "1",
+    "logic_zero": "0",
+    "logic_one": "1",
+    "rise": "rising",
+    "rising": "rising",
+    "fall": "falling",
+    "falling": "falling",
+}
+
+
 @dataclass
 class ClockSpec:
     """The fully parsed CDC-relevant view of an SDC file."""
@@ -231,6 +251,13 @@ class ClockSpec:
     # lets it override a generated→master collapse and an exclusive
     # group — the more-reporting reading (see ``are_async``).
     datapath_only_pairs: set[frozenset[str]] = field(default_factory=set)
+    # Top-level port → normalised ``set_case_analysis`` value ("0", "1",
+    # "rising", "falling"; see ``CASE_ANALYSIS_VALUES``). A bus bit is
+    # keyed in its SDC spelling, ``"sel[3]"``; a whole-bus key applies
+    # to every bit. Insertion order is application order (last write
+    # wins). Consumed by the clock tracer, which resolves a clock mux
+    # whose select is a case-analysed constant to the selected leg.
+    case_analysis: dict[str, str] = field(default_factory=dict)
     # Diagnostics accumulated during parse. Each entry is a single
     # human-readable sentence describing a CDC-relevant command the
     # parser couldn't fully understand. Surfaced once at the end of
@@ -475,6 +502,18 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             # ``--verbose`` without the report being flooded.
             logger.debug("sdc: ignoring unsupported command %r", cmd)
             note_tokenizer_skip(f"dropped unrecognised command {cmd!r}")
+            if cmd.isdigit():
+                # ``[get_ports sel[3]]`` with an unbraced bus index is
+                # Tcl command substitution of ``[3]``: the Tcl reader
+                # runs a command named ``3`` and the target silently
+                # becomes the whole bus ``sel``. No real SDC command is
+                # a number, so say what most likely happened.
+                spec.partial_warnings.append(
+                    f"command {cmd!r}{_at_line(command.line)} looks like an "
+                    f"unbraced bus index evaluated as Tcl command substitution "
+                    f"— brace the indexed name, e.g. {{p[{cmd}]}}, or the target "
+                    f"names the whole bus"
+                )
             continue
         if any("$" in w for w in words):
             note_tokenizer_skip(f"{cmd}: kept a literal $-word unevaluated")
@@ -1174,6 +1213,9 @@ ARG_SPECS: dict[str, ArgSpec] = {
     ),
     "set_input_delay": _DELAY_SPEC,
     "set_output_delay": _DELAY_SPEC,
+    # ``set_case_analysis <value> <targets>`` — no flags; the value and
+    # the target collections both land in the tail.
+    "set_case_analysis": ArgSpec(flags={}),
     "set_max_delay": ArgSpec(
         flags={
             "-datapath_only": Arity.ZERO,
@@ -1570,6 +1612,53 @@ def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:
                 spec.datapath_only_pairs.add(frozenset({a, b}))
 
 
+def _handle_set_case_analysis(spec: ClockSpec, p: Parsed) -> None:
+    """Parse ``set_case_analysis <value> <targets>`` (rtl-buddy-cdc#325).
+
+    Records each top-level port target on
+    :attr:`ClockSpec.case_analysis` with the normalised value from
+    :data:`CASE_ANALYSIS_VALUES` (last write wins, so a later statement
+    on the same target replaces an earlier one). Targets may be
+    ``[get_ports p]``, a braced / bare name list, and bus bits in the
+    braced form ``{p[3]}``. Pins, cells and nets are out of scope: they
+    are reported and ignored. Whether a port target exists in the
+    design is checked later, against the netlist
+    (:func:`rtl_buddy_cdc.domain.case_analysis_warnings`).
+    """
+    if not p.tail:
+        spec.partial_warnings.append("set_case_analysis: missing value and target")
+        return
+    raw, targets = p.tail[0], p.tail[1:]
+    value = CASE_ANALYSIS_VALUES.get(raw.lower())
+    if value is None:
+        spec.partial_warnings.append(
+            f"set_case_analysis: unrecognised value {raw!r} (expected one of "
+            f"0, 1, zero, one, rising, falling) — ignored"
+        )
+        return
+    if not targets:
+        spec.partial_warnings.append(f"set_case_analysis {raw}: missing target")
+        return
+    ports: list[str] = []
+    for word in targets:
+        kind, names, saw_filter = _split_collection(word)
+        if saw_filter:
+            spec.partial_warnings.append(
+                "set_case_analysis: ignored unsupported -filter clause"
+            )
+        if kind is None or kind == "port":
+            ports.extend(names)
+        else:
+            spec.partial_warnings.append(
+                f"set_case_analysis {raw} on {kind} target(s) "
+                f"{', '.join(names) or '(none)'}: only top-level ports are "
+                f"supported — ignored"
+            )
+    for port in ports:
+        spec.case_analysis.pop(port, None)  # re-insert: last write wins
+        spec.case_analysis[port] = value
+
+
 _DISPATCH = {
     "create_clock": _handle_create_clock,
     "create_generated_clock": _handle_create_generated_clock,
@@ -1578,6 +1667,7 @@ _DISPATCH = {
     "set_input_delay": _handle_set_delay,
     "set_output_delay": _handle_set_delay,
     "set_max_delay": _handle_set_max_delay,
+    "set_case_analysis": _handle_set_case_analysis,
 }
 
 

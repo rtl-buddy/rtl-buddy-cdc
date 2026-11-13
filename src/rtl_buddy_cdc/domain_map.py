@@ -48,7 +48,8 @@ from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 # without being clock declarations (#325): ``max_delay_datapath_only``
 # (every ``set_max_delay -datapath_only`` record) and
 # ``datapath_only_pairs`` (the clock pairs it marks as intended async
-# crossings). Each bump is additive: older consumers ignore unknown
+# crossings), and ``case_analysis`` (the ``set_case_analysis`` port
+# values the clock tracer resolved clock-mux selects with). Each bump is additive: older consumers ignore unknown
 # keys, and no key was renamed or retyped.
 SCHEMA_VERSION = "1.3"
 
@@ -128,6 +129,7 @@ def build_domain_map(
         "false_path_pairs": _serialize_false_paths(spec),
         "datapath_only_pairs": _serialize_datapath_only_pairs(spec),
         "max_delay_datapath_only": _serialize_datapath_only_delays(spec),
+        "case_analysis": _serialize_case_analysis(spec),
         "flop_domains": _serialize_flop_domains(module, domains),
         "port_domains": _serialize_port_domains(module, spec),
         "crossings": _serialize_crossings(
@@ -244,6 +246,22 @@ def _serialize_datapath_only_delays(spec: ClockSpec | None) -> list[dict[str, An
         }
         out.setdefault(json.dumps(entry, sort_keys=True), entry)
     return [out[k] for k in sorted(out)]
+
+
+def _serialize_case_analysis(spec: ClockSpec | None) -> list[dict[str, str]]:
+    """``set_case_analysis`` port values, sorted by port (#325).
+
+    ``value`` is normalised to ``"0"``, ``"1"``, ``"rising"`` or
+    ``"falling"``. Only ``"0"`` / ``"1"`` steer the clock tracer: a
+    clock mux whose select is one of these constants resolves to its
+    selected leg, which is what ``flop_domains`` then shows.
+    """
+    if spec is None:
+        return []
+    return [
+        {"port": port, "value": value}
+        for port, value in sorted(spec.case_analysis.items())
+    ]
 
 
 def _serialize_flop_domains(
