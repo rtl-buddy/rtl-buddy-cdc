@@ -17,12 +17,9 @@ sweeps the two dimensions the detector actually compares
   plus a pipeline (silent); tapped at stage 4 it is a genuine 4-deep
   chain (fires).
 
-  **Pinned gap** (``gap_note`` on the ``tapport`` cases): a tap that
-  goes *straight to a top-level output port* is not counted as a
-  reader — ``_bit_reader_count`` only counts cell input pins — so the
-  walker runs through it and CDC-018 fires on a 2FF sync whose output
-  is exported and also pipelined. The sentinel asserts today's
-  behaviour; fixing the reader count flips it.
+  A tap that goes *straight to a top-level output port* is a reader
+  too (rtl-buddy-cdc#344), so the ``tapport`` case is the same 2FF sync
+  plus pipeline and stays silent.
 
 Suppression variant: ``(* cdc_sync *)`` on the chain head vouches for
 the depth and silences the rule at any depth.
@@ -145,8 +142,8 @@ class CascadedChainDepth:
                 forbidden=_QUIET
                 + (() if fires else (ExpectedFinding("CDC-018", Op.ZERO),)),
             )
-        # Same tap wired straight to an output port: not seen as a
-        # reader, so the chain runs on to depth 6 and the rule fires.
+        # Same tap wired straight to an output port: the port is a
+        # reader (rtl-buddy-cdc#344), so the chain ends at stage 2.
         top = f"fuzz_{cls.name}_d6_tapport2"
         yield RenderedCase(
             template_name=cls.name,
@@ -155,14 +152,8 @@ class CascadedChainDepth:
             sdc=_SDC,
             top=top,
             params={"depth": 6, "tap": 2, "tap_kind": "port"},
-            expected=(ExpectedFinding("CDC-018", Op.EQ, 1),),
-            forbidden=_QUIET,
-            gap_note=(
-                "rtl-buddy-cdc#331: _bit_reader_count ignores top-level output "
-                "ports, so a stage exported straight to a port still extends "
-                "the chain. Correct verdict is silent (2FF + pipeline); flip "
-                "this expectation when port reads count as readers."
-            ),
+            expected=(),
+            forbidden=_QUIET + (ExpectedFinding("CDC-018", Op.ZERO),),
         )
 
         # Suppression: the user vouches for the chain (and its depth).
