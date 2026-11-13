@@ -471,6 +471,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `empty` / `full` flags) read undriven placeholder bits; it now reads
   the assign's driver.
 
+- **slang frontend: arrays of instances** (rtl-buddy-cdc#353) —
+  `sync2 u_sync[1:0] (...)` produced no cells at all on the pyslang
+  path, so the instances, their flops and every crossing through them
+  were missing with no diagnostic; the Yosys path reported them.
+  - Each element is now lowered as its own instance, named `u_sync[0]`,
+    `u_sync[1]` as Yosys `flatten` names it, so cell names, netnames,
+    `instance_path` and `inst:` waivers read the same on both
+    frontends. This covers inlined modules and blackbox / greybox
+    boundary cells (one cell per element, with pin directions and
+    parameters), arrays inside child modules and inside `for`-generate
+    entries, and multi-dimensional arrays (`u[1:0][0:1]` → `u[1][0]` …,
+    which Yosys' parser rejects).
+  - Connections follow IEEE 1800-2017 23.3.3.5: a connection as wide as
+    the port goes to every element; one `port width × elements` wide is
+    split with the leftmost index of the range taking the leftmost bits.
+    Yosys `read_verilog` does the same for a descending range
+    (`[1:0]`); for an ascending one (`[0:1]`) it gives the lowest index
+    the least significant slice, so on such an array the two frontends
+    attach the same bits to opposite element names (verdicts and the
+    set of instance paths are unaffected).
+  - A bit- or part-select of a vector not declared `[N-1:0]`
+    (`a[1]` of `logic [4:1] a`, `b[0]` of `logic [0:3] b`) picked the
+    wrong bits, or an `$_UNKNOWN_` driver, and an indexed part-select
+    (`c[4 +: 2]`, `c[4 -: 2]`) was read as a plain range. Both now
+    honour the declared range, as Yosys does; slang slices array
+    connections this way, so the array lowering depends on it.
+  - A child output bound to part of a parent net (`.q(dst[0])`, and every
+    sliced array output) left the parent's port / netname on stale bits;
+    they now follow the driver, as on the Yosys path. A cell whose
+    connections were rewritten by a forward-referenced `assign` no
+    longer loses its pin directions.
+  - An array element that is not a module instance (a gate-primitive
+    array such as `and g[1:0] (...)`), and a lone gate primitive, are
+    still not lowered; both are now reported as a warning on stderr
+    with their source location instead of vanishing.
+  - New fuzz template `inst_array_sync` (both range directions, 1- and
+    2-stage elements) runs through the cross-frontend oracle.
+
 ### Internal
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,

@@ -86,6 +86,13 @@ What currently works
 - Blackbox boundaries (rtl-buddy-cdc#345): ``(* blackbox *)`` modules
   and ``--blackbox`` / ``--greybox`` names stay as one cell per
   instance, with a sibling module — see :func:`elaborate_with_blackboxes`.
+- Arrays of instances (rtl-buddy-cdc#353): ``sync2 u_sync[1:0] (...)``
+  lowers one instance per element, named ``u_sync[0]`` / ``u_sync[1]``
+  as Yosys ``flatten`` names them (``u[1][0]`` for a multi-dimensional
+  array, which Yosys rejects), inlined or as boundary cells alike.
+  Connections are sliced per the LRM by slang itself; on an ascending
+  range Yosys ``read_verilog`` assigns the slices the other way round —
+  see :meth:`_ModuleBuilder._emit_instance_array`.
 - Direct ``port = var`` continuous assigns are aliased into the
   source variable's bits (matches Yosys post-``opt_clean``). The
   aliasing is propagated globally: every entry in the bit-id maps
@@ -116,8 +123,10 @@ What currently works
   fallback); LHS written in only one branch keeps the existing
   single-branch aliasing.
 - LHS bit-selects (``q[0] <= ...``) and contiguous ranges
-  (``bus[3:0] <= ...``) — see :meth:`_lvalue_bits`. Same shapes
-  accepted on the RHS via :meth:`_bits_of_expression`.
+  (``bus[3:0] <= ...``, ``bus[i +: 2]``) — see :meth:`_lvalue_bits`.
+  Same shapes accepted on the RHS via :meth:`_bits_of_expression`.
+  Indices are translated through the declared range, so ``a[1]`` of
+  ``logic [4:1] a`` is its LSB and ``b[0]`` of ``logic [0:3] b`` its MSB.
 - Concatenation (``{a, b, c}``) and replication (``{N{x}}``) on the
   RHS — see :meth:`_lower_concatenation` and
   :meth:`_lower_replication`. Pure bit-tuple aliasing, no Yosys
@@ -148,6 +157,9 @@ What is NOT yet implemented (next slices)
   Yosys-binary form per issue #40, and width comes straight from
   the Q bit-tuple, so multi-bit flops have correct parameter
   shape.)
+- **Gate primitives** (``and g (y, a, b);``, alone or in an instance
+  array) are not lowered; each one is reported with a ``WARNING``
+  (Yosys ``read_verilog`` does lower them).
 - **Yosys-only constructs** (``$_BUF_`` / ``$_NOT_`` primitives in SV
   source) are correctly rejected by slang — they're post-synthesis
   cells, not legal SV. Fixtures that rely on them
@@ -875,10 +887,17 @@ class _ModuleBuilder:
         elif kind == "ContinuousAssignSymbol":
             self._emit_continuous_assign(member)
         elif kind == "InstanceSymbol":
-            if self._is_boundary_instance(member):
-                self._emit_boundary_instance(member, hier_prefix)
-            else:
-                self._emit_child_instance(member, hier_prefix)
+            self._emit_instance(member, hier_prefix, member.name)
+        elif kind == "InstanceArraySymbol":
+            self._emit_instance_array(member, hier_prefix, member.name)
+        elif kind == "PrimitiveInstanceSymbol":
+            # Gate primitives (``and g (y, a, b);``) are not lowered;
+            # say so rather than drop their logic silently.
+            self._warn_dropped(
+                member,
+                f"gate primitive {member.name or '<unnamed>'}",
+                "primitive instance",
+            )
         elif kind == "NetSymbol":
             # ``wire foo = <expr>;`` lowers as a NetSymbol whose
             # ``initializer`` carries the RHS. pyslang doesn't emit a
@@ -888,10 +907,10 @@ class _ModuleBuilder:
             # nothing, which masks inter-stage comb hazards (CDC-014).
             self._emit_net_initializer(member)
         # GenerateBlock(Array)Symbol are pre-expanded by ``_iter_scope``
-        # before reaching this dispatch; any other unmodelled kind
-        # falls through silently — the missing flops surface in
-        # ``analyze`` output, which is a better failure mode than
-        # crashing on an unrecognised member kind.
+        # before reaching this dispatch. Every other kind (parameters,
+        # typedefs, variables — collected in pass 1 —, ports, …) carries
+        # no logic of its own and falls through; a logic-bearing construct
+        # this frontend cannot lower warns via ``_warn_dropped`` instead.
 
     def _emit_net_initializer(self, member: Any) -> None:
         """Lower a ``wire foo = <expr>;`` inline assignment.
@@ -922,14 +941,70 @@ class _ModuleBuilder:
         net_bits = self._alloc_bits(member)
         self._merge_canonical_var(canonical, net_bits, rhs_bits)
 
-    def _emit_child_instance(self, child: Any, parent_prefix: str) -> None:
+    def _emit_instance(self, inst: Any, parent_prefix: str, name: str) -> None:
+        """Lower one module instance named ``name`` under ``parent_prefix``:
+        a boundary cell for a blackbox / greybox module, otherwise its
+        body inlined."""
+        if self._is_boundary_instance(inst):
+            self._emit_boundary_instance(inst, parent_prefix, name)
+        else:
+            self._emit_child_instance(inst, parent_prefix, name)
+
+    def _emit_instance_array(self, arr: Any, parent_prefix: str, name: str) -> None:
+        """Lower an array of instances (``sync2 u_sync[1:0] (...)``) as one
+        instance per element (rtl-buddy-cdc#353).
+
+        Element ``k`` is named ``<name>[k]``, the name Yosys ``flatten``
+        gives it, so cells land under ``u_sync[0].`` like the entries of a
+        ``for``-generate do. A multi-dimensional array is an array of
+        arrays in pyslang; its elements are named ``u_m[1][0]``.
+
+        Port connections need no work here: slang already resolves each
+        element's connection by the LRM rule (IEEE 1800-2017 23.3.3.5) —
+        an expression of the port's width goes to every element, one of
+        ``port width * element count`` bits is split so the *leftmost*
+        index of the array range gets the leftmost (most significant)
+        bits — and hands every element its own sliced expression. Yosys
+        ``read_verilog`` follows that rule for a descending range
+        (``[1:0]``) but, for an ascending one (``[0:1]``), gives the
+        lowest index the least significant slice; this frontend keeps the
+        LRM order, so on an ascending array the two frontends attach the
+        same bits to opposite element names.
+        """
+        if getattr(arr, "isUninstantiated", False):
+            return
+        rng = getattr(arr, "range", None)
+        lower = getattr(rng, "lower", None)
+        elements = list(getattr(arr, "elements", None) or [])
+        if lower is None or not elements:
+            self._warn_dropped(arr, "no elaborated elements", "instance array")
+            return
+        # pyslang lists the elements from the lowest index up, whatever
+        # the declared direction (``[1:0]`` and ``[0:1]`` both start at 0).
+        for offset, element in enumerate(elements):
+            elem_name = f"{name}[{int(lower) + offset}]"
+            kind = self._kind_name(element)
+            if kind == "InstanceSymbol":
+                self._emit_instance(element, parent_prefix, elem_name)
+            elif kind == "InstanceArraySymbol":
+                self._emit_instance_array(element, parent_prefix, elem_name)
+            else:
+                self._warn_dropped(
+                    element,
+                    f"element {elem_name} is a {kind}, not a module instance",
+                    "instance array element",
+                )
+
+    def _emit_child_instance(self, child: Any, parent_prefix: str, name: str) -> None:
         """Inline a child instance's body into the flat ``Module``.
 
         Port connections are the load-bearing wiring step: the child's
         internal variables backing each port get their bits aliased to
         the parent's connection expression so net identity is preserved
         across the hierarchy boundary. After that, the child body is
-        walked exactly like the top.
+        walked exactly like the top. ``name`` is the instance's name in
+        the parent (``child.name``, or ``u_sync[0]`` for an array
+        element, whose own ``name`` is empty).
         """
         bound: set[Any] = set()
         for pc in getattr(child, "portConnections", []) or []:
@@ -959,12 +1034,12 @@ class _ModuleBuilder:
             # (e.g. ``assign clk_out = div`` collapses both to ``div``'s
             # freshly-allocated bits), ``_rewrite_aliased`` walks
             # ``_netnames`` and updates this entry too.
-            port_netname = f"{parent_prefix}{child.name}.{port.name}"
+            port_netname = f"{parent_prefix}{name}.{port.name}"
             self._netnames[port_netname] = Netname(
                 name=port_netname, bits=parent_bits, attributes={}
             )
 
-        child_prefix = f"{parent_prefix}{child.name}."
+        child_prefix = f"{parent_prefix}{name}."
         self._walk_instance(
             child, hier_prefix=child_prefix, bound_internals=frozenset(bound)
         )
@@ -1020,7 +1095,7 @@ class _ModuleBuilder:
             return bool(is_true()) if callable(is_true) else True
         return False
 
-    def _emit_boundary_instance(self, inst: Any, parent_prefix: str) -> None:
+    def _emit_boundary_instance(self, inst: Any, parent_prefix: str, name: str) -> None:
         """Emit ``inst`` as one boundary cell, Yosys-shaped (#345).
 
         Mirrors what ``read_verilog`` + ``flatten`` leave for an instance
@@ -1060,7 +1135,7 @@ class _ModuleBuilder:
             for member in inst.body
             if self._kind_name(member) == "PortSymbol" and member.name in connections
         }
-        cell_name = f"{parent_prefix}{inst.name}"
+        cell_name = f"{parent_prefix}{name}"
         self._cells[cell_name] = Cell(
             name=cell_name,
             type=defn_name,
@@ -1280,8 +1355,11 @@ class _ModuleBuilder:
 
     # -- plain ``always`` (Verilog-2001) lowering, rtl-buddy-cdc#345 -------
 
-    def _warn_dropped(self, block: Any, reason: str) -> None:
-        """Report a procedural block this frontend cannot lower.
+    def _warn_dropped(
+        self, block: Any, reason: str, what: str = "procedural block"
+    ) -> None:
+        """Report a construct (a procedural block, by default, or an
+        instance array, rtl-buddy-cdc#353) this frontend cannot lower.
 
         Its flops / logic are missing from the netlist, so the run would
         otherwise come back clean on a design it never saw. Logged at
@@ -1289,9 +1367,10 @@ class _ModuleBuilder:
         other non-fatal diagnostics."""
         where = self._src_attr(block) or "<unknown location>"
         _log.warning(
-            "slang frontend: %s: procedural block not lowered (%s); its "
+            "slang frontend: %s: %s not lowered (%s); its "
             "registers and logic are missing from the CDC netlist",
             where,
+            what,
             reason,
         )
 
@@ -2556,37 +2635,113 @@ class _ModuleBuilder:
                 return None, (), 0, 0
             # Stride at this level = the inner type's element width.
             inner_type = getattr(expr.value, "type", None)
-            elem_type = getattr(inner_type, "elementType", None)
-            new_stride = 1
-            if elem_type is not None:
-                new_stride = int(
-                    getattr(elem_type, "selectableWidth", None)
-                    or getattr(elem_type, "bitWidth", None)
-                    or 1
-                )
-            new_offset = inner_offset + idx * new_stride
+            new_stride = self._element_stride(inner_type)
+            pos = self._select_position(inner_type, idx)
+            new_offset = inner_offset + pos * new_stride
             return inner_sym, inner_bits, new_offset, new_stride
+        if kind == "RangeSelectExpression":
+            # A select of a part-select: slang builds ``src[3:2][2]`` for
+            # an instance-array element's share of ``src[3:2]``
+            # (rtl-buddy-cdc#353). The part-select's own type keeps the
+            # selected indices (``logic[3:2]``), so the outer select is
+            # translated against it by the ``ElementSelect`` branch.
+            span = self._range_select_span(expr)
+            if span is None:
+                return None, (), 0, 0
+            return span
         return None, (), 0, 0
 
-    def _range_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
-        """``var[hi:lo]`` — return the contiguous bit subset.
+    @staticmethod
+    def _element_stride(array_type: Any) -> int:
+        """Bits per element of ``array_type`` (1 for a bit vector)."""
+        elem_type = getattr(array_type, "elementType", None)
+        if elem_type is None:
+            return 1
+        return int(
+            getattr(elem_type, "selectableWidth", None)
+            or getattr(elem_type, "bitWidth", None)
+            or 1
+        )
 
-        Yosys stores bits LSB-first, so ``var[3:0]`` returns
-        ``var_bits[0:4]``. Non-constant ranges and indexed parts
-        (``var[i+:N]``) return ``None``.
+    @staticmethod
+    def _select_position(array_type: Any, index: int) -> int:
+        """Element position of declared ``index`` within ``array_type``'s
+        outermost dimension, counted from the start of its bit storage.
+
+        A packed dimension is stored LSB-first, as Yosys numbers port bits:
+        ``a[1]`` of ``logic [4:1] a`` is position 0, and ``b[0]`` of
+        ``logic [0:3] b`` is position 3 (the MSB). An unpacked dimension
+        keeps this frontend's existing layout, lowest index first. A type
+        without a declared range (``int``, a packed struct) is taken as
+        ``[W-1:0]``.
         """
-        inner = expr.value
-        if type(inner).__name__ != "NamedValueExpression":
+        t = getattr(array_type, "canonicalType", None) or array_type
+        rng = getattr(t, "range", None)
+        left = getattr(rng, "left", None)
+        right = getattr(rng, "right", None)
+        if left is None or right is None:
+            return index
+        left, right = int(left), int(right)
+        if getattr(t, "isUnpackedArray", False):
+            return index - min(left, right)
+        if left >= right:
+            return index - right
+        return right - index
+
+    def _range_select_span(
+        self, expr: Any
+    ) -> tuple[Any, tuple[Bit, ...], int, int] | None:
+        """Resolve a constant part-select to ``(base_sym, base_bits,
+        offset, width)`` in the same form :meth:`_resolve_select_chain`
+        returns, or ``None``.
+
+        Handles ``var[hi:lo]`` and the indexed forms ``var[i +: W]`` /
+        ``var[i -: W]`` on any resolvable base (a variable, or a select
+        of one), with the indices translated through the base's declared
+        range by :meth:`_select_position`.
+        """
+        base_sym, base_bits, base_offset, _stride = self._resolve_select_chain(
+            expr.value
+        )
+        if base_sym is None:
             return None
         left = self._const_int(getattr(expr, "left", None))
         right = self._const_int(getattr(expr, "right", None))
         if left is None or right is None:
             return None
-        lo, hi = min(left, right), max(left, right)
-        var_bits = self._alloc_bits(inner.symbol)
-        if lo < 0 or hi >= len(var_bits):
+        sel_kind = str(getattr(expr, "selectionKind", "")).rsplit(".", 1)[-1]
+        if sel_kind == "IndexedUp":
+            if right < 1:
+                return None
+            left, right = left, left + right - 1
+        elif sel_kind == "IndexedDown":
+            if right < 1:
+                return None
+            left, right = left, left - right + 1
+        value_type = getattr(expr.value, "type", None)
+        stride = self._element_stride(value_type)
+        p_left = self._select_position(value_type, left)
+        p_right = self._select_position(value_type, right)
+        lo, hi = min(p_left, p_right), max(p_left, p_right)
+        start = base_offset + lo * stride
+        end = base_offset + (hi + 1) * stride
+        if lo < 0 or end > len(base_bits):
             return None
-        return tuple(var_bits[lo : hi + 1])
+        return base_sym, base_bits, start, end - start
+
+    def _range_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
+        """``var[hi:lo]`` / ``var[i +: W]`` / ``var[i -: W]`` — return the
+        contiguous bit subset (see :meth:`_range_select_span`).
+
+        Yosys stores bits LSB-first, so ``var[3:0]`` of ``logic [3:0]
+        var`` returns ``var_bits[0:4]``. Non-constant ranges return
+        ``None``.
+        """
+        span = self._range_select_span(expr)
+        if span is None:
+            return None
+        _sym, base_bits, start, width = span
+        return tuple(base_bits[start : start + width])
 
     def _const_int(self, expr: Any) -> int | None:
         """Best-effort: extract an ``int`` from a constant pyslang
@@ -3723,6 +3878,24 @@ class _ModuleBuilder:
                     connections=conns,
                     parameters=cell.parameters,
                     attributes=cell.attributes,
+                    port_directions=cell.port_directions,
+                )
+        # Ports and netnames too: a child output bound to *part* of a
+        # parent net (``.q(dst[0])``, and every element of an instance
+        # array with a sliced output, rtl-buddy-cdc#353) re-points only
+        # those bits, which the whole-tuple alias merge in
+        # :meth:`_merge_canonical_var` cannot express.
+        for name, port in list(self._ports.items()):
+            bits = tuple(resolve(b) for b in port.bits)
+            if bits != port.bits:
+                self._ports[name] = Port(
+                    name=port.name, direction=port.direction, bits=bits
+                )
+        for name, nn in list(self._netnames.items()):
+            bits = tuple(resolve(b) for b in nn.bits)
+            if bits != nn.bits:
+                self._netnames[name] = Netname(
+                    name=nn.name, bits=bits, attributes=nn.attributes
                 )
 
     def _rewrite_aliased(self, lhs: Any, rhs_bits: tuple[Bit, ...]) -> None:
