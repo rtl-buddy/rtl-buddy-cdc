@@ -72,6 +72,7 @@ from __future__ import annotations
 import sys
 from collections import Counter
 
+from rtl_buddy_cdc.cli import BBOX_RULE_ID
 from rtl_buddy_cdc.rules import RULES
 
 from ._mutator import iter_mutants, xeno_available
@@ -292,10 +293,13 @@ def main() -> int:
             f"{disagree_disp:>8}"
         )
 
-    never_fired = [r for r in sorted(RULES) if r not in yosys_rule_fires]
+    # CDC-BBX is emitted by the CLI orchestration, not the rule pack, so
+    # it is not in RULES; the ``analysis="cli"`` corpus cases reach it.
+    rule_universe = sorted({*RULES, BBOX_RULE_ID})
+    never_fired = [r for r in rule_universe if r not in yosys_rule_fires]
     if never_fired:
         print()
-        print(f"Never fired ({len(never_fired)}/{len(RULES)}):")
+        print(f"Never fired ({len(never_fired)}/{len(rule_universe)}):")
         for rule_id in never_fired:
             print(f"  - {rule_id}")
 

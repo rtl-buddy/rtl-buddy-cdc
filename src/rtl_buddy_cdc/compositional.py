@@ -241,6 +241,14 @@ def derive_sub_spec(
     sub.async_groups = [[set(g) for g in stmt] for stmt in spec.async_groups]
     sub.exclusive_groups = [[set(g) for g in stmt] for stmt in spec.exclusive_groups]
     sub.false_path_pairs = set(spec.false_path_pairs)
+    # A clock-pair ``set_max_delay -datapath_only`` is an async relation
+    # like the three above (#325); without it a subtree crossing between
+    # such a pair would read as synchronous inside the per-module pass.
+    sub.datapath_only_pairs = set(spec.datapath_only_pairs)
+    # Multi-clock ports (#330): only the values matter here — a primary
+    # clock name and the clocks co-located with it — so ``are_async``
+    # expands a subtree domain exactly as it does the parent's.
+    sub.multi_clock_ports = dict(spec.multi_clock_ports)
     return sub
 
 

@@ -10,10 +10,12 @@ small heuristic in :func:`trace_clock_root`.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable
-from dataclasses import dataclass
+import re
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, TypedDict
 
+from rtl_buddy_cdc.cells import GATE_LOGIC_INPUTS, GATE_LOGIC_TYPES, MUX_PINS
 from rtl_buddy_cdc.flops import (
     Flop,
     find_flops,
@@ -175,6 +177,16 @@ class Crossing:
     and only an explicit ``--ignore-scan-mode`` makes the rule pack
     skip it. Stamped from :func:`find_scan_mode_flops`, which reads the
     fact off the ordinary clock-root walk rather than re-deriving it.
+
+    ``async_via`` (rtl-buddy-cdc#330) is set by :func:`filter_async` when
+    an endpoint sits behind a port carrying several clocks
+    (``create_clock -add``) and the crossing is asynchronous only through
+    one of the port's *co-located* clocks: ``src_clock`` / ``dst_clock``
+    keep the port's primary clock (the name every flop behind the port
+    has), and ``async_via`` names the ``(src, dst)`` clock pair that is
+    actually asynchronous. ``None`` whenever the primary names already
+    are that pair — every crossing on a design without a multi-clock
+    port. Additive and optional, like ``src_boundary``.
     """
 
     src_clock: str
@@ -187,6 +199,7 @@ class Crossing:
     src_boundary: tuple[str, str] | None = None
     dst_boundary: tuple[str, str] | None = None
     scan_mode: bool = False
+    async_via: tuple[str, str] | None = None
 
     @property
     def src_name(self) -> str:
@@ -311,12 +324,18 @@ _BUFFER_TYPES: frozenset[str] = frozenset(
     {"$not", "$logic_not", "$buf", "$pos", "$reduce_bool", "$_BUF_", "$_NOT_"}
 )
 # Cell types that combine two clock-network signals (one is the actual
-# clock, the other an enable) — common ICG shapes.
-_GATE_TYPES: frozenset[str] = frozenset(
-    {"$and", "$or", "$logic_and", "$logic_or", "$xor", "$xnor"}
+# clock, the other an enable) — common ICG shapes. The gate-level forms
+# (``$_AND_``, ``$_NAND_``, ``$_AOI3_`` …) are what ``techmap`` / ``abc``
+# turn the coarse ones into (rtl-buddy-cdc#336); their inputs are
+# :data:`cells.GATE_LOGIC_INPUTS`.
+_GATE_TYPES: frozenset[str] = (
+    frozenset({"$and", "$or", "$logic_and", "$logic_or", "$xor", "$xnor"})
+    | GATE_LOGIC_TYPES
 )
-# Cell types that select one of several clock candidates.
-_MUX_TYPES: frozenset[str] = frozenset({"$mux", "$pmux"})
+# Cell types that select one of several clock candidates, with their
+# data and select pins (``$mux`` / ``$pmux`` and the gate-level
+# ``$_MUX_`` / ``$_NMUX_`` / ``$_MUX4_`` … family).
+_MUX_TYPES: frozenset[str] = frozenset(MUX_PINS)
 
 # Cell types whose output lane ``i`` depends only on input lane ``i`` —
 # width-preserving bitwise ops and mux data paths. For these, a bit entering on
@@ -392,6 +411,176 @@ def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str]]:
     return out
 
 
+# Mux shapes whose select a ``set_case_analysis`` constant can resolve
+# (#325): Y = S ? B : A for ``$mux`` / ``$_MUX_``; ``$pmux`` picks the
+# ``B`` slice whose one-hot ``S`` bit is set, or ``A`` when none is.
+# ``$_MUX_`` is listed even though the un-analysed walk does not follow
+# it (it is not in ``_MUX_TYPES``): with a constant select the leg is
+# exact, and resolving it never touches a design without case analysis.
+_CASE_MUX_TYPES: frozenset[str] = frozenset({"$mux", "$pmux", "$_MUX_"})
+# Buffer-family cells that invert their input, for the select walk.
+_INVERTING_BUFFER_TYPES: frozenset[str] = frozenset({"$not", "$logic_not", "$_NOT_"})
+# Buffer-family cells whose output is a reduction of the whole ``A``
+# operand: transparent to the select walk only when ``A`` is one bit.
+_REDUCING_BUFFER_TYPES: frozenset[str] = frozenset({"$logic_not", "$reduce_bool"})
+
+_BUS_BIT_RE = re.compile(r"^(?P<base>.+)\[(?P<idx>\d+)\]$")
+
+
+def _case_target_bits(module: Module, target: str) -> tuple[Bit, ...] | str:
+    """The bits of a ``set_case_analysis`` port target, or why it has none.
+
+    ``target`` is a top-level port name, or a bus bit in SDC spelling
+    (``sel[3]``). The index is taken as the bit position from the LSB —
+    the netlist does not carry a port's declared range, so a port
+    declared ``[7:4]`` is addressed ``[0]``..``[3]``. A port whose name
+    itself contains the brackets (an escaped identifier) wins over the
+    bus reading. Returns an explanatory string when nothing resolves.
+    """
+    port = module.ports.get(target)
+    if port is None:
+        m = _BUS_BIT_RE.match(target)
+        if m is None or m["base"] not in module.ports:
+            return "no such top-level port"
+        port = module.ports[m["base"]]
+        idx = int(m["idx"])
+        if idx >= len(port.bits):
+            return f"bit {idx} is out of range for the {len(port.bits)}-bit port"
+        bits: tuple[Bit, ...] = (port.bits[idx],)
+    else:
+        bits = port.bits
+    if port.direction != "input":
+        return f"{port.direction} port, which cannot steer the clock network"
+    return bits
+
+
+def _build_case_bits(
+    module: Module, case_analysis: Mapping[str, str] | None
+) -> dict[Bit, int]:
+    """Expand ``ClockSpec.case_analysis`` to the constant net bits (#325).
+
+    Only the ``"0"`` / ``"1"`` values are constants; ``"rising"`` /
+    ``"falling"`` toggle and are left out. Entries apply in order, so a
+    later statement on an overlapping target (a bus, then one of its
+    bits) overrides an earlier one. Targets that do not resolve are
+    skipped here and reported by :func:`case_analysis_warnings`.
+    """
+    out: dict[Bit, int] = {}
+    if not case_analysis:
+        return out
+    for target, value in case_analysis.items():
+        if value not in ("0", "1"):
+            continue
+        bits = _case_target_bits(module, target)
+        if isinstance(bits, str):
+            continue
+        for b in bits:
+            if isinstance(b, int):
+                out[b] = int(value)
+    return out
+
+
+def case_analysis_warnings(
+    module: Module, case_analysis: Mapping[str, str] | None
+) -> list[str]:
+    """One sentence per ``set_case_analysis`` target that does not resolve.
+
+    Same shape as :attr:`~rtl_buddy_cdc.sdc.ClockSpec.partial_warnings`;
+    the CLI merges these into that list so they surface through the
+    existing end-of-parse warning channel. Resolution is the same
+    :func:`_case_target_bits` the tracer uses, so "warned" and "ignored
+    by the tracer" are one decision.
+    """
+    out: list[str] = []
+    for target, value in (case_analysis or {}).items():
+        why = _case_target_bits(module, target)
+        if isinstance(why, str):
+            out.append(
+                f"set_case_analysis {value} [get_ports {target}]: {why} "
+                f"— ignored for clock tracing"
+            )
+    return out
+
+
+def _case_constant(
+    module: Module,
+    bit: Bit,
+    drivers: dict[Bit, tuple[str, str]],
+    case_bits: Mapping[Bit, int],
+    max_hops: int = 16,
+) -> int | None:
+    """The case-analysis constant on ``bit``, or ``None`` when it is not one.
+
+    Exact and narrow: ``bit`` must be a case-analysed port bit, directly
+    or through the buffers / inverters :func:`_trace` already treats as
+    transparent (``_BUFFER_TYPES``), with inversions counted. No other
+    logic is evaluated — this is select resolution, not constant
+    propagation.
+    """
+    invert = 0
+    for _ in range(max_hops):
+        if not isinstance(bit, int):
+            return None
+        value = case_bits.get(bit)
+        if value is not None:
+            return value ^ invert
+        drv = drivers.get(bit)
+        if drv is None:
+            return None
+        cell = module.cells[drv[0]]
+        if cell.type not in _BUFFER_TYPES:
+            return None
+        a = cell.connections.get("A", ())
+        if cell.type in _REDUCING_BUFFER_TYPES:
+            if len(a) != 1:
+                return None
+            bit = a[0]
+        else:
+            y = cell.connections.get("Y", ())
+            k = y.index(bit) if bit in y else len(a)
+            if k >= len(a):
+                return None
+            bit = a[k]
+        if cell.type in _INVERTING_BUFFER_TYPES:
+            invert ^= 1
+    return None
+
+
+def _case_selected_input(
+    module: Module,
+    cell: Cell,
+    bit: Bit,
+    drivers: dict[Bit, tuple[str, str]],
+    case_bits: Mapping[Bit, int],
+) -> Bit | None:
+    """The data-input bit a case-analysed clock mux passes to ``bit``.
+
+    ``None`` unless ``cell`` is one of :data:`_CASE_MUX_TYPES` and every
+    select bit is a case-analysis constant (:func:`_case_constant`); a
+    ``$pmux`` with more than one select bit set is not resolved. The
+    returned bit is lane-exact: output bit ``k`` of a ``WIDTH``-wide
+    mux comes from ``A[k]`` or ``B[i*WIDTH + k]``.
+    """
+    if cell.type not in _CASE_MUX_TYPES:
+        return None
+    y = cell.connections.get("Y", ())
+    sel_bits = cell.connections.get("S", ())
+    if bit not in y or not sel_bits:
+        return None
+    sel = [_case_constant(module, sb, drivers, case_bits) for sb in sel_bits]
+    if any(v is None for v in sel):
+        return None
+    hot = [i for i, v in enumerate(sel) if v]
+    k = y.index(bit)
+    if not hot:
+        leg, idx = cell.connections.get("A", ()), k
+    elif len(hot) == 1:
+        leg, idx = cell.connections.get("B", ()), hot[0] * len(y) + k
+    else:
+        return None
+    return leg[idx] if idx < len(leg) else None
+
+
 def trace_clock_root(
     module: Module,
     bit: Bit,
@@ -403,6 +592,7 @@ def trace_clock_root(
     clock_identity: Callable[[str], str | None] | None = None,
     on_combine: CombineSink | None = None,
     on_clock_control: ClockControlSink | None = None,
+    case_bits: Mapping[Bit, int] | None = None,
 ) -> str | None:
     """Resolve a CLK net bit to the top-level port that ultimately drives it.
 
@@ -442,6 +632,16 @@ def trace_clock_root(
     spot a DFT scan structure in a flop's clock network (#45). Like
     ``on_combine`` it observes the walk and never changes its outcome.
 
+    ``case_bits`` (#325, from :func:`_build_case_bits`) maps
+    ``set_case_analysis`` constant net bits to 0/1. A clock mux
+    (:data:`_CASE_MUX_TYPES`) whose select is such a constant — directly
+    or through buffers / inverters — follows **only** the selected leg:
+    the mode fixes the select, so the other leg's clock never reaches
+    the flop. The selected leg is followed exactly; if it does not
+    resolve, neither does the mux. Its select is not reported to
+    ``on_clock_control`` — a constant select steers nothing in that
+    mode.
+
     Returns ``None`` when no candidate root resolves within
     ``max_depth`` cells; the caller treats that as "domain unknown".
     """
@@ -459,6 +659,7 @@ def trace_clock_root(
         clock_identity=clock_identity,
         on_combine=on_combine,
         on_clock_control=on_clock_control,
+        case_bits=case_bits or {},
     )
 
 
@@ -527,6 +728,7 @@ def _trace(
     clock_identity: Callable[[str], str | None] | None = None,
     on_combine: CombineSink | None = None,
     on_clock_control: ClockControlSink | None = None,
+    case_bits: Mapping[Bit, int] | None = None,
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
@@ -561,6 +763,7 @@ def _trace(
             clock_identity=clock_identity,
             on_combine=on_combine,
             on_clock_control=on_clock_control,
+            case_bits=case_bits,
         )
 
     def _record(clocks: frozenset[str]) -> None:
@@ -592,6 +795,7 @@ def _trace(
                 clock_identity=clock_identity,
                 on_combine=on_combine,
                 on_clock_control=on_clock_control,
+                case_bits=case_bits,
             )
         return None
 
@@ -605,7 +809,7 @@ def _trace(
     if ctype in _GATE_TYPES:
         roots: list[str] = []
         legs: list[tuple[Bit, str | None]] = []
-        for in_port in ("A", "B"):
+        for in_port in GATE_LOGIC_INPUTS:
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
                 r = _leg(in_bits[0])
@@ -620,12 +824,33 @@ def _trace(
             _record_control(tuple(b for b, r in legs if r != picked))
         return picked
 
+    # Clock mux with a case-analysed select (#325): the mode fixes S, so
+    # only the selected leg reaches the flop. Checked before the
+    # first-resolves-wins clause below, which it replaces for this cell.
+    if case_bits:
+        selected = _case_selected_input(module, cell, bit, drivers, case_bits)
+        if selected is not None:
+            return _trace(
+                module,
+                selected,
+                drivers,
+                seen,
+                depth - 1,
+                bit_to_clock,
+                allow_divider=allow_divider,
+                clock_identity=clock_identity,
+                on_combine=on_combine,
+                on_clock_control=on_clock_control,
+                case_bits=case_bits,
+            )
+
     # Clock mux — return whichever side resolves. A mux *selects* one of
     # its clock inputs (it does not combine them), so first-resolves-wins
     # is correct and it is deliberately NOT routed through the combining
     # decline above.
     if ctype in _MUX_TYPES:
-        for in_port in ("A", "B"):
+        data_pins, select_pins = MUX_PINS[ctype]
+        for in_port in data_pins:
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
                 root = _leg(in_bits[0])
@@ -633,7 +858,11 @@ def _trace(
                     # The select steers which leg reaches the flop; it
                     # is the one input of a clock mux that is not a
                     # clock. This is where a DFT scan mux is seen (#45).
-                    _record_control(tuple(cell.connections.get("S", ())))
+                    _record_control(
+                        tuple(
+                            b for p in select_pins for b in cell.connections.get(p, ())
+                        )
+                    )
                     return root
         return None
 
@@ -658,6 +887,7 @@ def _trace(
                 clock_identity=clock_identity,
                 on_combine=on_combine,
                 on_clock_control=on_clock_control,
+                case_bits=case_bits,
             )
 
     # Clock-path transparent latch — a latch-based ICG (or any clock
@@ -773,7 +1003,9 @@ def assign_domains(
     pin_clocks: dict[str, str] | None = None,
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
+    case_analysis: Mapping[str, str] | None = None,
 ) -> list[FlopDomain]:
     """Build per-flop ``FlopDomain`` records from clock-network tracing.
 
@@ -793,6 +1025,19 @@ def assign_domains(
     without a code change; it only ever resolves MORE flops, never
     fewer, so the default keeps results identical to a fixed-16 walk.
     Surfaced as ``--clock-trace-depth`` on the CLI. See issue #263.
+
+    ``case_analysis`` (typically ``ClockSpec.case_analysis``, #325)
+    resolves a clock mux whose select is a ``set_case_analysis``
+    constant to its selected leg — see :func:`trace_clock_root`. Every
+    clock-root walk on a run must be handed the same map, or two views
+    of one flop's domain disagree.
+
+    ``declared_clock_for_port`` is for callers that must keep raw root
+    names (no ``clock_for_port`` normalisation) but still know which
+    ports are clocks: it feeds only the combine-leg choice of
+    :func:`_pick_combining_root`, so a clock gate resolves to its clock
+    leg whichever input that leg is on (``clk & en`` and ``en & clk``
+    agree), and is ignored when ``clock_for_port`` is given.
     """
     resolve = flop_domain_resolver(
         module, pin_clocks, clock_for_port=clock_for_port, max_depth=max_depth
@@ -821,7 +1066,11 @@ def flop_domain_resolver(
     if drivers is None:
         drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
-    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+    clock_identity = _clock_identity_fn(
+        clock_for_port if clock_for_port is not None else declared_clock_for_port,
+        set(bit_to_clock.values()),
+    )
+    case_bits = _build_case_bits(module, case_analysis)
 
     def resolve(f: Flop) -> str | None:
         root = trace_clock_root(
@@ -831,6 +1080,7 @@ def flop_domain_resolver(
             max_depth=max_depth,
             bit_to_clock=bit_to_clock,
             clock_identity=clock_identity,
+            case_bits=case_bits,
         )
         if root is not None and clock_for_port is not None:
             resolved = clock_for_port(root)
@@ -1029,6 +1279,7 @@ def find_clock_combines(
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
+    case_analysis: Mapping[str, str] | None = None,
 ) -> list[ClockCombine]:
     """Report every clock-network node the tracer *declined* on (#269).
 
@@ -1068,6 +1319,7 @@ def find_clock_combines(
         return []
 
     drivers = _bit_drivers(module)
+    case_bits = _build_case_bits(module, case_analysis)
     clocks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
     sinks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
     types_at: dict[tuple[str, Bit], str] = {}
@@ -1095,6 +1347,7 @@ def find_clock_combines(
             bit_to_clock=bit_to_clock,
             clock_identity=clock_identity,
             on_combine=record,
+            case_bits=case_bits,
         )
 
     net_names = _bit_net_names(module)
@@ -1121,6 +1374,7 @@ def find_scan_mode_flops(
     pin_clocks: dict[str, str] | None = None,
     clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
+    case_analysis: Mapping[str, str] | None = None,
 ) -> set[str]:
     """Cell names of flops clocked through a DFT scan structure (#45).
 
@@ -1160,6 +1414,7 @@ def find_scan_mode_flops(
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
     clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+    case_bits = _build_case_bits(module, case_analysis)
 
     out: set[str] = set()
     for f in find_flops(module):
@@ -1181,6 +1436,7 @@ def find_scan_mode_flops(
             bit_to_clock=bit_to_clock,
             clock_identity=clock_identity,
             on_clock_control=record,
+            case_bits=case_bits,
         )
         if any(is_scan_control(bits) for bits in hits):
             out.add(f.cell.name)
@@ -1306,6 +1562,7 @@ def find_crossings(
     boundaries: dict[str, "BoundarySummary"] | None = None,
     max_depth: int = 16,
     scan_mode_flops: frozenset[str] = frozenset(),
+    case_analysis: Mapping[str, str] | None = None,
 ) -> list[Crossing]:
     """Find every fanout path whose endpoints are in different domains.
 
@@ -1345,11 +1602,17 @@ def find_crossings(
     ``scan_mode=True``. Tagging only — the set never adds, drops or
     reshapes a crossing, so a run that passes it and a run that does
     not produce the same crossings in the same order.
+
+    ``case_analysis`` is forwarded to :func:`assign_domains` (#325).
     """
     domains = {
         fd.flop.cell.name: fd
         for fd in assign_domains(
-            module, pin_clocks, clock_for_port=clock_for_port, max_depth=max_depth
+            module,
+            pin_clocks,
+            clock_for_port=clock_for_port,
+            max_depth=max_depth,
+            case_analysis=case_analysis,
         )
     }
     consumers = _build_bit_consumers(module)
@@ -1648,15 +1911,23 @@ def filter_async(crossings: list[Crossing], spec: "ClockSpec") -> list[Crossing]
     exactly the same predicate the top-level run uses — two answers to
     "is this crossing async?" is how an abstracted run and a flat run
     start to disagree. ``cli._filter_async`` is a thin alias.
+
+    A clock on a port that carries several clocks (``create_clock
+    -add``, rtl-buddy-cdc#330) stands for all of them: the crossing is
+    kept if *any* combination of co-located clocks is async and
+    reachable (:meth:`~rtl_buddy_cdc.sdc.ClockSpec.async_witness`). When
+    that combination is not the primary pair itself, the kept crossing
+    carries it as :attr:`Crossing.async_via` so the report can name the
+    clock the crossing is asynchronous to.
     """
     out: list[Crossing] = []
     for c in crossings:
         a = spec.clock_for_port(c.src_clock) or c.src_clock
         b = spec.clock_for_port(c.dst_clock) or c.dst_clock
-        if spec.is_unreachable_crossing(a, b):
+        via = spec.async_witness(a, b)
+        if via is None:
             continue
-        if spec.are_async(a, b):
-            out.append(c)
+        out.append(c if via == (a, b) else replace(c, async_via=via))
     return out
 
 

@@ -67,6 +67,10 @@ swappable so the rule pack doesn't depend on a specific toolchain.
         └──────────────────────────────────┘
                         ▼
         ┌──────────────────────────────────┐
+        │ liveness.prune_dead_cells (1a)   │  drop cells no output can observe
+        └──────────────────────────────────┘
+                        ▼
+        ┌──────────────────────────────────┐
         │ flops.find_flops    (2)          │  recognise FF cell zoo
         └──────────────────────────────────┘
                         ▼
@@ -116,11 +120,14 @@ without one the tool prints the structural summary and exits 0.
 | `frontends/yosys.py` | Yosys frontend: shell out to `yosys` then `netlist.load` the JSON | `elaborate`, `YosysError` |
 | `frontends/slang.py` | slang frontend: elaborate SystemVerilog via pyslang directly | `elaborate`, `SlangFrontendUnavailable`, `SlangElaborationError` |
 | `netlist.py` | Parse Yosys `write_json` output into typed structs | `Module`, `Cell`, `Port`, `Netname`, `BoundarySummary`, `PortBoundary` |
+| `regroup.py` | Loader normalisation: rebuild bit-blasted gate-level registers (and the lane-wise logic in front of them) as wide coarse cells (rtl-buddy-cdc#337) | `regroup_flops`, `REGROUPED_ATTR`, `ORPHAN_ATTR` |
+| `gate_eval.py` | Truth tables of small combinational cones (functional gray recognition on gate netlists) | `cone_tables` |
 | `flops.py` | Recognise the 11 Yosys FF cell variants and extract CLK / D / Q | `Flop`, `FF_CELL_TYPES` |
 | `domain.py` | Trace clock roots, find flop→flop crossings | `FlopDomain`, `Crossing`, `trace_clock_root`, `find_crossings` |
 | `abstract.py` | Detect + summarise single-clock subtrees to a port boundary (#256) | `is_single_clock_subtree`, `summarise_subtree` |
 | `hierarchy.py` | Compositional boundary walk: summarise each shared module once (#257) | `compose_boundaries`, `CompositionStats` |
 | `sdc.py` | Parse the CDC-relevant SDC subset | `ClockSpec`, `Clock` |
+| `sdc_objects.py` | Resolve SDC object patterns against the netlist; object-scoped false-path coverage and acknowledgement (#328, §6.4) | `NameIndex`, `resolve`, `coverage`, `acknowledge` |
 | `rules.py` | The CDC-001..-008 rule pack | `Violation`, `RULES`, `run_all` |
 | `waivers.py` | Per-violation suppression with regex | `Waiver`, `SuppressedViolation` |
 | `pragma.py` | Scan in-RTL `// rbcdc:` pragmas into `Waiver`s | `scan`, `scan_text` |
@@ -221,6 +228,32 @@ Every emitted cell carries an `attributes["src"]` string formatted
 as Yosys' `"file:line.col-line.col"` convention, so the JSON /
 SARIF reporters surface clickable source locations without a
 frontend-specific branch.
+
+Procedural blocks are lowered by what they infer, not by keyword
+(#345): `always_ff` and an edge-triggered plain `always` take the flop
+path; `always_comb`, `always @*` and a level-sensitive `always` that
+assigns every target on every path take the combinational path;
+`always_latch` and a latch-inferring level-sensitive `always` of the
+`if (en) q = d;` shape become `$dlatch`. A procedural block the
+builder cannot lower (mixed edge/level event list, delays, event
+controls inside the body, an unrecognised clock expression) is
+reported with a `WARNING` naming its source range instead of
+vanishing silently; `initial` / `final` are not modelled.
+
+Blackbox boundaries (#345): an instance of a module with a truthy
+`(* blackbox *)` attribute, or one named by `lint --blackbox` /
+`--greybox`, is not inlined. It becomes one cell named by its
+flattened instance path, `type` = module name, `connections` keyed by
+port name, and `parameters` holding only the parameters the
+instantiation overrides, encoded as Yosys' `write_json` does — the
+same cell a Yosys netlist carries, so CDC-022's XPM-default fallback
+and `--sync-primitive` recognition behave identically.
+`frontends.slang.elaborate_with_blackboxes` returns the module as an
+`is_blackbox` sibling, the `(top, blackboxes)` pair
+`netlist.load_with_blackboxes` returns (§4.8). The sibling's port
+widths come from the first instance's parameters (Yosys sizes them
+from the module defaults; the analysis reads widths off the
+connections). A greybox sibling carries its lowered body.
 Reaches parity with the Yosys frontend on every SDC-equipped
 fixture in the regression suite; the per-fixture matrix lives in
 the `frontends/slang.py` module docstring.
@@ -251,6 +284,78 @@ the upstream flop (see `user_sync_flop_names` and
 scan-mode set (§8.20) — because what they declare is a property of the
 external pin, not of a producing flop.
 
+### 4.1a Unobservable cells (rtl-buddy-cdc#338)
+
+Before any analysis, `cli._analyze_module_and_report` passes the top
+module (and every greybox body) through `liveness.prune_dead_cells`.
+A cell is **live** iff it is backward-reachable from an observation
+point: an `output` / `inout` port bit, a netname bit with a truthy
+`keep` attribute, or an input pin of a cell that is not a known pure
+Yosys cell (blackbox / library / hierarchical instances, read through
+the blackbox definition's port directions when the netlist has one and
+as all-inputs otherwise; memories; `$assert` / `$print` …; any
+unlisted type; any cell with `keep`). A live pure cell makes all its
+input pins live, clock and enable pins included. Dead cells are
+dropped from `Module.cells`; ports and netnames are untouched.
+
+Consequences, deliberately:
+
+- A flop whose `Q` reaches no observation point is dead with its whole
+  input cone, so a crossing into it is **not reported**: nothing it
+  captures can reach an output. It is also the flop `opt_clean`
+  deletes, so the verdict on a netlist equals the verdict on that
+  netlist after `opt_clean` (held for the whole corpus by
+  `tests/test_gate_level_corpus.py::test_verdict_invariant_under_opt_clean`).
+- Conservative: unknown cell types are never pruned, and a module with
+  no observation point at all is analysed whole (a hand-made fragment,
+  not a design that computes nothing).
+- One linear pass per run; rules see only live cells and need no
+  liveness checks of their own. The design summary's cell count is the
+  live count.
+
+### 4.1.1 Gate-level registers are regrouped at load (rtl-buddy-cdc#337)
+
+After `techmap` / `abc` a W-bit register is W one-bit `$_DFF_*`
+cells, and every rule that reasons about a bus (CDC-004 / 012 / 019 /
+020, the gated- and gray-bus acceptances, CDC-014's width guard) keys
+on one flop cell carrying the bus. `netlist.load_with_blackboxes` runs
+`regroup.regroup_flops` on every module it parses, so the analyzer —
+crossing enumeration, abstraction and the rule pack alike — sees the
+shape `proc` would have produced:
+
+- **Registers.** Gate flops are grouped by their `Q` bits' owner
+  netname (public, ≥ 2 bits; the narrowest wins, so a concatenating
+  wire never merges two registers; a port name is passed over when the
+  bit has a name of its own; `splitnets`-style `q[3]` names are
+  rebuilt into `q`) and split by control key: family, clock net and
+  edge, reset / set / load / enable nets and polarities, and the
+  cell's `src` (the `always` block). Each group of ≥ 2 lanes becomes
+  one coarse cell (`$dff` / `$adff` / `$dffe` / `$adffe` / `$sdff*` /
+  `$dffsr*` / `$aldff*`) named after the netname, lanes in netname
+  order, per-bit reset values in `ARST_VALUE` / `SRST_VALUE`. The cell
+  carries `REGROUPED_ATTR` listing the replaced cells.
+- **Lane-wise logic.** From each rebuilt register's `D`, a vector whose
+  bits are the outputs of distinct one-bit gates of one type
+  (`$_MUX_` with one shared `S`, `$_AND_` / `$_OR_` / `$_XOR_` /
+  `$_XNOR_` / `$_NOT_` / `$_BUF_`) is rebuilt as the equivalent wide
+  `$mux` / `$and` / … / `$pos`, recursively. That restores the enable
+  and sync-reset muxes and the gray encoder's `$xor` exactly.
+- **Not regrouped.** Coarse cells are never touched (an RTL netlist is
+  returned unchanged). A flop with no qualifying netname, or a bit of a
+  register whose name names one flop twice (merged bits), stays one bit
+  wide; if it also has no one-bit name of its own it is tagged
+  `ORPHAN_ATTR`, and CDC-004 reports orphans of one `always` block that
+  cross together as a possible bus (`warning`) rather than letting W
+  clean one-bit chains go silent.
+
+Where synthesis re-derived the logic (`abc`), two rule helpers fall back
+to the gate-level form: `_is_gray_encoded_source` checks, by truth
+table (`gate_eval.cone_tables`, ≤ 10 leaves), whether a rebuilt
+register's `D` is the gray code of another register's `D` or `Q`; and
+CDC-019 groups one-bit gate drivers by the multi-bit netname their
+outputs share (§8.7). Both apply only to gate-level cells, so no
+RTL-level verdict depends on them.
+
 ### 4.2 Flop recognition
 
 `flops.FF_CELL_TYPES` enumerates the FF cell zoo Yosys may emit:
@@ -268,7 +373,10 @@ cell level).
 input port name that ultimately drives its CLK pin, or `None` if no
 root could be resolved within the trace depth budget. The analyzer
 treats `None` as "domain unknown" and excludes those flops from
-crossing detection rather than emitting a false positive.
+crossing detection rather than emitting a false positive. A flop
+behind a port that carries several clocks (`create_clock -add`) gets
+the port's primary clock, which stands for all of them (§4.5,
+"Multi-clock ports", #330).
 
 ### 4.4 Crossings
 
@@ -288,6 +396,7 @@ class Crossing:
     src_boundary: tuple[str, str] | None = None  # (instance, port): abstracted-subtree output
     dst_boundary: tuple[str, str] | None = None  # (instance, port): data entering a boundary input
     scan_mode: bool = False      # #45: dst flop clocked through a DFT scan structure
+    async_via: tuple[str, str] | None = None  # #330: co-located clock pair it is async through
 ```
 
 Three design choices matter here:
@@ -322,6 +431,14 @@ Three design choices matter here:
    optional fields so the public JSON contract (`summary.crossings`) is
    never forked.
 
+`async_via` (#330) is stamped by `filter_async` on a crossing whose
+endpoint sits behind a multi-clock port and which is asynchronous only
+through a clock *co-located* with the port's primary (§4.5,
+"Multi-clock ports"). `src_clock` / `dst_clock` keep the primary names
+— the names the flops have, which every rule compares domains against —
+and `async_via` names the pair that is actually asynchronous. It is
+`None` on every crossing of a design without a multi-clock port.
+
 ### 4.5 Clock topology
 
 `ClockSpec` is the parsed, CDC-relevant view of an SDC file:
@@ -335,6 +452,11 @@ class ClockSpec:
     false_path_pairs: set[frozenset[str]]          # set_false_path -from -to clock pairs
     port_clock: dict[str, str]                     # set_input_delay / set_output_delay → port→clock
     pin_clocks: dict[str, str]                     # internal-pin target → generated clock name
+    datapath_only_delays: list[DatapathOnlyDelay]  # every set_max_delay -datapath_only (#325)
+    datapath_only_pairs: set[frozenset[str]]       # …the clock-to-clock ones, as pairs
+    false_path_exceptions: list[FalsePathException]  # object-scoped / -through set_false_path (#328)
+    case_analysis: dict[str, str]                  # set_case_analysis port → "0"/"1"/"rising"/"falling" (#325)
+    multi_clock_ports: dict[str, tuple[str, ...]]  # port → its clocks, primary first, ports with ≥2 (#330)
     partial_warnings: list[str]                    # diagnostics surfaced once at end-of-parse
 ```
 
@@ -357,7 +479,10 @@ Three consumer-facing predicates:
   case for generated clocks), OR (2) their resolved roots differ
   AND `false_path_pairs` lists them OR async groups separate the
   resolved roots. Step 1 is what lets a project mark `clk_div2` as
-  async to `clk` despite sharing a master.
+  async to `clk` despite sharing a master. A clock pair in
+  `datapath_only_pairs` (by name, or by resolved roots) is async
+  too, and is checked in step 1 — see "Datapath-only max delay"
+  below.
 - `is_unreachable_crossing(a, b)` — true iff resolved roots are in
   different `exclusive_groups` entries. Logically/physically-
   exclusive clocks never coexist at runtime, so a flop→flop
@@ -370,6 +495,105 @@ Three consumer-facing predicates:
 Clocks not mentioned in any group remain conservatively synchronous
 to everything (zero false positives for crossings the user has not
 declared async). See [§6](#6-sdc-parsing) for the parser scope.
+
+**Multi-clock ports (issue #330).** SDC lets a source object carry
+several clocks: `create_clock -name clk_a2 -add [get_ports clk_a]` on a
+port that already has `clk_a` keeps both (typically two modes on one
+pin, declared `-physically_exclusive` / `-logically_exclusive`). Without
+`-add`, a later `create_clock` on the same port *replaces* the earlier
+one — the parser strips the port from the earlier clock, removes that
+clock once it has no port left, and warns (`_claim_ports`). So after a
+parse a port carries several clocks only through `-add`, and
+`parse()` records them in `ClockSpec.multi_clock_ports` (port → clocks
+in declaration order).
+
+The data model keeps one clock per flop (`FlopDomain.clock: str |
+None`). Rather than a composite domain, the port's **primary** clock —
+the first declared, which is what `clock_for_port` returns — names every
+flop behind it, and that name **stands for every clock on the port**:
+
+- `colocated_clocks(name)` is `(name,)` unless `name` is a primary,
+  then `name` followed by the port's other clocks in declaration
+  order. A non-primary clock (`set_input_delay -clock clk_a2`) means
+  only itself; a port typed with the primary means the whole port.
+- `are_async(a, b)` is true iff **some** pair in
+  `colocated_clocks(a) × colocated_clocks(b)` is async (per-pair rules
+  above) **and** not unreachable — a crossing is synchronous only if it
+  is synchronous to every clock on the port. `is_unreachable_crossing`
+  is true only if **every** pair is unreachable, so the usual exclusive
+  group between the two modes removes just that pair.
+- `async_witness(a, b)` returns the first such pair, scanning `a`'s
+  clocks then `b`'s in declaration order — deterministic, and identical
+  on both SDC backends (they hand the handlers the same commands in the
+  same order). `filter_async` keeps a crossing iff it has a witness and
+  stamps `Crossing.async_via` when the witness is not `(a, b)` itself;
+  `rules.run_all` appends `[multi-clock port] asynchronous as X → Y` to
+  every finding on such a crossing, and the JSON report and domain map
+  carry `async_via`.
+
+For two single-clock names every predicate is exactly the per-pair
+answer, so a design without a multi-clock port is unaffected. Why this
+shape: a composite domain (`"clk_a|clk_a2"`) would have to be taught to
+every consumer that compares domain names or looks a clock up by name
+(sync-chain walks, period lookups, the JSON schema), while every async
+question in the analyzer already goes through `are_async` — making that
+one predicate port-aware gives all of them (rules, `clock_network`,
+`abstract`, the compositional pass, which copies `multi_clock_ports`
+into its sub-spec) the conservative answer at once. The costs: the
+primary's name in a message can be a clock the crossing is *not*
+asynchronous to (hence the suffix), a clock with several ports expands
+for all its flops if it is primary on any of them, and period-based
+rules (CDC-013 / CDC-014) still read only the primary's period.
+
+`create_generated_clock` follows the same replace/add rule on port
+targets. Internal-pin targets (`pin_clocks`) still hold one clock per
+pin: a replacement warns, and `-add` on a pin is not modelled (the first
+clock stays; warning). A generated clock's master comes from
+`-master_clock` only — `-source` (recorded on `Clock.source`) never
+infers one — so a `-master_clock` naming one co-located clock
+disambiguates exactly, and a multi-clock `-source` with no
+`-master_clock` (or one naming none of its clocks) is a G-11 warning
+(§8.14) rather than a silent pick.
+
+**Datapath-only max delay (issue #325).** `set_max_delay <v>
+-datapath_only -from [get_clocks A] -to [get_clocks B]` bounds the
+skew of an intentional asynchronous crossing (a gray bus, a handshake
+payload) without declaring a false path. The bound only exists where
+the launch and capture clocks are *not* timed against each other —
+`-datapath_only` drops the clock relationship from the check — so a
+clock-to-clock datapath-only constraint is read as **the pair is an
+intended asynchronous crossing**: `are_async` returns True for it,
+exactly as for a `set_false_path -from/-to` clock pair.
+
+Where it contradicts a declaration that says *synchronous* — the two
+clocks are generated from one master, or share a `-group` of a
+`set_clock_groups -asynchronous` (members of one group are timed
+together) — the datapath-only bound **wins**. That is the conservative
+choice for a CDC linter: it keeps the crossing in the async list, so
+its synchroniser is checked, rather than trusting the relationship
+the author just told STA to ignore. A `set_false_path` on a same-root
+pair still loses to the collapse, unchanged. The same reasoning makes
+a datapath-only pair never *unreachable*: `is_unreachable_crossing`
+returns False for it even when the clocks sit in different exclusive
+groups, because bounding a path's delay says its author believes the
+path is live. A pair declared between two masters also covers clocks
+generated from them (the check runs on the given names and on the
+resolved roots). Adding a datapath-only pair can only move a crossing
+*into* the async list, never out of it, so it cannot reduce findings.
+
+Each constraint is recorded as a frozen `sdc.DatapathOnlyDelay`
+(`value`, `from_clocks`, `to_clocks`, `from_objects`, `to_objects`).
+Endpoints other than clocks — `[get_cells …]`, `[get_pins …]`,
+`[get_ports …]`, `[get_nets …]` — are kept as `(kind, name)` pairs in
+SDC `/` notation and **not resolved** against the netlist; such a
+record never contributes a clock pair and raises a partial warning.
+Resolving object endpoints to flops is the seam left for issue #328
+(object-scoped `set_false_path`), which will need the same
+cell/pin → flop mapping for both commands. `-through` narrows the
+constraint to specific paths and is not recorded (warning), mirroring
+`set_false_path -through`. Plain `set_max_delay` without
+`-datapath_only` is gated off before dispatch (`sdc._COMMAND_GATES`)
+and dropped exactly like an unrecognised command.
 
 ### 4.6 Violations
 
@@ -560,7 +784,8 @@ leaves it standing and the parent keeps an ordinary instance cell) **and**
 its cells. Yosys produces one with
 `setattr -mod -set blackbox 1 <module>` between `proc` and `flatten`;
 `lint --greybox MODULE` is the CLI surface (a plain Yosys pass — no plugin
-needed, unlike `--blackbox`). Nothing in the loader changes: `is_blackbox`
+needed, unlike `--blackbox`; the slang frontend builds the same sibling
+natively, #345). Nothing in the loader changes: `is_blackbox`
 still comes from the attribute, and a zero-cell sibling still takes the
 pre-#261 path exactly as before. The whole of §4.9's compositional
 machinery is gated on `sub.cells` being non-empty.
@@ -990,6 +1215,10 @@ Cell-type categories the walker recognizes:
 | Buffer / inverter | `$not`, `$logic_not`, `$buf`, `$pos`, `$reduce_bool`, `$_BUF_`, `$_NOT_` | Transparent: trace the single `A` input |
 | Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor` | Trace both inputs; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline and are reported as CDC-023 (see below) |
 | Mux | `$mux`, `$pmux` | Trace each candidate input; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline, and never produces a CDC-023 finding |
+| Case-analysed mux | `$mux`, `$pmux`, `$_MUX_` whose every `S` bit is a `set_case_analysis` constant | Follow **only** the selected leg (§5.2) — the mode fixes `S`. Replaces the first-resolves-wins row above for that cell |
+
+| Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor`, and the gate-level `cells.GATE_LOGIC_TYPES` (`$_AND_`, `$_OR_`, `$_NAND_`, `$_NOR_`, `$_XOR_`, `$_XNOR_`, `$_ANDNOT_`, `$_ORNOT_`, `$_AOI3_`, `$_OAI3_`, `$_AOI4_`, `$_OAI4_`; rtl-buddy-cdc#336) | Trace every input (`A`/`B`, plus `C`/`D` on the AOI/OAI cells). The leg choice depends on the legs' clocks, not their order: the rule context passes `assign_domains(declared_clock_for_port=…)`, built from `create_clock` ports only, so `en & clk` and `clk & en` resolve alike; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline and are reported as CDC-023 (see below) |
+| Mux | `cells.MUX_PINS`: `$mux`, `$pmux`, and gate-level `$_MUX_`, `$_NMUX_`, `$_MUX4_`, `$_MUX8_`, `$_MUX16_` (rtl-buddy-cdc#336) | Trace each candidate data input (`A`/`B`, or `A`…`P` on the wide gate muxes); every select pin (`S`, plus `T`/`U`/`V`) is reported as the mux's control; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline, and never produces a CDC-023 finding |
 | FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root |
 | Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline and are reported as CDC-023 (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
 
@@ -1112,6 +1341,75 @@ attribute-kept primitive) on the forwarding path keeps each forwarded
 clock at a distinct bit identity. The `good_source_sync_internal`
 fixture uses `$_BUF_` primitives for this reason.
 
+### 5.2 Case-analysed clock muxes
+
+`set_case_analysis <0|1> [get_ports sel]` (issue #325) pins a mode port
+to a constant. Without it, a clock mux presents both clocks and the
+walker takes the first leg that resolves, so a flop behind the mux can
+be filed under a clock the constrained mode never selects — and a real
+crossing into the clock it *does* select goes unreported.
+
+`domain._build_case_bits(module, ClockSpec.case_analysis)` expands the
+port targets to constant net bits (`"0"` / `"1"` only — `"rising"` /
+`"falling"` toggle and are left out; a bus bit `sel[3]` is bit 3 from
+the LSB, since the netlist carries no declared range). The map rides
+into `trace_clock_root` as `case_bits`, and the mux clause becomes
+exact for any `$mux`, `$pmux` or `$_MUX_` whose **every** select bit is
+a case constant:
+
+- the select is evaluated by `_case_constant`, which follows the bit
+  back through exactly the `_BUFFER_TYPES` the walker already treats as
+  transparent, counting inversions (`$not`, `$logic_not`, `$_NOT_`);
+  `$logic_not` / `$reduce_bool` count only on a one-bit operand. Any
+  other driver stops it — this is select resolution, not constant
+  propagation;
+- `$mux` / `$_MUX_` pass `B` when `S=1` and `A` when `S=0`; a `$pmux`
+  passes the `B` slice whose one-hot `S` bit is set, or `A` when none
+  is, and is left unresolved when two are hot. The leg is lane-exact
+  (`Y[k]` ← `A[k]` / `B[i*WIDTH+k]`);
+- **only the selected leg is followed**, and followed exactly: if it
+  does not resolve (a constant, an undeclared net), neither does the
+  mux. There is no fallback to the other leg — in that mode the other
+  leg's clock never reaches the flop.
+
+`$_MUX_` is resolved here although the un-analysed walk does not follow
+it (it is not in `_MUX_TYPES`): with a constant select the answer is
+exact, and the change is invisible to any design without case analysis.
+
+Every clock-root walk on a run is handed the same map — `assign_domains`
+(and through it `find_crossings`), `find_clock_combines` (CDC-023),
+`find_scan_mode_flops`, the rule context (`_build_context`), the
+clock-network surface (`find_clock_network_crossings`) and the
+boundary clock-pin classification (`abstract._instance_clocks`,
+`summarise_sync_primitive`) — for the same reason `max_depth` is
+threaded everywhere: two views of one flop's domain must not disagree.
+Interactions, each pinned by `tests/test_sdc_case_analysis.py`:
+
+- **CDC-023** — the combine walk follows only the selected leg, so a
+  combine on the unselected leg is unreachable in that mode and not
+  reported; a combine on the selected leg is reported and leaves the
+  flop `domain_unknown` (it no longer falls through to the other leg).
+- **CDC-010** — unchanged, and it never fired on these selects: a
+  case-analysed select comes from a top-level port, and CDC-010 only
+  fires when a control pin's backward fan-in reaches a *flop*. The
+  case-resolved mux is still a clock-network cell for CDC-008 / CDC-010.
+- **Scan-mode tagging (#45)** — a case-resolved select is not reported
+  to `on_clock_control`: a constant select steers nothing in that mode,
+  so the flop is not tagged as clocked through a scan structure
+  (`set_case_analysis 0 scan_en` analyses functional mode, and its
+  crossings are reported).
+- **`find_inferred_clock_candidates`** — unaffected; it counts CLK
+  fan-out by driver and never traces through a mux.
+
+`domain.case_analysis_warnings` reports, through the end-of-parse
+`partial_warnings` channel, every target that names no input port, an
+out-of-range bit, or a non-input port — the same `_case_target_bits`
+resolution the tracer uses, so "warned" and "ignored" are one decision.
+Pin / cell / net targets are reported at parse time and ignored (a
+case-analysed internal pin could be flop-driven, which CDC-010 would
+then need to honour; out of scope). Data-path use of the constant is
+out of scope too.
+
 CDC-008 ("clock signal used as data") asks a closely related
 question — *which cells form the legitimate clock-distribution
 network?* — and answers it with its own helper,
@@ -1169,15 +1467,18 @@ that some SDC files in the wild use.
 ### 6.1 What the parser handles today
 
 ```text
-create_clock -name <name> -period <p> [get_ports <port> ...]
+create_clock -name <name> -period <p> [-add] [get_ports <port> ...]
 create_generated_clock -name <n> -master_clock <m> \
-    -source <pin-or-port> -divide_by N [get_pins <pin>]
+    -source <pin-or-port> -divide_by N [-add] [get_pins <pin>]
 set_clock_groups -asynchronous          -group {…} -group {…} …
 set_clock_groups -logically_exclusive   -group {…} -group {…} …
 set_clock_groups -physically_exclusive  -group {…} -group {…} …
 set_false_path  -from [get_clocks A] -to [get_clocks B]
+set_false_path  -from <clocks|objects> -through <objects> -to <clocks|objects>
 set_input_delay  -clock <name> … [get_ports <port>]
 set_output_delay -clock <name> … [get_ports <port>]
+set_max_delay <v> -datapath_only -from <clocks|objects> -to <clocks|objects>
+set_case_analysis <0|1|zero|one|rising|falling> [get_ports <port>]
 ```
 
 Every collection-valued operand on every supported command accepts
@@ -1207,23 +1508,33 @@ recorded in `ClockSpec.pin_clocks` and consumed by the clock walker
 (§5.1) — that's the integration point for SoC clock-forwarding
 chains. `set_false_path -from [get_clocks A] -to [get_clocks B]` is
 treated as a pairwise async hint (equivalent to async groups for that
-specific pair). Exclusive groups drop crossings as unreachable in
-`_filter_async` before any rule sees them.
+specific pair). A `set_false_path` with any design-object endpoint or a
+`-through` is something else entirely — an acknowledged path, never a
+clock pair — and is §6.4's subject. Exclusive groups drop crossings as unreachable in
+`_filter_async` before any rule sees them. `set_max_delay
+-datapath_only` between two clocks is an async hint that also
+overrides a same-root collapse and an exclusive group (§4.5).
+`set_case_analysis` on top-level ports resolves case-analysed clock
+muxes in the clock walker (§5.2). A second `create_clock` on a port
+replaces the first unless `-add` is given; with `-add` the port carries
+both (§4.5, "Multi-clock ports"). Bus bits must be braced
+(`[get_ports {sel[3]}]`): unbraced, the Tcl backend evaluates `[3]` as
+command substitution and the target becomes the whole bus, so the
+reader warns on any command whose name is a number.
 
 ### 6.2 What it deliberately ignores
 
-STA-only commands (`set_max_delay`, `set_min_delay`, `set_load`,
-`set_drive`, `set_disable_timing`, `set_case_analysis`, …) are
-silently dropped at the `logging.DEBUG` level. This is by design:
+STA-only commands (plain `set_max_delay` — only the
+`-datapath_only` form carries CDC intent — `set_min_delay`,
+`set_load`, `set_drive`, `set_disable_timing`, …) are silently
+dropped at the `logging.DEBUG` level. This is by design:
 users should be able to point the tool at their existing constraint
 file without curating a CDC-only subset.
 
 The parser is also deliberately *not* a Tcl interpreter (see this
 section's intro). Constructs not supported: command substitution
 beyond `[get_clocks …]` / `[get_ports …]` / `[get_pins …]`, `set`
-variables, `expr`, `-filter` clauses inside collection commands,
-and `set_false_path -through` (path-specific, not a clock-pair
-hint). If any of these become real requirements, the right move is
+variables, `expr`, and `-filter` clauses inside collection commands. If any of these become real requirements, the right move is
 to switch to `tkinter.Tcl()` (the rejected alternative recorded on
 #144), not to grow them onto this tokenizer.
 
@@ -1231,9 +1542,12 @@ to switch to `tkinter.Tcl()` (the rejected alternative recorded on
 
 The silent-drop default is tempered by `ClockSpec.partial_warnings`:
 when the parser sees a CDC-relevant command it can't fully
-understand (e.g. `set_false_path -through`, `set_clock_groups`
-without a kind specifier, `[get_clocks -filter …]`, `set_false_path`
-with non-clock endpoints), it appends a one-line description. The
+understand (e.g. `set_clock_groups` without a kind specifier,
+`[get_clocks -filter …]`, a `-filter` inside an object-scoped
+`set_false_path`), it appends a one-line description. The CLI adds the
+netlist-side diagnostics to the same list before printing it: case
+analysis on a non-port, and an SDC object pattern that matches nothing
+(§6.4). The
 CLI surfaces these once at the end of parsing (in text mode, to
 stderr) rather than logging line-by-line — keeping the noise floor
 low for the common case while flagging cases where the user might
@@ -1242,6 +1556,137 @@ assume CDC coverage that isn't there.
 Truly unrecognised commands (`set_load`, `set_drive`, …) emit only
 a `logging.DEBUG` line so they're visible under `--verbose` but
 don't pollute normal output.
+
+### 6.4 Object-scoped exceptions (`set_false_path` objects / `-through`, issue #328)
+
+A clock-pair `set_false_path` makes a clock pair *asynchronous* — more
+checking. An object-scoped one (`-from [get_cells u_cfg/mode_q_reg*]`,
+`-through [get_pins u_cfg/mode_o]`) does something different: it removes
+the timing check on specific paths. It **does not add a synchroniser**,
+and it never says anything about the clocks as a whole. The analyzer
+therefore reads it as a *declared, reviewed exception* on the crossings
+it covers: those crossings stay in the report, and only the findings the
+exception actually answers are moved to the suppressed list, with the
+SDC statement as the justification.
+
+**Layering.** `sdc.py` stays a pure parser: `_handle_set_false_path`
+sends any statement with a `get_cells` / `get_pins` / `get_ports` /
+`get_nets` endpoint or a `-through` to
+`ClockSpec.false_path_exceptions` as a `FalsePathException`
+(`SdcObject(kind, name, hierarchical)` patterns per side, clock
+endpoints given alongside them, one tuple per `-through` flag, the edge
+/ check `qualifiers`, the source `line`, and a canonical `statement`
+rendered from the record so it is identical on both backends). A word
+with no object collection in it is read exactly as before (every name a
+clock), so clock-pair false paths are byte-for-byte unchanged, and a
+`FalsePathException` never feeds `are_async`. The netlist side lives in
+`sdc_objects.py`, called from `cli._analyze_module_and_report`:
+`resolve(module, spec)` right after the other SDC diagnostics,
+`coverage(...)` once the crossings exist, `acknowledge(...)` after the
+waivers. `set_max_delay -datapath_only` object endpoints
+(`DatapathOnlyDelay.from_objects` / `to_objects`) go through the same
+resolver.
+
+**Name matching** (`sdc_objects.NameIndex`, built once per design;
+tables are built lazily, every pattern is resolved once and cached, an
+exact name is a dict hit and a glob scans only the sorted-key slice
+sharing its literal prefix). An SDC name is normalised first: `\`
+escapes dropped, the `/` hierarchy separator becomes `.` (the separator
+both frontends use). `*` / `?` never cross a hierarchy level;
+`get_* -hierarchical` matches the pattern at any depth. `[…]` is a
+literal bus index.
+
+| Object | Matches | Does not match |
+|---|---|---|
+| register (`get_cells`, a pin's owner) | every non-internal (no `$`) netname on the flop's `Q` whose scope is the flop's own instance or a generate scope inside it — the cell is `$flatten\u_cfg.$procdff$8` (Yosys) or `u_cfg.$slang$dff$3` (slang), neither the register's name, while both name `Q` `u_cfg.mode_q`; each name bare and with `_reg` on its leaf (`u_cfg/mode_q_reg`, `u_sync/chain_reg[1]` for an unpacked element); `[i]` selects one bit, numbered by the net's declared range (`offset` / `upto`, now loaded on `Netname`); a cell whose own name is meaningful (a read-back gate-level netlist) | a parent's wire the flop drives through a port (`w` for `u_cfg.mode_q`), a child instance's port it feeds (`u_sub.d`); synthesis renames (`mode_q_reg_3_`, a generate scope flattened to `g_1__r`). An output port written straight from the register is the same net, so it is an alias (`u_cfg/mode_reg` names `u_cfg.mode_q`) — over-match by design |
+| pin (`get_pins`) | any pin of a register names that register (`…/Q`, `…/D`, `…/CK`); otherwise the hierarchical pin of a flattened instance, i.e. the net of that name (`u_cfg/mode_o` → `u_cfg.mode_o`) | pins of anonymous combinational cells |
+| port (`get_ports`) | top-level ports, `[i]` per bit | — |
+| net (`get_nets`) | netname bits; as `-from`, the flop / input port driving them; as `-to`, the flops whose `D` they feed | internal `$` names |
+| `-through` | net bits of nets, hierarchical pins, a register's `Q` / `D` pins, ports; a bare name tries net, pin, port | cells (statement inert, warning) |
+
+A pattern that resolves to nothing usable is a warning naming it
+(`set_false_path (line 12): -from cell pattern 'u_cfg/mode_qq_reg*'
+matches nothing usable in the netlist — constraint typo?`), once per
+distinct message.
+
+**Coverage** (`sdc_objects.coverage`). A crossing is covered when
+every (source bit, destination bit) pair it can carry is named by some
+statement's `-from` × `-to` — so a register constrained one bit per line,
+as synthesis-generated SDCs write it, is covered by the lines together,
+and three of four bits covers nothing. Bits are counted over the whole
+source / destination flop (conservative: the crossing record does not say
+which source bits reach the destination). A clock endpoint covers its
+side when every clock the side's domain stands for
+(`colocated_clocks`) is listed; an absent flag covers anything. A
+statement with `-through` must cover alone, and only when **every** path
+from source to destination passes each `-through` group: the crossing
+walk is re-run from the source (same cells, lane-precise edges, same
+4-hop budget) with the through bits as cut points, and the destination's
+`D` must become unreachable. A partial cover counts for nothing.
+False-path and datapath-only statements are evaluated separately.
+
+**Effect on findings.** A covered crossing is *acknowledged* only by a
+false path with no edge or check qualifier (a `-rise_from` or `-setup`
+false path leaves the other edge / check timed) that names the
+crossing's **source by object** — `-from [get_cells …]` /
+`[get_pins …]` / `[get_ports …]` / `[get_nets …]` — or pins the path
+with `-through`. That is the SDC-side equivalent of asserting the source
+quasi-static. A `-to`-only or clock-sourced object false path (the usual
+`set_false_path -to [get_cells */sync_reg[0]]`, which marks a capture
+point and says nothing about the source) covers the crossing for the
+domain map but acknowledges nothing. An acknowledged crossing loses
+exactly the findings `(* cdc_static *)` silences for its source:
+
+| Rule | Acknowledged? | Why |
+|---|---|---|
+| CDC-001 unsynchronised control | yes | a static source cannot be sampled mid-transition |
+| CDC-002 short synchroniser | yes | same — depth guards a toggling source |
+| CDC-003 comb before synchroniser | yes | the glitch needs a toggling input; per-crossing, so another, unacknowledged source through the same gate still fires on its own crossing |
+| CDC-004 multi-bit bus | yes | coherence of a bus that does not change |
+| CDC-019 one-hot decode | yes, only if **every** lane's crossing is acknowledged | stricter than `cdc_static`, which silences the group when any lane is static |
+| CDC-020 sliced bus | yes, only if every crossing out of the register is acknowledged | same |
+| CDC-005 reconvergence | **no** | the hazard is at the destination's recombination; a static source merged with a live one is still a coherency hazard (`cdc_static` keeps it too) |
+| CDC-006 port comb → sync, CDC-011 unconstrained input | **no** | `cdc_static` has no port form; CDC-011 is a missing-constraint finding whose fix is `set_input_delay` |
+| CDC-012 data-hold, CDC-013 fast→slow event loss, CDC-009 pulse width | **no** | protocol findings on gated / pulse crossings; not in `cdc_static`'s set |
+| CDC-014 / -015 / -016 / -017 / -018 / -022 | **no** | a broken or degraded synchroniser stays broken whatever the source does |
+| CDC-008 / -010 / -021 / -023 | **no** | clock-network findings, not data crossings |
+| RDC-* | **no** | a false path removes a timing check, not a reset synchroniser — `set_false_path -from [get_ports rst_n]` is routine and must not hide RDC findings |
+
+`DatapathOnlyDelay` object endpoints are resolved and covered the same
+way but acknowledge nothing: a bounded datapath still needs a
+synchroniser. They only annotate the domain map.
+
+**Representation.** An acknowledged finding is a `SuppressedViolation`
+— the waiver channel (§9), applied **after** the waiver file and pragmas
+so an existing waiver keeps the findings it already claimed. Its
+`Waiver` carries `sdc: SdcJustification(statement, line, file)`,
+`rule_pattern` = the rule id, `regex` = the escaped cell name,
+`reason` = `"SDC false path: <statement>"` (plus `(+N more)` when
+several statements cover it together), `source_line` = the SDC line
+(`0` on the tokenizer backend, which tracks none):
+
+- **text** — listed under the heading `Suppressed by waivers and SDC
+  exceptions` (the heading is unchanged when no SDC entry is present),
+  provenance `(sdc <file>:<line>)`;
+- **JSON** — a `suppressed[]` entry like any other, its `waiver` object
+  gaining `sdc: {statement, line, file}` (only on these entries); counted
+  in `summary.suppressed`;
+- **SARIF** — a result with `suppressions: [{kind: "external", status:
+  "accepted", justification: "SDC false path: …"}]`;
+- **exit code** — unaffected, as for any suppressed finding;
+- **domain map** (schema 1.3, additive) — top-level
+  `false_path_exceptions` (every record, sorted), and on each covered
+  crossing `sdc_exceptions: [{command, statement, line}]` plus
+  `sdc_acknowledged: bool`, both absent elsewhere. An acknowledged
+  finding is not in that crossing's `findings` (which lists raised
+  findings), exactly like a waived one.
+
+**Out of scope.** Findings lifted from inside an abstracted blackbox
+(#261) are not matched against SDC objects (their flops are not in the
+flat netlist). `-filter` inside an object collection drops the whole
+statement with a warning — dropping just the filter would widen its side
+to "any object". Ordering of several `-through` groups is not modelled
+(each must be passed; the order is not checked).
 
 ## 7. Crossing detection
 
@@ -1469,6 +1914,7 @@ free functions in `rules.py`:
 | Helper | Used by | Purpose |
 |---|---|---|
 | `_sync_chain_depth(module, dst_flop, dst_clock, ...)` | CDC-001, -002, -003 | Walk forward from a flop's Q lane-wise; count the chain length of single-reader same-domain flops |
+| `_bit_reader_count(module)` | `_build_context` (cached as `ctx.reader_counts`), every single-reader test above and in `compositional` | The one definition of "who reads this bit": cell **input** pins except `CLK` (a pin `port_directions` marks `output`, or `Y` / `Q` when the cell has no directions, is a driver, not a reader — so a blackbox's `clk_out` / `dout` never counts), plus every module **output / inout port** bit. A synchroniser stage exported straight to a port therefore has a second reader and ends the chain, exactly as it would through a buffer (rtl-buddy-cdc#344) |
 | `_packed_shift_register_depth(head, reader_counts, module, bit_drivers)` | `_sync_chain_depth` | Recognise a synchroniser packed into one multi-bit flop (`s <= {s[N-2:0], d}`): `D` must be, lane for lane, either one of the flop's own `Q` bits or — for exactly one lane — an external bit; follow the per-lane shift and return the effective depth (#264). With a **synchronous reset** the lane test runs on the data leg of the `$mux` `proc` leaves on `D` (#301) |
 | `_constant_leg_reset_mux_data_bits(head, module, bit_drivers, reader_counts)` | `_packed_shift_register_depth`, CDC-003 | Return the data leg of a single `$mux` whose `Y` is exactly the flop's `D` vector and whose other leg is entirely constant (either polarity, any reset value) — i.e. an un-folded synchronous reset. Rejects enable muxes (other leg = own `Q`), any other live leg, both-constant legs, `$pmux`, chained muxes, and a `Y` with more than one reader (#301) |
 | `_srst_mux_data_bit_to_single_bit_flop(module, d_bit_to_single_bit_flop, bit_drivers, reader_counts)` | `_build_context` (cached as `ctx.srst_mux_data_bit_to_single_bit_flop`), `_sync_chain_depth`, `_sync_chain_flops`, `_chain_has_inter_stage_comb` | Reverse index from a constant-leg sync-reset `$mux`'s *data-leg* bit to the 1-bit flop it feeds. The chain walkers consult it when the `D`-bit lookup misses, so a separate-flop chain steps over each stage's own reset mux (depth 2 for `if (rst) … else begin s1 <= d; s2 <= s1; end`), and the inter-stage-comb detector skips that mux so CDC-014 matches the slang `$sdff` verdict (#304) |
@@ -1492,9 +1938,11 @@ free functions in `rules.py`:
 | `scan_mode_port_names(module)` | §8.20 scan filter | Return the names of top-level **input ports** annotated with one of `SCAN_MODE_ATTRS` (`scan_en` / `scan_mode` / `test_mode` / `dft_scan_en`, matched case-insensitively). Port-scoped, not flop-scoped |
 | `scan_mode_clock_select_flops(module, ...)` | §8.20 scan filter | Return cell names of flops whose `CLK` network is steered by a scan-mode port. Supplies the `is_scan_control` predicate to `domain.find_scan_mode_flops`, which reads the fact off the ordinary clock-root walk rather than re-deriving the clock network |
 | `user_static_flop_names(module)` | CDC-001..-004 | Return cell names of source-side flops the user has annotated `(* cdc_static *)` — runtime-constant config/mode registers; suppresses CDC-001..-004 on crossings sourced from the tagged flop |
-| `is_ff_cell(cell_type)` (in `flops.py`) | every rule + `find_flops` | Predicate "is this Yosys cell type a flip-flop?" — true for higher-level `$dff*` families AND for gate-level cells whose type starts with one of the `GATE_LEVEL_FF_PREFIXES` (`$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`, `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`). The two families have different pin name conventions (CLK vs C); use `flop_clk_pin(cell)` to extract the clock portably. Replaces direct `cell.type in FF_CELL_TYPES` checks across the codebase to make rules work uniformly on pre-`abc` and post-`abc` netlists |
+| `cells.parse_gate_storage_cell(cell_type)` | `flops.py` accessors, CDC-010 | The one decoder of Yosys gate-level flop / latch type names (rtl-buddy-cdc#336): clock edge, async/sync reset on pin `R` with its polarity and value, set pin `S`, async-load pin `L`, enable pin `E`, for `$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`, `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`, `$_DLATCH_`, `$_DLATCHSR_`, `$_SR_`. Letter positions follow the Yosys cell library (`help <type>`); `tests/test_cells.py` cross-checks them against the local Yosys's descriptions. Returns `None` for any malformed suffix rather than guessing |
+| `flop_reset(cell)` / `flop_reset_bits(cell, *roles)` / `flop_enable_pin(cell)` / `flop_clk_polarity(cell)` (in `flops.py`) | `reset_domain`, RDC-001..-006, CDC-004, CDC-011, CDC-015, CDC-016 | Read a flop's reset pin (role `arst` / `srst` / `clr` / `aload`, pin, kind, polarity, reset value), enable pin (`EN` / `E`) and clock edge the same way for coarse cells (parameters) and gate-level cells (type name). A rule scoped to one coarse pin (RDC-001 reads `ARST`) asks for that role, so it stays scoped on a gate-level netlist |
+| `is_ff_cell(cell_type)` (in `flops.py`) | every rule + `find_flops` | Predicate "is this Yosys cell type a flip-flop?" — true for higher-level `$dff*` families AND for gate-level cells that `cells.parse_gate_storage_cell` decodes as clocked (`$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`, `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`). The two families have different pin name conventions (CLK vs C); use `flop_clk_pin(cell)` to extract the clock portably. Replaces direct `cell.type in FF_CELL_TYPES` checks across the codebase to make rules work uniformly on pre-`abc` and post-`abc` netlists |
 | `flop_clk_pin(cell)` (in `flops.py`) | `find_flops` + `domain.trace_clock_root` | Return the clock-pin connection (tuple of `Bit`s) for a flop cell, portably across families. Higher-level cells use the ``CLK`` pin; gate-level cells use ``C`` |
-| `is_latch_cell(cell_type)` (in `flops.py`) | CDC-017 | Predicate "is this a transparent latch?" — true for `$dlatch` (higher-level) and any cell type starting with `$_DLATCH_` (gate-level family) |
+| `is_latch_cell(cell_type)` (in `flops.py`) | CDC-017 | Predicate "is this a transparent latch?" — true for `$dlatch` (higher-level) and the gate-level `$_DLATCH_*` / `$_DLATCHSR_*` families |
 | `_has_xor_tail_pulse_recovery(head, head_clock, ctx, module)` | CDC-013 | Positive-recognition phase for the canonical pulse-synchroniser idiom. Walks the dst-domain chain starting at `head`; returns True iff the chain tail's Q is consumed by both (a) a follow-on flop in the same dst clock whose D is exactly tail.Q and (b) an XOR cell (`$xor` / `$_XOR_`) whose two inputs are tail.Q and that follow-on flop's Q. Suppresses CDC-013 on the textbook correct fast-to-slow idiom so the rule doesn't false-fire on a complete pulse-synchroniser (closed by rtl-buddy-cdc#196) |
 
 Each rule is a self-contained function; new rules don't have to learn
@@ -1721,6 +2169,12 @@ whole decoder. Suppression when the immediate driver is itself a
 flop is structural: chained registers are CDC-001 / CDC-002's
 territory.
 
+On a gate-level netlist the decoder is one gate per lane, so no driver
+has ≥2 output bits. A lane whose driver is a one-bit gate-level cell
+(`$_*`) is grouped instead by the narrowest public multi-bit netname
+holding its `D` bit — the decoder's output vector (`one_hot`), which
+survives `techmap` and `abc` (rtl-buddy-cdc#337).
+
 ### 8.8 CDC-021 — flop CLK driven by undeclared port
 
 CDC-021 closes the silent-when-broken methodology gap on the clock-
@@ -1913,12 +2367,16 @@ the validator looks at the *collective* clock graph after every
 statement has been parsed and surfaces shapes that individually-
 valid statements compose into an inconsistent or undefined whole.
 
-Three checks:
+Four checks:
 
 1. **Same port in multiple clocks**: scan `Clock.ports` across every
    declared clock; flag any port that appears in ≥2 clocks.
    `clock_for_port` is deterministic (first match wins) but the
-   user's intent is ambiguous.
+   user's intent is ambiguous. Since #330 a parsed SDC only reaches
+   this shape through `-add`, which is legitimate and recorded in
+   `multi_clock_ports`, so it is skipped; an accidental redefinition
+   without `-add` is a *replacement*, warned inline by the handler. The
+   check still guards specs assembled without `parse()`.
 
 2. **Unresolved master**: for each generated clock with
    `Clock.master` set, check the master name exists in
@@ -1930,6 +2388,12 @@ Three checks:
    a per-walk visited list; if a name is revisited, the chain is
    cyclic. `ClockSpec.resolve` has a cycle guard, but the SDC is
    methodology-broken.
+
+4. **Generated clock on a multi-clock source** (#330): a
+   `create_generated_clock -source` port in `multi_clock_ports` with no
+   `-master_clock` (ambiguous — the generated clock is left without a
+   master, as for any `-source`-only declaration), or with a
+   `-master_clock` that names none of the port's clocks.
 
 Duplicate clock names are caught inline by the per-command
 handlers (`_handle_create_clock` / `_handle_create_generated_clock`):
@@ -2411,7 +2875,10 @@ wins, mirroring user expectation that waiver files are read top-
 down.
 
 Suppressed findings are kept in the report (with the matching reason
-and waiver-line number), not silently dropped. They appear in JSON
+and waiver-line number), not silently dropped. A third producer shares
+the channel without going through `apply`: an object-scoped
+`set_false_path` acknowledges findings on the crossings it covers, with
+the SDC statement as the reason (§6.4, `Waiver.sdc`). They appear in JSON
 output and in SARIF as `suppressions`. They don't drive the exit
 code, so a fully-waived run returns 0.
 
@@ -2554,12 +3021,30 @@ findings stream: clocks, generated clocks, async / exclusive groups,
 false-path pairs, per-flop domain assignments with source locations,
 the typed port→clock map, and structural crossings (each tagged with
 `async_per_sdc` so consumers know which subset would reach the rule
-pack). It is its own contract: `schema_version` (currently `"1.2"`) is
+pack). It is its own contract: `schema_version` (currently `"1.3"`) is
 pinned by `domain_map.SCHEMA_VERSION`, breaking changes require a bump, and the
 artifact ships sorted deterministically so consumers can golden-diff
 against the same inputs. `--no-findings` short-circuits rule
 evaluation when the map is the sole deliverable. Primary consumer
 today is [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view).
+
+Schema 1.3 also carries, additively, the object-scoped false-path
+records (`false_path_exceptions`) and the per-crossing
+`sdc_exceptions` / `sdc_acknowledged` annotation (#328, §6.4).
+
+Schema 1.3 (#325) adds, additively, the SDC constraints that carry CDC
+intent without declaring a clock: `datapath_only_pairs` (the clock
+pairs a `set_max_delay -datapath_only` marks async — sorted pairs, the
+same shape as `false_path_pairs`) and `max_delay_datapath_only` (every
+datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
+`to_objects` as `{kind, name}` exactly as written, `value`, and
+`clock_pair` saying whether it contributed a pair; object endpoints are
+resolved since #328 and the crossings they cover carry `sdc_exceptions`),
+plus `case_analysis`
+(`{port, value}` per `set_case_analysis` target, sorted by port — the
+`flop_domains` already reflect any clock mux it resolved). A consumer can
+match a crossing's `src_clock` / `dst_clock` against
+`datapath_only_pairs` to see which crossings are constrained.
 
 Schema 1.2 (#307) adds a per-crossing verdict to every `crossings[]`
 and `clock_network_crossings[]` entry, so a consumer can tell a
@@ -2736,6 +3221,21 @@ current bottlenecks if scaled up:
   contracts it does one expanded-once backward walk per contracted
   output (`O(cone)`), traces the clock of each launching register once
   (memoised), and replays the cone forward only for outputs that fire.
+
+- The reset-side views are `_RuleContext` cached properties built at
+  most once per run (#324): `reset_domains`
+  (`assign_reset_domains`), `reset_synchronizers`
+  (`find_reset_synchronizers` plus the `reset_sync` marks) and
+  `reset_sync_chains` (`iter_reset_sync_chains`), all from the
+  context's own flop list and driver map. RDC-002 / -004 / -005 /
+  -006 / -007 / -008 read them instead of rebuilding them, and
+  CDC-008 / CDC-010 share `clock_network_cells` the same way. The
+  public `reset_domain` helpers take the precomputed pieces as
+  optional keyword arguments and build them when omitted.
+- `Module.port_of_bit` is a dict lookup: the bit → port index is a
+  `cached_property` built on first use (first port in `ports` order
+  wins, as the old scan did). It is not a dataclass field, so `==`,
+  `hash` and `repr` are unchanged (#324).
 - The rule pack is `O(C)` in crossings for most rules, with two
   exceptions: CDC-005 (reconvergence detection) is `O(C²)` worst-
   case from the per-group cone walks (each chain's

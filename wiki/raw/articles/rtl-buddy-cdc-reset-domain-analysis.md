@@ -62,28 +62,27 @@ reconciliation is the consumer rule's job — see §6.
 
 ## 3. Cell-type → reset-pin map
 
-`reset_domain.py` keys off two cell-type tables. Adding a new
-reset-bearing flop type means extending one of them.
+`reset_domain.py` reads every flop's reset through
+`flops.flop_reset(cell)`, which covers both Yosys cell libraries
+(rtl-buddy-cdc#336). Adding a new reset-bearing flop type means
+extending `flops._COARSE_RESETS` (coarse) or the layout table in
+`cells.py` (gate-level).
 
-```python
-_ASYNC_RESET_PINS = {
-    "$adff":   ("ARST",  "ARST_POLARITY"),
-    "$adffe":  ("ARST",  "ARST_POLARITY"),
-    "$aldff":  ("ALOAD", "ALOAD_POLARITY"),
-    "$aldffe": ("ALOAD", "ALOAD_POLARITY"),
-    "$dffsr":  ("CLR",   "CLR_POLARITY"),
-    "$dffsre": ("CLR",   "CLR_POLARITY"),
-}
-_SYNC_RESET_PINS = {
-    "$sdff":   ("SRST", "SRST_POLARITY"),
-    "$sdffe":  ("SRST", "SRST_POLARITY"),
-    "$sdffce": ("SRST", "SRST_POLARITY"),
-}
-```
+| role | kind | coarse cell / pin / polarity param | gate-level cell / pin (polarity in the name) |
+|---|---|---|---|
+| `arst` | async | `$adff`, `$adffe` / `ARST` / `ARST_POLARITY` | `$_DFF_XXV_`, `$_DFFE_XXVX_` / `R` |
+| `aload` | async | `$aldff`, `$aldffe` / `ALOAD` / `ALOAD_POLARITY` | `$_ALDFF_XX_`, `$_ALDFFE_XXX_` / `L` |
+| `clr` | async | `$dffsr`, `$dffsre` / `CLR` / `CLR_POLARITY` | `$_DFFSR_XXX_`, `$_DFFSRE_XXXX_` / `R` |
+| `srst` | sync | `$sdff`, `$sdffe`, `$sdffce` / `SRST` / `SRST_POLARITY` | `$_SDFF_XXV_`, `$_SDFFE_XXVX_`, `$_SDFFCE_XXVX_` / `R` |
+
+The role keeps a rule's scope the same on both libraries: RDC-001
+reads `arst` only, so a gate-level `$_DFFSR_` clear is out of its scope
+exactly as a coarse `$dffsr.CLR` is.
 
 A few deliberate choices:
 
-- **`$dffsr` surfaces `CLR`, not `SET`.** The SR-latch flop has
+- **`$dffsr` surfaces `CLR`, not `SET`** (gate-level `$_DFFSR_`:
+  `R`, not `S`). The SR-latch flop has
   independent `SET` and `CLR` async pins. `CLR` matches the
   dominant industry idiom (active-low clear); `SET` semantics
   differ enough that v1 punts. A future PR can add `SET`-aware
@@ -92,9 +91,9 @@ A few deliberate choices:
   `ResetSource`. None of those are decided.
 - **Polarity decode is conservative.** Yosys emits polarity as a
   multi-bit binary string (`"1"`, `"0"`, or the 32-bit padded form).
-  `_polarity_from_param` reads only the trailing bit. Empty
-  strings or unrecognised values default to `"low"` (the
-  active-low idiom). See the function's docstring.
+  `flops.flop_reset` reads only the trailing bit; a missing
+  parameter reads as active high, as before. Gate-level polarity is
+  the `P` / `N` letter in the type name.
 
 ## 4. Source classification
 

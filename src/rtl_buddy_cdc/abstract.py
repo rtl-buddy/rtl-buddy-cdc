@@ -222,9 +222,15 @@ def _instance_clocks(
     """
     if drivers is None:
         drivers = _bit_drivers(parent)
-    from rtl_buddy_cdc.domain import _build_bit_to_clock
+    from rtl_buddy_cdc.domain import _build_bit_to_clock, _build_case_bits
 
     bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
+    # Same set_case_analysis select resolution the flat walk uses (#325),
+    # so a boundary clock pin behind a case-analysed mux gets the clock
+    # the flat assign_domains would give it.
+    case_bits = _build_case_bits(
+        parent, spec.case_analysis if spec is not None else None
+    )
     roots: set[str] = set()
     clock_pins: set[str] = set()
     pin_roots: dict[str, str | None] = {}
@@ -251,6 +257,7 @@ def _instance_clocks(
                 drivers,
                 max_depth=max_depth,
                 bit_to_clock=bit_to_clock,
+                case_bits=case_bits,
             )
             clock_pins.add(pin)
             pin_roots[pin] = root
@@ -274,6 +281,7 @@ def _instance_clocks(
                 max_depth=max_depth,
                 bit_to_clock=bit_to_clock,
                 allow_divider=False,
+                case_bits=case_bits,
             )
             if root is not None and _is_known_clock(root, spec):
                 clock_pins.add(pin)
@@ -606,9 +614,10 @@ def summarise_sync_primitive(
     )
     if not ic.clock_pins:
         return None
-    from rtl_buddy_cdc.domain import _build_bit_to_clock
+    from rtl_buddy_cdc.domain import _build_bit_to_clock, _build_case_bits
 
     bit_to_clock = _build_bit_to_clock(parent, pin_clocks)
+    case_bits = _build_case_bits(parent, spec.case_analysis)
 
     roles: dict[str, str | None] = {}
     unclassified: list[str | None] = []
@@ -616,7 +625,12 @@ def summarise_sync_primitive(
         bits = instance.connections.get(pin)
         root = (
             trace_clock_root(
-                parent, bits[0], drivers, max_depth=max_depth, bit_to_clock=bit_to_clock
+                parent,
+                bits[0],
+                drivers,
+                max_depth=max_depth,
+                bit_to_clock=bit_to_clock,
+                case_bits=case_bits,
             )
             if bits
             else None

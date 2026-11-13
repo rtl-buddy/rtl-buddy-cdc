@@ -22,6 +22,12 @@ def pytest_configure(config) -> None:
     )
     config.addinivalue_line(
         "markers",
+        "gate_level: fixture corpus rebuilt through a Yosys gate flow and "
+        "compared with the committed RTL verdict (gated; needs yosys on "
+        "PATH; run via `pytest -m gate_level`)",
+    )
+    config.addinivalue_line(
+        "markers",
         "sim: behavioural simulation oracle (opt-in; needs iverilog)",
     )
     config.addinivalue_line(

@@ -14,9 +14,11 @@ needs to reason about resets without each rule re-walking the netlist:
 
 The classifier deliberately stays close to what the Yosys netlist
 hands us. Polarity comes straight from the ``$adff*`` / ``$sdff*``
-parameter (Yosys preserves it as a multi-bit binary string). Sync vs.
-async is derived from the cell type: ``$adff*`` / ``$aldff*`` /
-``$dffsr*`` are async, ``$sdff*`` are sync. The reset source is
+parameter (Yosys preserves it as a multi-bit binary string), or from
+the gate-level type name (``$_DFF_PN0_``: active-low async reset).
+Sync vs. async is derived from the cell type: ``$adff*`` / ``$aldff*``
+/ ``$dffsr*`` and their ``$_DFF_XXV_`` / ``$_ALDFF*`` / ``$_DFFSR*``
+gate forms are async, ``$sdff*`` / ``$_SDFF*`` are sync. The reset source is
 classified by walking the reset bit back through the standard
 backward-fanin: a top-level input port → ``"port"``; a flop's ``Q``
 output → ``"inferred"`` (with the driving flop's cell name as the
@@ -40,35 +42,21 @@ Out of scope here, by design:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Literal
 
-from rtl_buddy_cdc.flops import Flop, find_flops
+from rtl_buddy_cdc.flops import Flop, find_flops, flop_reset
 from rtl_buddy_cdc.netlist import Bit, Module
 
-# Cell types with an asynchronous reset pin. Each maps to the pin name
-# carrying the reset and the parameter that documents its polarity.
-# ``$dffsr`` / ``$dffsre`` are SR-latch flops with separate ``SET`` and
-# ``CLR`` async pins; we surface ``CLR`` as the canonical reset to
-# match the dominant industry idiom (active-low clear). ``SET`` semantics
-# are different enough that we punt on them in this foundation pass —
-# the rule pack can layer SET-specific handling on top later.
-_ASYNC_RESET_PINS: dict[str, tuple[str, str]] = {
-    "$adff": ("ARST", "ARST_POLARITY"),
-    "$adffe": ("ARST", "ARST_POLARITY"),
-    "$aldff": ("ALOAD", "ALOAD_POLARITY"),
-    "$aldffe": ("ALOAD", "ALOAD_POLARITY"),
-    "$dffsr": ("CLR", "CLR_POLARITY"),
-    "$dffsre": ("CLR", "CLR_POLARITY"),
-}
-
-# Cell types with a synchronous reset pin.
-_SYNC_RESET_PINS: dict[str, tuple[str, str]] = {
-    "$sdff": ("SRST", "SRST_POLARITY"),
-    "$sdffe": ("SRST", "SRST_POLARITY"),
-    "$sdffce": ("SRST", "SRST_POLARITY"),
-}
+# Which pin carries a flop's reset, its kind and its polarity come from
+# :func:`rtl_buddy_cdc.flops.flop_reset`, which reads the coarse
+# ``$adff*.ARST`` / ``$aldff*.ALOAD`` / ``$dffsr*.CLR`` / ``$sdff*.SRST``
+# parameters and the gate-level ``$_DFF_XXV_`` / ``$_SDFF*`` /
+# ``$_DFFSR*`` / ``$_ALDFF*`` type names alike (rtl-buddy-cdc#336).
+# ``$dffsr`` / ``$_DFFSR_`` surface the clear pin as the reset; the set
+# pin is a separate concern the rule pack can layer on later.
 
 
 ResetType = Literal["sync", "async"]
@@ -111,7 +99,12 @@ class ResetDomain:
     reset: ResetSource | None
 
 
-def assign_reset_domains(module: Module) -> dict[str, ResetDomain]:
+def assign_reset_domains(
+    module: Module,
+    *,
+    flops: Iterable[Flop] | None = None,
+    drivers: dict[Bit, tuple[str, str]] | None = None,
+) -> dict[str, ResetDomain]:
     """For each flop in ``module``, classify its reset pin (if any).
 
     Returns ``{cell_name: ResetDomain}`` covering every flop. Plain
@@ -125,22 +118,24 @@ def assign_reset_domains(module: Module) -> dict[str, ResetDomain]:
     = "low" *)`` on a top-level port) is **not** applied here — the
     consumer rule pack reconciles port-declared vs. flop-inferred
     polarity itself; see :func:`rtl_buddy_cdc.rules.user_reset_polarity_overrides`.
+
+    ``flops`` / ``drivers`` (optional, issue #324) let a caller that
+    already holds ``find_flops(module)`` and the bit-driver map (the
+    rule pack's ``_RuleContext``) skip rebuilding them. Each is built
+    from ``module`` when omitted; passing them never changes the result.
     """
-    drivers = _bit_drivers(module)
+    if drivers is None:
+        drivers = _bit_drivers(module)
+    if flops is None:
+        flops = find_flops(module)
     out: dict[str, ResetDomain] = {}
-    for f in find_flops(module):
-        ctype = f.cell.type
-        if ctype in _ASYNC_RESET_PINS:
-            pin, polarity_param = _ASYNC_RESET_PINS[ctype]
-            reset_type: ResetType = "async"
-        elif ctype in _SYNC_RESET_PINS:
-            pin, polarity_param = _SYNC_RESET_PINS[ctype]
-            reset_type = "sync"
-        else:
+    for f in flops:
+        rst = flop_reset(f.cell)
+        if rst is None:
             out[f.cell.name] = ResetDomain(flop=f.cell.name, reset=None)
             continue
 
-        bits = f.cell.connections.get(pin, ())
+        bits = rst.bits
         if not bits:
             # Defensive: a flop typed as reset-bearing but missing the
             # pin connection is malformed. Treat it as "no reset" rather
@@ -148,7 +143,7 @@ def assign_reset_domains(module: Module) -> dict[str, ResetDomain]:
             out[f.cell.name] = ResetDomain(flop=f.cell.name, reset=None)
             continue
 
-        polarity = _polarity_from_param(f.cell.parameters.get(polarity_param, "1"))
+        polarity: ResetPolarity = "high" if rst.polarity == 1 else "low"
         rst_bit = bits[0]
         name, kind = _classify_reset_source(module, rst_bit, drivers)
         out[f.cell.name] = ResetDomain(
@@ -156,7 +151,7 @@ def assign_reset_domains(module: Module) -> dict[str, ResetDomain]:
             reset=ResetSource(
                 name=name,
                 polarity=polarity,
-                type=reset_type,
+                type=rst.kind,
                 source=kind,
             ),
         )
@@ -235,6 +230,9 @@ def find_reset_synchronizers(
     *,
     min_depth: int = 2,
     extra_synchronizers: AbstractSet[str] | None = None,
+    reset_domains: dict[str, ResetDomain] | None = None,
+    flops: Iterable[Flop] | None = None,
+    bit_drivers: dict[Bit, tuple[str, str]] | None = None,
 ) -> set[str]:
     """Identify flop cells that participate in a reset-synchronizer chain.
 
@@ -253,8 +251,8 @@ def find_reset_synchronizers(
 
     A flop is recognised iff:
 
-    * it is async-reset (has an ``ARST`` / ``ALOAD`` / ``CLR`` pin
-      per :data:`_ASYNC_RESET_PINS`),
+    * it is async-reset (has an ``ARST`` / ``ALOAD`` / ``CLR`` pin, or
+      gate-level ``R`` / ``L``, per :func:`~rtl_buddy_cdc.flops.flop_reset`),
     * the chain walking backward through its ``D`` pin (following
       same-clock, same-reset-source flops only) reaches a flop whose
       ``D`` is a constant within ``min_depth - 1`` hops, and
@@ -275,12 +273,23 @@ def find_reset_synchronizers(
     head's D is fed by an upstream signal rather than a literal
     constant — the structural recogniser is deliberately conservative
     and would otherwise miss them.
+
+    ``reset_domains`` / ``flops`` / ``bit_drivers`` (optional, issue
+    #324) are the :func:`assign_reset_domains` result,
+    ``find_flops(module)`` and the bit-driver map, for a caller that
+    already holds them; each is built from ``module`` when omitted.
     """
     if min_depth < 1:
         raise ValueError("min_depth must be >= 1")
-    domains = assign_reset_domains(module)
-    flop_by_name = {f.cell.name: f for f in find_flops(module)}
-    bit_drivers = _bit_drivers(module)
+    if bit_drivers is None:
+        bit_drivers = _bit_drivers(module)
+    if flops is None:
+        flops = find_flops(module)
+    flops = tuple(flops)
+    if reset_domains is None:
+        reset_domains = assign_reset_domains(module, flops=flops, drivers=bit_drivers)
+    domains = reset_domains
+    flop_by_name = {f.cell.name: f for f in flops}
     out: set[str] = set(extra_synchronizers or ())
 
     for name, rd in domains.items():
@@ -304,6 +313,9 @@ def iter_reset_sync_chains(
     clock_domains: dict[str, str | None],
     *,
     min_depth: int = 2,
+    reset_domains: dict[str, ResetDomain] | None = None,
+    flops: Iterable[Flop] | None = None,
+    bit_drivers: dict[Bit, tuple[str, str]] | None = None,
 ) -> list[ResetSyncChain]:
     """Enumerate structurally-recognised reset-synchroniser chains.
 
@@ -322,10 +334,19 @@ def iter_reset_sync_chains(
     return for them (their head may be fed by an upstream signal
     rather than a literal). RDC-007 already documents that as the
     known limitation.
+
+    ``reset_domains`` / ``flops`` / ``bit_drivers`` are optional
+    precomputed inputs, as for :func:`find_reset_synchronizers`.
     """
-    flop_by_name = {f.cell.name: f for f in find_flops(module)}
-    bit_drivers = _bit_drivers(module)
-    domains = assign_reset_domains(module)
+    if bit_drivers is None:
+        bit_drivers = _bit_drivers(module)
+    if flops is None:
+        flops = find_flops(module)
+    flops = tuple(flops)
+    if reset_domains is None:
+        reset_domains = assign_reset_domains(module, flops=flops, drivers=bit_drivers)
+    domains = reset_domains
+    flop_by_name = {f.cell.name: f for f in flops}
 
     best_by_head: dict[str, ResetSyncChain] = {}
     for name, rd in domains.items():
@@ -418,20 +439,6 @@ def _trace_reset_sync_chain(
     return ([], None)
 
 
-def _polarity_from_param(raw: str) -> ResetPolarity:
-    """Decode Yosys' parameter polarity string.
-
-    Yosys emits parameters as binary strings (``'1'``, ``'0'``, or the
-    32-bit padded form like ``'00000000000000000000000000000001'``).
-    A trailing ``1`` bit means active-high; anything else (including
-    the empty string) is treated as active-low — the conservative
-    default for the active-low reset idiom that dominates the field.
-    """
-    if not raw:
-        return "low"
-    return "high" if raw[-1] == "1" else "low"
-
-
 ResetCrossingKind = Literal[
     "async-deassert",
     "polarity-mismatch",
@@ -474,6 +481,7 @@ def find_reset_crossings(
     *,
     recognised_syncs: set[str] | None = None,
     polarity_overrides: dict[str, ResetPolarity] | None = None,
+    reset_domains: dict[str, ResetDomain] | None = None,
 ) -> list[ResetCrossing]:
     """Unified view of every reset arrival worth flagging in ``module``.
 
@@ -509,10 +517,16 @@ def find_reset_crossings(
     rule checks keep their own walks. ``find_reset_crossings`` is the
     public surface for *consumers* of the analyzer (downstream tooling
     and tests that want to enumerate the reset-domain facts directly).
+
+    ``reset_domains`` (optional) is a precomputed
+    :func:`assign_reset_domains` result; built from ``module`` when
+    omitted.
     """
     out: list[ResetCrossing] = []
     syncs = recognised_syncs or set()
-    domains = assign_reset_domains(module)
+    domains = (
+        reset_domains if reset_domains is not None else assign_reset_domains(module)
+    )
 
     for name, rd in domains.items():
         if name in syncs:

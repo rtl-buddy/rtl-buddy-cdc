@@ -20,6 +20,11 @@ Before the rule existed, ``run_all`` produced zero findings for this
 design (and worse, every downstream consumer using the broken
 chain's output was silently suppressed from RDC-001..-006 because
 the chain looked structurally valid).
+
+The per-rule dimension sweep — polarity × head constant × depth, with
+a consumer on the chain — lives in ``rdc007.py`` (rtl-buddy-cdc#331);
+this file stays the single-shape regression sentinel and its
+expectation already names the rule.
 """
 
 from __future__ import annotations
