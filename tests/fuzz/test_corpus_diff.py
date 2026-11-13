@@ -92,8 +92,8 @@ _CASES = collect_cases()
 #
 # rtl-buddy-cdc#331 added the rows below with the per-rule templates.
 # Each value names the root cause; none is fixed by that test-only
-# change. Two are slang-frontend gaps; the case_n8 row is the reverse
-# (the Yosys path is the one that misses).
+# change. Both are slang-frontend gaps. (The reverse case_n8 row, a
+# Yosys-path CDC-019 miss, went with rtl-buddy-cdc#344.)
 _NO_BLACKBOX = (
     "rtl-buddy-cdc#331: the pyslang frontend has no blackbox support "
     "(frontend.elaborate_with_blackboxes returns no siblings for it); a "
@@ -113,14 +113,6 @@ _KNOWN_SLANG_PARITY_GAPS: dict[str, str] = {
     # flop is missing and the combined clock reads as clock-as-data.
     "fuzz_cdc023_clock_combine_and_s1_v2001": (
         "rtl-buddy-cdc#331: pyslang frontend drops plain `always` flops"
-    ),
-    # The reverse direction: slang is right, the Yosys path misses.
-    # Yosys proc lowers a full 8-entry constant case table to a ROM
-    # ($memrd_v2); CDC-019 accepts only a comb cell's Y port as the shared
-    # decoder driver. slang keeps the $pmux and fires.
-    "fuzz_cdc019_decoder_lanes_case_n8": (
-        "rtl-buddy-cdc#331: Yosys ROM-lowers the case decoder; CDC-019 "
-        "ignores a $memrd DATA driver"
     ),
 }
 
