@@ -347,6 +347,11 @@ GOOD_FIXTURES = [
     # own ARST by design, so RDC-001 is silent (rtl-buddy-cdc#367). No
     # data crossings.
     ("good_reset_sync_foreign_reg", 0),
+    # Toggle handshake with ack: an 8-bit payload and two 1-bit flags
+    # captured under the synchronised toggle edge; CDC-001 accepts the
+    # flags like CDC-004 accepts the bus (rtl-buddy-cdc#368). Five
+    # crossings: toggle, ack, data, flag_out, flag_r.
+    ("good_handshake_single_bit", 5),
 ]
 
 

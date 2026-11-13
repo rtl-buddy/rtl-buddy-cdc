@@ -2634,6 +2634,42 @@ was extended with a synced-back ack and source-held payload so
 they now demonstrate the real-world correct pattern rather than
 just "doesn't trigger CDC-004."
 
+**Single-bit captures (rtl-buddy-cdc#368).** A handshake usually
+carries a 1-bit member next to its bus (a flag, a step bit), captured
+under the same synchronised enable. CDC-004 / CDC-012 never see it
+(width 1), and CDC-001 used to report it as unsynchronised. CDC-001 now
+accepts a single-bit crossing whose chain depth is 1 when
+`_single_bit_handshake_capture` answers `"handshake"`:
+
+1. *Gated with a hold* — `_gated_capture_fanin(..., require_hold=True)`,
+   the test behind `_is_gated_bus_crossing` with one narrowing: the mux
+   form needs a real hold mux (one leg is the flop's own `Q`, driving
+   `D` directly or behind the flop's own local sync-reset mux). The
+   `EN` form (`$dffe` / `$sdffe` / `$_DFFE_*` …) is a hold by
+   construction. The enable's fanin flops must be non-empty and all in
+   the destination domain, as for a bus.
+2. *Synchronised from the source domain* — every one of those flops
+   is a stage past the first of a depth ≥ 2 single-bit synchroniser
+   whose first stage samples a flop of the crossing's own source clock
+   directly, or a plain delay of such a stage (the `s3` of an
+   `s2 ^ s3` edge detector; `_carries_synchronised_control`, built on
+   `_sync_chain_flops`). A free-running dst enable, a single-flop
+   capture, a third domain's synchronised control, a constant, or an
+   enable that mixes any of these in (`edge | free_run`) does not
+   qualify; an enable further qualified by an unrelated dst register
+   (`edge & mode`) is conservatively rejected too.
+3. *Held at the source* — `_has_dst_to_src_feedback`, CDC-012's test.
+
+When 1 and 2 hold but 3 does not (an open-loop transfer), CDC-012 would
+own the case for a bus, but a single bit has no CDC-012: CDC-001 keeps
+firing, at `error`, with a message naming the missing acknowledge. The
+open-loop single bit is a single-flop sample of a value that may change
+at any time, the hazard CDC-001 exists for, so no case falls between
+the two rules. `crossing_synchronizer` reports the accepted shape as
+`"handshake"`. Fixtures: `good_handshake_single_bit` (hold mux,
+`$dffe`, gate-level `$_DFFE_*`, and a sync-reset capture) and
+`bad_handshake_single_bit` (one capture per broken condition).
+
 ### 8.17 CDC-022 — CDC primitive with insufficient sync depth
 
 Recognising a vendor CDC macro (§4.10) removes its crossing from the
