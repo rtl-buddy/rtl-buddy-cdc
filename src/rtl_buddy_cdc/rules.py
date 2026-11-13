@@ -6101,13 +6101,13 @@ def check_cdc_025(
     idx = _output_launch_index(module, clock_spec, ctx)
 
     clock_ports = {pn for clk in clock_spec.clocks.values() for pn in clk.ports}
-    clock_net: tuple[set[str], set[Bit]] | None = None
+    clock_net: tuple[frozenset[str], set[Bit]] | None = None
 
     def on_clock_network(bits: Iterable[Bit]) -> bool:
         nonlocal clock_net
         if clock_net is None:
             clock_net = (
-                _clock_network_cells(module, ctx.bit_drivers),
+                ctx.clock_network_cells,
                 {f.clk for f in ctx.flops if isinstance(f.clk, int)},
             )
         cells, clk_bits = clock_net
