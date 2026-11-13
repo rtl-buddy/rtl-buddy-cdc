@@ -516,6 +516,22 @@ def test_derive_sub_spec_projects_the_parents_clock_partition() -> None:
     assert blackboxes["xsync"].cells  # sanity: this really is a greybox
 
 
+def test_derive_sub_spec_carries_datapath_only_pairs() -> None:
+    """A clock-pair ``set_max_delay -datapath_only`` is the only thing
+    making this pair asynchronous; the subtree's spec must agree with the
+    parent's, or the per-module pass would drop the crossing (#325)."""
+    spec = sdc_mod.parse(
+        "create_clock -name clk_s -period 10 [get_ports clk_s]\n"
+        "create_clock -name clk_c -period 7 [get_ports clk_c]\n"
+        "set_max_delay 3 -datapath_only -from [get_clocks clk_s] "
+        "-to [get_clocks clk_c]\n",
+        backend="tokenizer",
+    )
+    assert spec.are_async("clk_s", "clk_c") is True
+    sub_spec = derive_sub_spec(spec, {"clk_s": "clk_s", "clk_c": "clk_c"})
+    assert sub_spec.are_async("clk_s", "clk_c") is True
+
+
 def test_derive_sub_spec_declares_an_undeclared_traced_root() -> None:
     """A traced root the SDC never named still becomes a clock in the
     subtree's spec, so the internal flops land in a named domain instead
@@ -527,13 +543,15 @@ def test_derive_sub_spec_declares_an_undeclared_traced_root() -> None:
 
 
 def test_top_level_port_rules_are_excluded_from_the_internal_pass() -> None:
-    """CDC-006 / CDC-011 / RDC-008 are defined on the DESIGN's top-level
+    """CDC-006 / CDC-011 / CDC-025 / RDC-008 are defined on the DESIGN's top-level
     ports. At module scope a port is a hierarchy pin, so they fire on
     every correctly-built IP — CDC-006 in particular calls a textbook
     boundary input synchroniser a glitch hazard. They are excluded, and
     the hazard they are really about is reported by the parent as the
     boundary-sink crossing at that same port."""
-    assert INTERNAL_RULE_EXCLUSIONS == frozenset({"CDC-006", "CDC-011", "RDC-008"})
+    assert INTERNAL_RULE_EXCLUSIONS == frozenset(
+        {"CDC-006", "CDC-011", "CDC-025", "RDC-008"}
+    )
     _flat, grey, _stub, sdc = _paths("bbx_input_sync")
     top, blackboxes, spec = _load(grey, sdc)
     ic = _instance_clocks(top, top.cells["u_sync"], blackboxes["ctrl_sync"], spec=spec)

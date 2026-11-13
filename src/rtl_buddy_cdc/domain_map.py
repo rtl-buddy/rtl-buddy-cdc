@@ -1,6 +1,6 @@
 """Serialize the analyzer's domain model to a stable JSON artifact.
 
-The output is the ``domain-map`` schema (v1.0, now v1.2) designed for downstream
+The output is the ``domain-map`` schema (v1.0, now v1.3) designed for downstream
 consumers — chiefly `rtl-buddy-view
 <https://github.com/rtl-buddy/rtl-buddy-view>`_ (clock-domain overlay on
 the hierarchy view), but generally useful for any tool that wants the
@@ -10,13 +10,14 @@ parsing.
 Schema reference: rtl-buddy-cdc issue #106.
 
 The format is stable: rename or retype any documented field requires a
-``schema_version`` bump (currently ``"1.2"``). Additions are
+``schema_version`` bump (currently ``"1.3"``). Additions are
 backward-compatible. Collections are sorted by a documented key so a
 golden-file diff against the same inputs stays empty.
 """
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -47,9 +48,22 @@ from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 # v1.1 adds the additive optional ``clock_network_crossings`` list
 # (#168). v1.2 adds the per-crossing verdict — ``synchronizer`` and
 # ``findings`` on every ``crossings[]`` and ``clock_network_crossings[]``
-# entry (#307). Each bump is additive: older consumers ignore unknown
-# keys, and no key was renamed or retyped.
-SCHEMA_VERSION = "1.2"
+# entry (#307). v1.3 adds the SDC constraints that carry CDC intent
+# without being clock declarations (#325): ``max_delay_datapath_only``
+# (every ``set_max_delay -datapath_only`` record) and
+# ``datapath_only_pairs`` (the clock pairs it marks as intended async
+# crossings), and ``case_analysis`` (the ``set_case_analysis`` port
+# values the clock tracer resolved clock-mux selects with). Each bump is additive: older consumers ignore unknown
+# keys, and no key was renamed or retyped. The optional ``async_via``
+# object on a ``crossings[]`` entry (#330, the co-located clock pair a
+# multi-clock-port crossing is asynchronous through) rides on the
+# still-unreleased v1.3 rather than bumping again; it is absent on every
+# design without a ``create_clock -add`` port. The object-scoped
+# ``set_false_path`` additions (#328) ride on it too: the top-level
+# ``false_path_exceptions`` list, and the optional per-crossing
+# ``sdc_exceptions`` / ``sdc_acknowledged`` keys, absent on every
+# crossing no object-scoped constraint covers.
+SCHEMA_VERSION = "1.3"
 
 # Identity of one data crossing: (src_clock, dst_clock, dst cell, source
 # kind, source id). The source kind keeps a port, a boundary pin and a
@@ -83,8 +97,9 @@ def build_domain_map(
     clock_network_crossings: list[ClockNetworkCrossing] | None = None,
     rule_context: _RuleContext | None = None,
     findings: Sequence[Violation] | None = None,
+    crossing_exceptions: dict[_CrossingKey, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build the v1.2 domain-map payload.
+    """Build the v1.3 domain-map payload.
 
     ``async_crossings`` is the SDC-aware subset of ``crossings`` that
     the rule pack would receive. Each emitted crossing is tagged with
@@ -123,11 +138,26 @@ def build_domain_map(
     :func:`_serialize_memory_crossings`). The key is absent when the
     design has no memory cells, so every memory-free map is unchanged;
     present-but-empty means "has memories, none crosses a clock".
+
+    ``crossing_exceptions`` (#328, from
+    :func:`rtl_buddy_cdc.sdc_objects.domain_map_exceptions`) annotates
+    the crossings an object-scoped ``set_false_path`` or
+    ``set_max_delay -datapath_only`` fully covers: ``sdc_exceptions``
+    lists the covering statements (``command``, canonical
+    ``statement``, ``line``) and ``sdc_acknowledged`` says whether a
+    false path among them acknowledges the crossing's quasi-static-class
+    findings (which then appear as suppressed, not in ``findings``).
+    Both keys are absent on an uncovered crossing.
     """
     if rule_context is None:
         rule_context = _build_context(module, spec)
     index = _FindingIndex.build(findings, crossings) if findings is not None else None
     async_keys = _crossing_keys(async_crossings or [])
+    async_via = {
+        _crossing_key(c): c.async_via
+        for c in async_crossings or []
+        if c.async_via is not None
+    }
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generator": {"name": TOOL_NAME, "version": TOOL_VERSION},
@@ -136,10 +166,20 @@ def build_domain_map(
         "generated_clocks": _serialize_clocks(spec, generated=True),
         "clock_groups": _serialize_clock_groups(spec),
         "false_path_pairs": _serialize_false_paths(spec),
+        "datapath_only_pairs": _serialize_datapath_only_pairs(spec),
+        "max_delay_datapath_only": _serialize_datapath_only_delays(spec),
+        "false_path_exceptions": _serialize_false_path_exceptions(spec),
+        "case_analysis": _serialize_case_analysis(spec),
         "flop_domains": _serialize_flop_domains(module, domains),
         "port_domains": _serialize_port_domains(module, spec),
         "crossings": _serialize_crossings(
-            module, crossings, async_keys, rule_context, index
+            module,
+            crossings,
+            async_keys,
+            rule_context,
+            index,
+            async_via,
+            crossing_exceptions,
         ),
         "clock_network_crossings": _serialize_clock_network_crossings(
             module, clock_network_crossings or [], rule_context, index
@@ -220,6 +260,100 @@ def _serialize_false_paths(spec: ClockSpec | None) -> list[list[str]]:
     return pairs
 
 
+def _serialize_datapath_only_pairs(spec: ClockSpec | None) -> list[list[str]]:
+    """Clock pairs a ``set_max_delay -datapath_only`` marks async (#325).
+
+    Same shape and order as ``false_path_pairs``: a sorted list of
+    sorted two-clock lists.
+    """
+    if spec is None:
+        return []
+    pairs = [sorted(fp) for fp in spec.datapath_only_pairs]
+    pairs.sort(key=lambda p: (p[0], p[1] if len(p) > 1 else ""))
+    return pairs
+
+
+def _serialize_datapath_only_delays(spec: ClockSpec | None) -> list[dict[str, Any]]:
+    """Every ``set_max_delay -datapath_only`` record, deduplicated (#325).
+
+    Object endpoints (``[get_cells …]`` / ``[get_pins …]`` …) are
+    listed as ``{"kind", "name"}`` exactly as written — recorded, not
+    resolved against the netlist. ``clock_pair`` says whether the record
+    is clock-to-clock, i.e. whether it contributed to
+    ``datapath_only_pairs``. Sorted on the serialized form so the list
+    is independent of SDC statement order.
+    """
+    if spec is None:
+        return []
+
+    def objects(objs: tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
+        return [{"kind": k, "name": n} for k, n in sorted(objs)]
+
+    out: dict[str, dict[str, Any]] = {}
+    for rec in spec.datapath_only_delays:
+        entry: dict[str, Any] = {
+            "from_clocks": sorted(rec.from_clocks),
+            "to_clocks": sorted(rec.to_clocks),
+            "from_objects": objects(rec.from_objects),
+            "to_objects": objects(rec.to_objects),
+            "value": rec.value,
+            "clock_pair": rec.is_clock_pair,
+        }
+        out.setdefault(json.dumps(entry, sort_keys=True), entry)
+    return [out[k] for k in sorted(out)]
+
+
+def _serialize_false_path_exceptions(spec: ClockSpec | None) -> list[dict[str, Any]]:
+    """Every object-scoped / ``-through`` ``set_false_path`` (#328).
+
+    Objects are ``{"kind", "name", "hierarchical"}`` exactly as written;
+    ``through`` is one list per ``-through`` flag; ``qualifiers`` the
+    edge / check flags that narrow the exception; ``statement`` the
+    canonical rendering reports quote. Deduplicated and sorted on the
+    serialized form (``line`` aside), independent of statement order.
+    """
+    if spec is None:
+        return []
+
+    def objects(objs: Sequence[Any]) -> list[dict[str, Any]]:
+        return [
+            {"kind": o.kind, "name": o.name, "hierarchical": o.hierarchical}
+            for o in sorted(objs, key=lambda o: (o.kind, o.name, o.hierarchical))
+        ]
+
+    out: dict[str, dict[str, Any]] = {}
+    for rec in spec.false_path_exceptions:
+        entry: dict[str, Any] = {
+            "from_clocks": sorted(rec.from_clocks),
+            "to_clocks": sorted(rec.to_clocks),
+            "from_objects": objects(rec.from_objects),
+            "to_objects": objects(rec.to_objects),
+            "through": [objects(g) for g in rec.through],
+            "qualifiers": list(rec.qualifiers),
+            "statement": rec.statement,
+        }
+        key = json.dumps(entry, sort_keys=True)
+        if key not in out:
+            out[key] = {**entry, "line": rec.line}
+    return [out[k] for k in sorted(out)]
+
+
+def _serialize_case_analysis(spec: ClockSpec | None) -> list[dict[str, str]]:
+    """``set_case_analysis`` port values, sorted by port (#325).
+
+    ``value`` is normalised to ``"0"``, ``"1"``, ``"rising"`` or
+    ``"falling"``. Only ``"0"`` / ``"1"`` steer the clock tracer: a
+    clock mux whose select is one of these constants resolves to its
+    selected leg, which is what ``flop_domains`` then shows.
+    """
+    if spec is None:
+        return []
+    return [
+        {"port": port, "value": value}
+        for port, value in sorted(spec.case_analysis.items())
+    ]
+
+
 def _serialize_flop_domains(
     module: Module, domains: list[FlopDomain]
 ) -> list[dict[str, Any]]:
@@ -282,6 +416,8 @@ def _serialize_crossings(
     async_keys: set[_CrossingKey],
     rule_context: _RuleContext,
     index: _FindingIndex | None,
+    async_via: dict[_CrossingKey, tuple[str, str]] | None = None,
+    crossing_exceptions: dict[_CrossingKey, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for c in crossings:
@@ -314,6 +450,16 @@ def _serialize_crossings(
             )
         if c.src_port is not None:
             entry["src_port"] = c.src_port
+        via = (async_via or {}).get(key)
+        if via is not None:
+            # Additive (#330): the co-located clock pair a multi-clock
+            # port crossing is asynchronous through; absent otherwise.
+            entry["async_via"] = {"src_clock": via[0], "dst_clock": via[1]}
+        exc = (crossing_exceptions or {}).get(key)
+        if exc is not None:
+            # Additive (#328): only on a crossing an object-scoped
+            # constraint fully covers.
+            entry.update(exc)
         out.append(entry)
     out.sort(
         key=lambda e: (

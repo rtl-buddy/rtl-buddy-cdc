@@ -2,19 +2,28 @@
 
 Supported commands:
 
-    create_clock -name <name> -period <p> [get_ports <port>]
+    create_clock -name <name> -period <p> [-add] [get_ports <port>]
     create_generated_clock -name <name> -source <port-or-pin> \\
                            [-master_clock <name>] [-divide_by N] \\
-                           [-multiply_by N] [-edges …] [get_pins <pin>]
+                           [-multiply_by N] [-edges …] [-add] [get_pins <pin>]
     set_clock_groups -asynchronous          -group {…} -group {…} …
     set_clock_groups -logically_exclusive   -group {…} -group {…} …
     set_clock_groups -physically_exclusive  -group {…} -group {…} …
     set_false_path  -from [get_clocks A] -to [get_clocks B]
+    set_false_path  -from <clocks|objects> -through <objects> -to <…>
     set_input_delay  -clock <name> … [get_ports <port>]
     set_output_delay -clock <name> … [get_ports <port>]
+    set_max_delay <v> -datapath_only -from <clocks|objects> -to <…>
+    set_case_analysis <0|1|zero|one|rising|falling> [get_ports <port>]
+
+A clock defined on a port that already carries one replaces it unless
+``-add`` is given; with ``-add`` the port carries both
+(:attr:`ClockSpec.multi_clock_ports`, rtl-buddy-cdc#330).
 
 Numeric delays, slack, drive, load — all silently dropped. The parser
 only cares about clock topology and async-partitioning, not timing.
+``set_max_delay`` *without* ``-datapath_only`` is still dropped as STA
+noise; with it, the constraint is CDC intent (rtl-buddy-cdc#325).
 
 The implementation has two layers (issue #144 for the original design
 discussion, rtl-buddy-cdc#298 for the reader split). Layer 1 *reads*
@@ -75,12 +84,14 @@ end-of-parse warning rather than spamming line-by-line.
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import json
 import logging
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -96,7 +107,7 @@ from rtl_buddy_cdc.tcl_tokenizer import _extract_names, _tokenize
 # (see this module's docstring for why). That module imports
 # ``tkinter`` lazily inside its own ``main()``, so naming it here costs
 # nothing and, critically, does not pull ``_tkinter`` into this process.
-from rtl_buddy_cdc.tcl_worker import WORKER_MODULE
+from rtl_buddy_cdc.tcl_worker import WORKER_MODULE, _strip_collection_wrappers
 
 if TYPE_CHECKING:
     from rtl_buddy_cdc.netlist import Module
@@ -106,8 +117,12 @@ __all__ = [
     "ARG_SPECS",
     "BACKENDS",
     "BACKEND_ENV_VAR",
+    "CASE_ANALYSIS_VALUES",
     "Clock",
     "ClockSpec",
+    "DatapathOnlyDelay",
+    "FalsePathException",
+    "SdcObject",
     "TclReadError",
     "TclResourceLimitError",
     "UNCONSTRAINED_SENTINEL",
@@ -144,6 +159,190 @@ class Clock:
     ports: tuple[str, ...]  # top-level port names this clock is associated with
     master: str | None = None  # name of the master clock when generated
     is_generated: bool = False
+    # ``create_generated_clock -source`` objects, as written (rtl-buddy-cdc#330).
+    # Recorded for diagnostics only: the master comes from ``-master_clock``.
+    source: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DatapathOnlyDelay:
+    """One ``set_max_delay -datapath_only`` constraint (rtl-buddy-cdc#325).
+
+    ``from_clocks`` / ``to_clocks`` hold the endpoints given as clocks
+    (``[get_clocks A]``, or a bare / braced name — the same reading
+    ``set_false_path`` gives a bare endpoint). Every other collection
+    (``[get_cells …]``, ``[get_pins …]``, ``[get_ports …]``,
+    ``[get_nets …]``) lands in ``from_objects`` / ``to_objects`` as a
+    ``(kind, name)`` pair — ``kind`` is the collection noun (``"cell"``,
+    ``"pin"``, ``"port"``, ``"net"``) and ``name`` keeps the SDC ``/``
+    hierarchy separator. Objects are **recorded, not resolved** against
+    the netlist: object-scoped endpoints are rtl-buddy-cdc#328's seam.
+
+    ``value`` is the max-delay bound in SDC time units, or ``None`` when
+    the command carried no numeric operand.
+    """
+
+    value: float | None
+    from_clocks: tuple[str, ...] = ()
+    to_clocks: tuple[str, ...] = ()
+    from_objects: tuple[tuple[str, str], ...] = ()
+    to_objects: tuple[tuple[str, str], ...] = ()
+    # Source line of the statement (Tcl backend only; the tokenizer
+    # tracks none). Diagnostic, so it takes no part in equality: the two
+    # backends must produce equal records (rtl-buddy-cdc#328).
+    line: int | None = field(default=None, compare=False)
+
+    @property
+    def is_clock_pair(self) -> bool:
+        """True when both sides are clocks only — a clock-pair constraint."""
+        return bool(
+            self.from_clocks
+            and self.to_clocks
+            and not self.from_objects
+            and not self.to_objects
+        )
+
+    @property
+    def statement(self) -> str:
+        """The constraint re-rendered canonically, for reports.
+
+        Built from the parsed record rather than the source words, so it
+        is the same text on both SDC backends.
+        """
+        value = "" if self.value is None else f" {self.value:g}"
+        return (
+            f"set_max_delay{value} -datapath_only"
+            f"{_render_side('-from', self.from_clocks, _as_objects(self.from_objects))}"
+            f"{_render_side('-to', self.to_clocks, _as_objects(self.to_objects))}"
+        )
+
+
+@dataclass(frozen=True)
+class SdcObject:
+    """One design-object pattern from a ``get_*`` collection (#328).
+
+    ``kind`` is the collection noun — ``"cell"``, ``"pin"``, ``"port"``,
+    ``"net"`` — or ``"any"`` for a bare name in a ``-through`` list,
+    which a timer would look up as a pin, net or port. ``name`` keeps
+    the SDC spelling (``/`` hierarchy separator, ``*`` / ``?`` globs,
+    ``[3]`` bus index). ``hierarchical`` records ``get_* -hierarchical``:
+    the pattern then matches at any depth of the hierarchy.
+    """
+
+    kind: str
+    name: str
+    hierarchical: bool = False
+
+    def render(self) -> str:
+        """``[get_cells {u/q_reg[3]}]`` — the pattern as SDC text."""
+        return _render_collection(self.kind, (self.name,), self.hierarchical)
+
+
+def _render_collection(kind: str, names: tuple[str, ...], hierarchical: bool) -> str:
+    # Brace a name carrying a bus index: unbraced, Tcl would read ``[3]``
+    # as command substitution.
+    body = " ".join(f"{{{n}}}" if "[" in n else n for n in names)
+    if kind == "any":
+        return f"{{{body}}}"
+    flag = " -hierarchical" if hierarchical else ""
+    return f"[get_{kind}s{flag} {body}]"
+
+
+@dataclass(frozen=True)
+class FalsePathException:
+    """One ``set_false_path`` that is not a pure clock pair (#328).
+
+    Recorded when any endpoint is a design object (``[get_cells …]``,
+    ``[get_pins …]``, ``[get_ports …]``, ``[get_nets …]``) or the
+    statement carries ``-through``. Clock endpoints given alongside —
+    ``-from [get_cells u/q_reg] -to [get_clocks B]`` — stay in
+    ``from_clocks`` / ``to_clocks`` and constrain that side's domain.
+
+    Unlike a clock-pair false path (:attr:`ClockSpec.false_path_pairs`,
+    which makes the pair *asynchronous* — more checking), this record
+    never changes :meth:`ClockSpec.are_async`. It names specific paths
+    whose timing check the constraints author removed; the netlist
+    resolution and its effect on findings live outside the parser, in
+    :mod:`rtl_buddy_cdc.sdc_objects`.
+
+    ``through`` holds one tuple per ``-through`` flag (a path must pass
+    every group, and any one object within a group). ``qualifiers`` are
+    the flags that narrow the exception to part of the timing check —
+    ``-rise_from`` / ``-fall_to`` / … (one edge) and ``-setup`` /
+    ``-hold`` (one check) — edge flags in ``-from`` / ``-to`` /
+    ``-through`` order, then the check flags. A statement with any
+    qualifier never acknowledges findings (see ``sdc_objects``).
+    """
+
+    from_clocks: tuple[str, ...] = ()
+    to_clocks: tuple[str, ...] = ()
+    from_objects: tuple[SdcObject, ...] = ()
+    to_objects: tuple[SdcObject, ...] = ()
+    through: tuple[tuple[SdcObject, ...], ...] = ()
+    qualifiers: tuple[str, ...] = ()
+    line: int | None = field(default=None, compare=False)
+
+    @property
+    def statement(self) -> str:
+        """The constraint re-rendered canonically (same on both backends).
+
+        Each side is rendered under the first flag spelling it was given
+        with (``-from`` unless only ``-rise_from`` / ``-fall_from`` was
+        used, and so on); ``-setup`` / ``-hold`` lead.
+        """
+
+        def flag(side: str) -> str:
+            return next(
+                (q for q in self.qualifiers if q.endswith(f"_{side}")), f"-{side}"
+            )
+
+        checks = "".join(f" {q}" for q in self.qualifiers if "_" not in q)
+        through = "".join(
+            _render_side(flag("through"), (), group) for group in self.through
+        )
+        return (
+            f"set_false_path{checks}"
+            f"{_render_side(flag('from'), self.from_clocks, self.from_objects)}"
+            f"{through}"
+            f"{_render_side(flag('to'), self.to_clocks, self.to_objects)}"
+        )
+
+
+def _as_objects(pairs: tuple[tuple[str, str], ...]) -> tuple[SdcObject, ...]:
+    return tuple(SdcObject(kind, name) for kind, name in pairs)
+
+
+def _render_side(
+    flag: str, clocks: tuple[str, ...], objects: tuple[SdcObject, ...]
+) -> str:
+    """`` -from [get_clocks a] [get_cells u/q*]`` — empty when nothing given."""
+    words: list[str] = []
+    if clocks:
+        words.append(f"[get_clocks {' '.join(clocks)}]")
+    by_kind: dict[tuple[str, bool], list[str]] = {}
+    for obj in objects:
+        by_kind.setdefault((obj.kind, obj.hierarchical), []).append(obj.name)
+    for (kind, hier), names in by_kind.items():
+        words.append(_render_collection(kind, tuple(names), hier))
+    return f" {flag} {' '.join(words)}" if words else ""
+
+
+#: ``set_case_analysis`` value spellings → the normalised value stored on
+#: :attr:`ClockSpec.case_analysis`. ``"0"`` / ``"1"`` are constants the
+#: clock tracer resolves a mux select with; ``"rising"`` / ``"falling"``
+#: are recorded but are not constants (the pin still toggles).
+CASE_ANALYSIS_VALUES: dict[str, str] = {
+    "0": "0",
+    "1": "1",
+    "zero": "0",
+    "one": "1",
+    "logic_zero": "0",
+    "logic_one": "1",
+    "rise": "rising",
+    "rising": "rising",
+    "fall": "falling",
+    "falling": "falling",
+}
 
 
 @dataclass
@@ -179,6 +378,39 @@ class ClockSpec:
     # chain. The pin path uses SDC convention (``/`` separator); the
     # consumer normalises to Yosys' flattened netname (``.`` separator).
     pin_clocks: dict[str, str] = field(default_factory=dict)
+    # Every ``set_max_delay -datapath_only`` constraint, in file order
+    # (rtl-buddy-cdc#325). Recorded whatever its endpoints are; only
+    # the clock-pair ones feed ``datapath_only_pairs``.
+    datapath_only_delays: list[DatapathOnlyDelay] = field(default_factory=list)
+    # Unordered ``{from, to}`` clock pairs carrying a clock-to-clock
+    # ``set_max_delay -datapath_only``. A datapath-only bound exists
+    # only where the launch and capture clocks are not timed against
+    # each other, so the pair is an intended asynchronous crossing:
+    # ``are_async`` treats it as async and, unlike ``false_path_pairs``,
+    # lets it override a generated→master collapse and an exclusive
+    # group — the more-reporting reading (see ``are_async``).
+    datapath_only_pairs: set[frozenset[str]] = field(default_factory=set)
+    # Every ``set_false_path`` that is not a pure clock pair — an object
+    # endpoint or a ``-through`` — in file order (rtl-buddy-cdc#328).
+    # Never feeds ``are_async``: such a statement acknowledges specific
+    # paths, it does not declare a clock pair asynchronous. Resolved
+    # against the netlist by :mod:`rtl_buddy_cdc.sdc_objects`.
+    false_path_exceptions: list[FalsePathException] = field(default_factory=list)
+    # Top-level port → normalised ``set_case_analysis`` value ("0", "1",
+    # "rising", "falling"; see ``CASE_ANALYSIS_VALUES``). A bus bit is
+    # keyed in its SDC spelling, ``"sel[3]"``; a whole-bus key applies
+    # to every bit. Insertion order is application order (last write
+    # wins). Consumed by the clock tracer, which resolves a clock mux
+    # whose select is a case-analysed constant to the selected leg.
+    case_analysis: dict[str, str] = field(default_factory=dict)
+    # Top-level port → every clock declared on it, in declaration order,
+    # for ports that carry more than one clock (``create_clock -add``,
+    # rtl-buddy-cdc#330). The first entry is the port's *primary* clock —
+    # the one ``clock_for_port`` returns, so the one the flops behind the
+    # port are named after; the rest are co-located with it, and
+    # ``are_async`` checks a crossing against each of them. Filled at the
+    # end of :func:`parse`; empty for every SDC without such a port.
+    multi_clock_ports: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Diagnostics accumulated during parse. Each entry is a single
     # human-readable sentence describing a CDC-relevant command the
     # parser couldn't fully understand. Surfaced once at the end of
@@ -194,6 +426,10 @@ class ClockSpec:
         explicitly typed by the user), then falls back to scanning
         ``create_clock`` port lists. Returns ``None`` if the port is
         not associated with any clock.
+
+        On a port carrying several clocks (``create_clock -add``) this is
+        the first-declared one — the port's primary clock, see
+        :attr:`multi_clock_ports` (rtl-buddy-cdc#330).
         """
         if port in self.port_clock:
             return self.port_clock[port]
@@ -241,7 +477,87 @@ class ClockSpec:
            masters and compare. Same-root → sync. Otherwise check
            ``false_path_pairs`` and async groups against the
            resolved roots too.
+
+        A clock-pair ``set_max_delay -datapath_only``
+        (``datapath_only_pairs``, rtl-buddy-cdc#325) is an async hint
+        like a false path, but it is also an explicit override in step
+        1: it wins over the same-root collapse of step 2. Bounding only
+        the datapath is what a constraints author does when the two
+        clocks are *not* timed against each other, so when that
+        contradicts a generated→master relationship (or two clocks
+        sharing one ``-group``, which ``are_async`` already reads as
+        synchronous) the analyzer takes the reading that reports more:
+        the crossing is checked for a synchroniser.
+
+        **Multi-clock ports** (``create_clock -add``, rtl-buddy-cdc#330).
+        A flop behind a port that carries several clocks is named after
+        the port's primary clock (see :attr:`multi_clock_ports`), and that
+        name stands for every clock on the port. When ``a`` or ``b`` is
+        such a primary, the pair is async iff *some* combination of their
+        co-located clocks is async and not unreachable (exclusive) — a
+        crossing is synchronous only if it is synchronous to every clock
+        on the port. :meth:`async_witness` names the combination. For
+        clocks on single-clock ports this is exactly the per-pair answer.
         """
+        if a == b:
+            return False
+        ca = self.colocated_clocks(a)
+        cb = self.colocated_clocks(b)
+        if len(ca) == 1 and len(cb) == 1:
+            return self._are_async_pair(a, b)
+        return self._first_async_pair(ca, cb) is not None
+
+    def colocated_clocks(self, name: str) -> tuple[str, ...]:
+        """Every clock a domain named ``name`` stands for (rtl-buddy-cdc#330).
+
+        ``(name,)`` unless ``name`` is the primary clock of a port in
+        :attr:`multi_clock_ports`; then ``name`` first, followed by the
+        other clocks on that port (or ports) in declaration order. A
+        non-primary clock on such a port — ``clk_a2`` named by
+        ``set_input_delay -clock clk_a2`` — means exactly itself.
+        """
+        if not self.multi_clock_ports:
+            return (name,)
+        out = [name]
+        for clocks in self.multi_clock_ports.values():
+            if clocks[0] == name:
+                out.extend(c for c in clocks[1:] if c not in out)
+        return tuple(out)
+
+    def async_witness(self, a: str, b: str) -> tuple[str, str] | None:
+        """The clock pair that makes a crossing ``a`` → ``b`` checkable.
+
+        ``None`` when the crossing is synchronous or unreachable — the
+        crossings :func:`rtl_buddy_cdc.domain.filter_async` drops.
+        Otherwise ``(a, b)`` itself when that pair is async and
+        reachable, else the first async, reachable pair of co-located
+        clocks (:meth:`colocated_clocks`), scanning ``a``'s clocks then
+        ``b``'s in declaration order — so the answer is deterministic and
+        the same on both SDC backends.
+        """
+        if a == b:
+            return None
+        ca = self.colocated_clocks(a)
+        cb = self.colocated_clocks(b)
+        if len(ca) == 1 and len(cb) == 1:
+            if self._is_unreachable_pair(a, b) or not self._are_async_pair(a, b):
+                return None
+            return (a, b)
+        return self._first_async_pair(ca, cb)
+
+    def _first_async_pair(
+        self, ca: tuple[str, ...], cb: tuple[str, ...]
+    ) -> tuple[str, str] | None:
+        for x in ca:
+            for y in cb:
+                if x == y or self._is_unreachable_pair(x, y):
+                    continue
+                if self._are_async_pair(x, y):
+                    return (x, y)
+        return None
+
+    def _are_async_pair(self, a: str, b: str) -> bool:
+        """:meth:`are_async` for two single clocks (no port expansion)."""
         if a == b:
             return False
         # Sentinel port-clock (synthesised for input ports without
@@ -258,6 +574,8 @@ class ClockSpec:
             gb = next((g for g in groups if b in g), None)
             if ga is not None and gb is not None and ga is not gb:
                 return True
+        if self._is_datapath_only_pair(a, b):
+            return True
         # Step 2: resolved-root comparison.
         ra = self.resolve(a)
         rb = self.resolve(b)
@@ -282,8 +600,31 @@ class ClockSpec:
         ``ck0`` or ``ck1``). A flop→flop "crossing" between them is a
         static-analysis artifact, not a real path, and should be
         dropped before any rule sees it.
+
+        A pair carrying a clock-pair ``set_max_delay -datapath_only`` is
+        never unreachable (rtl-buddy-cdc#325): bounding a path's delay
+        says its author believes the path is live, and dropping it would
+        hide the crossing — the less-reporting reading.
+
+        When ``a`` or ``b`` is the primary clock of a multi-clock port
+        (rtl-buddy-cdc#330), the crossing is unreachable only if every
+        combination of their co-located clocks is — the usual
+        ``-physically_exclusive`` between two modes on one pin removes
+        just the pairs it names.
         """
         if a == b:
+            return False
+        ca = self.colocated_clocks(a)
+        cb = self.colocated_clocks(b)
+        if len(ca) == 1 and len(cb) == 1:
+            return self._is_unreachable_pair(a, b)
+        return all(x != y and self._is_unreachable_pair(x, y) for x in ca for y in cb)
+
+    def _is_unreachable_pair(self, a: str, b: str) -> bool:
+        """:meth:`is_unreachable_crossing` for two single clocks."""
+        if a == b:
+            return False
+        if self._is_datapath_only_pair(a, b):
             return False
         ra = self.resolve(a)
         rb = self.resolve(b)
@@ -295,6 +636,21 @@ class ClockSpec:
             if ga is not None and gb is not None and ga is not gb:
                 return True
         return False
+
+    def _is_datapath_only_pair(self, a: str, b: str) -> bool:
+        """True when a clock-pair ``-datapath_only`` bound links ``a`` and ``b``.
+
+        Checked on the names as given and on their resolved roots, so a
+        constraint written between two masters also covers crossings
+        between clocks generated from them.
+        """
+        if not self.datapath_only_pairs:
+            return False
+        if frozenset({a, b}) in self.datapath_only_pairs:
+            return True
+        ra = self.resolve(a)
+        rb = self.resolve(b)
+        return ra != rb and frozenset({ra, rb}) in self.datapath_only_pairs
 
 
 # ---- parser entry points ----------------------------------------------------
@@ -376,18 +732,56 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             )
             continue
         spec_for_cmd = ARG_SPECS.get(cmd)
+        gate = _COMMAND_GATES.get(cmd)
+        if gate is not None and not gate(args):
+            # A command that is CDC-relevant only in one form (plain
+            # ``set_max_delay`` is STA noise; ``-datapath_only`` is CDC
+            # intent) is dropped exactly like an unrecognised one.
+            spec_for_cmd = None
         if spec_for_cmd is None:
             # Drop noise (set_max_delay, set_load, set_drive, …) at
             # DEBUG level so users can see what was skipped via
             # ``--verbose`` without the report being flooded.
             logger.debug("sdc: ignoring unsupported command %r", cmd)
             note_tokenizer_skip(f"dropped unrecognised command {cmd!r}")
+            if cmd.isdigit():
+                # ``[get_ports sel[3]]`` with an unbraced bus index is
+                # Tcl command substitution of ``[3]``: the Tcl reader
+                # runs a command named ``3`` and the target silently
+                # becomes the whole bus ``sel``. No real SDC command is
+                # a number, so say what most likely happened.
+                spec.partial_warnings.append(
+                    f"command {cmd!r}{_at_line(command.line)} looks like an "
+                    f"unbraced bus index evaluated as Tcl command substitution "
+                    f"— brace the indexed name, e.g. {{p[{cmd}]}}, or the target "
+                    f"names the whole bus"
+                )
             continue
         if any("$" in w for w in words):
             note_tokenizer_skip(f"{cmd}: kept a literal $-word unevaluated")
-        parsed = _slice(args, spec_for_cmd)
+        parsed = dataclasses.replace(_slice(args, spec_for_cmd), line=command.line)
         _DISPATCH[cmd](spec, parsed)
+    spec.multi_clock_ports = _index_multi_clock_ports(spec.clocks)
     return spec
+
+
+def _index_multi_clock_ports(clocks: dict[str, Clock]) -> dict[str, tuple[str, ...]]:
+    """Port → its clocks in declaration order, for ports carrying ≥ 2.
+
+    Without ``-add`` a later clock on a port replaces the earlier one
+    (:func:`_claim_ports`), so after a parse a port can only carry
+    several clocks through ``-add``. The order is ``spec.clocks``
+    order, which is what :meth:`ClockSpec.clock_for_port` scans — so
+    the first entry is always the clock the port's flops are named
+    after.
+    """
+    owners: dict[str, list[str]] = {}
+    for clk in clocks.values():
+        for port in clk.ports:
+            names = owners.setdefault(port, [])
+            if clk.name not in names:
+                names.append(clk.name)
+    return {p: tuple(names) for p, names in owners.items() if len(names) > 1}
 
 
 def parse_file(path: str | Path, *, backend: str | None = None) -> ClockSpec:
@@ -422,7 +816,12 @@ def validate_clock_graph(spec: ClockSpec) -> list[str]:
        match found while scanning ``spec.clocks.values()``) but the
        user's intent is ambiguous; the value-derived rules (CDC-001,
        CDC-011, CDC-021, RDC-008) silently see one clock and not the
-       other.
+       other. Since rtl-buddy-cdc#330 a parsed SDC never reaches this
+       shape by accident: without ``-add`` the later clock replaces the
+       earlier one (warned at parse time), and a port shared through
+       ``-add`` is a legitimate multi-clock port
+       (:attr:`ClockSpec.multi_clock_ports`) that is not flagged. The
+       check still guards specs built without :func:`parse`.
 
     2. **Unresolved master clock** — a ``create_generated_clock`` whose
        ``-master_clock`` names a clock not present in ``spec.clocks``.
@@ -436,6 +835,11 @@ def validate_clock_graph(spec: ClockSpec) -> list[str]:
        :meth:`ClockSpec.resolve` has a cycle guard that prevents
        infinite-loop, but the SDC is methodology-broken; surface it.
 
+    4. **Generated clock on a multi-clock source** (rtl-buddy-cdc#330)
+       — a ``create_generated_clock -source`` port that carries several
+       clocks, with no ``-master_clock`` to pick one (ambiguous), or with
+       a ``-master_clock`` that names none of them.
+
     Duplicate clock names (two ``create_clock -name X``, or
     ``create_clock -name X`` followed by ``create_generated_clock -name
     X``) are caught inline by the per-command handlers — there the
@@ -444,13 +848,19 @@ def validate_clock_graph(spec: ClockSpec) -> list[str]:
     """
     out: list[str] = []
 
-    # Check 1: same port in multiple clocks.
+    # Check 1: same port in multiple clocks. A port the parser recorded
+    # in ``multi_clock_ports`` got there through ``-add`` (a replacement
+    # without it already warned at parse time and left one clock), so
+    # it is a legitimate declaration and is not flagged. What remains is
+    # a spec assembled without :func:`parse` — no -add / replace record.
     port_owners: dict[str, list[str]] = {}
     for clk in spec.clocks.values():
         for port in clk.ports:
             port_owners.setdefault(port, []).append(clk.name)
     for port, owners in sorted(port_owners.items()):
         if len(owners) < 2:
+            continue
+        if spec.multi_clock_ports.get(port) == tuple(owners):
             continue
         out.append(
             f"port '{port}' is claimed by multiple clocks: "
@@ -500,6 +910,34 @@ def validate_clock_graph(spec: ClockSpec) -> list[str]:
                 f"{', '.join(sorted(cycle_found))} (master chain "
                 f"doesn't terminate at a primary clock)"
             )
+
+    # Check 4 (rtl-buddy-cdc#330): a generated clock whose -source is a
+    # port carrying several clocks. The master comes from -master_clock
+    # only (never inferred from -source), so without it the generated
+    # clock has no master on ANY source — but on a multi-clock source the
+    # missing choice is genuinely ambiguous, so say so; and a
+    # -master_clock that names none of the source's clocks contradicts it.
+    for clk in spec.clocks.values():
+        if not clk.is_generated:
+            continue
+        for src in clk.source:
+            on_src = spec.multi_clock_ports.get(src)
+            if on_src is None:
+                continue
+            listed = ", ".join(on_src)
+            if clk.master is None:
+                out.append(
+                    f"create_generated_clock '{clk.name}': -source port "
+                    f"'{src}' carries clocks {listed} and no -master_clock "
+                    f"picks one — the generated clock is left without a "
+                    f"master; add -master_clock"
+                )
+            elif clk.master not in on_src:
+                out.append(
+                    f"create_generated_clock '{clk.name}': -master_clock "
+                    f"'{clk.master}' is not one of the clocks on -source "
+                    f"port '{src}' ({listed})"
+                )
 
     return out
 
@@ -944,6 +1382,9 @@ class Parsed:
 
     flags: dict[str, list[Any]]
     tail: list[str]
+    # Source line of the command, when the reader knows it (Tcl backend).
+    # Handlers that record a constraint for reporting keep it (#328).
+    line: int | None = None
 
     def present(self, flag: str) -> bool:
         """Return True if ``flag`` appeared at least once."""
@@ -1081,6 +1522,38 @@ ARG_SPECS: dict[str, ArgSpec] = {
     ),
     "set_input_delay": _DELAY_SPEC,
     "set_output_delay": _DELAY_SPEC,
+    # ``set_case_analysis <value> <targets>`` — no flags; the value and
+    # the target collections both land in the tail.
+    "set_case_analysis": ArgSpec(flags={}),
+    "set_max_delay": ArgSpec(
+        flags={
+            "-datapath_only": Arity.ZERO,
+            "-from": Arity.GREEDY,
+            "-to": Arity.GREEDY,
+            "-rise_from": Arity.GREEDY,
+            "-fall_from": Arity.GREEDY,
+            "-rise_to": Arity.GREEDY,
+            "-fall_to": Arity.GREEDY,
+            "-through": Arity.GREEDY,
+            "-rise_through": Arity.GREEDY,
+            "-fall_through": Arity.GREEDY,
+            "-rise": Arity.ZERO,
+            "-fall": Arity.ZERO,
+            "-reset_path": Arity.ZERO,
+            "-ignore_clock_latency": Arity.ZERO,
+            "-comment": Arity.ONE,
+        },
+    ),
+}
+
+# Commands in ``ARG_SPECS`` that are CDC-relevant only in some forms.
+# The predicate sees the raw argument words; a False answer sends the
+# command down the unrecognised-command path (DEBUG log, tokenizer-skip
+# note), exactly as if it had no ``ARG_SPECS`` entry.
+_COMMAND_GATES: dict[str, Callable[[list[str]], bool]] = {
+    # Plain set_max_delay is STA noise and stays ignored; only the
+    # -datapath_only form carries CDC intent (rtl-buddy-cdc#325).
+    "set_max_delay": lambda args: "-datapath_only" in args,
 }
 
 
@@ -1121,7 +1594,44 @@ def _handle_create_clock(spec: ClockSpec, p: Parsed) -> None:
             f"duplicate clock name '{name}': second create_clock silently "
             f"overrides the first"
         )
+    _claim_ports(spec, "create_clock", name, ports, add=p.present("-add"))
     spec.clocks[name] = Clock(name=name, period=period, ports=tuple(ports))
+
+
+def _claim_ports(
+    spec: ClockSpec, cmd: str, name: str, ports: list[str], *, add: bool
+) -> None:
+    """Apply SDC replace-vs-add semantics to a new clock's ports (#330).
+
+    Without ``-add``, a clock defined on a source object that already
+    carries a clock *replaces* it: the earlier clock loses that port,
+    and is removed altogether once it has no port left. With ``-add``
+    both clocks exist on the port (:attr:`ClockSpec.multi_clock_ports`).
+    A replacement is almost always an accident in a constraints file —
+    the earlier clock silently stops existing — so it warns; ``-add`` is
+    a legitimate declaration and does not.
+    """
+    if add or not ports:
+        return
+    claimed = set(ports)
+    for other in list(spec.clocks.values()):
+        if other.name == name:
+            continue
+        lost = [p for p in other.ports if p in claimed]
+        if not lost:
+            continue
+        kept = tuple(p for p in other.ports if p not in claimed)
+        if kept:
+            spec.clocks[other.name] = dataclasses.replace(other, ports=kept)
+            fate = f"'{other.name}' keeps {', '.join(kept)}"
+        else:
+            del spec.clocks[other.name]
+            fate = f"'{other.name}' is removed"
+        spec.partial_warnings.append(
+            f"{cmd} '{name}' without -add replaces clock '{other.name}' on "
+            f"port {', '.join(repr(p) for p in lost)}; {fate} (use -add to "
+            f"keep both clocks on the port)"
+        )
 
 
 def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
@@ -1179,10 +1689,33 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
     # consumed by the clock-trace pass.
     if target_is_pin:
         clock_ports: tuple[str, ...] = ()
+        add = p.present("-add")
         for t in targets:
+            prev = spec.pin_clocks.get(t)
+            if prev is not None and prev != name:
+                # rtl-buddy-cdc#330: replace-vs-add on an internal pin.
+                # ``pin_clocks`` holds one clock per pin, so an added
+                # clock is kept out of the domain model (the first one
+                # stays) and said so; a replacement keeps today's
+                # last-writer-wins and warns like a port replacement.
+                if add:
+                    spec.partial_warnings.append(
+                        f"create_generated_clock '{name}' -add on pin '{t}', "
+                        f"which already carries '{prev}': several generated "
+                        f"clocks on one internal pin are not modelled — flops "
+                        f"behind it stay in '{prev}'"
+                    )
+                    continue
+                spec.partial_warnings.append(
+                    f"create_generated_clock '{name}' without -add replaces "
+                    f"clock '{prev}' on pin '{t}' (use -add to keep both)"
+                )
             spec.pin_clocks[t] = name
     else:
         clock_ports = tuple(targets)
+        _claim_ports(
+            spec, "create_generated_clock", name, targets, add=p.present("-add")
+        )
 
     if name in spec.clocks:
         # G-11 duplicate-name check, mirroring create_clock's surface.
@@ -1190,12 +1723,15 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
             f"duplicate clock name '{name}': second create_generated_clock "
             f"silently overrides the first"
         )
+    source_word = p.first("-source")
+    source = tuple(_extract_names(source_word)[0]) if source_word is not None else ()
     spec.clocks[name] = Clock(
         name=name,
         period=period,
         ports=clock_ports,
         master=master,
         is_generated=True,
+        source=source,
     )
 
 
@@ -1236,63 +1772,123 @@ def _handle_set_clock_groups(spec: ClockSpec, p: Parsed) -> None:
 
 
 def _handle_set_false_path(spec: ClockSpec, p: Parsed) -> None:
-    """Parse ``set_false_path -from [get_clocks A] -to [get_clocks B]``.
+    """Parse ``set_false_path``.
 
-    Treated as a pairwise async declaration when both endpoints are
-    clock collections. ``-through`` makes this path-specific (not a
-    clock-pair hint) — we drop those with a partial-parse warning.
+    A statement whose endpoints are all clocks
+    (``-from [get_clocks A] -to [get_clocks B]``, or bare / braced
+    names) is a pairwise async declaration: the pairs land in
+    :attr:`ClockSpec.false_path_pairs`. That path is unchanged from
+    before rtl-buddy-cdc#328, byte for byte.
+
+    Anything narrower — a design-object endpoint (``[get_cells …]``,
+    ``[get_pins …]``, ``[get_ports …]``, ``[get_nets …]``) on either
+    side, or a ``-through`` — is recorded as a
+    :class:`FalsePathException` on
+    :attr:`ClockSpec.false_path_exceptions` instead, with any clock
+    endpoints given alongside it. It never adds a clock pair: an
+    object-scoped false path acknowledges specific paths, it does not
+    make the clocks asynchronous. Resolving the objects against the
+    netlist is :mod:`rtl_buddy_cdc.sdc_objects`'s job (the parser stays
+    netlist-free).
     """
-    if (
-        p.present("-through")
-        or p.present("-rise_through")
-        or p.present("-fall_through")
-    ):
-        spec.partial_warnings.append(
-            "set_false_path: -through clauses are path-specific and "
-            "not interpreted as clock-pair async hints"
-        )
-        return
-
     from_clocks: list[str] = []
     to_clocks: list[str] = []
-    saw_non_clock_endpoint = False
+    from_objects: list[SdcObject] = []
+    to_objects: list[SdcObject] = []
+    qualifiers: list[str] = []
+    saw_filter = False
+    saw_object = False
 
-    for flag, sink in (
-        ("-from", from_clocks),
-        ("-rise_from", from_clocks),
-        ("-fall_from", from_clocks),
-        ("-to", to_clocks),
-        ("-rise_to", to_clocks),
-        ("-fall_to", to_clocks),
+    for flag, clocks, objects in (
+        ("-from", from_clocks, from_objects),
+        ("-rise_from", from_clocks, from_objects),
+        ("-fall_from", from_clocks, from_objects),
+        ("-to", to_clocks, to_objects),
+        ("-rise_to", to_clocks, to_objects),
+        ("-fall_to", to_clocks, to_objects),
     ):
         for slurped in p.all(flag):
-            blob = " ".join(slurped)
-            if "get_pins" in blob or "get_cells" in blob or "get_ports" in blob:
-                saw_non_clock_endpoint = True
-                continue
-            names: list[str] = []
+            if flag not in ("-from", "-to") and flag not in qualifiers:
+                qualifiers.append(flag)
             for word in slurped:
-                ns, _ = _extract_names(word)
-                names.extend(ns)
-            sink.extend(names)
+                cs, objs, sf, so = _classify_endpoint(word)
+                clocks.extend(cs)
+                objects.extend(objs)
+                saw_filter = saw_filter or sf
+                saw_object = saw_object or so
 
-    if saw_non_clock_endpoint:
+    through: list[tuple[SdcObject, ...]] = []
+    for flag in ("-through", "-rise_through", "-fall_through"):
+        for slurped in p.all(flag):
+            if flag != "-through" and flag not in qualifiers:
+                qualifiers.append(flag)
+            group: list[SdcObject] = []
+            for word in slurped:
+                for item in _endpoint_items(word):
+                    kind, names, sf, hier = _split_endpoint_item(item)
+                    saw_filter = saw_filter or sf
+                    if kind is None:
+                        group.extend(SdcObject("any", n) for n in names)
+                    elif kind in _OBJECT_KINDS:
+                        group.extend(SdcObject(kind, n, hier) for n in names)
+                    else:
+                        spec.partial_warnings.append(
+                            f"set_false_path{_at_line(p.line)}: -through "
+                            f"{item} is not a pin, net or port — ignored"
+                        )
+            if group:
+                through.append(tuple(dict.fromkeys(group)))
+            else:
+                # An empty -through group cannot be matched; dropping it
+                # silently would widen the exception to every path.
+                spec.partial_warnings.append(
+                    f"set_false_path{_at_line(p.line)}: -through names no "
+                    f"pin, net or port — statement ignored"
+                )
+                return
+
+    if saw_object and not from_objects and not to_objects and not through:
         spec.partial_warnings.append(
-            "set_false_path: non-clock endpoints (get_pins/get_cells/"
-            "get_ports) are path-specific and not interpreted"
+            f"set_false_path{_at_line(p.line)}: object endpoint names no usable "
+            f"pattern (unsupported -filter?) — statement ignored"
         )
         return
-
-    if not from_clocks or not to_clocks:
-        spec.partial_warnings.append(
-            "set_false_path: incomplete -from/-to clock list, ignored"
-        )
+    if not from_objects and not to_objects and not through:
+        # Pure clock-pair form — the pre-#328 path, unchanged.
+        if not from_clocks or not to_clocks:
+            spec.partial_warnings.append(
+                "set_false_path: incomplete -from/-to clock list, ignored"
+            )
+            return
+        for a in from_clocks:
+            for b in to_clocks:
+                if a != b:
+                    spec.false_path_pairs.add(frozenset({a, b}))
         return
 
-    for a in from_clocks:
-        for b in to_clocks:
-            if a != b:
-                spec.false_path_pairs.add(frozenset({a, b}))
+    if saw_filter:
+        # A -filter clause drops the names it would have selected, so the
+        # side it sat on would read as "any object" — a wider exception
+        # than the author wrote. Drop the statement instead.
+        spec.partial_warnings.append(
+            f"set_false_path{_at_line(p.line)}: unsupported -filter clause in "
+            f"an object-scoped false path — statement ignored"
+        )
+        return
+    for flag in ("-setup", "-hold"):
+        if p.present(flag):
+            qualifiers.append(flag)
+    spec.false_path_exceptions.append(
+        FalsePathException(
+            from_clocks=tuple(dict.fromkeys(from_clocks)),
+            to_clocks=tuple(dict.fromkeys(to_clocks)),
+            from_objects=tuple(dict.fromkeys(from_objects)),
+            to_objects=tuple(dict.fromkeys(to_objects)),
+            through=tuple(through),
+            qualifiers=tuple(qualifiers),
+            line=p.line,
+        )
+    )
 
 
 def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
@@ -1348,6 +1944,152 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
         spec.port_clock[port] = clock
 
 
+def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:
+    """Parse ``set_max_delay <v> -datapath_only -from … -to …`` (#325).
+
+    Only reached for the ``-datapath_only`` form (see
+    :data:`_COMMAND_GATES`). Every such constraint is recorded on
+    :attr:`ClockSpec.datapath_only_delays`; a clock-to-clock one also
+    adds its pairs to :attr:`ClockSpec.datapath_only_pairs`, which
+    ``are_async`` reads as an intended asynchronous crossing.
+
+    Endpoints are split per collection: ``[get_clocks …]`` and bare /
+    braced names are clocks (as for ``set_false_path``); any other
+    ``get_*`` collection is recorded as a ``(kind, name)`` object
+    endpoint. Object endpoints never mark a clock pair async; they are
+    resolved against the netlist later, by
+    :mod:`rtl_buddy_cdc.sdc_objects` (rtl-buddy-cdc#328), which
+    associates the record with the crossings it constrains (an
+    annotation only — a bounded datapath still needs a synchroniser,
+    so nothing is suppressed on its account). ``-through`` narrows the
+    constraint to specific paths, so it is never a clock-pair hint.
+    The delay value is the numeric operand wherever it sits — before
+    the flags, or after them, where a GREEDY ``-to`` slurps it.
+    """
+    if (
+        p.present("-through")
+        or p.present("-rise_through")
+        or p.present("-fall_through")
+    ):
+        spec.partial_warnings.append(
+            "set_max_delay -datapath_only: -through clauses are path-specific "
+            "and not interpreted as clock-pair async hints"
+        )
+        return
+
+    value: float | None = None
+    from_clocks: list[str] = []
+    to_clocks: list[str] = []
+    from_objects: list[tuple[str, str]] = []
+    to_objects: list[tuple[str, str]] = []
+    saw_filter = False
+
+    def take_value(word: str) -> bool:
+        nonlocal value
+        if not _looks_numeric(word):
+            return False
+        if value is None:
+            value = float(word)
+        return True
+
+    for word in p.tail:
+        take_value(word)
+
+    for flag, clocks, objects in (
+        ("-from", from_clocks, from_objects),
+        ("-rise_from", from_clocks, from_objects),
+        ("-fall_from", from_clocks, from_objects),
+        ("-to", to_clocks, to_objects),
+        ("-rise_to", to_clocks, to_objects),
+        ("-fall_to", to_clocks, to_objects),
+    ):
+        for slurped in p.all(flag):
+            for word in slurped:
+                if take_value(word):
+                    continue
+                kind, names, sf = _split_collection(word)
+                saw_filter = saw_filter or sf
+                if kind is None or kind == "clock":
+                    clocks.extend(names)
+                else:
+                    objects.extend((kind, n) for n in names)
+
+    if saw_filter:
+        spec.partial_warnings.append(
+            "set_max_delay -datapath_only: ignored unsupported -filter clause"
+        )
+    if not (from_clocks or from_objects) or not (to_clocks or to_objects):
+        spec.partial_warnings.append(
+            "set_max_delay -datapath_only: incomplete -from/-to endpoint list, ignored"
+        )
+        return
+
+    record = DatapathOnlyDelay(
+        value=value,
+        from_clocks=tuple(dict.fromkeys(from_clocks)),
+        to_clocks=tuple(dict.fromkeys(to_clocks)),
+        from_objects=tuple(dict.fromkeys(from_objects)),
+        to_objects=tuple(dict.fromkeys(to_objects)),
+        line=p.line,
+    )
+    spec.datapath_only_delays.append(record)
+    if not record.is_clock_pair:
+        # Object endpoints: resolved against the netlist and associated
+        # with crossings by ``sdc_objects`` (#328); never a clock pair.
+        return
+    for a in record.from_clocks:
+        for b in record.to_clocks:
+            if a != b:
+                spec.datapath_only_pairs.add(frozenset({a, b}))
+
+
+def _handle_set_case_analysis(spec: ClockSpec, p: Parsed) -> None:
+    """Parse ``set_case_analysis <value> <targets>`` (rtl-buddy-cdc#325).
+
+    Records each top-level port target on
+    :attr:`ClockSpec.case_analysis` with the normalised value from
+    :data:`CASE_ANALYSIS_VALUES` (last write wins, so a later statement
+    on the same target replaces an earlier one). Targets may be
+    ``[get_ports p]``, a braced / bare name list, and bus bits in the
+    braced form ``{p[3]}``. Pins, cells and nets are out of scope: they
+    are reported and ignored. Whether a port target exists in the
+    design is checked later, against the netlist
+    (:func:`rtl_buddy_cdc.domain.case_analysis_warnings`).
+    """
+    if not p.tail:
+        spec.partial_warnings.append("set_case_analysis: missing value and target")
+        return
+    raw, targets = p.tail[0], p.tail[1:]
+    value = CASE_ANALYSIS_VALUES.get(raw.lower())
+    if value is None:
+        spec.partial_warnings.append(
+            f"set_case_analysis: unrecognised value {raw!r} (expected one of "
+            f"0, 1, zero, one, rising, falling) — ignored"
+        )
+        return
+    if not targets:
+        spec.partial_warnings.append(f"set_case_analysis {raw}: missing target")
+        return
+    ports: list[str] = []
+    for word in targets:
+        kind, names, saw_filter = _split_collection(word)
+        if saw_filter:
+            spec.partial_warnings.append(
+                "set_case_analysis: ignored unsupported -filter clause"
+            )
+        if kind is None or kind == "port":
+            ports.extend(names)
+        else:
+            spec.partial_warnings.append(
+                f"set_case_analysis {raw} on {kind} target(s) "
+                f"{', '.join(names) or '(none)'}: only top-level ports are "
+                f"supported — ignored"
+            )
+    for port in ports:
+        spec.case_analysis.pop(port, None)  # re-insert: last write wins
+        spec.case_analysis[port] = value
+
+
 _DISPATCH = {
     "create_clock": _handle_create_clock,
     "create_generated_clock": _handle_create_generated_clock,
@@ -1355,6 +2097,8 @@ _DISPATCH = {
     "set_false_path": _handle_set_false_path,
     "set_input_delay": _handle_set_delay,
     "set_output_delay": _handle_set_delay,
+    "set_max_delay": _handle_set_max_delay,
+    "set_case_analysis": _handle_set_case_analysis,
 }
 
 
@@ -1371,6 +2115,153 @@ def _extract_clock_list(token: str) -> list[str]:
     """Turn ``"{src_clk dst_clk}"`` / ``"src_clk"`` into a name list."""
     names, _ = _extract_names(token)
     return names
+
+
+#: ``get_*`` collection command → the object kind recorded for it.
+_COLLECTION_KINDS: dict[str, str] = {
+    "get_clocks": "clock",
+    "get_ports": "port",
+    "get_pins": "pin",
+    "get_cells": "cell",
+    "get_nets": "net",
+}
+
+
+def _split_collection(word: str) -> tuple[str | None, list[str], bool]:
+    """Split one endpoint / target word into ``(kind, names, saw_filter)``.
+
+    ``kind`` is ``None`` for a bare or braced name list (``clk``,
+    ``{a b}`` — or ``a b`` once the Tcl backend has evaluated the
+    braces away), else the collection's noun from
+    :data:`_COLLECTION_KINDS` (an unlisted head such as
+    ``all_registers`` is kept verbatim). Unlike
+    :func:`~rtl_buddy_cdc.tcl_tokenizer._extract_names` this keeps a
+    bus index on the name (``{sel[3]}`` → ``sel[3]``) and recognises
+    every ``get_*`` head, which is what an object endpoint needs; the
+    tokenizer module stays untouched because rtl-buddy vendors it.
+
+    Works on both backends' word shapes: the tokenizer hands through
+    ``[get_ports {sel[3]}]`` verbatim, the Tcl reader hands back
+    ``[get_ports sel[3]]`` (braces evaluated, collection re-wrapped),
+    and a nested ``[get_pins [get_cells u]/C]`` from the tokenizer is
+    peeled to ``u/C`` the way the Tcl worker already does.
+    """
+    text = word.strip()
+    kind: str | None = None
+    if text.startswith("[") and text.endswith("]"):
+        inner = _strip_collection_wrappers(text[1:-1])
+        parts = inner.replace("{", " ").replace("}", " ").split()
+        if parts:
+            head, parts = parts[0], parts[1:]
+            kind = _COLLECTION_KINDS.get(head, head)
+    else:
+        parts = text.replace("{", " ").replace("}", " ").split()
+    names: list[str] = []
+    saw_filter = False
+    for tok in parts:
+        if tok == "-filter":
+            # The filter expression is everything after the flag in
+            # practice; drop it (and say so via ``saw_filter``).
+            saw_filter = True
+            break
+        if tok.startswith("-"):
+            # Vendor flags inside a get_* expression (-hierarchical,
+            # -quiet, -of_objects …) carry no name we can use.
+            continue
+        names.append(tok)
+    return kind, names, saw_filter
+
+
+#: Collection kinds that name design objects rather than clocks.
+_OBJECT_KINDS: frozenset[str] = frozenset({"cell", "pin", "port", "net"})
+
+
+def _endpoint_items(word: str) -> list[str]:
+    """Split one endpoint word into its top-level items (#328).
+
+    A word is usually one item — ``[get_cells u/q*]``, ``clk`` — but a
+    braced or quoted list can mix collections:
+    ``{[get_cells a] [get_clocks b]}`` (tokenizer) or
+    ``[get_cells a] [get_clocks b]`` (the Tcl backend after
+    substitution). Splits on whitespace outside ``[…]`` / ``{…}``; a
+    bus index inside a bare name (``u/q[3]``) stays attached.
+    """
+    text = word.strip()
+    if text.startswith("{") and _closing_brace(text) == len(text) - 1:
+        text = text[1:-1]
+    items: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for ch in text:
+        if ch in "[{":
+            depth += 1
+        elif ch in "]}" and depth:
+            depth -= 1
+        if ch.isspace() and depth == 0:
+            if cur:
+                items.append("".join(cur))
+                cur = []
+            continue
+        cur.append(ch)
+    if cur:
+        items.append("".join(cur))
+    return items
+
+
+def _closing_brace(text: str) -> int:
+    """Index of the brace closing ``text[0] == '{'``, or -1."""
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _split_endpoint_item(item: str) -> tuple[str | None, list[str], bool, bool]:
+    """:func:`_split_collection` plus the ``-hierarchical`` flag (#328)."""
+    kind, names, saw_filter = _split_collection(item)
+    hierarchical = False
+    if kind is not None:
+        words = item.replace("[", " ").replace("]", " ").split()
+        hierarchical = any(w in ("-hierarchical", "-hier") for w in words)
+    return kind, names, saw_filter, hierarchical
+
+
+def _classify_endpoint(
+    word: str,
+) -> tuple[list[str], list[SdcObject], bool, bool]:
+    """Split a ``-from`` / ``-to`` word into its clocks and objects.
+
+    Returns ``(clocks, objects, saw_filter, saw_object)``; ``saw_object``
+    is True when the word held a design-object collection at all, even
+    one whose names were all dropped (``[get_cells -filter …]``).
+
+    A word with no design-object collection in it is read exactly as the
+    pre-#328 parser read it — every name a clock, via
+    :func:`_extract_names` — so clock-only false paths keep their
+    meaning byte for byte. Otherwise each item is classified on its own:
+    ``get_cells`` / ``get_pins`` / ``get_ports`` / ``get_nets`` become
+    :class:`SdcObject` patterns, everything else is read as clocks.
+    """
+    items = [(item, _split_endpoint_item(item)) for item in _endpoint_items(word)]
+    if not any(parts[0] in _OBJECT_KINDS for _, parts in items):
+        names, saw_filter = _extract_names(word)
+        return names, [], saw_filter, False
+    clocks: list[str] = []
+    objects: list[SdcObject] = []
+    saw_filter = False
+    for item, (kind, names, sf, hier) in items:
+        saw_filter = saw_filter or sf
+        if kind in _OBJECT_KINDS:
+            assert kind is not None
+            objects.extend(SdcObject(kind, n, hier) for n in names)
+        else:
+            clocks.extend(_extract_names(item)[0])
+    return clocks, objects, saw_filter, True
 
 
 def _looks_numeric(word: str) -> bool:

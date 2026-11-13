@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rtl_buddy_cdc.sdc import parse
+from rtl_buddy_cdc.sdc import SdcObject, parse
 
 
 @pytest.fixture(autouse=True)
@@ -268,7 +268,9 @@ def test_false_path_clock_pair_is_treated_as_async() -> None:
     assert spec.are_async("b", "a")
 
 
-def test_false_path_through_is_partial_warning() -> None:
+def test_false_path_through_is_recorded_not_a_clock_pair() -> None:
+    """``-through`` narrows the false path to specific paths (#328): it is
+    recorded as an exception and never makes the clock pair async."""
     spec = parse(
         """
         create_clock -name a -period 10 [get_ports a]
@@ -277,17 +279,27 @@ def test_false_path_through_is_partial_warning() -> None:
         """
     )
     assert not spec.are_async("a", "b")
-    assert any("through" in w for w in spec.partial_warnings)
+    assert spec.false_path_pairs == set()
+    (exc,) = spec.false_path_exceptions
+    assert exc.from_clocks == ("a",)
+    assert exc.to_clocks == ("b",)
+    assert exc.through == ((SdcObject("pin", "x"),),)
+    assert spec.partial_warnings == []
 
 
-def test_false_path_pin_endpoint_is_partial_warning() -> None:
+def test_false_path_pin_endpoint_is_recorded() -> None:
+    """An object endpoint is recorded for netlist resolution (#328)."""
     spec = parse(
         """
         create_clock -name a -period 10 [get_ports a]
         set_false_path -from [get_pins inst/Q] -to [get_clocks a]
         """
     )
-    assert any("non-clock endpoints" in w for w in spec.partial_warnings)
+    (exc,) = spec.false_path_exceptions
+    assert exc.from_objects == (SdcObject("pin", "inst/Q"),)
+    assert exc.to_clocks == ("a",)
+    assert spec.false_path_pairs == set()
+    assert spec.partial_warnings == []
 
 
 def test_false_path_rise_from_fall_to_recognized() -> None:
@@ -630,7 +642,7 @@ def test_set_input_delay_bracket_clock_argument() -> None:
 
 # --- G-11 clock-graph validation (rtl-buddy-cdc#218) -----------------------
 
-from rtl_buddy_cdc.sdc import validate_clock_graph
+from rtl_buddy_cdc.sdc import Clock, ClockSpec, validate_clock_graph
 
 
 def test_g11_duplicate_clock_name_warns_at_parse_time() -> None:
@@ -649,14 +661,14 @@ def test_g11_duplicate_clock_name_warns_at_parse_time() -> None:
 
 
 def test_g11_same_port_in_multiple_clocks() -> None:
-    """Two distinct clock names listing the same port. ``clock_for_port``
-    is deterministic but the user's intent is ambiguous."""
-    spec = parse(
-        """
-        create_clock -name ck0 -period 10.0 [get_ports p]
-        create_clock -name ck1 -period  7.5 [get_ports p]
-        """
-    )
+    """Two distinct clock names listing the same port in a spec built
+    without :func:`parse` (no ``-add`` / replace record). ``clock_for_port``
+    is deterministic but the user's intent is ambiguous. A parsed SDC
+    never reaches this shape: without ``-add`` the later clock replaces
+    the earlier one (rtl-buddy-cdc#330, ``test_sdc_multi_clock_port``)."""
+    spec = ClockSpec()
+    spec.clocks["ck0"] = Clock(name="ck0", period=10.0, ports=("p",))
+    spec.clocks["ck1"] = Clock(name="ck1", period=7.5, ports=("p",))
     warnings = validate_clock_graph(spec)
     assert any("port 'p' is claimed by multiple clocks" in w for w in warnings), (
         warnings

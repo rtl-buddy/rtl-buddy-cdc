@@ -125,7 +125,8 @@ def test_crossings_parity_across_depths() -> None:
 def test_cli_flag_resolves_deep_flop(tmp_path: Path) -> None:
     """End to end through ``analyze``: ``summary.domain_unknown`` is non-zero
     at the default depth and zero at ``--clock-trace-depth 40``, while the
-    crossing/violation counts stay byte-identical."""
+    crossing count stays identical and the violations differ only by the
+    CDC-025 merge the newly resolved flop reveals."""
     _skip_if_missing()
     default_out = tmp_path / "default.json"
     _analyze_and_report(JSON, SDC, None, OutputFormat.json, default_out)
@@ -139,7 +140,13 @@ def test_cli_flag_resolves_deep_flop(tmp_path: Path) -> None:
 
     assert default["summary"]["domain_unknown"] > 0
     assert deep["summary"]["domain_unknown"] == 0
-    # PARITY: raising the budget must not move crossings or violations.
+    # PARITY: raising the budget must not move crossings or violations —
+    # except CDC-025 (#329), which judges the launch domains of the flops
+    # driving `q_out = deep_q ^ b_q`: once `deep_q` resolves to clk_a the
+    # output is a merge of two asynchronous domains, and only then.
     assert deep["summary"]["crossings"] == default["summary"]["crossings"]
-    assert deep["summary"]["violations"] == default["summary"]["violations"]
+    cdc_025 = [v for v in deep["violations"] if v["rule_id"] == "CDC-025"]
+    assert [v["severity"] for v in cdc_025] == ["error"]
+    assert not [v for v in default["violations"] if v["rule_id"] == "CDC-025"]
+    assert deep["summary"]["violations"] == default["summary"]["violations"] + 1
     assert default["summary"]["crossings"] >= 1

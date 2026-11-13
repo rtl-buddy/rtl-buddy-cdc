@@ -1,7 +1,7 @@
 ---
 title: Waivers and Reporting
 created: 2026-05-11
-updated: 2026-05-14
+updated: 2026-11-13
 type: concept
 tags: [waivers, reporting, cli, sarif, testing]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
@@ -28,12 +28,29 @@ The matcher tries the regex against three strings per violation, most specific �
 
 A hit on any of the three suppresses. First matching waiver wins (top-down).
 
+### Instance scope (`inst:`)
+
+Since #327 a line can add an instance scope, alone or after the object regex:
+
+```
+waive <RULE-ID|*> inst:<inst-regex> [reason ...]
+waive <RULE-ID|*> <regex> inst:<inst-regex> [reason ...]
+```
+
+- Matched with `re.search` (the same unanchored search as the object regex) against `"/".join(instance_path)` — `u_block_a/u_sync`, or `""` at top. `/` was chosen over `.` so patterns don't need `\.` everywhere.
+- Idioms: `inst:^u_ip(/|$)` = `u_ip` and everything under it; `inst:^$` = top-level findings only. A top-level finding never matches a pattern that needs a character.
+- With an object regex both must match; with `inst:` alone the scope decides.
+- `instance_path` is resolved at the CLI boundary **before** waivers run, so the scope sees it on every path (`analyze`, `lint`, greybox-lifted findings, ahead of `--baseline`).
+- A finding anchored on a blackbox instance (`CDC-BBX`, or a finding lifted from an analysed boundary module) keeps its reported `instance_path` (the parent) but is *scoped* to the instance itself, via the CLI's `instance_scope` resolver — so `inst:^u_ip(/|$)` waives the `u_ip` coverage gap too.
+- Compatibility: `inst:` is recognised only as the 3rd or 4th word, so older lines parse identically unless their object regex or reason begins with a literal `inst:`. Empty scope, bad regex and two scopes on one line are `ValueError`s, like a bad object regex.
+- JSON: `suppressed[].waiver.inst_regex` (pattern or `null`). An instance-only line carries `regex: ".*"`.
+
 ### Behavior
 
 - Suppressed findings are **kept in the report** (with matching reason and waiver line number), not silently dropped
 - They appear in JSON output and in SARIF as `suppressions`
 - They **don't drive the exit code** — a fully-waived run returns 0
-- Deliberately mimics the common `.swl` waiver-file workflow at a smaller surface: no scope qualifiers, severity overrides, or expiry dates
+- Deliberately mimics the common `.swl` waiver-file workflow at a smaller surface: one scope qualifier (`inst:`), no severity overrides or expiry dates
 
 ## Reporting
 

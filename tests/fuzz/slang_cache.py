@@ -12,7 +12,7 @@ Layout::
 
     tests/fuzz/.cache/
       <first-byte-of-hash>/
-        <full-hash>.slang10p0p0.pkl    - pickled netlist.Module
+        <full-hash>.slang10p0p0.bb.pkl - pickled (netlist.Module, blackboxes)
 
 The cache key includes the pyslang version because rule-pack
 parity is pinned per-major (see ``src/rtl_buddy_cdc/frontends/slang.py``
@@ -36,7 +36,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -68,6 +68,10 @@ def slang_available() -> bool:
 class SlangCacheResult:
     module: Module
     cache_hit: bool
+    # Blackbox boundary siblings keyed by module name — the second half
+    # of ``frontends.slang.elaborate_with_blackboxes`` (rtl-buddy-cdc#345),
+    # the same shape ``netlist.load_with_blackboxes`` gives the Yosys side.
+    blackboxes: dict[str, Module] = field(default_factory=dict)
 
 
 def _cache_path(case: RenderedCase) -> Path:
@@ -76,7 +80,10 @@ def _cache_path(case: RenderedCase) -> Path:
     version = slang_version()
     if version is None:
         raise RuntimeError("pyslang not importable; slang cache unavailable")
-    suffix = "slang" + version.replace(".", "p")
+    # ``.bb``: the pickle holds ``(module, blackboxes)`` since
+    # rtl-buddy-cdc#345. A pre-#345 pickle (a bare Module) has no suffix
+    # and is simply never read again.
+    suffix = "slang" + version.replace(".", "p") + ".bb"
     digest = case.content_hash
     bucket = CACHE_ROOT / digest[:2]
     bucket.mkdir(parents=True, exist_ok=True)
@@ -97,8 +104,8 @@ def build(case: RenderedCase) -> SlangCacheResult:
     path = _cache_path(case)
     if path.exists():
         with path.open("rb") as fh:
-            module: Module = pickle.load(fh)
-        return SlangCacheResult(module=module, cache_hit=True)
+            module, blackboxes = pickle.load(fh)
+        return SlangCacheResult(module=module, cache_hit=True, blackboxes=blackboxes)
 
     # Lazy import — keeps the no-slang default install path quiet.
     slang_fe = importlib.import_module("rtl_buddy_cdc.frontends.slang")
@@ -113,10 +120,10 @@ def build(case: RenderedCase) -> SlangCacheResult:
     if not sv_path.exists():
         sv_path.write_text(case.sv)
 
-    module = slang_fe.elaborate([sv_path], case.top)
+    module, blackboxes = slang_fe.elaborate_with_blackboxes([sv_path], case.top)
 
     # Pickle next to the SV so the cache layout stays uniform with
     # the Yosys side.
     with path.open("wb") as fh:
-        pickle.dump(module, fh)
-    return SlangCacheResult(module=module, cache_hit=False)
+        pickle.dump((module, blackboxes), fh)
+    return SlangCacheResult(module=module, cache_hit=False, blackboxes=blackboxes)

@@ -1,0 +1,540 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_output_contracts_complete": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:8.1-56.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "d_a": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "d_b": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "bus_a": {
+          "direction": "input",
+          "bits": [ 6, 7, 8, 9 ]
+        },
+        "en_b": {
+          "direction": "input",
+          "bits": [ 10 ]
+        },
+        "q_a": {
+          "direction": "output",
+          "bits": [ 11 ]
+        },
+        "q_b": {
+          "direction": "output",
+          "bits": [ 12 ]
+        },
+        "q_bus": {
+          "direction": "output",
+          "bits": [ 13, 14, 15, 16 ]
+        },
+        "q_pair_a": {
+          "direction": "output",
+          "bits": [ 17 ]
+        },
+        "q_pair_b": {
+          "direction": "output",
+          "bits": [ 18 ]
+        },
+        "clk_fwd": {
+          "direction": "output",
+          "bits": [ 2 ]
+        },
+        "clk_gated": {
+          "direction": "output",
+          "bits": [ 19 ]
+        },
+        "div_o": {
+          "direction": "output",
+          "bits": [ 20 ]
+        },
+        "tie_o": {
+          "direction": "output",
+          "bits": [ "0" ]
+        },
+        "thru_o": {
+          "direction": "output",
+          "bits": [ 4 ]
+        }
+      },
+      "cells": {
+        "$and$tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:51$6": {
+          "hide_name": 1,
+          "type": "$and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:51.24-51.36"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 3 ],
+            "B": [ 21 ],
+            "Y": [ 19 ]
+          }
+        },
+        "$not$tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:36$2": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:36.21-36.27"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 20 ],
+            "Y": [ 22 ]
+          }
+        },
+        "$procdff$10": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:39.5-43.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 5 ],
+            "Q": [ 18 ]
+          }
+        },
+        "$procdff$11": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:39.5-43.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 10 ],
+            "Q": [ 21 ]
+          }
+        },
+        "$procdff$12": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:32.5-37.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$procdff$13": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:32.5-37.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 6, 7, 8, 9 ],
+            "Q": [ 13, 14, 15, 16 ]
+          }
+        },
+        "$procdff$14": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:32.5-37.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 17 ]
+          }
+        },
+        "$procdff$15": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:32.5-37.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 22 ],
+            "Q": [ 20 ]
+          }
+        },
+        "$procdff$7": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:48.5-48.51"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 19 ],
+            "D": [ 5 ],
+            "Q": [ 23 ]
+          }
+        },
+        "$procdff$8": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:47.5-47.46"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 20 ],
+            "D": [ 4 ],
+            "Q": [ 24 ]
+          }
+        },
+        "$procdff$9": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:39.5-43.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 5 ],
+            "Q": [ 12 ]
+          }
+        }
+      },
+      "netnames": {
+        "$0\\div_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:32.5-37.8"
+          }
+        },
+        "$0\\en_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:39.5-43.8"
+          }
+        },
+        "$0\\gated_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:48.5-48.51"
+          }
+        },
+        "$0\\q_a[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:32.5-37.8"
+          }
+        },
+        "$0\\q_b[0:0]": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:39.5-43.8"
+          }
+        },
+        "$0\\q_bus[3:0]": {
+          "hide_name": 1,
+          "bits": [ 6, 7, 8, 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:32.5-37.8"
+          }
+        },
+        "$0\\q_pair_a[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:32.5-37.8"
+          }
+        },
+        "$0\\q_pair_b[0:0]": {
+          "hide_name": 1,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:39.5-43.8"
+          }
+        },
+        "$0\\slow_q[0:0]": {
+          "hide_name": 1,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:47.5-47.46"
+          }
+        },
+        "$and$tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:51$6_Y": {
+          "hide_name": 1,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:51.24-51.36"
+          }
+        },
+        "$not$tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:36$2_Y": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:36.21-36.27"
+          }
+        },
+        "bus_a": {
+          "hide_name": 0,
+          "bits": [ 6, 7, 8, 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:13.24-13.29"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:9.24-9.29"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:10.24-10.29"
+          }
+        },
+        "clk_fwd": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:20.24-20.31"
+          }
+        },
+        "clk_gated": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:21.24-21.33"
+          }
+        },
+        "d_a": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:11.24-11.27"
+          }
+        },
+        "d_b": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:12.24-12.27"
+          }
+        },
+        "div_o": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:22.24-22.29"
+          }
+        },
+        "div_q": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:28.11-28.16"
+          }
+        },
+        "en_b": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:14.24-14.28"
+          }
+        },
+        "en_q": {
+          "hide_name": 0,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:27.11-27.15"
+          }
+        },
+        "gated_q": {
+          "hide_name": 0,
+          "bits": [ 23 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:30.11-30.18"
+          }
+        },
+        "q_a": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:15.24-15.27"
+          }
+        },
+        "q_b": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:16.24-16.27"
+          }
+        },
+        "q_bus": {
+          "hide_name": 0,
+          "bits": [ 13, 14, 15, 16 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:17.24-17.29"
+          }
+        },
+        "q_pair_a": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:18.24-18.32"
+          }
+        },
+        "q_pair_b": {
+          "hide_name": 0,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:19.24-19.32"
+          }
+        },
+        "slow_q": {
+          "hide_name": 0,
+          "bits": [ 24 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:29.11-29.17"
+          }
+        },
+        "thru_o": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:24.24-24.30"
+          }
+        },
+        "tie_o": {
+          "hide_name": 0,
+          "bits": [ "0" ],
+          "attributes": {
+            "src": "tests/fixtures/good_output_contracts_complete/good_output_contracts_complete.sv:23.24-23.29"
+          }
+        }
+      }
+    }
+  }
+}

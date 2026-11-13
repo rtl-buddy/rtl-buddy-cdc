@@ -80,6 +80,8 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "CDC-022": "CDC primitive with insufficient DEST_SYNC_FF depth",
     "CDC-023": "Clock net driven by a combine of two declared clocks",
     "CDC-026": "Dual-clock memory read with no synchronised control",
+    "CDC-024": "Top-level output launched asynchronously to its set_output_delay clock",
+    "CDC-025": "Top-level output from clocked logic with no set_output_delay contract",
 }
 
 
@@ -413,7 +415,14 @@ def _waiver_provenance(w: Waiver) -> str:
     clickable and unambiguous against the waiver-file form. A pragma
     closed by an ``enable-rule`` renders its whole block as
     ``src.sv:42-58``, so a block-scoped suppression is visibly
-    narrower than one that runs to the end of the file."""
+    narrower than one that runs to the end of the file. A finding an
+    SDC false path acknowledged (#328) renders as ``sdc <file>:<line>``
+    (the file / line parts drop out when unknown)."""
+    if w.sdc is not None:
+        where = w.sdc.file or ""
+        if w.sdc.line is not None:
+            where = f"{where}:{w.sdc.line}" if where else f"line {w.sdc.line}"
+        return f"sdc {where}" if where else "sdc"
     if w.origin is None:
         return f"waiver line {w.source_line}"
     if w.end_line is not None:
@@ -424,7 +433,12 @@ def _waiver_provenance(w: Waiver) -> str:
 def _render_suppressed(result: AnalysisResult, out: IO[str], s: _Style) -> None:
     if not result.suppressed:
         return
-    out.write(f"\n{s.bold}Suppressed by waivers{s.reset} ({len(result.suppressed)})\n")
+    # The heading only grows when an SDC exception is among them (#328),
+    # so a waiver-only report is unchanged.
+    title = "Suppressed by waivers"
+    if any(sup.waiver.sdc is not None for sup in result.suppressed):
+        title = "Suppressed by waivers and SDC exceptions"
+    out.write(f"\n{s.bold}{title}{s.reset} ({len(result.suppressed)})\n")
     for sup in result.suppressed:
         rule_id = sup.violation.rule_id
         reason = sup.waiver.reason or "(no reason given)"
@@ -518,23 +532,7 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
         "suppressed": [
             {
                 **_violation_to_dict(s.violation, result.module),
-                "waiver": {
-                    "rule_pattern": s.waiver.rule_pattern,
-                    "regex": s.waiver.regex.pattern,
-                    "reason": s.waiver.reason,
-                    # ``source_line`` is a line in ``origin`` when that
-                    # is set (an in-RTL pragma), else in the --waivers
-                    # file. ``origin`` / ``end_line`` are added keys, so
-                    # a consumer that ignores them keeps reading the old
-                    # shape. ``end_line`` closes the pragma's half-open
-                    # ``[source_line, end_line)`` block; null means the
-                    # pragma runs to the end of its file (and is always
-                    # null for a waiver-file entry, which has no line
-                    # scope).
-                    "source_line": s.waiver.source_line,
-                    "origin": s.waiver.origin,
-                    "end_line": s.waiver.end_line,
-                },
+                "waiver": _waiver_to_dict(s.waiver),
             }
             for s in result.suppressed
         ],
@@ -542,8 +540,43 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             _violation_to_dict(v, result.module) for v in result.baseline_carryover
         ],
     }
-    json.dump(payload, out, indent=2)
+    # ``dumps`` + one write, not ``dump``: ``json.dump`` always takes the
+    # pure-Python encoder, while ``dumps`` uses the C encoder whenever the
+    # interpreter's C encoder handles ``indent`` (it does on the 3.13 this
+    # repo pins). The bytes are the same either way (#324).
+    out.write(json.dumps(payload, indent=2))
     out.write("\n")
+
+
+def _waiver_to_dict(w: Waiver) -> dict[str, object]:
+    out: dict[str, object] = {
+        "rule_pattern": w.rule_pattern,
+        "regex": w.regex.pattern,
+        "reason": w.reason,
+        # ``source_line`` is a line in ``origin`` when that
+        # is set (an in-RTL pragma), else in the --waivers
+        # file. ``origin`` / ``end_line`` are added keys, so
+        # a consumer that ignores them keeps reading the old
+        # shape. ``end_line`` closes the pragma's half-open
+        # ``[source_line, end_line)`` block; null means the
+        # pragma runs to the end of its file (and is always
+        # null for a waiver-file entry, which has no line
+        # scope).
+        "source_line": w.source_line,
+        "origin": w.origin,
+        "end_line": w.end_line,
+        # ``inst:`` scope (#327); null when the line has none.
+        "inst_regex": (w.inst_regex.pattern if w.inst_regex is not None else None),
+    }
+    if w.sdc is not None:
+        # Additive (#328): present only on a finding an SDC false path
+        # acknowledged — never on a waiver-file / pragma entry.
+        out["sdc"] = {
+            "statement": w.sdc.statement,
+            "line": w.sdc.line,
+            "file": w.sdc.file,
+        }
+    return out
 
 
 def _by_instance(violations: list[Violation]) -> list[dict]:
@@ -603,6 +636,10 @@ def _crossing_to_dict(c: Crossing) -> dict:
             "instance": c.dst_boundary[0],
             "port": c.dst_boundary[1],
         }
+    # Additive (#330): only on a crossing asynchronous through a clock
+    # co-located on a multi-clock port, never on any other design.
+    if c.async_via is not None:
+        out["async_via"] = {"src_clock": c.async_via[0], "dst_clock": c.async_via[1]}
     return out
 
 
@@ -702,7 +739,7 @@ def render_sarif(result: AnalysisResult, out: IO[str]) -> None:
             }
         ],
     }
-    json.dump(sarif, out, indent=2)
+    out.write(json.dumps(sarif, indent=2))  # see render_json
     out.write("\n")
 
 

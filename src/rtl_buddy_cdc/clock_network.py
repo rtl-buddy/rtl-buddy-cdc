@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from rtl_buddy_cdc.cells import MUX_PINS
 from rtl_buddy_cdc.domain import assign_domains
 from rtl_buddy_cdc.flops import Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
@@ -103,6 +104,7 @@ def find_clock_network_crossings(
         pin_clocks=pin_clocks,
         clock_for_port=clock_for_port,
         max_depth=max_depth,
+        case_analysis=clock_spec.case_analysis if clock_spec is not None else None,
     )
     flop_by_name = {fd.flop.cell.name: fd.flop for fd in flop_domains}
     domain_by_name = {fd.flop.cell.name: fd.clock for fd in flop_domains}
@@ -327,7 +329,7 @@ def _control_kind_for(control_pin: str, cell_type: str) -> ControlKind:
     enable). The pin-name list is the same heuristic the rule pack uses
     in :data:`rtl_buddy_cdc.rules._CDC_010_HEURISTIC_PINS`.
     """
-    if cell_type in {"$mux", "$pmux", "$_MUX_", "$_MUX4_", "$_MUX8_", "$_MUX16_"}:
+    if cell_type in MUX_PINS:
         return "mux-select"
     if control_pin.upper() in _GATE_ENABLE_PINS:
         return "gate-enable"

@@ -54,6 +54,7 @@ flowchart LR
 
 ## Files
 
+- `bad_reset_crossing.gates.json`
 - `bad_reset_crossing.json`
 - `bad_reset_crossing.sdc`
 - `bad_reset_crossing.sv`
