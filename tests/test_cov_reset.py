@@ -10,8 +10,7 @@ suite leaves uncovered:
   arms against a hand-built :class:`Module`.
 * :mod:`rtl_buddy_cdc.reset_domain` — the defensive arms of the
   per-flop classifier (constant-driven reset, untracked-driver reset,
-  reset-bearing cell missing its pin), the ``_polarity_from_param``
-  empty-string default, the ``iter_reset_sync_chains`` walk on the
+  reset-bearing cell missing its pin), the ``iter_reset_sync_chains`` walk on the
   ``bad_reset_sync_deassert_polarity`` fixture, and the
   ``find_reset_crossings`` reset-less skip.
 * :mod:`rtl_buddy_cdc.reset_domain_map` — the serializer's
@@ -37,7 +36,6 @@ from rtl_buddy_cdc.netlist import Cell, Module, Netname, Port
 from rtl_buddy_cdc.reset_domain import (
     ResetSource,
     _classify_reset_source,
-    _polarity_from_param,
     assign_reset_domains,
     find_reset_crossings,
     iter_reset_sync_chains,
@@ -369,15 +367,6 @@ def test_classify_reset_source_non_q_driver_is_comb() -> None:
     module = Module(name="top", ports={}, cells={}, netnames={})
     name, kind = _classify_reset_source(module, 7, drivers={7: ("u_and", "Y")})
     assert (name, kind) == ("", "comb")
-
-
-def test_polarity_from_param_empty_defaults_low() -> None:
-    """An empty polarity parameter defaults to the active-low idiom;
-    a trailing ``1`` is active-high; anything else is low."""
-    assert _polarity_from_param("") == "low"
-    assert _polarity_from_param("1") == "high"
-    assert _polarity_from_param("0") == "low"
-    assert _polarity_from_param("00000000000000000000000000000001") == "high"
 
 
 def test_assign_reset_domains_missing_pin_is_resetless() -> None:

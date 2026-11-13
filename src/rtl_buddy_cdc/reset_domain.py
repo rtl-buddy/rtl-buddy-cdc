@@ -14,9 +14,11 @@ needs to reason about resets without each rule re-walking the netlist:
 
 The classifier deliberately stays close to what the Yosys netlist
 hands us. Polarity comes straight from the ``$adff*`` / ``$sdff*``
-parameter (Yosys preserves it as a multi-bit binary string). Sync vs.
-async is derived from the cell type: ``$adff*`` / ``$aldff*`` /
-``$dffsr*`` are async, ``$sdff*`` are sync. The reset source is
+parameter (Yosys preserves it as a multi-bit binary string), or from
+the gate-level type name (``$_DFF_PN0_``: active-low async reset).
+Sync vs. async is derived from the cell type: ``$adff*`` / ``$aldff*``
+/ ``$dffsr*`` and their ``$_DFF_XXV_`` / ``$_ALDFF*`` / ``$_DFFSR*``
+gate forms are async, ``$sdff*`` / ``$_SDFF*`` are sync. The reset source is
 classified by walking the reset bit back through the standard
 backward-fanin: a top-level input port → ``"port"``; a flop's ``Q``
 output → ``"inferred"`` (with the driving flop's cell name as the
@@ -44,31 +46,16 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Literal
 
-from rtl_buddy_cdc.flops import Flop, find_flops
+from rtl_buddy_cdc.flops import Flop, find_flops, flop_reset
 from rtl_buddy_cdc.netlist import Bit, Module
 
-# Cell types with an asynchronous reset pin. Each maps to the pin name
-# carrying the reset and the parameter that documents its polarity.
-# ``$dffsr`` / ``$dffsre`` are SR-latch flops with separate ``SET`` and
-# ``CLR`` async pins; we surface ``CLR`` as the canonical reset to
-# match the dominant industry idiom (active-low clear). ``SET`` semantics
-# are different enough that we punt on them in this foundation pass —
-# the rule pack can layer SET-specific handling on top later.
-_ASYNC_RESET_PINS: dict[str, tuple[str, str]] = {
-    "$adff": ("ARST", "ARST_POLARITY"),
-    "$adffe": ("ARST", "ARST_POLARITY"),
-    "$aldff": ("ALOAD", "ALOAD_POLARITY"),
-    "$aldffe": ("ALOAD", "ALOAD_POLARITY"),
-    "$dffsr": ("CLR", "CLR_POLARITY"),
-    "$dffsre": ("CLR", "CLR_POLARITY"),
-}
-
-# Cell types with a synchronous reset pin.
-_SYNC_RESET_PINS: dict[str, tuple[str, str]] = {
-    "$sdff": ("SRST", "SRST_POLARITY"),
-    "$sdffe": ("SRST", "SRST_POLARITY"),
-    "$sdffce": ("SRST", "SRST_POLARITY"),
-}
+# Which pin carries a flop's reset, its kind and its polarity come from
+# :func:`rtl_buddy_cdc.flops.flop_reset`, which reads the coarse
+# ``$adff*.ARST`` / ``$aldff*.ALOAD`` / ``$dffsr*.CLR`` / ``$sdff*.SRST``
+# parameters and the gate-level ``$_DFF_XXV_`` / ``$_SDFF*`` /
+# ``$_DFFSR*`` / ``$_ALDFF*`` type names alike (rtl-buddy-cdc#336).
+# ``$dffsr`` / ``$_DFFSR_`` surface the clear pin as the reset; the set
+# pin is a separate concern the rule pack can layer on later.
 
 
 ResetType = Literal["sync", "async"]
@@ -129,18 +116,12 @@ def assign_reset_domains(module: Module) -> dict[str, ResetDomain]:
     drivers = _bit_drivers(module)
     out: dict[str, ResetDomain] = {}
     for f in find_flops(module):
-        ctype = f.cell.type
-        if ctype in _ASYNC_RESET_PINS:
-            pin, polarity_param = _ASYNC_RESET_PINS[ctype]
-            reset_type: ResetType = "async"
-        elif ctype in _SYNC_RESET_PINS:
-            pin, polarity_param = _SYNC_RESET_PINS[ctype]
-            reset_type = "sync"
-        else:
+        rst = flop_reset(f.cell)
+        if rst is None:
             out[f.cell.name] = ResetDomain(flop=f.cell.name, reset=None)
             continue
 
-        bits = f.cell.connections.get(pin, ())
+        bits = rst.bits
         if not bits:
             # Defensive: a flop typed as reset-bearing but missing the
             # pin connection is malformed. Treat it as "no reset" rather
@@ -148,7 +129,7 @@ def assign_reset_domains(module: Module) -> dict[str, ResetDomain]:
             out[f.cell.name] = ResetDomain(flop=f.cell.name, reset=None)
             continue
 
-        polarity = _polarity_from_param(f.cell.parameters.get(polarity_param, "1"))
+        polarity: ResetPolarity = "high" if rst.polarity == 1 else "low"
         rst_bit = bits[0]
         name, kind = _classify_reset_source(module, rst_bit, drivers)
         out[f.cell.name] = ResetDomain(
@@ -156,7 +137,7 @@ def assign_reset_domains(module: Module) -> dict[str, ResetDomain]:
             reset=ResetSource(
                 name=name,
                 polarity=polarity,
-                type=reset_type,
+                type=rst.kind,
                 source=kind,
             ),
         )
@@ -253,8 +234,8 @@ def find_reset_synchronizers(
 
     A flop is recognised iff:
 
-    * it is async-reset (has an ``ARST`` / ``ALOAD`` / ``CLR`` pin
-      per :data:`_ASYNC_RESET_PINS`),
+    * it is async-reset (has an ``ARST`` / ``ALOAD`` / ``CLR`` pin, or
+      gate-level ``R`` / ``L``, per :func:`~rtl_buddy_cdc.flops.flop_reset`),
     * the chain walking backward through its ``D`` pin (following
       same-clock, same-reset-source flops only) reaches a flop whose
       ``D`` is a constant within ``min_depth - 1`` hops, and
@@ -416,20 +397,6 @@ def _trace_reset_sync_chain(
         chain.append(drv_name)
         cur_name = drv_name
     return ([], None)
-
-
-def _polarity_from_param(raw: str) -> ResetPolarity:
-    """Decode Yosys' parameter polarity string.
-
-    Yosys emits parameters as binary strings (``'1'``, ``'0'``, or the
-    32-bit padded form like ``'00000000000000000000000000000001'``).
-    A trailing ``1`` bit means active-high; anything else (including
-    the empty string) is treated as active-low — the conservative
-    default for the active-low reset idiom that dominates the field.
-    """
-    if not raw:
-        return "low"
-    return "high" if raw[-1] == "1" else "low"
 
 
 ResetCrossingKind = Literal[

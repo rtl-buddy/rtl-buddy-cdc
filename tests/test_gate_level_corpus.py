@@ -63,8 +63,9 @@ CDC-001s (or into nothing) is exactly the regression this corpus
 exists to find. On the measured corpus a set-only contract would hide
 only count-level divergences that are real bugs anyway
 (``bad_scan_mode_functional_crossing``, CDC-001 2 → 1, and on the
-``synth`` leg ``bad_untyped_sync_reset_{mux,srst}``, CDC-011 2 → 1),
-so the stricter contract costs nothing.
+``synth`` leg ``bad_untyped_sync_reset_{mux,srst}``, CDC-011 2 → 1,
+all three fixed by rtl-buddy-cdc#336), so the stricter contract costs
+nothing.
 
 Known-divergence allowlist
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -150,39 +151,15 @@ _FRONT_HALF_CLEANUP: dict[str, str] = {
 # it. "Limitation": the information survives only in another form (or not
 # at all) and the rule's structural definition does not reach it.
 
-_R_RESET_PIN = (
-    "analyzer bug: gate-level flops carry async/sync reset on pin R "
-    "($_DFF_PN0_, $_DFFE_PN0P_, $_SDFF_*, $_DFFSR_*), but reset_domain "
-    "and the RDC / CDC-015 / CDC-011 reset paths only read $adff ARST and "
-    "$sdff SRST"
-)
-_R_CLK_POLARITY = (
-    "analyzer bug: rules._clk_polarity decodes a bare N segment "
-    "($_DFF_N_) but reads $_DFF_NN0_ (negedge, async reset) as posedge, "
-    "so CDC-016 misses the opposite-edge stage"
-)
-_R_MUX = (
-    "analyzer bug: $_MUX_ is not matched where the analyzer looks for "
-    "$mux (sync-reset mux in a sync chain, scan-mode mux, toggle hold mux)"
-)
-_R_CLOCK_GATE = (
-    "analyzer bug: the clock tracer's gate set (domain._GATE_TYPES) has no "
-    "$_AND_ / $_OR_ / ..., so a gated or combined clock is not traced "
-    "through gate-level cells"
-)
-_R_RESET_PIN_AND_MUX = (
-    "analyzer bug: reset pin R not read (see the reset-pin rows) and the "
-    "derived-reset logic is a $_MUX_ the reset tracer does not walk"
-)
+# rtl-buddy-cdc#336 (reset pin R, gate-flop clock polarity, $_MUX_,
+# gate-level clock gating) is fixed; its rows are gone. The causes below
+# are what remains.
+
 _R_BIT_BLAST = (
     "limitation: a W-bit flop becomes W 1-bit flops, and the bus rules "
     "(CDC-004 / 012 / 020, gated- and gray-bus acceptance, CDC-014's "
     "width guard) key on cell width; the bus survives only as a "
     "multi-bit netname"
-)
-_R_MUX_AND_BIT_BLAST = (
-    "analyzer bug + limitation: the clock-mux $_MUX_ is not traced "
-    "(CDC-011 lost) and the bus is bit-blasted (CDC-004 lost)"
 )
 _R_DECODER = (
     "limitation: techmap splits the shared multi-bit decoder cell into "
@@ -198,6 +175,18 @@ _R_ENABLE_TOGGLE = (
     "(D=~Q on EN) and CDC-013 only recognises a toggle through a hold "
     "$mux, so an enable-flop toggle is missed at RTL level too"
 )
+_R_GATE_LEG_ORDER = (
+    "analyzer bug (RTL-level): the rule context traces clocks without "
+    "the SDC's clock set, so a clock gate whose FIRST input is an enable "
+    "port resolves to that port (first-leg-wins) and CDC-021 calls it an "
+    "undeclared clock. RTL `en & clk` fires the same way; abc emits "
+    "$_AND_(A=en_b, B=$_AND_(clk, en_a)) where the RTL has $and(clk, en)"
+)
+_R_ABC_RESET_INVERTER = (
+    "lowering: abc rewrites the constant-leg $mux (rst_n ? 0 : 1) that "
+    "drives the clear pin into a $_NOT_; RDC-006 (muxed async reset) "
+    "keys on a mux driving the reset pin, and an inverter is not one"
+)
 
 
 def _both(reason: str) -> dict[str, str]:
@@ -205,39 +194,12 @@ def _both(reason: str) -> dict[str, str]:
 
 
 _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
-    # Reset pin R.
-    "bad_marked_reset_polarity": _both(_R_RESET_PIN),
-    "bad_primary_reset_unsynced": _both(_R_RESET_PIN),
-    "bad_rdc_002_polarity_mismatch": _both(_R_RESET_PIN),
-    "bad_rdc_003_sync_reset_crossing": _both(_R_RESET_PIN),
-    "bad_rdc_004_comb_driven_reset": _both(_R_RESET_PIN),
-    "bad_rdc_005_multi_source_reset": _both(_R_RESET_PIN),
-    "bad_reset_crossing": _both(_R_RESET_PIN),
-    "bad_reset_sync_deassert_polarity": {
-        "gates": _R_RESET_PIN,
-        "synth": _R_OPT_CONST_FLOP,
-    },
-    "bad_reset_tree": _both(_R_RESET_PIN),
-    "bad_sync_chain_foreign_reset": _both(_R_RESET_PIN),
-    "bad_untyped_sync_reset_mux": {"synth": _R_RESET_PIN},
-    "bad_untyped_sync_reset_srst": {"synth": _R_RESET_PIN},
-    "flop_zoo_crossing": _both(_R_RESET_PIN),
-    "bad_derived_async_reset_unsync": _both(_R_RESET_PIN_AND_MUX),
-    # Clock polarity.
-    "bad_opposite_edge_sync": _both(_R_CLK_POLARITY),
-    # $_MUX_.
-    "bad_scan_mode_functional_crossing": _both(_R_MUX),
-    "good_scan_mode_ignored": _both(_R_MUX),
-    "good_2ff_sync_srst": {"gates": _R_MUX},
-    "good_packed_shift_sync_srst": {"gates": _R_MUX},
-    "bad_toggle_no_xor_tail": {"gates": _R_MUX, "synth": _R_ENABLE_TOGGLE},
-    "bad_unconstrained_input_muxed_clock": _both(_R_MUX_AND_BIT_BLAST),
-    # Gate-level clock gating / combining.
-    "bad_clock_gating_async_enable": _both(_R_CLOCK_GATE),
-    "bad_unconstrained_input_derived_clock": _both(_R_CLOCK_GATE),
-    "clock_combine_gate": _both(_R_CLOCK_GATE),
-    "clock_combine_generated": _both(_R_CLOCK_GATE),
-    "inferred_gate_clock": _both(_R_CLOCK_GATE),
+    # Lowering / optimisation changes the structure under test.
+    "bad_reset_sync_deassert_polarity": {"synth": _R_OPT_CONST_FLOP},
+    "flop_zoo_crossing": {"synth": _R_ABC_RESET_INVERTER},
+    # RTL-level analyzer bugs that the gate flows happen to expose.
+    "bad_toggle_no_xor_tail": {"synth": _R_ENABLE_TOGGLE},
+    "bad_clock_gating": {"synth": _R_GATE_LEG_ORDER},
     # Bit-blasted buses.
     "bad_async_fifo_binary_ptrs": _both(_R_BIT_BLAST),
     "bad_bus_crossing": _both(_R_BIT_BLAST),
@@ -248,6 +210,9 @@ _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     "bad_quasi_static_unmarked": _both(_R_BIT_BLAST),
     "bad_sliced_bus_reconvergence": _both(_R_BIT_BLAST),
     "bad_typed_port_bus_crossing": _both(_R_BIT_BLAST),
+    # CDC-011 (the clock-mux $_MUX_) agrees since rtl-buddy-cdc#336;
+    # CDC-004 on the bit-blasted bus is still lost.
+    "bad_unconstrained_input_muxed_clock": _both(_R_BIT_BLAST),
     "bad_unconstrained_input_bus_two_domains": _both(_R_BIT_BLAST),
     "blackbox_leaf_crossing": _both(_R_BIT_BLAST),
     "foreign_input_no_abstract": _both(_R_BIT_BLAST),

@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
+from rtl_buddy_cdc.cells import GATE_LOGIC_INPUTS, GATE_LOGIC_TYPES, MUX_PINS
 from rtl_buddy_cdc.flops import (
     Flop,
     find_flops,
@@ -311,12 +312,18 @@ _BUFFER_TYPES: frozenset[str] = frozenset(
     {"$not", "$logic_not", "$buf", "$pos", "$reduce_bool", "$_BUF_", "$_NOT_"}
 )
 # Cell types that combine two clock-network signals (one is the actual
-# clock, the other an enable) — common ICG shapes.
-_GATE_TYPES: frozenset[str] = frozenset(
-    {"$and", "$or", "$logic_and", "$logic_or", "$xor", "$xnor"}
+# clock, the other an enable) — common ICG shapes. The gate-level forms
+# (``$_AND_``, ``$_NAND_``, ``$_AOI3_`` …) are what ``techmap`` / ``abc``
+# turn the coarse ones into (rtl-buddy-cdc#336); their inputs are
+# :data:`cells.GATE_LOGIC_INPUTS`.
+_GATE_TYPES: frozenset[str] = (
+    frozenset({"$and", "$or", "$logic_and", "$logic_or", "$xor", "$xnor"})
+    | GATE_LOGIC_TYPES
 )
-# Cell types that select one of several clock candidates.
-_MUX_TYPES: frozenset[str] = frozenset({"$mux", "$pmux"})
+# Cell types that select one of several clock candidates, with their
+# data and select pins (``$mux`` / ``$pmux`` and the gate-level
+# ``$_MUX_`` / ``$_NMUX_`` / ``$_MUX4_`` … family).
+_MUX_TYPES: frozenset[str] = frozenset(MUX_PINS)
 
 # Cell types whose output lane ``i`` depends only on input lane ``i`` —
 # width-preserving bitwise ops and mux data paths. For these, a bit entering on
@@ -605,7 +612,7 @@ def _trace(
     if ctype in _GATE_TYPES:
         roots: list[str] = []
         legs: list[tuple[Bit, str | None]] = []
-        for in_port in ("A", "B"):
+        for in_port in GATE_LOGIC_INPUTS:
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
                 r = _leg(in_bits[0])
@@ -625,7 +632,8 @@ def _trace(
     # is correct and it is deliberately NOT routed through the combining
     # decline above.
     if ctype in _MUX_TYPES:
-        for in_port in ("A", "B"):
+        data_pins, select_pins = MUX_PINS[ctype]
+        for in_port in data_pins:
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
                 root = _leg(in_bits[0])
@@ -633,7 +641,11 @@ def _trace(
                     # The select steers which leg reaches the flop; it
                     # is the one input of a clock mux that is not a
                     # clock. This is where a DFT scan mux is seen (#45).
-                    _record_control(tuple(cell.connections.get("S", ())))
+                    _record_control(
+                        tuple(
+                            b for p in select_pins for b in cell.connections.get(p, ())
+                        )
+                    )
                     return root
         return None
 
