@@ -307,6 +307,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`set_input_delay` / `set_output_delay` silently ignored a typo'd
+  clock and glob port targets** (rtl-buddy-cdc#357).
+  - A `-clock` naming no `create_clock` / `create_generated_clock` now
+    raises an SDC warning. It is decided at the end of the file, so a
+    clock declared later counts, and a virtual clock (`create_clock
+    -name V -period P` with no port) is a declared clock. The typing
+    itself is kept, as before.
+  - Port targets are resolved against the top-level ports with the
+    object-pattern matcher of `sdc_objects.py`. A glob (`[get_ports
+    d*]`, `{d?}`, bare `d*`) types every matching port of the command's
+    direction that carries no declared clock; before, it was stored
+    literally and typed nothing. A bus index (`{d[3]}`) types the whole
+    port `d`, as it already did by accident (the name was split into
+    `d` and a stray `3`); port typing is per port, and a port whose
+    bits are given different clocks is now warned about. A target that
+    matches no port is warned about.
+  - `ClockSpec` gains `port_delays` (one `PortDelay` per statement,
+    targets as written); `sdc_objects.resolve_port_delays` rewrites
+    `port_clock`, and the CLI calls it right after parsing. No
+    committed fixture changes verdict.
+
+- **Text report printed an empty title for 13 rules** (rtl-buddy-cdc#355).
+  `CDC-009` … `CDC-013`, `CDC-018` … `CDC-021`, `RDC-006` … `RDC-008`
+  and `CDC-BBX` had no entry in the reporter's rule-title table, so the
+  text report's group header read `CDC-018 —` and the SARIF rule
+  `shortDescription` fell back to the bare rule id. Every rule now has
+  a one-line title in the README's wording, and a test fails if a rule
+  is registered without one.
+
+- **RDC-006 fired on a constant-leg mux driving an async reset**
+  (rtl-buddy-cdc#354). A `$mux` / `$_MUX_` (or `$pmux`) whose data legs
+  are all constants, such as the `rst_n ? 1'b0 : 1'b1` Yosys builds for
+  a `$dffsr` clear pin, is an inverter or buffer of its select, not a
+  selection between reset sources. RDC-006 now skips it, judged per
+  output lane, so the RTL netlist and the synthesised one (where `abc`
+  turns the mux into a `$_NOT_`) agree. RDC-005's explicit-mux
+  exemption no longer covers such a mux either: two resets combined on
+  its select converge as they would through the inverter. Verdict
+  change: `flop_zoo_crossing` loses its RDC-006 (now 5 × CDC-001 only),
+  and its gate-level allowlist row is removed.
+
 - **CDC-001 missed a synchroniser stage exported straight to an output
   port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
   walk counted cell input pins only, so a first stage whose `Q` drove a
@@ -495,7 +536,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `empty` / `full` flags) read undriven placeholder bits; it now reads
   the assign's driver.
 
+- **slang frontend: arrays of instances** (rtl-buddy-cdc#353) —
+  `sync2 u_sync[1:0] (...)` produced no cells at all on the pyslang
+  path, so the instances, their flops and every crossing through them
+  were missing with no diagnostic; the Yosys path reported them.
+  - Each element is now lowered as its own instance, named `u_sync[0]`,
+    `u_sync[1]` as Yosys `flatten` names it, so cell names, netnames,
+    `instance_path` and `inst:` waivers read the same on both
+    frontends. This covers inlined modules and blackbox / greybox
+    boundary cells (one cell per element, with pin directions and
+    parameters), arrays inside child modules and inside `for`-generate
+    entries, and multi-dimensional arrays (`u[1:0][0:1]` → `u[1][0]` …,
+    which Yosys' parser rejects).
+  - Connections follow IEEE 1800-2017 23.3.3.5: a connection as wide as
+    the port goes to every element; one `port width × elements` wide is
+    split with the leftmost index of the range taking the leftmost bits.
+    Yosys `read_verilog` does the same for a descending range
+    (`[1:0]`); for an ascending one (`[0:1]`) it gives the lowest index
+    the least significant slice, so on such an array the two frontends
+    attach the same bits to opposite element names (verdicts and the
+    set of instance paths are unaffected).
+  - A bit- or part-select of a vector not declared `[N-1:0]`
+    (`a[1]` of `logic [4:1] a`, `b[0]` of `logic [0:3] b`) picked the
+    wrong bits, or an `$_UNKNOWN_` driver, and an indexed part-select
+    (`c[4 +: 2]`, `c[4 -: 2]`) was read as a plain range. Both now
+    honour the declared range, as Yosys does; slang slices array
+    connections this way, so the array lowering depends on it.
+  - A child output bound to part of a parent net (`.q(dst[0])`, and every
+    sliced array output) left the parent's port / netname on stale bits;
+    they now follow the driver, as on the Yosys path. A cell whose
+    connections were rewritten by a forward-referenced `assign` no
+    longer loses its pin directions.
+  - An array element that is not a module instance (a gate-primitive
+    array such as `and g[1:0] (...)`), and a lone gate primitive, are
+    still not lowered; both are now reported as a warning on stderr
+    with their source location instead of vanishing.
+  - New fuzz template `inst_array_sync` (both range directions, 1- and
+    2-stage elements) runs through the cross-frontend oracle.
+
 ### Internal
+
+- **Fixture READMEs regenerated and drift-checked in CI**
+  (rtl-buddy-cdc#356). Thirteen generated fixture READMEs were stale or
+  missing (header comments, netlists and companion gate netlists had
+  changed since they were written); they are regenerated. The lint
+  workflow gains a `fixture-docs` job running
+  `scripts/gen_fixture_docs.py --check --committed-netlists-only`, and
+  now also triggers on `tests/fixtures/**`. The new flag skips the four
+  fixtures with no committed netlist, which would need Yosys to
+  elaborate (and whose READMEs depend on its cell naming); without the
+  flag they are also skipped, with a clear message, when `yosys` is not
+  on PATH.
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
   work item 2) — *test-only: no analyzer change.* CDC-022, CDC-023 and

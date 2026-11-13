@@ -18,13 +18,13 @@ Input `in` has no `set_input_delay -clock` typing and is captured by a flop whos
 flowchart LR
   subgraph clk_clk_a["clk_a · 10.0 ns"]
     direction TB
-    f_ab50e9c3["$procdff$4<br/><i>sv:20</i>"]:::ckcls_clk_a
   end
   subgraph clk_clk_b["clk_b · 7.5 ns"]
     direction TB
   end
   subgraph clk_clk_c["clk_c · 5.0 ns"]
     direction TB
+    f_ab50e9c3["$procdff$4<br/><i>sv:20</i>"]:::ckcls_clk_c
   end
   p_in_in -. "⚠ async · 1b" .-> f_ab50e9c3
   subgraph rb_legend["Legend"]

@@ -79,6 +79,7 @@ flowchart LR
 
 ## Files
 
+- `good_dffe_gated_bus_crossing.gates.json`
 - `good_dffe_gated_bus_crossing.json`
 - `good_dffe_gated_bus_crossing.sdc`
 - `good_dffe_gated_bus_crossing.sv`

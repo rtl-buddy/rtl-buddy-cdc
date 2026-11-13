@@ -19,6 +19,7 @@ flowchart LR
   subgraph clk_ck0["ck0 · 10.0 ns"]
     direction TB
     p_in_d_in[/"d_in⟨in⟩"/]:::ckcls_ck0
+    f_b78ac293["$procdff$10<br/><i>sv:36</i>"]:::ckcls_ck0
   end
   subgraph clk_ck1["ck1 · 13.3 ns"]
     direction TB
