@@ -1015,14 +1015,17 @@ hierarchy pin, and the parent's boundary-sink crossing is what reports
 data entering it) and `pin_clocks` generated-clock targets (their paths
 are parent-relative).
 
-Three rules are excluded from the internal pass because their predicate
+Four rules are excluded from the internal pass because their predicate
 is literally *"a top-level port of the design"*: **CDC-006** (a
 synchroniser fed from an unregistered top port with no source flop — the
 definition of a correct boundary input synchroniser), **CDC-011**
-(untyped primary input — no subtree pin is ever typed), and **RDC-008**
+(untyped primary input — no subtree pin is ever typed), **RDC-008**
 (async reset driven directly by a top-level port — what every reset pin
-is). Their subject matter is still reported, by the parent, as the
-boundary-sink crossing at that same port.
+is), and **CDC-025** (uncontracted top-level output, §8.22 — a subtree
+output pin is an internal net of the parent). The input-side three are
+still reported, by the parent, as the boundary-sink crossing at that
+same port; whatever captures a subtree output inside the parent is a
+crossing the parent's own walk reports.
 
 **What the pass publishes, and what each fact does.**
 
@@ -1498,7 +1501,8 @@ skipped; otherwise only the flag itself is skipped.
 `set_input_delay` and `set_output_delay` both land in
 `ClockSpec.port_clock`; the port's direction decides the consumer. A
 typed *input* is a crossing source in `find_crossings`; a typed
-*output* is an external-capture contract checked by CDC-024 (§8.21).
+*output* is an external-capture contract checked by CDC-024 (§8.21); an
+*untyped* output is CDC-025's (§8.22).
 
 Generated clocks fold back into their master via `ClockSpec.resolve`
 unless an explicit `set_clock_groups -asynchronous` overrides the
@@ -1727,8 +1731,10 @@ records with `width = 1`.
   contract is checked instead by CDC-024 (§8.21), which walks the
   output's cone directly; it deliberately does **not** fake a sink
   flop, so no crossing-consuming rule ever sees an external capture.
-  An output with no contract stays unchecked: the responsibility
-  shifts to the consumer of the port.
+  An output with no contract is reported by CDC-025 (§8.22) when it
+  merges asynchronous domains, or — once the SDC types some other
+  output — as a missing contract; otherwise the responsibility shifts to
+  the consumer of the port.
 - **Untyped-port crossings, unless the sentinel was synthesized.**
   The walk only visits ports present in `port_clock`. The CLI calls
   `sdc.synthesize_unconstrained_inputs` first, which stamps
@@ -1858,10 +1864,12 @@ fewer flops.
 >   lifted). That is the analyse-once contract, not a loss.
 >
 > Neither relation is a subset in the hazard sense — nothing that fires
-> flat goes unreported — with one stated exception: the three top-level
-> port rules §4.9 excludes from the internal pass (CDC-006 / CDC-011 /
+> flat goes unreported — with two stated exceptions: the three top-level
+> input-port rules §4.9 excludes from the internal pass (CDC-006 / CDC-011 /
 > RDC-008), whose subject is reported by the parent at the boundary port
-> instead. Two counts deliberately do **not** match: `summary.crossings`
+> instead; and the output rules CDC-024 / CDC-025 (§8.21, §8.22), which
+> cannot see a top-level output driven *through* an abstracted boundary
+> pin (no launching `Q` in the parent's cone). Two counts deliberately do **not** match: `summary.crossings`
 > (an internal crossing is counted inside the module, not at top level)
 > and `summary.flops` (the scaling win). And a rule measuring a structure
 > that *spans* the boundary — CDC-018's chain length — sees each side
@@ -1930,9 +1938,10 @@ free functions in `rules.py`:
 | `_clock_network_cells(...)` | CDC-008, -010 | Identify cells whose output transitively drives any flop CLK. CDC-008 *exempts* them ("clock as data" doesn't apply to the distribution itself); CDC-010 *targets* them (a wrong-domain control pin on one of these cells is the failure mode) |
 | `_control_pins_for(cell, *, use_heuristic=True)` | CDC-010 | Classify a clock-network cell's *control* pins (those whose transitions can glitch the output clock). Three resolution paths, tried in order: (1) explicit map for Yosys higher-level cells (`$mux.S`, `$dffe.EN`, `$dlatch.EN`) and the gate-level mux family (`$_MUX_` / `$_MUX{4,8,16}_`); (2) prefix paths for the gate-level latch and enable-flop families (`$_DLATCH*` / `$_DFFE_*` / `$_SDFFE_*` → all carry the enable on `E`); (3) a conservative pin-name heuristic — input pins named `E` / `EN` / `CE` / `GATE` / `SE` (case-insensitive) on any other cell are treated as control. `use_heuristic=False` (CLI: `--cdc-010-no-heuristic`) suppresses the heuristic only; the map and prefix paths remain active. Returns the empty set for non-glitch-producing cell types ($buf / $not / AND-trees / vendor cells that lack a heuristic-matching pin) so the rule's outer loop short-circuits |
 | `_clock_input_domains_for(module, cell, ctx, clock_spec, control_ports)` | CDC-010 | Set of clock-domain names that drive a clock-network cell's *non-control* inputs. Walks each non-control input backward through combinational cells; records the domain of any flop's Q reached (via `ctx.domains`) and the SDC clock name of any top-level clock port reached directly. Empty set means none of the inputs trace to a classifiable clock — the rule then stays silent (false-negative-biased) |
-| `_output_cone(module, start_bits, drivers, input_bit_port)` | CDC-024 | Backward combinational cone of a top-level output: the cells whose `Q` launches it, the top-level input ports it reaches (feed-throughs), and the bit set visited. Same walk shape as `_backward_flop_fanin` (each comb cell expanded once, depth 12) but keeps the ports and bits that walk discards; reads input ports from a prebuilt bit→port index rather than `Module.port_of_bit` (a linear scan) |
-| `_reached_output_bits(module, seeds, cone, consumers, port_bit_index)` | CDC-024 | Forward replay confined to that cone, lane-aware via `domain._lane_targets`, returning which of the output's bits the asynchronous launchers reach — so a bus reports "2 of 4 bits", not the whole bus |
-| `domain.flop_domain_resolver(module, pin_clocks, clock_for_port=, max_depth=, drivers=)` | `assign_domains`, CDC-024 | The per-flop domain function `assign_domains` applies, split out so CDC-024 resolves only the flops that launch an output — with pin-declared generated clocks and canonical clock names, exactly as `find_crossings` sees them (the rule context's `domains` is built without either) |
+| `_output_cone(module, start_bits, drivers, input_bit_port)` | CDC-024, -025 | Backward combinational cone of a top-level output: the cells whose `Q` launches it, the top-level input ports it reaches (feed-throughs), and the bit set visited. Same walk shape as `_backward_flop_fanin` (each comb cell expanded once, depth 12) but keeps the ports and bits that walk discards; reads input ports from a prebuilt bit→port index rather than `Module.port_of_bit` (a linear scan) |
+| `_reached_output_bits(module, seeds, cone, consumers, port_bit_index)` | CDC-024, -025 | Forward replay confined to that cone, lane-aware via `domain._lane_targets`, returning which of the output's bits the given launchers reach — so a bus reports "2 of 4 bits", not the whole bus, and CDC-025 can tell a per-bit merge of two domains from a bus whose halves merely sit side by side |
+| `_output_launch_index(module, clock_spec, ctx)` | CDC-024, -025 | The run's `_OutputLaunchIndex`, built on first use and cached in `_RuleContext.output_launch_memo` (keyed by the `ClockSpec`): each output's `_output_cone` (walked at most once per run however many output rules ask), the memoised `flop_domain_resolver`, the bit→input-port index, and the `canonical` / `is_async` predicate `filter_async` applies. A plain mutable memo by design — the one non-frozen object on the rule context, invisible outside the two rules |
+| `domain.flop_domain_resolver(module, pin_clocks, clock_for_port=, max_depth=, drivers=)` | `assign_domains`, CDC-024, -025 | The per-flop domain function `assign_domains` applies, split out so CDC-024 resolves only the flops that launch an output — with pin-declared generated clocks and canonical clock names, exactly as `find_crossings` sees them (the rule context's `domains` is built without either) |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |
 | `scan_mode_port_names(module)` | §8.20 scan filter | Return the names of top-level **input ports** annotated with one of `SCAN_MODE_ATTRS` (`scan_en` / `scan_mode` / `test_mode` / `dft_scan_en`, matched case-insensitively). Port-scoped, not flop-scoped |
@@ -2815,8 +2824,7 @@ source location (and an in-RTL pragma's scope) is where the output
 gets its value. The message names the port, the affected bit count for
 a bus, each asynchronous launch domain with a sample of its launchers,
 and the declared receiving clock. Outputs with no `set_output_delay`
-are not checked (no new findings on designs that do not declare output
-contracts).
+are CDC-025's (§8.22).
 
 **Severity `warning`.** An asynchronous output is correct engineering
 whenever the receiving design synchronises it, and that receiver is
@@ -2852,6 +2860,129 @@ fires once per port and nothing else) and `good_output_sync_contract`
 contracts; silent). `tests/test_cdc_024_output_boundary.py` covers the
 issue's reproducer and the corners on hand-built netlists, under both
 SDC reader backends.
+
+### 8.22 CDC-025 — top-level output with no `set_output_delay` contract (issue #329)
+
+CDC-024 can only check an output that has a contract. An output with
+no `set_output_delay -clock` was skipped silently — the output-side
+mirror of what CDC-011 covers for untyped primary inputs. CDC-025
+reports those outputs when clocked logic drives them, naming the port
+and its launch domain(s).
+
+**Same walk as CDC-024, shared.** Cone, launchers, domains and the
+async predicate are CDC-024's: `_output_cone`, `flop_domain_resolver`
+(memoised per flop), `canonical` + `is_unreachable_crossing` /
+`are_async`. Both rules read them through `_output_launch_index`, a
+per-run memo on the rule context, so an output is walked at most once
+whichever rules run — CDC-024 walks the contracted outputs, CDC-025 the
+rest, and a test pins that no output is walked twice.
+
+**Two shapes, CDC-011's split.**
+
+- **`error`, always on — asynchronous merge.** Some *bit* of the output
+  is a combinational function of launches from two domains the SDC
+  declares mutually asynchronous (`irq = irq_a | irq_b`; a `clk_b`
+  enable gating a `clk_a` bus). A boundary signal mixing asynchronous
+  domains has no single clock any receiver could capture it on and can
+  glitch whenever either side switches; no `set_output_delay` makes it
+  right, which is why this half ignores the SDC's output typing
+  entirely. The merge is judged **per bit**, not per port: for each
+  launch domain, `_reached_output_bits` replays the cone forward from
+  that domain's launchers, and a bit reached from both sides of an
+  asynchronous pair is a merge. A port-level test would escalate every
+  status bus that concatenates fields from two domains (`{st_b, st_a}`)
+  — common, and correct — so the per-bit reading is the one that
+  matches the issue's "combinational merge". The finding counts the
+  merged bits and anchors on the cell driving the lowest of them.
+- **`warning`, self-calibrating — missing contract.** Every bit is
+  launched from one domain (or from related domains: a generated clock
+  and its master), or a bus's domains never meet on a bit. This is a
+  constraints-completeness gap, not a bug, so it fires **only when the
+  SDC types at least one top-level output of the module** with
+  `set_output_delay -clock`. Rationale: every existing design has
+  untyped outputs, and a default-on warning would add a finding to
+  nearly every report on upgrade (measured when the rule landed: 148 of
+  the 166 pre-existing fixture netlists, 189 findings, including 46 of
+  the 48 `good_*` fixtures — and each of the three project-template CDC
+  demos elaborated with yosys); an opt-in flag would add CLI
+  surface for a check most users would never turn on. A user who types
+  some outputs has started declaring capture contracts, so the ones
+  left out are likely omissions — the gate calibrates itself from the
+  SDC with no new flag. The `single_domain` keyword on `check_cdc_025`
+  overrides the gate for tests and library callers (`True` always,
+  `False` never); the CLI does not expose it. A mixed-domain bus that
+  no single contract can describe gets a "split the port per domain"
+  hint instead of a `set_output_delay` suggestion (the parser does not
+  resolve bit-selected ports, §8.21 scope limits).
+
+One finding per output port; a bus is one finding.
+
+**Exclusions.**
+
+- Contracted outputs — CDC-024's, so an output **with** a contract
+  never gets CDC-025, even when it merges asynchronous domains (CDC-024
+  then reports the launch asynchronous to the contract; a merge whose
+  every launch is related to the contract clock — a virtual clock in no
+  async group — stays silent, as CDC-024 always has).
+- Clock outputs: a port the SDC declares a clock on (`create_clock` /
+  `create_generated_clock` targeting it), an output whose cone reaches a
+  declared clock input port (forwarded or gated clocks), and an output
+  whose net is a flop `CLK` or is driven by a `_clock_network_cells`
+  cell (e.g. a divider register that also clocks internal flops). A
+  divider whose only load is the output is indistinguishable from data;
+  declare it with `create_generated_clock [get_ports …]` to exclude it.
+  The clock-network set is computed lazily, only for an output that
+  otherwise qualifies.
+- Outputs with no recognised register launching them: constant or
+  undriven bits, a register whose `D` is all constant (it never
+  launches data; yosys's `opt` folds it away while slang keeps it, so
+  counting it split the two frontends on the grammar fuzz oracle), a
+  latch or blackbox-pin driver, and **pure
+  combinational feed-throughs of input ports**. A feed-through is
+  launched outside the design; the input's own typing (CDC-011) is the
+  place to declare its domain. A typed input that *does* meet a
+  register in the cone counts as a launcher in its `set_input_delay`
+  clock, exactly as CDC-024 counts it — so a `clk_b`-typed input gating
+  a `clk_a` register onto an output is a merge.
+- Launchers whose domain did not resolve (already in
+  `summary.domain_unknown`) or resolved to the `<unconstrained>`
+  sentinel of an undeclared clock port (CDC-021's finding). Note this
+  makes CDC-025 sensitive to resolution: raising `--clock-trace-depth`
+  or teaching the tracer a new clock-path shape can reveal a merge that
+  was hidden behind an unresolved flop (`deep_clock_divider_chain`,
+  `clock_through_latch`). That is the rule working, not a regression;
+  the parity tests that compare resolution modes exclude it explicitly.
+
+**Intentional cases.** No new mechanism, as for CDC-024: `waive
+CDC-025 <port> <reason>` or `// rbcdc: disable-rule CDC-025` on the
+driving logic; the finding moves to `suppressed` with its message.
+
+**Compositional pass.** Excluded (`INTERNAL_RULE_EXCLUSIONS`, §4.9): a
+subtree output is a hierarchy pin, not a top-level output. The
+single-domain half is inert there anyway (`derive_sub_spec` drops port
+typings, so the gate is closed); the merge half would otherwise fire on
+an internal net the parent's crossing walk already covers.
+
+**Existing reports that change.** With default flags, the merge half
+fires on six existing fixtures, all of them the "parity anchor" outputs
+that XOR a `clk_a` register with a `clk_b` one to keep logic alive
+(`bad_unresolved_clock_latch`, `clock_through_latch`,
+`declared_pin_clock`, `inferred_fwd_clock`, `scaling_perf` flat and
+hierarchical, `bbx_residual_declines` flat) — true positives of the
+exact shape the rule targets. No `good_*` fixture changes; the
+single-domain half fires on no pre-existing fixture (the only two that
+type outputs, CDC-024's pair, type all of them).
+
+CDC-025 is a **new rule id** under the CDC-022 / CDC-023 / CDC-024
+discipline. Fixtures: `bad_output_async_merge` (an OR merge and a
+mux-gated bus merge fire as errors; a concatenated mixed-domain bus and
+a single-domain register stay silent with no output typed) /
+`good_output_async_merge_synced` (each foreign source 2FF-synchronised
+first), and `bad_output_missing_contract` (one output typed; three
+uncontracted data outputs warn; every exclusion present and silent) /
+`good_output_contracts_complete`. `tests/test_cdc_025_unconstrained_outputs.py`
+covers each shape, exclusion and the CDC-024 interplay on hand-built
+netlists under both SDC reader backends.
 
 ## 9. Waivers
 
@@ -3221,6 +3352,15 @@ current bottlenecks if scaled up:
   contracts it does one expanded-once backward walk per contracted
   output (`O(cone)`), traces the clock of each launching register once
   (memoised), and replays the cone forward only for outputs that fire.
+- CDC-025 costs nothing on an SDC with no asynchronous relation while
+  no output is typed (the only live shape needs one). Otherwise it does
+  one backward walk per *uncontracted* output — shared with CDC-024
+  through `_output_launch_index`, so no output is walked twice — reuses
+  the same memoised launch-domain resolver, and replays the cone forward
+  once per launch domain for an output with an asynchronous pair among
+  its launchers (once in all for a reported single-domain output). `_clock_network_cells` (one `O(design)` pass) is
+  built lazily, for the first output that otherwise qualifies.
+
 
 - The reset-side views are `_RuleContext` cached properties built at
   most once per run (#324): `reset_domains`

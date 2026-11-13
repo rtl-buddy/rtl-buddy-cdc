@@ -81,12 +81,19 @@ from rtl_buddy_cdc.sdc import Clock, ClockSpec
 #   port*. A reset arriving on a module pin is by construction exactly
 #   that; the flattened design sees the same structure as a flop-sourced
 #   reset and reports it under RDC-001 instead.
+# - **CDC-025** flags a top-level *output* with no ``set_output_delay``
+#   contract. No subtree pin is ever typed, so its single-domain shape is
+#   already gated off here; its asynchronous-merge shape would still fire
+#   on a subtree output pin, which is an internal net of the parent — the
+#   parent's crossing walk reports whatever captures it. (A merge driving
+#   a real top-level output *through* an abstracted boundary pin is not
+#   seen by the parent either — the same scope limit CDC-024 has.)
 #
-# None of the three goes silent overall: what they are really about — data
-# (or a reset) entering the block from a foreign domain — is reported by
-# the PARENT as the boundary-sink crossing at that very port, where
-# CDC-001 / CDC-003 / CDC-004 apply. And comb logic between the port and
-# the first internal flop *defeats* the synchroniser proof
+# None of the input-side three goes silent overall: what they are really
+# about — data (or a reset) entering the block from a foreign domain — is
+# reported by the PARENT as the boundary-sink crossing at that very port,
+# where CDC-001 / CDC-003 / CDC-004 apply. And comb logic between the port
+# and the first internal flop *defeats* the synchroniser proof
 # (:func:`_prove_input_synchroniser`), so the boundary falls back to
 # firing CDC-001 rather than staying quiet. The residual is a rule-id
 # difference against a flat run, never a dropped hazard.
@@ -96,7 +103,9 @@ from rtl_buddy_cdc.sdc import Clock, ClockSpec
 # clocks, so the rules that key off declared-clock identity (CDC-008 /
 # CDC-010 / CDC-021 / CDC-023) see a coherent SDC rather than an
 # undeclared-everything one.
-INTERNAL_RULE_EXCLUSIONS: frozenset[str] = frozenset({"CDC-006", "CDC-011", "RDC-008"})
+INTERNAL_RULE_EXCLUSIONS: frozenset[str] = frozenset(
+    {"CDC-006", "CDC-011", "CDC-025", "RDC-008"}
+)
 
 
 @dataclass(frozen=True)
