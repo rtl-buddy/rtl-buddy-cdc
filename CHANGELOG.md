@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Gate-level fixture corpus** (#331) — *test-only, no output change.*
+  `tests/test_gate_level_corpus.py` rebuilds every fixture through two
+  Yosys gate flows (`techmap`, and `opt_dff; techmap; abc`) and asserts
+  the analyzer's per-rule verdict matches the committed RTL netlist.
+  It runs in CI's yosys job. Eight fixtures also commit a gate-level
+  netlist, so the default job exercises `$_DFF_*` / `$_DFFE_*` /
+  `$_SDFF_*` / `$_DLATCH_*` / `$_MUX_` netlists without Yosys. The new
+  `flop_zoo_crossing` fixture covers `$aldff`, `$dffsr`, `$sdffce`,
+  `$adffe` and `$dffe`, which no fixture produced before. Known
+  gate-level divergences are listed with their root causes in a
+  strict allowlist; the analyzer gaps behind them (reset pin `R`,
+  `$_DFF_NN0_` clock polarity, `$_MUX_`, gate-level clock gating,
+  bit-blasted buses) are tracked separately.
+
+- **`set_max_delay -datapath_only` is read as CDC intent** (#325) — the
+  constraint that bounds an intentional async crossing's datapath was
+  dropped as STA noise, so a pair related only by it looked synchronous
+  and its crossings were never checked. A clock-to-clock
+  `set_max_delay <v> -datapath_only -from [get_clocks A] -to [get_clocks B]`
+  now marks the pair as an intended asynchronous crossing, exactly like
+  `set_false_path -from/-to` — and, unlike a false path, also wins over
+  a generated→master relationship or an exclusive group for that pair
+  (the more-reporting reading). Object endpoints (`[get_cells …]`,
+  `[get_pins …]`, `[get_ports …]`) are recorded but not interpreted
+  (warning; object resolution is #328's job); `-through` is not
+  interpreted (warning). Plain `set_max_delay` stays ignored exactly as
+  before. Both SDC backends.
+
+- **`set_case_analysis` resolves clock muxes** (#325) — a clock mux
+  whose select is a case-analysed mode port still presented both clocks
+  to the tracer, which took the first resolving leg, so flops behind it
+  could be filed under a clock the constrained mode never selects (and
+  real crossings into the selected clock went unreported).
+  `set_case_analysis <0|1|zero|one> [get_ports p]` now pins the port
+  for clock-root tracing: a `$mux` / `$pmux` / `$_MUX_` whose select is
+  that constant — directly or through buffers / inverters — resolves to
+  the selected leg only, everywhere the clock tracer runs (domains,
+  crossings, CDC-023, scan-mode tagging, blackbox clock pins).
+  `rising` / `falling` are recorded, not constant. Bus bits use the
+  braced form `{p[3]}`; an unbraced `p[3]`, which Tcl evaluates as
+  command substitution, now raises a warning. Pin / cell targets and
+  targets naming no input port are reported and ignored. CDC-010 is
+  unaffected: a port-driven select never fired it. Narrow by design —
+  no general constant propagation.
+
+- **Domain map schema 1.3** (#325), additive: top-level
+  `datapath_only_pairs` (sorted clock pairs, same shape as
+  `false_path_pairs`), `max_delay_datapath_only` (every
+  datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
+  `to_objects` as `{kind, name}`, `value`, `clock_pair`) and
+  `case_analysis` (`{port, value}` per `set_case_analysis` target).
+
 - **Object-scoped and `-through` `set_false_path` are interpreted**
   (#328) — `set_false_path -from [get_cells u_cfg/mode_q_reg*]`, the
   usual way to constrain a quasi-static configuration register, was
@@ -50,30 +102,176 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   see above); `-through` is not
   interpreted (warning). Plain `set_max_delay` stays ignored exactly as
   before. Both SDC backends.
-- **`set_case_analysis` resolves clock muxes** (#325) — a clock mux
-  whose select is a case-analysed mode port still presented both clocks
-  to the tracer, which took the first resolving leg, so flops behind it
-  could be filed under a clock the constrained mode never selects (and
-  real crossings into the selected clock went unreported).
-  `set_case_analysis <0|1|zero|one> [get_ports p]` now pins the port
-  for clock-root tracing: a `$mux` / `$pmux` / `$_MUX_` whose select is
-  that constant — directly or through buffers / inverters — resolves to
-  the selected leg only, everywhere the clock tracer runs (domains,
-  crossings, CDC-023, scan-mode tagging, blackbox clock pins).
-  `rising` / `falling` are recorded, not constant. Bus bits use the
-  braced form `{p[3]}`; an unbraced `p[3]`, which Tcl evaluates as
-  command substitution, now raises a warning. Pin / cell targets and
-  targets naming no input port are reported and ignored. CDC-010 is
-  unaffected: a port-driven select never fired it. Narrow by design —
-  no general constant propagation.
-- **Domain map schema 1.3** (#325), additive: top-level
-  `datapath_only_pairs` (sorted clock pairs, same shape as
-  `false_path_pairs`), `max_delay_datapath_only` (every
-  datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
-  `to_objects` as `{kind, name}`, `value`, `clock_pair`) and
-  `case_analysis` (`{port, value}` per `set_case_analysis` target).
+
+### Changed
+
+- **Faster analysis on large flat netlists** (#324) — *patch: no
+  output change.* Text, JSON, SARIF, domain-map and reset-domain-map
+  outputs are byte-identical. On a synthetic 44k-cell, 8-clock
+  netlist `analyze` drops from 6.0 s to 3.1 s.
+  - The RDC rules each rebuilt the per-flop reset classification, the
+    reset-synchroniser set and the flop list / driver map under them:
+    one run classified every flop's reset 11 times. They are now
+    built once per run in the shared rule context. CDC-008 and CDC-010
+    likewise share one clock-network walk.
+  - `Module.port_of_bit` scanned every port's bits on each call; it is
+    now a dict lookup built once per module.
+  - The JSON and SARIF reports are serialised with `json.dumps`, which
+    can use the C encoder, instead of `json.dump`.
 
 ### Fixed
+
+- **CDC-001 missed a synchroniser stage exported straight to an output
+  port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
+  walk counted cell input pins only, so a first stage whose `Q` drove a
+  top-level output *and* a second flop looked like a clean two-stage
+  chain. A module output (or inout) port is now a reader, so the
+  exported stage ends the chain and CDC-001 fires — the same verdict as
+  when the tap goes through a gate. The last stage of a synchroniser
+  still drives outputs freely.
+
+- **CDC-018 over-counted a cascade behind an exported stage** (rtl-buddy-cdc#344).
+  Same cause: a 2FF synchroniser whose output is exported and also
+  pipelined was reported as a 4-or-more-flop cascade. The tap now ends
+  the chain at the synchroniser.
+
+- **CDC-008 reported a blackbox's clock output pin as clock-as-data**
+  (rtl-buddy-cdc#344). When a blackbox's forwarded clock clocked a flop in the
+  parent, the stub's own `clk_out` pin — the clock's driver — was
+  listed as a reader. Cell pins are now classified by the netlist's
+  `port_directions`, so output pins are never readers (CDC-008, and the
+  reader counts above). The CDC-BBX finding for the clock output is
+  unchanged.
+
+- **CDC-019 missed a one-hot decoder that Yosys lowers to a ROM**
+  (rtl-buddy-cdc#344). `proc` turns a full constant `case` table into an
+  asynchronous `$memrd_v2`; the rule only accepted a comb cell's `Y` as
+  the shared driver. An asynchronous memory read port's `DATA` is now
+  accepted too, matching the slang frontend, which keeps the mux.
+
+- **`--sync-primitive` decline now says why** (rtl-buddy-cdc#344). A registered
+  module whose destination clock pin cannot be identified (two or more
+  clock pins, none named `dest` / `dst`) is still declined, which is the
+  safe outcome, but the CDC-BBX message now names that cause instead of
+  the generic "not provably single-clock", and the option's help text
+  says a destination pin hint is needed.
+
+- **Gate-level netlists: reset pins, clock edge, `$_MUX_` and gate-cell
+  clock gating are read** (#336). On a netlist after `techmap` /
+  `abc` the analyzer misread information the netlist carries:
+  - Reset and set pins of gate-level flops (`$_DFF_PN0_`,
+    `$_SDFF_PP0_`, `$_DFFSR_*`, `$_ALDFF_*` …) are on pins `R` / `S` /
+    `L`, with polarity and reset value in the cell-type name. The RDC
+    rules, CDC-015 and CDC-011's sync-reset walk read only `ARST` /
+    `SRST` / `CLR` / `ALOAD`, so they went silent. The gated-bus check
+    (CDC-004) read `EN`, but gate-level enable flops use `E`.
+  - CDC-016 read `$_DFF_NN0_` (negedge, async reset) as posedge.
+  - `$_MUX_` was not treated as a mux by the sync-reset mux
+    look-through (false CDC-014), the scan-mode / clock-mux tracer, or
+    the CDC-013 toggle classifier.
+  - The clock tracer did not walk `$_AND_` / `$_OR_` / `$_NAND_` …, so
+    CDC-023 / CDC-011 lost gated and combined clocks.
+
+  A new `cells.py` decodes every gate-level flop / latch family
+  (`$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`,
+  `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`, `$_DLATCH_`,
+  `$_DLATCHSR_`, `$_SR_`) in one place. A test checks the decoder
+  against the local Yosys's cell descriptions. `flops.flop_reset` /
+  `flop_enable_pin` / `flop_clk_polarity` read coarse and gate-level
+  flops the same way, and the rules go through them. 43 of the 99
+  gate-level corpus allowlist rows are gone. No RTL-level fixture
+  verdict changes.
+
+- **A clock gate's domain no longer depends on which input carries the
+  clock** (found via #336). The rule context traced flop clocks without
+  the SDC's clock set, so in `en & clk` first-leg-wins picked the
+  enable port, and CDC-021 reported it as an undeclared clock (`clk &
+  en` was fine). The rule context now tells the tracer which ports are
+  `create_clock` ports. It does this for leg choice only; root names
+  are not normalised, so CDC-021 still sees raw port names.
+  `set_input_delay`-typed data ports never count as clocks.
+
+- **Gate-level netlists: bit-blasted buses are regrouped into their
+  registers** (#337). After `techmap` / `abc` a W-bit register is W
+  one-bit `$_DFF_*` cells, so every bus rule lost the bus:
+  `bad_bus_crossing` was silent at gate level, and a load-gated bus
+  (`good_dffe_gated_bus_crossing`) reported CDC-001 once per bit. The
+  loader now rebuilds each register as one wide coarse flop cell, keyed
+  on the register's multi-bit netname plus matching clock, reset,
+  enable and `always` block (new `regroup.py`), and rebuilds the
+  lane-wise enable / reset muxes and gray-encoder XORs in front of it.
+  The rebuilt cell is named after the register (`src_q`), not a
+  generated `$auto$…` cell name. Also on gate-level netlists:
+  - The gray-code acceptance recognises a gray code `abc` re-derived
+    without the `b ^ (b >> 1)` XOR, by comparing truth tables of the
+    register's `D` with the gray code of another register's `D` / `Q`
+    (new `gate_eval.py`).
+  - CDC-019 groups a decoder split into per-lane gates by its output
+    netname (`one_hot`).
+  - Where no register name survives, the bits stay one-bit and CDC-004
+    reports bits of one `always` block crossing together as a possible
+    bus (`warning`) rather than going silent.
+
+  RTL-level netlists are not touched: no RTL-level fixture verdict
+  changes. All 53 bit-blast / decoder rows of the gate-level corpus
+  allowlist are gone, and three more committed gate netlists cover the
+  regrouping in the default CI job.
+
+- **CDC-013 recognises a toggle folded into an enable flop** (#338).
+  `opt_dff` (so any synthesis-shaped flow) turns `if (en) q <= ~q;`
+  into an enable flop with `D = ~Q` and `en` on the enable pin, instead
+  of the hold mux `D = en ? ~Q : Q` that `proc` leaves. The toggle
+  classifier knew only the mux, so CDC-013 (and the domain map's
+  `pulse` synchroniser label) was lost on optimised netlists. It now
+  accepts both shapes, on coarse (`$dffe` / `$adffe` / `$sdffe` /
+  `$sdffce` …) and gate-level (`$_DFFE_*` / `$_SDFFE_*` …, `$_NOT_`)
+  cells and either enable polarity. `D = ~Q` without an enable (or
+  with a constant one) is a divider, not a toggle, and stays silent.
+  The slang frontend never emits enable flops, so it was not affected.
+
+- **Verdicts no longer depend on dead cells** (#338). Without
+  `opt_clean` in the netlist flow, an unloaded `$not` of a clock fired
+  CDC-008, and the `for`-loop counter register `proc` leaves in a reset
+  branch (read by nothing but itself) fired CDC-004 and CDC-011 as a
+  crossing destination. `analyze` / `lint` now drop every cell whose
+  outputs reach no output / inout port, `keep` net, or instance /
+  memory / formal-cell pin before analysis. A crossing into a flop
+  whose `Q` reaches none of those is not reported. Unknown cell types
+  are never dropped, and a module with no observation point at all is
+  analysed whole. The design summary's cell count is the observable
+  count. No committed fixture verdict changes.
+
+- **slang frontend: plain `always` blocks and blackbox instances**
+  (#345) — two gaps that made `lint --frontend slang` report nothing
+  where the Yosys frontend reports findings.
+  - A Verilog-2001 `always` block was silently dropped. An
+    edge-triggered `always @(posedge clk …)` now lowers like `always_ff`
+    (async reset, `negedge` clocks, enables, blocking or nonblocking
+    writes); `always @*` / `always @(*)` / a level-sensitive list that
+    assigns every target on every path lowers like `always_comb`; one
+    that infers a latch in the `if (en) q = d;` shape becomes a
+    `$dlatch`. Any procedural block still not lowered (mixed edge and
+    level events, delays, event controls inside the body, a clock that
+    is not a plain signal) is now reported as a warning on stderr with
+    its source location instead of vanishing. An edge-triggered block
+    that reads a variable it writes with a blocking `=` is warned about
+    too (the read is modelled as the registered value).
+  - The async-reset event may be listed first
+    (`@(negedge rst_n or posedge clk)`), for `always_ff` too; it used to
+    be taken as the clock.
+  - A `(* blackbox *)` module elaborated as an empty body, so its
+    instance and every crossing through it disappeared: CDC-BBX, CDC-022
+    and `--sync-primitive` never fired on the slang path. The instance is
+    now a boundary cell (module-name `type`, port connections, the
+    overridden parameters in Yosys' encoding) with a bodyless sibling
+    module, the shape the Yosys netlist has. `--blackbox` and
+    `--greybox` work with `--frontend slang` too, natively (previously
+    ignored on this path); naming one module in both is rejected, as on
+    the Yosys path.
+  - The cross-frontend fuzz allowlist loses the CDC-022 and CDC-BBX
+    families and `fuzz_cdc023_clock_combine_and_s1_v2001` (24 cases).
+    The slang fuzz cache now pickles `(module, blackboxes)` under a new
+    file suffix.
 
 - **Several clocks on one port (`create_clock -add`)** (#330) — `-add`
   was parsed and ignored: with or without it, both clocks stayed on the
@@ -101,6 +299,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `-master_clock` disambiguates; the master is still never inferred
     from `-source`.
   Reports on SDCs without such a port are unchanged.
+
+### Internal
+
+- **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
+  work item 2) — *test-only: no analyzer change.* CDC-022, CDC-023 and
+  CDC-BBX had no fuzz template; CDC-018/019/020/021 and RDC-007/008 had
+  only a single-shape `gap_g*` sentinel (still in place). Nine new
+  templates (154 cases) sweep what each detector compares: CDC-018
+  chain depth against `--cdc-018-depth-threshold`; CDC-019 lane count
+  and decoder shape; CDC-020 bus width, slice pattern and destination
+  split; CDC-021 consumer count and port declaration; CDC-022
+  `DEST_SYNC_FF` (including the XPM default) against `--sync-depth` per
+  macro; CDC-023 combine cell against a mux and an ICG; RDC-007 polarity
+  against the head constant; RDC-008's ≥2-consumer and chain-elsewhere
+  thresholds; CDC-BBX decline reasons. Each has silent and
+  attribute-/pragma-suppressed variants.
+  - The fuzz runner takes `cdc_018_depth_threshold`, `sync_primitives`
+    and `analysis="cli"` from a case's `params` (beside
+    `required_depth`). `"cli"` runs the case through the CLI's own
+    analysis path, so blackbox stubs, CDC-BBX and `// rbcdc:` pragmas
+    work in the corpus.
+  - The cross-frontend allowlist accepts a single case id as well as a
+    template family. New rows: no blackbox support in the pyslang
+    frontend (CDC-022, CDC-BBX); the pyslang frontend dropping plain
+    `always @(posedge …)` flops; and the Yosys path missing CDC-019 when
+    `proc` lowers an 8-way `case` decoder to a ROM.
+  - Seven cases pin verdicts believed wrong, each with a `gap_note`. The
+    list is in `wiki/concepts/cdc-testing-strategy.md`.
 
 ## [0.7.3] — 2026-10-31
 

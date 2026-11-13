@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +25,12 @@ class Port:
     bits: tuple[Bit, ...]
 
 
+# Output pin names of the Yosys cell library the rule pack relies on when a
+# cell carries no ``port_directions`` (hand-built netlists, the slang
+# frontend): combinational ``Y`` and flop ``Q``.
+DEFAULT_OUTPUT_PINS: frozenset[str] = frozenset({"Y", "Q"})
+
+
 @dataclass(frozen=True)
 class Cell:
     name: str
@@ -31,6 +38,24 @@ class Cell:
     connections: dict[str, tuple[Bit, ...]]
     parameters: dict[str, str] = field(default_factory=dict)
     attributes: dict[str, str] = field(default_factory=dict)
+    # ``write_json``'s per-cell ``port_directions`` ("input" / "output" /
+    # "inout"). Yosys emits it for every cell, including blackbox
+    # instances, whose output pins carry arbitrary names (``clk_out``,
+    # ``dout``). Empty when the producer did not supply it.
+    port_directions: dict[str, str] = field(default_factory=dict)
+
+    def is_output_pin(self, port: str) -> bool:
+        """True iff ``port`` is driven *by* this cell rather than read by it.
+
+        Uses ``port_directions`` when the netlist carries it, so a
+        blackbox instance's ``clk_out`` or a ``$memrd`` ``DATA`` port is
+        an output; falls back to the ``Y`` / ``Q`` names otherwise. An
+        ``inout`` pin is not an output here: it reads the net too.
+        """
+        direction = self.port_directions.get(port)
+        if direction is not None:
+            return direction == "output"
+        return port in DEFAULT_OUTPUT_PINS
 
 
 @dataclass(frozen=True)
@@ -151,13 +176,37 @@ class Module:
     boundary: BoundarySummary | None = None
 
     def port_of_bit(self, bit: Bit) -> Port | None:
-        """Return the top-level port that owns ``bit`` if any."""
+        """Return the top-level port that owns ``bit`` if any.
+
+        When several ports carry the same bit, the first one in
+        ``ports`` order wins. O(1) per call via :attr:`_port_by_bit`.
+        """
         if not isinstance(bit, int):
             return None
+        return self._port_by_bit.get(bit)
+
+    @cached_property
+    def _port_by_bit(self) -> dict[Bit, Port]:
+        """Bit -> owning port, built on the first :meth:`port_of_bit` call.
+
+        The rule pack asks for a bit's port hundreds of thousands of times
+        on a large design; a linear scan over every port's bits made each
+        call O(total port bits) (issue #324). ``setdefault`` keeps the
+        first port in ``ports`` order, the tie-break the scan had.
+
+        A ``cached_property``, not a dataclass field, so it plays no part
+        in ``==`` / ``hash`` / ``repr``; it lands in the instance
+        ``__dict__`` directly, which ``frozen=True`` does not forbid.
+        ``ports`` is never mutated after construction (``Module`` is
+        frozen and ``dataclasses.replace`` builds a fresh instance with
+        an empty cache), so the index cannot go stale.
+        """
+        index: dict[Bit, Port] = {}
         for p in self.ports.values():
-            if bit in p.bits:
-                return p
-        return None
+            for b in p.bits:
+                if isinstance(b, int):
+                    index.setdefault(b, p)
+        return index
 
     def cells_of_type(self, types: Iterable[str]) -> list[Cell]:
         wanted = set(types)
@@ -186,6 +235,16 @@ def _is_blackbox(raw: dict) -> bool:
 
 
 def _parse_module(name: str, raw: dict, *, is_blackbox: bool) -> Module:
+    """One raw Yosys-JSON module, with bit-blasted gate-level flops
+    regrouped into their registers (:func:`regroup.regroup_flops`,
+    rtl-buddy-cdc#337; a no-op on a coarse netlist)."""
+    # Imported here: ``regroup`` builds ``Cell`` / ``Module`` from this module.
+    from rtl_buddy_cdc.regroup import regroup_flops
+
+    return regroup_flops(_parse_raw_module(name, raw, is_blackbox=is_blackbox))
+
+
+def _parse_raw_module(name: str, raw: dict, *, is_blackbox: bool) -> Module:
     ports = {
         pn: Port(name=pn, direction=pd["direction"], bits=_bits(pd["bits"]))
         for pn, pd in raw.get("ports", {}).items()
@@ -197,6 +256,7 @@ def _parse_module(name: str, raw: dict, *, is_blackbox: bool) -> Module:
             connections={pn: _bits(pb) for pn, pb in cd.get("connections", {}).items()},
             parameters=dict(cd.get("parameters", {})),
             attributes=dict(cd.get("attributes", {})),
+            port_directions=dict(cd.get("port_directions", {})),
         )
         for cn, cd in raw.get("cells", {}).items()
     }
