@@ -370,6 +370,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   context; the boundary clock-pin walk also makes the same leg choice
   and names a pin's clock canonically.
 
+- **CDC-012 missed an acknowledge relayed through a third clock domain**
+  (rtl-buddy-cdc#359). The handshake-feedback walk stayed inside the
+  source domain, so a payload held until an ack that travels
+  destination → third domain → source was reported as an open-loop bus
+  (`good_handshake_ack_via_third_domain`; and next to the expected
+  CDC-001 in `bad_handshake_ack_via_third_domain`). When the
+  source-domain walk finds nothing, the walk now continues through
+  registers of other domains (bounded, following only `D` / enable /
+  synchronous-reset pins and skipping clock dividers and reset
+  synchronisers, so a shared reset or a free-running third-domain
+  register is not an acknowledge). Whether each relay hop is
+  synchronised stays CDC-001's job.
+
 - **CDC-001 missed a synchroniser stage exported straight to an output
   port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
   walk counted cell input pins only, so a first stage whose `Q` drove a

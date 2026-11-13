@@ -4416,6 +4416,96 @@ def _flop_input_fanin_bits(flop: Flop) -> tuple[Bit, ...]:
     return tuple(out)
 
 
+def _flop_functional_fanin_bits(flop: Flop) -> tuple[Bit, ...]:
+    """The input bits a flop's next *value* flows through: ``D``, the
+    clock enable and a synchronous reset — not an asynchronous reset,
+    set or load (rtl-buddy-cdc#359).
+
+    The relayed-acknowledge walk in :func:`_has_dst_to_src_feedback`
+    follows these pins only, so a third-domain register that hears the
+    destination solely through a shared reset is not an acknowledge.
+    """
+    cell = flop.cell
+    pins = ["D"]
+    en = flop_enable_pin(cell)
+    if en is not None:
+        pins.append(en)
+    rst = flop_reset(cell)
+    if rst is not None and rst.kind == "sync":
+        pins.append(rst.pin)
+    out: list[Bit] = []
+    for pin in pins:
+        out.extend(b for b in cell.connections.get(pin, ()) if isinstance(b, int))
+    return tuple(out)
+
+
+def _has_relayed_feedback(
+    module: Module,
+    crossing: Crossing,
+    domains: dict[str, str | None],
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+    flops_by_name: dict[str, Flop],
+    *,
+    excluded: frozenset[str],
+    max_flop_hops: int,
+    max_relay_hops: int,
+    fanin_cache: dict[str, set[str]],
+) -> bool:
+    """The acknowledge relayed through other clock domains (#359): an
+    ack that goes destination → third domain → source. Whether each hop
+    of that relay is itself synchronised is CDC-001's question.
+
+    Same shape as the source-domain walk, but a register of any third
+    domain may sit on the path (``max_relay_hops`` of them at most,
+    after at most ``max_flop_hops`` source-domain registers), and every
+    hop follows :func:`_flop_functional_fanin_bits` only. ``excluded``
+    are registers that carry no acknowledge whatever their wiring:
+    clock-network registers (dividers) and reset synchronisers.
+    """
+    src_flop = crossing.src_flop
+    if src_flop is None:
+        return False
+    src_clock = crossing.src_clock
+    dst_clock = crossing.dst_clock
+    seen: set[str] = {src_flop.cell.name}
+    # (register, source-domain hops, relay hops) on the path to it.
+    frontier: list[tuple[Flop, int, int]] = [(src_flop, 0, 0)]
+    while frontier:
+        nxt: list[tuple[Flop, int, int]] = []
+        for f, src_hops, relay_hops in frontier:
+            if relay_hops == 0 and src_hops >= max_flop_hops:
+                continue
+            if relay_hops >= max_relay_hops:
+                continue
+            fanin = fanin_cache.get(f.cell.name)
+            if fanin is None:
+                in_bits = _flop_functional_fanin_bits(f)
+                fanin = (
+                    _backward_flop_fanin(module, in_bits, bit_drivers)
+                    if in_bits
+                    else set()
+                )
+                fanin_cache[f.cell.name] = fanin
+            for ff_name in fanin:
+                if ff_name in seen or ff_name in excluded:
+                    continue
+                seen.add(ff_name)
+                ff_domain = domains.get(ff_name)
+                if ff_domain is None:
+                    continue
+                if ff_domain == dst_clock:
+                    return True
+                ff = flops_by_name.get(ff_name)
+                if ff is None:
+                    continue
+                if ff_domain == src_clock and relay_hops == 0:
+                    nxt.append((ff, src_hops + 1, 0))
+                else:
+                    nxt.append((ff, src_hops, relay_hops + 1))
+        frontier = nxt
+    return False
+
+
 def _has_dst_to_src_feedback(
     module: Module,
     crossing: Crossing,
@@ -4455,6 +4545,10 @@ def _has_dst_to_src_feedback(
     flops reach the same registers, and recomputing each register's
     combinational cone per source flop dominated runtime on large
     datapaths.
+
+    When this walk finds nothing, :func:`check_cdc_012` asks
+    :func:`_has_relayed_feedback`, which lets the path pass through
+    registers of other domains (rtl-buddy-cdc#359).
     """
     src_flop = crossing.src_flop
     if src_flop is None:
@@ -4560,6 +4654,8 @@ def check_cdc_012(
     # the same clocks (rtl-buddy-cdc#239).
     feedback_cache: dict[str, bool] = {}
     fanin_cache: dict[str, set[str]] = {}
+    relay_fanin_cache: dict[str, set[str]] = {}
+    relay_excluded: frozenset[str] | None = None
 
     for c in crossings:
         if c.src_clock == UNCONSTRAINED_SENTINEL:
@@ -4595,7 +4691,7 @@ def check_cdc_012(
             continue
         key = c.src_flop.cell.name
         if key not in feedback_cache:
-            feedback_cache[key] = _has_dst_to_src_feedback(
+            found = _has_dst_to_src_feedback(
                 module,
                 c,
                 ctx.domains,
@@ -4603,6 +4699,26 @@ def check_cdc_012(
                 flops_by_name,
                 fanin_cache=fanin_cache,
             )
+            if not found:
+                if relay_excluded is None:
+                    # Registers that are never an acknowledge however they
+                    # are wired (#359): clock dividers and reset
+                    # synchronisers. Built once, on the first miss.
+                    relay_excluded = (
+                        ctx.clock_network_cells | ctx.reset_synchronizers
+                    ) & frozenset(flops_by_name)
+                found = _has_relayed_feedback(
+                    module,
+                    c,
+                    ctx.domains,
+                    ctx.bit_drivers,
+                    flops_by_name,
+                    excluded=relay_excluded,
+                    max_flop_hops=6,
+                    max_relay_hops=6,
+                    fanin_cache=relay_fanin_cache,
+                )
+            feedback_cache[key] = found
         if feedback_cache[key]:
             continue
         out.append(

@@ -201,15 +201,6 @@ EXPECTED: dict[str, Verdict] = {
 # a finding for an issue; the test flips to XPASS (a failure, strict) the
 # day the analyzer is fixed, and the entry must then be removed.
 _XFAIL: dict[str, str] = {
-    "good_handshake_ack_via_third_domain": (
-        "false CDC-012: _has_dst_to_src_feedback walks only inside the "
-        "source domain, so an acknowledge relayed clk_b → clk_c → clk_a "
-        "(payload held until it arrives) is not seen as feedback"
-    ),
-    "bad_handshake_ack_via_third_domain": (
-        "extra CDC-012 next to the expected CDC-001: same relayed-ack "
-        "blind spot as good_handshake_ack_via_third_domain"
-    ),
     "good_virtual_clock_io": (
         "false CDC-006 on a typed input port wired straight into a 2FF "
         "synchroniser: there is no combinational logic before the first "
@@ -254,14 +245,14 @@ def test_every_new_fixture_is_in_the_table() -> None:
 
 
 def test_relayed_ack_hop_is_reported_once() -> None:
-    """The real bug in bad_handshake_ack_via_third_domain is found, and
-    the gated payload is not a CDC-004 — only the extra CDC-012 is wrong."""
+    """The real bug in bad_handshake_ack_via_third_domain is found once,
+    and the payload held until the relayed acknowledge is neither a
+    CDC-004 nor a CDC-012 (rtl-buddy-cdc#359)."""
     _, report = _analyze("bad_handshake_ack_via_third_domain")
     got = [
         _finding("bad_handshake_ack_via_third_domain", v) for v in report["violations"]
     ]
-    assert _cdc001("c_ack_q", "a_ack_s1") in got
-    assert {f[0] for f in got} <= {"CDC-001", "CDC-012"}
+    assert got == [_cdc001("c_ack_q", "a_ack_s1")]
 
 
 def test_gen_clock_chain_raw_paths_are_synchronous() -> None:

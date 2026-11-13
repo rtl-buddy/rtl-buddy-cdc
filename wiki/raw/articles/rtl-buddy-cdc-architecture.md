@@ -2618,6 +2618,33 @@ synchroniser plus the enable flop(s) gating the payload load). The
 feedback result is cached per `c.src_flop.cell.name`, one entry
 per source flop.
 
+**Relayed acknowledge (rtl-buddy-cdc#359).** The acknowledge need not
+come straight back: it can go destination → a third domain → source
+(`good_handshake_ack_via_third_domain`: clk_b's ack is synchronised
+into clk_c, re-registered, and synchronised into clk_a). When the
+source-domain walk finds no dst flop, `_has_relayed_feedback` walks
+again from the same source flop, letting the path pass through
+registers of any other known domain: at most 6 source-domain hops (as
+above) and then at most 6 relay hops, with one visited set. Whether
+each hop of the relay is itself synchronised is CDC-001's job — an
+unsynchronised hop is reported there
+(`bad_handshake_ack_via_third_domain`: CDC-001 on the C → A capture,
+no CDC-012). So that a relay is an acknowledge and not a coincidence,
+the relayed walk is narrower than the source-domain one:
+
+- every hop follows only the pins a register's next *value* flows
+  through — `D`, the clock enable, a synchronous reset
+  (`_flop_functional_fanin_bits`) — never an asynchronous reset, set or
+  load, so a third-domain register that hears the destination only
+  through a shared reset carries no acknowledge;
+- clock-network registers (dividers) and recognised reset
+  synchronisers are never traversed or accepted;
+- a relay register whose own fanin never reaches the destination (a
+  free-running register in the third domain) ends that path.
+
+`tests/test_cdc_012_relayed_ack.py` pins the reset-only and
+free-running relays as still firing.
+
 Feedback presence is a **crossing-level** property, not a
 domain-level one. Scoping the walk to the crossing's own source
 flop is what stops an unrelated handshake (or a FIFO's pointer

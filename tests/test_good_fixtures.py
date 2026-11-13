@@ -290,15 +290,8 @@ GOOD_FIXTURES = [
     # clk_c and combined: not CDC-005 (no shared source flop).
     ("good_reconvergence_two_source_domains", 2),
     # Req/ack handshake whose ack returns clk_b → clk_c → clk_a.
-    pytest.param(
-        "good_handshake_ack_via_third_domain",
-        4,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="false CDC-012: the data-hold feedback walk stays in the "
-            "source domain and misses an ack relayed through clk_c",
-        ),
-    ),
+    # CDC-012 follows the acknowledge through clk_c (rtl-buddy-cdc#359).
+    ("good_handshake_ack_via_third_domain", 4),
     # --- rtl-buddy-cdc#331: SDC forms ---
     # Generated clock of a generated clock on internal pins; clk_ext
     # crosses into ck_div4 through a 2FF synchroniser.
