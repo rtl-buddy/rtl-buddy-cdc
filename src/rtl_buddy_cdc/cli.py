@@ -152,7 +152,10 @@ _SYNC_PRIMITIVE_OPT = typer.Option(
     "crossing landing in an instance of it is safe by construction, the "
     "instance is summarised at its destination clock instead of being "
     "declined as a multi-clock blackbox (no CDC-BBX), and its "
-    "`DEST_SYNC_FF` parameter is checked by CDC-022. Repeatable. The "
+    "`DEST_SYNC_FF` parameter is checked by CDC-022. The destination clock "
+    "is found from the clock pin names: with two or more clock pins, one "
+    "must contain `dest` or `dst` (a `src` pin is the source side), or the "
+    "instance is still declined with CDC-BBX. Repeatable. The "
     "Xilinx XPM CDC family (xpm_cdc_single / _array_single / _gray / "
     "_handshake / _pulse / _sync_rst / _async_rst) is recognised "
     "built-in — use this only for an in-house or other-vendor macro. "
@@ -1006,6 +1009,20 @@ def _analyze_module_and_report(
                         "or split the port "
                         f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
                     )
+                elif cell.type in comp_stats.undirected_primitive_modules:
+                    # rtl-buddy-cdc#344: registered as a synchroniser primitive, but the
+                    # primitive path needs to know which clock pin is the
+                    # destination and could not tell. Declining is the
+                    # safe outcome; say why so the promise of
+                    # ``--sync-primitive`` ("no CDC-BBX") is not a mystery.
+                    reason = (
+                        "left opaque — registered as a synchroniser primitive, "
+                        "but its destination clock pin could not be identified: "
+                        "with more than one clock pin, one must carry a `dest` / "
+                        "`dst` name hint, and it must trace to a declared clock. "
+                        "Rename the destination clock pin, or flatten it "
+                        f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                    )
                 else:
                     reason = (
                         "left opaque — not provably single-clock; internal "
@@ -1238,16 +1255,19 @@ def _analyze_module_and_report(
         flop_clocks = {fd.flop.cell.name: fd.clock for fd in domains}
         reset_domains_map = assign_reset_domains(module)
         polarity_overrides = user_reset_polarity_overrides(module, hints=reset_hints)
+        # One reset classification for all three consumers (#324).
         recognised_syncs = find_reset_synchronizers(
             module,
             flop_clocks,
             extra_synchronizers=user_reset_sync_flop_names(module, hints=reset_hints),
+            reset_domains=reset_domains_map,
         )
         reset_crossings = find_reset_crossings(
             module,
             flop_clocks,
             recognised_syncs=recognised_syncs,
             polarity_overrides=polarity_overrides,
+            reset_domains=reset_domains_map,
         )
         reset_payload = build_reset_domain_map(
             module,

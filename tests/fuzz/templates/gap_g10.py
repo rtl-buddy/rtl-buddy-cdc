@@ -19,6 +19,11 @@ Asserts CDC-021 fires once per case on the undeclared port driving
 the self-loop flop. Before the rule existed, ``run_all`` produced
 zero findings on this shape — and worse, any legitimate
 crossing involving the undeclared domain was silently dropped.
+
+The per-rule dimension sweep — consumer count, declared / renamed /
+undeclared, clock path, pragma — lives in ``cdc021.py`` (rtl-buddy-
+cdc#331); this file stays the single-shape regression sentinel and its
+expectation already names the rule.
 """
 
 from __future__ import annotations

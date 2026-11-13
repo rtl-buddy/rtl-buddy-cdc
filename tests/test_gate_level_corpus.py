@@ -38,8 +38,9 @@ Legs, appended to the front half:
     ``$_*_`` gates, every W-bit flop W 1-bit ``$_DFF_*`` cells.
     ``techmap`` rather than bare ``simplemap`` because ``simplemap``
     leaves ``$pmux`` / ``$eq`` / arithmetic coarse, so the result is
-    not a gate-level netlist (the only extra divergence ``techmap``
-    produces on the corpus is ``bad_onehot_decode_independent_sync``).
+    not a gate-level netlist (``techmap`` also splits the one-hot
+    decoder of ``bad_onehot_decode_independent_sync`` into per-lane
+    gates, which CDC-019 has read since rtl-buddy-cdc#337).
 ``synth``
     ``opt_dff; techmap; abc -g AND,OR,XOR,MUX; opt_clean``.
     Synthesis-shaped: ``opt_dff`` first folds enable and sync-reset
@@ -157,17 +158,6 @@ _FRONT_HALF_CLEANUP: dict[str, str] = {
 # opt_dff folds) are fixed; their rows are gone. The causes below are
 # what remains.
 
-_R_BIT_BLAST = (
-    "limitation: a W-bit flop becomes W 1-bit flops, and the bus rules "
-    "(CDC-004 / 012 / 020, gated- and gray-bus acceptance, CDC-014's "
-    "width guard) key on cell width; the bus survives only as a "
-    "multi-bit netname"
-)
-_R_DECODER = (
-    "limitation: techmap splits the shared multi-bit decoder cell into "
-    "per-lane gates, and CDC-019 groups lanes by one shared >=2-bit "
-    "driver cell"
-)
 _R_OPT_CONST_FLOP = (
     "inherent: opt_dff removes the stuck-at-0 `meta` flop that is the "
     "bug under test (optimisation changes the design, not the lowering)"
@@ -187,37 +177,6 @@ _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     # Lowering / optimisation changes the structure under test.
     "bad_reset_sync_deassert_polarity": {"synth": _R_OPT_CONST_FLOP},
     "flop_zoo_crossing": {"synth": _R_ABC_RESET_INVERTER},
-    # Bit-blasted buses.
-    "bad_async_fifo_binary_ptrs": _both(_R_BIT_BLAST),
-    "bad_bus_crossing": _both(_R_BIT_BLAST),
-    "bad_functional_datahold_enable": _both(_R_BIT_BLAST),
-    "bad_gray_phase_break": _both(_R_BIT_BLAST),
-    "bad_handshake_ack_missing": _both(_R_BIT_BLAST),
-    "bad_mixed_handshake_datahold": _both(_R_BIT_BLAST),
-    "bad_quasi_static_unmarked": _both(_R_BIT_BLAST),
-    "bad_sliced_bus_reconvergence": _both(_R_BIT_BLAST),
-    "bad_typed_port_bus_crossing": _both(_R_BIT_BLAST),
-    # CDC-011 (the clock-mux $_MUX_) agrees since rtl-buddy-cdc#336;
-    # CDC-004 on the bit-blasted bus is still lost.
-    "bad_unconstrained_input_muxed_clock": _both(_R_BIT_BLAST),
-    "bad_unconstrained_input_bus_two_domains": _both(_R_BIT_BLAST),
-    "blackbox_leaf_crossing": _both(_R_BIT_BLAST),
-    "foreign_input_no_abstract": _both(_R_BIT_BLAST),
-    "good_buffered_gated_bus_crossing": _both(_R_BIT_BLAST),
-    "good_dffe_gated_bus_crossing": _both(_R_BIT_BLAST),
-    "good_functional_datahold_handshake": _both(_R_BIT_BLAST),
-    "good_gray_counter_crossing": {"gates": _R_BIT_BLAST},
-    "good_mixed_handshake_datahold": _both(_R_BIT_BLAST),
-    "good_unconstrained_input_bus_two_domains_typed": _both(_R_BIT_BLAST),
-    "ip_cdc_handshake": _both(_R_BIT_BLAST),
-    "safe_single_input": _both(_R_BIT_BLAST),
-    "scaling_perf": _both(_R_BIT_BLAST),
-    "shared_subtree_compose": _both(_R_BIT_BLAST),
-    "single_clock_leaf_abstract": _both(_R_BIT_BLAST),
-    "wide_bus_lane_crossing": _both(_R_BIT_BLAST),
-    "wide_bus_mixing_crossing": _both(_R_BIT_BLAST),
-    # Decoder structure.
-    "bad_onehot_decode_independent_sync": _both(_R_DECODER),
 }
 
 

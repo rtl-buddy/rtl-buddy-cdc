@@ -120,6 +120,8 @@ without one the tool prints the structural summary and exits 0.
 | `frontends/yosys.py` | Yosys frontend: shell out to `yosys` then `netlist.load` the JSON | `elaborate`, `YosysError` |
 | `frontends/slang.py` | slang frontend: elaborate SystemVerilog via pyslang directly | `elaborate`, `SlangFrontendUnavailable`, `SlangElaborationError` |
 | `netlist.py` | Parse Yosys `write_json` output into typed structs | `Module`, `Cell`, `Port`, `Netname`, `BoundarySummary`, `PortBoundary` |
+| `regroup.py` | Loader normalisation: rebuild bit-blasted gate-level registers (and the lane-wise logic in front of them) as wide coarse cells (rtl-buddy-cdc#337) | `regroup_flops`, `REGROUPED_ATTR`, `ORPHAN_ATTR` |
+| `gate_eval.py` | Truth tables of small combinational cones (functional gray recognition on gate netlists) | `cone_tables` |
 | `flops.py` | Recognise the 11 Yosys FF cell variants and extract CLK / D / Q | `Flop`, `FF_CELL_TYPES` |
 | `domain.py` | Trace clock roots, find flop→flop crossings | `FlopDomain`, `Crossing`, `trace_clock_root`, `find_crossings` |
 | `abstract.py` | Detect + summarise single-clock subtrees to a port boundary (#256) | `is_single_clock_subtree`, `summarise_subtree` |
@@ -283,6 +285,49 @@ Consequences, deliberately:
 - One linear pass per run; rules see only live cells and need no
   liveness checks of their own. The design summary's cell count is the
   live count.
+
+### 4.1.1 Gate-level registers are regrouped at load (rtl-buddy-cdc#337)
+
+After `techmap` / `abc` a W-bit register is W one-bit `$_DFF_*`
+cells, and every rule that reasons about a bus (CDC-004 / 012 / 019 /
+020, the gated- and gray-bus acceptances, CDC-014's width guard) keys
+on one flop cell carrying the bus. `netlist.load_with_blackboxes` runs
+`regroup.regroup_flops` on every module it parses, so the analyzer —
+crossing enumeration, abstraction and the rule pack alike — sees the
+shape `proc` would have produced:
+
+- **Registers.** Gate flops are grouped by their `Q` bits' owner
+  netname (public, ≥ 2 bits; the narrowest wins, so a concatenating
+  wire never merges two registers; a port name is passed over when the
+  bit has a name of its own; `splitnets`-style `q[3]` names are
+  rebuilt into `q`) and split by control key: family, clock net and
+  edge, reset / set / load / enable nets and polarities, and the
+  cell's `src` (the `always` block). Each group of ≥ 2 lanes becomes
+  one coarse cell (`$dff` / `$adff` / `$dffe` / `$adffe` / `$sdff*` /
+  `$dffsr*` / `$aldff*`) named after the netname, lanes in netname
+  order, per-bit reset values in `ARST_VALUE` / `SRST_VALUE`. The cell
+  carries `REGROUPED_ATTR` listing the replaced cells.
+- **Lane-wise logic.** From each rebuilt register's `D`, a vector whose
+  bits are the outputs of distinct one-bit gates of one type
+  (`$_MUX_` with one shared `S`, `$_AND_` / `$_OR_` / `$_XOR_` /
+  `$_XNOR_` / `$_NOT_` / `$_BUF_`) is rebuilt as the equivalent wide
+  `$mux` / `$and` / … / `$pos`, recursively. That restores the enable
+  and sync-reset muxes and the gray encoder's `$xor` exactly.
+- **Not regrouped.** Coarse cells are never touched (an RTL netlist is
+  returned unchanged). A flop with no qualifying netname, or a bit of a
+  register whose name names one flop twice (merged bits), stays one bit
+  wide; if it also has no one-bit name of its own it is tagged
+  `ORPHAN_ATTR`, and CDC-004 reports orphans of one `always` block that
+  cross together as a possible bus (`warning`) rather than letting W
+  clean one-bit chains go silent.
+
+Where synthesis re-derived the logic (`abc`), two rule helpers fall back
+to the gate-level form: `_is_gray_encoded_source` checks, by truth
+table (`gate_eval.cone_tables`, ≤ 10 leaves), whether a rebuilt
+register's `D` is the gray code of another register's `D` or `Q`; and
+CDC-019 groups one-bit gate drivers by the multi-bit netname their
+outputs share (§8.7). Both apply only to gate-level cells, so no
+RTL-level verdict depends on them.
 
 ### 4.2 Flop recognition
 
@@ -1494,6 +1539,7 @@ free functions in `rules.py`:
 | Helper | Used by | Purpose |
 |---|---|---|
 | `_sync_chain_depth(module, dst_flop, dst_clock, ...)` | CDC-001, -002, -003 | Walk forward from a flop's Q lane-wise; count the chain length of single-reader same-domain flops |
+| `_bit_reader_count(module)` | `_build_context` (cached as `ctx.reader_counts`), every single-reader test above and in `compositional` | The one definition of "who reads this bit": cell **input** pins except `CLK` (a pin `port_directions` marks `output`, or `Y` / `Q` when the cell has no directions, is a driver, not a reader — so a blackbox's `clk_out` / `dout` never counts), plus every module **output / inout port** bit. A synchroniser stage exported straight to a port therefore has a second reader and ends the chain, exactly as it would through a buffer (rtl-buddy-cdc#344) |
 | `_packed_shift_register_depth(head, reader_counts, module, bit_drivers)` | `_sync_chain_depth` | Recognise a synchroniser packed into one multi-bit flop (`s <= {s[N-2:0], d}`): `D` must be, lane for lane, either one of the flop's own `Q` bits or — for exactly one lane — an external bit; follow the per-lane shift and return the effective depth (#264). With a **synchronous reset** the lane test runs on the data leg of the `$mux` `proc` leaves on `D` (#301) |
 | `_constant_leg_reset_mux_data_bits(head, module, bit_drivers, reader_counts)` | `_packed_shift_register_depth`, CDC-003 | Return the data leg of a single `$mux` whose `Y` is exactly the flop's `D` vector and whose other leg is entirely constant (either polarity, any reset value) — i.e. an un-folded synchronous reset. Rejects enable muxes (other leg = own `Q`), any other live leg, both-constant legs, `$pmux`, chained muxes, and a `Y` with more than one reader (#301) |
 | `_srst_mux_data_bit_to_single_bit_flop(module, d_bit_to_single_bit_flop, bit_drivers, reader_counts)` | `_build_context` (cached as `ctx.srst_mux_data_bit_to_single_bit_flop`), `_sync_chain_depth`, `_sync_chain_flops`, `_chain_has_inter_stage_comb` | Reverse index from a constant-leg sync-reset `$mux`'s *data-leg* bit to the 1-bit flop it feeds. The chain walkers consult it when the `D`-bit lookup misses, so a separate-flop chain steps over each stage's own reset mux (depth 2 for `if (rst) … else begin s1 <= d; s2 <= s1; end`), and the inter-stage-comb detector skips that mux so CDC-014 matches the slang `$sdff` verdict (#304) |
@@ -1744,6 +1790,12 @@ captures "the user has handled the multi-bit coherence" for the
 whole decoder. Suppression when the immediate driver is itself a
 flop is structural: chained registers are CDC-001 / CDC-002's
 territory.
+
+On a gate-level netlist the decoder is one gate per lane, so no driver
+has ≥2 output bits. A lane whose driver is a one-bit gate-level cell
+(`$_*`) is grouped instead by the narrowest public multi-bit netname
+holding its `D` bit — the decoder's output vector (`one_hot`), which
+survives `techmap` and `abc` (rtl-buddy-cdc#337).
 
 ### 8.8 CDC-021 — flop CLK driven by undeclared port
 
@@ -2665,6 +2717,20 @@ current bottlenecks if scaled up:
   the parent's driver map once and pass it as `drivers=` to
   `_instance_clocks` and its callers. Rebuilding it per instance was
   O(cells × instances) (#320).
+- The reset-side views are `_RuleContext` cached properties built at
+  most once per run (#324): `reset_domains`
+  (`assign_reset_domains`), `reset_synchronizers`
+  (`find_reset_synchronizers` plus the `reset_sync` marks) and
+  `reset_sync_chains` (`iter_reset_sync_chains`), all from the
+  context's own flop list and driver map. RDC-002 / -004 / -005 /
+  -006 / -007 / -008 read them instead of rebuilding them, and
+  CDC-008 / CDC-010 share `clock_network_cells` the same way. The
+  public `reset_domain` helpers take the precomputed pieces as
+  optional keyword arguments and build them when omitted.
+- `Module.port_of_bit` is a dict lookup: the bit → port index is a
+  `cached_property` built on first use (first port in `ports` order
+  wins, as the old scan did). It is not a dataclass field, so `==`,
+  `hash` and `repr` are unchanged (#324).
 - The rule pack is `O(C)` in crossings for most rules, with two
   exceptions: CDC-005 (reconvergence detection) is `O(C²)` worst-
   case from the per-group cone walks (each chain's
