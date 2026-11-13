@@ -96,7 +96,7 @@ def test_domain_map_names_the_flag_crossings_handshake(suffix: str) -> None:
     """The domain map's scheme agrees with lint: the two flag captures
     are ``"handshake"``, not unrecognised."""
     module, spec, crossings = _spec_and_crossings(GOOD, suffix)
-    ctx = _build_context(module, spec, clock_for_port=spec.clock_for_port)
+    ctx = _build_context(module, spec)
     schemes = {
         _reg(module, c.dst_flop.cell.name): crossing_synchronizer(module, c, ctx)
         for c in crossings
