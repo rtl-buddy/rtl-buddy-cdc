@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CDC-024 — top-level output launched asynchronously to its
+  `set_output_delay` contract** (#323). `set_output_delay -clock C
+  [get_ports o]` declares that the receiver outside the design captures
+  `o` on `C`. The SDC parser has always recorded that clock, but
+  crossings only land on flop `D` pins and the typed-port walk only
+  visits *inputs*, so an output launched from a domain asynchronous to
+  `C` produced no crossing, no finding and no diagnostic. CDC-024 walks
+  each contracted output's combinational cone back to the registers
+  (and typed input ports, for a feed-through) that launch it, resolves
+  their domains exactly as the crossing walk does, and fires when one is
+  asynchronous to `C` under the same predicate the crossing filter uses
+  (`set_clock_groups -asynchronous` / `set_false_path`, exclusive
+  groups dropped). A related contract — the launch clock itself, a
+  generated clock of it, a virtual clock never declared asynchronous —
+  is silent however the names differ. One finding per output port,
+  naming the port, how many of a bus's bits are affected, each
+  asynchronous launch domain with its launching registers, and the
+  receiving clock.
+
+  It is a standalone rule, not a synthetic crossing sink: no
+  crossing-consuming rule (CDC-001, CDC-004, …) ever sees an external
+  capture, and `summary.crossings` is unchanged. Severity `warning`
+  (`--strict` → error) — an asynchronous output is fine when the
+  receiving design synchronises it, which this analysis cannot see.
+  Accept an intentional one with an ordinary waiver (`waive CDC-024
+  <port> <reason>`, or `// rbcdc: disable-rule CDC-024` on the driving
+  logic); the waived finding stays in the report's suppressed list as
+  the receiver's synchronisation obligation.
+
+  No schema change — an additive rule id through the normal `Violation`
+  path (text / JSON / SARIF). Outputs without a `set_output_delay` are
+  not checked, so every existing fixture report is byte-identical. A
+  design whose SDC contracts an output to a clock it declares
+  asynchronous to the output's launch domain, and which previously
+  reported clean, will now report a CDC-024 `warning`. New fixtures
+  `bad_output_async_contract` / `good_output_sync_contract`.
+  `domain.flop_domain_resolver` is the per-flop domain function
+  `assign_domains` now delegates to, so the rule resolves only the
+  launching registers without re-tracing the whole design.
+
 ## [0.7.3] — 2026-10-31
 
 ### Changed
