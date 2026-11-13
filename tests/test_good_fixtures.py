@@ -338,6 +338,10 @@ GOOD_FIXTURES = [
     # Gray encoder written (b >> 1) ^ b, into an ungated 4-bit 2FF
     # (rtl-buddy-cdc#365); one 4-bit crossing.
     ("good_gray_xor_swapped", 1),
+    # Gray pointers into 4-bit 2FF synchronisers whose stages carry a
+    # synchronous reset (port reset and synchronised local reset): the
+    # first-stage test looks through the reset mux (rtl-buddy-cdc#366).
+    ("good_gray_bus_sync_srst", 2),
 ]
 
 

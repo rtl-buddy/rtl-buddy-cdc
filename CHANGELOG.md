@@ -342,6 +342,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CDC-004 missed a gray pointer into a synchroniser with a synchronous
+  reset** (rtl-buddy-cdc#366). `if (rst) begin meta <= '0; q <= '0; end`
+  leaves, after `proc`, a constant-leg `$mux` between the stages, and
+  `_is_multibit_sync_first_stage` (which wants stage 1's `Q` to be stage
+  2's `D` lane for lane) did not see the chain. It now looks through the
+  mux shape the single-bit chain walk already steps over
+  (`_constant_leg_reset_mux_data_bits`, rtl-buddy-cdc#301 / #304), and
+  only when the mux select is local to the destination: dst-domain
+  flops, a primary port or a constant. A mux whose other leg is live
+  (a data select or an enable), a `$pmux`, a mux output read elsewhere,
+  or a select driven from another domain is not looked through. The
+  `opt_dff` form (`$sdff`) already matched. New fixture
+  `good_gray_bus_sync_srst` (both netlist forms). No other committed
+  fixture changes verdict.
+
 - **CDC-004 missed a gray encoder written `(b >> 1) ^ b`**
   (rtl-buddy-cdc#365). The structural gray detector
   (`_is_gray_encoded_source`) accepted the `$xor` only with the

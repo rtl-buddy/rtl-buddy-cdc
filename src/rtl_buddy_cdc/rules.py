@@ -2070,6 +2070,8 @@ def _is_multibit_sync_first_stage(
     dst_clock: str,
     domains: dict[str, str | None],
     flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]] | None = None,
+    *,
+    ctx: _RuleContext | None = None,
 ) -> bool:
     """Test whether ``dst_flop`` is the first stage of a multi-bit
     synchronizer chain.
@@ -2089,9 +2091,22 @@ def _is_multibit_sync_first_stage(
     structural case; users who want stricter behaviour can keep
     asserting via ``set_clock_groups`` and the rule pass.
 
+    A **synchronous reset** on the second stage puts a ``$mux`` between
+    the stages after ``proc`` (``if (rst) s2 <= '0; else s2 <= s1;``),
+    so ``Q`` is that mux's data leg rather than the next flop's ``D``
+    (rtl-buddy-cdc#366). The mux is looked through when it is the shape
+    the single-bit chain walk already steps over
+    (:func:`_constant_leg_reset_mux_data_bits`: one ``$mux`` whose ``Y``
+    is exactly the next flop's ``D``, the other leg all-constant, ``Y``
+    read by nothing else) *and* its select is local to the destination
+    (:func:`_srst_select_is_local`). After ``opt_dff`` the reset is
+    folded into an ``$sdff`` whose ``D`` is ``Q`` directly, which the
+    plain lane test already accepts.
+
     ``flops_by_d`` is the rule context's :attr:`_RuleContext.flops_by_d`
-    index. Rule callers must pass it: without it this rescans every cell
-    of ``module``, which is O(cells) per crossing.
+    index. Rule callers must pass it, and ``ctx`` for the reset-mux
+    look-through's driver / reader / consumer maps: without them this
+    rescans every cell of ``module``, which is O(cells) per crossing.
     """
     if len(dst_flop.q) < 2:
         return False
@@ -2108,7 +2123,85 @@ def _is_multibit_sync_first_stage(
             continue
         if domains.get(f.cell.name) == dst_clock:
             return True
-    return False
+    nxt = _srst_mux_next_stage(module, q_bits, flops_by_d, ctx)
+    return (
+        nxt is not None
+        and nxt.cell.name != dst_flop.cell.name
+        and domains.get(nxt.cell.name) == dst_clock
+        and _srst_select_is_local(module, nxt, dst_clock, domains, ctx)
+    )
+
+
+def _srst_mux_next_stage(
+    module: Module,
+    q_bits: tuple[Bit, ...],
+    flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]],
+    ctx: _RuleContext | None,
+) -> Flop | None:
+    """The flop behind a synchronous-reset ``$mux`` whose data leg is
+    exactly ``q_bits`` (rtl-buddy-cdc#366), or ``None``.
+
+    The candidate mux is found from ``q_bits[0]``'s consumers; the shape
+    test is :func:`_constant_leg_reset_mux_data_bits`, shared with the
+    single-bit chain walk (#301 / #304), so a mux it rejects (an enable
+    mux, a live other leg, a ``$pmux``, a mux output read elsewhere) is
+    not looked through here either.
+    """
+    if ctx is not None:
+        bit_drivers = ctx.bit_drivers
+        reader_counts = ctx.reader_counts
+        consumers: tuple[tuple[str, str, int], ...] = ctx.bit_consumers.get(
+            q_bits[0], ()
+        )
+    else:
+        bit_drivers = _bit_drivers(module)
+        reader_counts = _bit_reader_count(module)
+        consumers = tuple(
+            (cell.name, pin, i)
+            for cell in module.cells.values()
+            for pin in ("A", "B")
+            for i, b in enumerate(cell.connections.get(pin, ()))
+            if b == q_bits[0]
+        )
+    for cell_name, pin, _idx in consumers:
+        cell = module.cells.get(cell_name)
+        if cell is None or cell.type not in MUX2_TYPES or pin not in ("A", "B"):
+            continue
+        if tuple(cell.connections.get(pin, ())) != q_bits:
+            continue
+        for f in flops_by_d.get(tuple(cell.connections.get("Y", ())), ()):
+            if (
+                _constant_leg_reset_mux_data_bits(f, module, bit_drivers, reader_counts)
+                == q_bits
+            ):
+                return f
+    return None
+
+
+def _srst_select_is_local(
+    module: Module,
+    stage: Flop,
+    dst_clock: str,
+    domains: dict[str, str | None],
+    ctx: _RuleContext | None,
+) -> bool:
+    """The select of the synchronous-reset ``$mux`` on ``stage``'s ``D``
+    is a reset of the destination domain: every flop in its fanin is
+    clocked by ``dst_clock`` (a synchronised local reset), or it has no
+    flop fanin at all (a primary reset port or a constant).
+
+    A select driven from another domain makes the mux part of a second
+    crossing, not a reset of this synchroniser, so the chain is not seen
+    through it. (That crossing into ``stage`` is reported on its own.)
+    """
+    bit_drivers = ctx.bit_drivers if ctx is not None else _bit_drivers(module)
+    first = stage.d[0] if stage.d else None
+    drv = bit_drivers.get(first) if isinstance(first, int) else None
+    if drv is None:
+        return False
+    s_bits = tuple(module.cells[drv[0]].connections.get("S", ()))
+    fanin = _backward_flop_fanin(module, s_bits, bit_drivers)
+    return all(domains.get(name) == dst_clock for name in fanin)
 
 
 def check_cdc_004(
@@ -2168,7 +2261,7 @@ def check_cdc_004(
         if (
             c.src_flop is not None
             and _is_multibit_sync_first_stage(
-                module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d
+                module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx
             )
             and _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers)
         ):
@@ -5293,7 +5386,7 @@ def check_cdc_020(
         # Structural gray + multi-bit-sync suppression — mirrors CDC-004.
         if _is_gray_encoded_source(module, src_flop, ctx.bit_drivers) and any(
             _is_multibit_sync_first_stage(
-                module, dst, dst_clock, ctx.domains, ctx.flops_by_d
+                module, dst, dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx
             )
             for dst in dst_map.values()
         ):
@@ -6942,7 +7035,7 @@ def crossing_synchronizer(
     if (
         src is not None
         and _is_multibit_sync_first_stage(
-            module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d
+            module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx
         )
         and _is_gray_encoded_source(module, src, ctx.bit_drivers)
     ):

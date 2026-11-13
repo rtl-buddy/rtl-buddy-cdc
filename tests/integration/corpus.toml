@@ -48,23 +48,6 @@ schema = 1
 # analyzer is fixed the affected design's test fails; update its counts,
 # drop the finding / missed entry, and remove the gap here.
 
-[gaps.gray-sync-srst]
-kind = "false_positive"
-rules = ["CDC-004"]
-summary = """
-_is_multibit_sync_first_stage requires the first stage's Q to be,
-lane for lane, another same-clock flop's D. When the synchroniser
-stages carry a synchronous reset, Yosys leaves a constant-leg $mux on
-each stage's D (the slang path likewise), so the chain is not seen and a
-canonical gray pointer reports CDC-004. The single-bit chain walkers
-already step over that mux (_srst_mux_data_bit_to_single_bit_flop,
-rtl-buddy-cdc#304); the multi-bit first-stage test does not."""
-reproducer = """
-Canonical gray counter (gray <= bnext ^ (bnext >> 1)) in clk_a into a
-two-stage 4-bit synchroniser in clk_b written as `meta <= gray; q <=
-meta; if (rst_b) begin meta <= 0; q <= 0; end`. CDC-004 fires on both
-frontends; without the synchronous reset it is clean."""
-
 [gaps.rdc001-reset-synchroniser]
 kind = "false_positive"
 rules = ["RDC-001"]
@@ -136,6 +119,21 @@ diagnostic. Writing the two stages as separate statements makes the
 frontends agree. Combinational variant: `always @* {carry, sum} = acc +
 inc;` drops the acc register on the slang path."""
 
+[gaps.slang-function-call]
+kind = "frontend"
+rules = ["CDC-004"]
+summary = """
+The slang frontend does not lower a call to a user-defined function: the
+call becomes a `$_UNKNOWN_` cell, so the logic the function computes is
+invisible to the structural rules. A gray pointer written
+`gray <= bin2gray(b)` with `bin2gray = b ^ (b >> 1)` loses its `$xor`, and
+the gray-coded crossing reports CDC-004 on the slang path only."""
+reproducer = """
+`function [3:0] bin2gray(input [3:0] x); bin2gray = x ^ (x >> 1);
+endfunction` and `always @(posedge clk) g <= bin2gray(b + 1);`: Yosys
+emits `$add` + `$xor`; slang emits `$add` + `$_UNKNOWN_`. Writing the
+XOR inline makes the frontends agree."""
+
 # --- Designs -----------------------------------------------------------------
 
 [[design]]
@@ -180,22 +178,23 @@ license_file = "COPYING"
 sources = ["rtl/axis_async_fifo.v"]
 top = "axis_async_fifo"
 sdc = "sdc/axis_async_fifo.sdc"
-expect = { clocks = ["s_clk", "m_clk"], crossings = 7, rules = { "CDC-004" = 2 } }
-slang = { reads = true, matches_yosys = true }
-
-[[design.finding]]
-rule = "CDC-004"
-count = 2
-classification = "false_positive"
-gap = "gray-sync-srst"
-reason = """
-wr_ptr_gray_reg / rd_ptr_gray_reg are bin2gray(b) = b ^ (b >> 1) of
-the next binary pointer, captured by a two-stage 13-bit synchroniser
-(*_gray_sync1_reg -> *_gray_sync2_reg). The stages are cleared by the
-synchronised local reset (if (rst_sync3) sync1 <= 0; sync2 <= 0), and
-that reset mux on sync2.D hides the chain from the first-stage test.
-The other five crossings (two reset synchronisers, three toggle-pulse
-status synchronisers) are correctly silent."""
+expect = { clocks = ["s_clk", "m_clk"], crossings = 7, rules = {} }
+slang = { reads = true, matches_yosys = false, crossings = 7, rules = { "CDC-004" = 1 }, gap = "slang-function-call" }
+notes = """
+Clean on the Yosys path. wr_ptr_gray_reg / rd_ptr_gray_reg are the gray
+code b ^ (b >> 1) of the next binary pointer, captured by a two-stage
+13-bit synchroniser (*_gray_sync1_reg -> *_gray_sync2_reg) whose stages
+are cleared synchronously by the destination's reset port (if (m_rst)
+begin sync1 <= 0; sync2 <= 0; end; the FRAME_FIFO-only clear by the
+synchronised local reset folds away at the default parameters). The
+first-stage test looks through that reset mux since rtl-buddy-cdc#366
+(2 false CDC-004 before). The other five crossings
+(two reset synchronisers, three toggle-pulse status synchronisers) are
+correctly silent. On the slang path the write pointer still reports
+CDC-004 (a false positive): it is written wr_ptr_gray_reg <=
+bin2gray(wr_ptr_temp), and the slang frontend leaves the function call
+as an unknown cell, so the gray encoder is invisible; the read pointer
+writes the XOR inline and is clean on both paths."""
 
 [[design]]
 name = "axil_cdc"
