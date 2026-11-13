@@ -36,7 +36,8 @@ src/rtl_buddy_cdc/
 │   ├── yosys.py       # Yosys frontend: shell out + netlist.load
 │   └── slang.py       # slang frontend (Yosys-parity in 0.2.0) — lazy pyslang import
 ├── netlist.py         # Yosys write_json loader (Module / Cell / Port / Netname)
-├── flops.py           # FF cell zoo (FF_CELL_TYPES) + Flop dataclass
+├── cells.py           # Yosys cell-type decoding: gate-level flop names, mux / gate families
+├── flops.py           # FF cell zoo + Flop + reset / enable / clock-edge accessors
 ├── domain.py          # trace_clock_root + find_crossings (BFS) + Crossing
 ├── sdc.py             # SDC parser: Tcl safe-interp / tokenizer reader + arg-spec table
 ├── tcl_tokenizer.py   # stdlib-only Tcl word tokenizer (vendored verbatim by rtl-buddy)

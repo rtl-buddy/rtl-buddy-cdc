@@ -76,6 +76,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the generic "not provably single-clock", and the option's help text
   says a destination pin hint is needed.
 
+- **Gate-level netlists: reset pins, clock edge, `$_MUX_` and gate-cell
+  clock gating are read** (#336). On a netlist after `techmap` /
+  `abc` the analyzer misread information the netlist carries:
+  - Reset and set pins of gate-level flops (`$_DFF_PN0_`,
+    `$_SDFF_PP0_`, `$_DFFSR_*`, `$_ALDFF_*` …) are on pins `R` / `S` /
+    `L`, with polarity and reset value in the cell-type name. The RDC
+    rules, CDC-015 and CDC-011's sync-reset walk read only `ARST` /
+    `SRST` / `CLR` / `ALOAD`, so they went silent. The gated-bus check
+    (CDC-004) read `EN`, but gate-level enable flops use `E`.
+  - CDC-016 read `$_DFF_NN0_` (negedge, async reset) as posedge.
+  - `$_MUX_` was not treated as a mux by the sync-reset mux
+    look-through (false CDC-014), the scan-mode / clock-mux tracer, or
+    the CDC-013 toggle classifier.
+  - The clock tracer did not walk `$_AND_` / `$_OR_` / `$_NAND_` …, so
+    CDC-023 / CDC-011 lost gated and combined clocks.
+
+  A new `cells.py` decodes every gate-level flop / latch family
+  (`$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`,
+  `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`, `$_DLATCH_`,
+  `$_DLATCHSR_`, `$_SR_`) in one place. A test checks the decoder
+  against the local Yosys's cell descriptions. `flops.flop_reset` /
+  `flop_enable_pin` / `flop_clk_polarity` read coarse and gate-level
+  flops the same way, and the rules go through them. 43 of the 99
+  gate-level corpus allowlist rows are gone. No RTL-level fixture
+  verdict changes.
+
+- **A clock gate's domain no longer depends on which input carries the
+  clock** (found via #336). The rule context traced flop clocks without
+  the SDC's clock set, so in `en & clk` first-leg-wins picked the
+  enable port, and CDC-021 reported it as an undeclared clock (`clk &
+  en` was fine). The rule context now tells the tracer which ports are
+  `create_clock` ports. It does this for leg choice only; root names
+  are not normalised, so CDC-021 still sees raw port names.
+  `set_input_delay`-typed data ports never count as clocks.
+
 ### Internal
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,

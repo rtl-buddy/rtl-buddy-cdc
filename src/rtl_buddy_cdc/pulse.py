@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from rtl_buddy_cdc.cells import MUX2_TYPES
 from rtl_buddy_cdc.flops import is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, Module
 
@@ -129,7 +130,8 @@ def classify_toggle_d_pin(
 ) -> ToggleShape:
     """Classify whether ``d_bit`` is a toggle-with-enable pattern.
 
-    Returns ``"toggle"`` iff ``d_bit`` is the ``Y`` of a ``$mux`` whose
+    Returns ``"toggle"`` iff ``d_bit`` is the ``Y`` of a ``$mux`` (or
+    gate-level ``$_MUX_``) whose
     two data inputs (``A``, ``B``) are ``(src_q_bit, ~src_q_bit)`` in
     either order — where ``~src_q_bit`` is the ``Y`` of a cell in
     :data:`_NOT_TYPES` whose ``A`` is ``src_q_bit``. The mux's ``S``
@@ -159,7 +161,7 @@ def classify_toggle_d_pin(
         return "other"
     cell_name, port, _ = drv
     cell = module.cells.get(cell_name)
-    if cell is None or cell.type != "$mux" or port != "Y":
+    if cell is None or cell.type not in MUX2_TYPES or port != "Y":
         return "other"
     a_bits = cell.connections.get("A", ())
     b_bits = cell.connections.get("B", ())

@@ -20,7 +20,17 @@ from rtl_buddy_cdc.domain import (
     find_clock_combines,
     find_scan_mode_flops,
 )
-from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell, is_latch_cell
+from rtl_buddy_cdc.cells import MUX2_TYPES, MUX_PINS, parse_gate_storage_cell
+from rtl_buddy_cdc.flops import (
+    Flop,
+    find_flops,
+    flop_clk_polarity,
+    flop_enable_pin,
+    flop_reset,
+    flop_reset_bits,
+    is_ff_cell,
+    is_latch_cell,
+)
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.primitives import (
     is_sync_primitive,
@@ -289,8 +299,23 @@ def _build_context(
     """
     flops = tuple(find_flops(module))
     flops_by_d = _index_flops_by_d(flops)
+    # Without ``clock_for_port`` the domains keep raw root names (CDC-021
+    # needs the port name of an undeclared clock), but the tracer still
+    # needs to know which ports ARE clocks to pick the clock leg of a
+    # clock gate: otherwise first-leg-wins makes ``en & clk`` resolve to
+    # the enable port (found by the gate-level corpus, where abc swaps
+    # the legs of $_AND_; rtl-buddy-cdc#336). Only ``create_clock``
+    # ports count — not ``set_input_delay``-typed data ports.
+    declared_clock_ports: dict[str, str] = {}
+    if clock_spec is not None:
+        for clk in clock_spec.clocks.values():
+            for port in clk.ports:
+                declared_clock_ports.setdefault(port, clk.name)
     flop_domains = assign_domains(
-        module, clock_for_port=clock_for_port, max_depth=max_depth
+        module,
+        clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_ports.get,
+        max_depth=max_depth,
     )
     domains = {fd.flop.cell.name: fd.clock for fd in flop_domains}
 
@@ -1090,8 +1115,9 @@ def _constant_leg_reset_mux_data_bits(
     if port != "Y":
         return None
     cell = module.cells.get(cell_name)
-    # ``$pmux`` (and every other cell type) is deliberately not walked.
-    if cell is None or cell.type != "$mux":
+    # ``$pmux`` (and every other cell type) is deliberately not walked;
+    # gate-level ``$_MUX_`` is the 1-bit ``$mux`` (rtl-buddy-cdc#336).
+    if cell is None or cell.type not in MUX2_TYPES:
         return None
     y = cell.connections.get("Y", ())
     a = cell.connections.get("A", ())
@@ -1802,8 +1828,9 @@ def _is_gated_bus_crossing(
       after the flatten/opt passes.
     - **Dffe-EN**: the destination cell is itself a flop-with-enable
       from :data:`flops.FF_CELL_TYPES` (``$dffe`` / ``$sdffe`` /
-      ``$adffe`` / etc.) whose ``EN`` pin fans in only from dst-domain
-      flops. That's the "load on synced enable" idiom.
+      ``$adffe`` / etc., or gate-level ``$_DFFE_*`` …) whose enable pin
+      (``EN`` / ``E``, per :func:`flops.flop_enable_pin`) fans in only
+      from dst-domain flops. That's the "load on synced enable" idiom.
 
     A more rigorous check would also verify that the mux's
     hold-input is the destination flop's own ``Q`` (proper feedback
@@ -1817,8 +1844,9 @@ def _is_gated_bus_crossing(
     # Shape 1: $dffe-style EN gating. Cheap to test (one cell-type
     # lookup plus one pin walk); try first so EN-gated designs skip
     # the more expensive driver-cell aggregation below.
-    if is_ff_cell(dst_cell.type):
-        en_bits = dst_cell.connections.get("EN", ())
+    en_pin = flop_enable_pin(dst_cell) if is_ff_cell(dst_cell.type) else None
+    if en_pin is not None:
+        en_bits = dst_cell.connections.get(en_pin, ())
         en_int_bits = tuple(b for b in en_bits if isinstance(b, int))
         if en_int_bits:
             en_fanin_flops = _backward_flop_fanin(module, en_int_bits, drivers)
@@ -1842,7 +1870,7 @@ def _is_gated_bus_crossing(
     if len(driver_cells) != 1:
         return False
     drv_cell = module.cells[next(iter(driver_cells))]
-    if drv_cell.type != "$mux":
+    if drv_cell.type not in MUX2_TYPES:
         return False
     s_bits = drv_cell.connections.get("S", ())
     if not s_bits:
@@ -2528,6 +2556,7 @@ _CDC_010_CONTROL_PINS: dict[str, frozenset[str]] = {
     # Gate-level mux family. Yosys's ``$_MUX{4,8,16}_`` carry their
     # selects on consecutive letters starting at ``S``.
     "$_MUX_": frozenset({"S"}),
+    "$_NMUX_": frozenset({"S"}),
     "$_MUX4_": frozenset({"S", "T"}),
     "$_MUX8_": frozenset({"S", "T", "U"}),
     "$_MUX16_": frozenset({"S", "T", "U", "V"}),
@@ -2568,11 +2597,13 @@ def _control_pins_for(cell: Cell, *, use_heuristic: bool = True) -> frozenset[st
     1. **Explicit map** (:data:`_CDC_010_CONTROL_PINS`) for
        higher-level Yosys cells (phase 1) and the gate-level mux
        family (phase 3).
-    2. **Prefix path** for the Yosys gate-level latch and
-       enable-flop families: any cell type starting with
-       ``$_DLATCH``, ``$_DFFE_``, or ``$_SDFFE_`` reports ``E`` as
-       the control pin. Avoids enumerating the polarity-/reset-/
-       set-shape variant explosion (``$_DFFE_PP0P_`` and friends).
+    2. **Type-name path** for the Yosys gate-level latch and
+       enable-flop families: any cell type that
+       :func:`cells.parse_gate_storage_cell` decodes with an ``E``
+       pin (``$_DLATCH*``, ``$_DFFE_``, ``$_SDFFE_``, ``$_SDFFCE_``,
+       ``$_DFFSRE_``, ``$_ALDFFE_``) reports ``E`` as the control
+       pin. Avoids enumerating the polarity-/reset-/set-shape variant
+       explosion (``$_DFFE_PP0P_`` and friends).
     3. **Heuristic fallback** (when ``use_heuristic`` is True, the
        default): scan the cell's input pins for names matching
        :data:`_CDC_010_HEURISTIC_PINS` case-insensitively. Designed
@@ -2589,14 +2620,11 @@ def _control_pins_for(cell: Cell, *, use_heuristic: bool = True) -> frozenset[st
     explicit = _CDC_010_CONTROL_PINS.get(cell.type)
     if explicit is not None:
         return explicit
-    # Yosys gate-level latch / enable-flop families. Cover the
-    # prefix once instead of enumerating $_DFFE_PP0P_, $_DFFE_NP1N_,
-    # etc. — every variant carries the enable on ``E``.
-    if (
-        cell.type.startswith("$_DLATCH")
-        or cell.type.startswith("$_DFFE_")
-        or cell.type.startswith("$_SDFFE_")
-    ):
+    # Yosys gate-level latch / enable-flop families, decoded from the
+    # type name instead of enumerating $_DFFE_PP0P_, $_DFFE_NP1N_,
+    # etc. — every variant with an enable carries it on ``E``.
+    gate = parse_gate_storage_cell(cell.type)
+    if gate is not None and gate.enable_polarity is not None:
         return frozenset({"E"})
     if not use_heuristic:
         return frozenset()
@@ -2854,7 +2882,7 @@ def check_rdc_001(
     # tree is reviewed.
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for f in ctx.flops:
-        arst_bits = f.cell.connections.get("ARST", ())
+        arst_bits = flop_reset_bits(f.cell, "arst")
         if not arst_bits:
             continue
         my_clk = ctx.domains.get(f.cell.name)
@@ -2940,7 +2968,7 @@ def check_rdc_003(
 
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for f in ctx.flops:
-        srst_bits = f.cell.connections.get("SRST", ())
+        srst_bits = flop_reset_bits(f.cell, "srst")
         if not srst_bits:
             continue
         my_clk = ctx.domains.get(f.cell.name)
@@ -3033,12 +3061,7 @@ def check_rdc_004(
         if rd.reset.type != "async" or rd.reset.source != "comb":
             continue
         # Locate the actual reset pin on this cell type.
-        rst_bits: tuple[Bit, ...] = ()
-        for pin in ("ARST", "ALOAD", "CLR"):
-            bits = f.cell.connections.get(pin, ())
-            if bits:
-                rst_bits = bits
-                break
+        rst_bits = flop_reset_bits(f.cell, "arst", "aload", "clr")
         if not rst_bits:
             continue
         fanin_flops = _backward_flop_fanin(module, rst_bits, ctx.bit_drivers)
@@ -3113,12 +3136,7 @@ def check_rdc_005(
             continue
         if rd.reset.type != "async" or rd.reset.source != "comb":
             continue
-        rst_bits: tuple[Bit, ...] = ()
-        for pin in ("ARST", "ALOAD", "CLR"):
-            bits = f.cell.connections.get(pin, ())
-            if bits:
-                rst_bits = bits
-                break
+        rst_bits = flop_reset_bits(f.cell, "arst", "aload", "clr")
         if not rst_bits:
             continue
         # Immediate-driver exemption: explicit-mux selection of the
@@ -3132,7 +3150,7 @@ def check_rdc_005(
             if drv is not None:
                 drv_cell_name, _, _ = drv
                 drv_cell = module.cells.get(drv_cell_name)
-                if drv_cell is not None and drv_cell.type in {"$mux", "$pmux"}:
+                if drv_cell is not None and drv_cell.type in MUX_PINS:
                     continue
         # RDC-004 already owns the "fanin reaches flops" case.
         fanin_flops = _backward_flop_fanin(module, rst_bits, ctx.bit_drivers)
@@ -3263,12 +3281,7 @@ def check_rdc_006(
             continue
         if rd.reset.type != "async" or rd.reset.source != "comb":
             continue
-        rst_bits: tuple[Bit, ...] = ()
-        for pin in ("ARST", "ALOAD", "CLR"):
-            bits = f.cell.connections.get(pin, ())
-            if bits:
-                rst_bits = bits
-                break
+        rst_bits = flop_reset_bits(f.cell, "arst", "aload", "clr")
         if not rst_bits:
             continue
         rst_bit = rst_bits[0]
@@ -3279,15 +3292,15 @@ def check_rdc_006(
             continue
         drv_cell_name, _, _ = drv
         drv_cell = module.cells.get(drv_cell_name)
-        if drv_cell is None or drv_cell.type not in {"$mux", "$pmux"}:
+        if drv_cell is None or drv_cell.type not in MUX_PINS:
             continue
         # Walk only the mux's *data* legs for the message — the
         # select pin is a control signal, not a reset source, and
         # surfacing it as one is confusing. ``$mux`` has data pins
         # A / B and select S; ``$pmux`` has A (default) / B (cases)
-        # / S (one-hot select).
+        # / S (one-hot select); the gate-level muxes are in MUX_PINS.
         data_bits: list[Bit] = []
-        for pin in ("A", "B"):
+        for pin in MUX_PINS[drv_cell.type][0]:
             data_bits.extend(drv_cell.connections.get(pin, ()))
         fanin_ports = _backward_port_fanin(module, tuple(data_bits), ctx.bit_drivers)
         port_list = sorted(fanin_ports)
@@ -3325,15 +3338,16 @@ def _producer_async_reset_value(producer: Cell) -> str | None:
     """The bit a producer flop's ``Q`` takes when its async reset asserts.
 
     ``$adff`` / ``$adffe`` carry it in ``ARST_VALUE``; ``$dffsr`` /
-    ``$dffsre`` reset through ``CLR``, which drives ``Q`` to 0. Every
+    ``$dffsre`` reset through ``CLR``, which drives ``Q`` to 0. The
+    gate-level forms (``$_DFF_XX1_``, ``$_DFFSR_*``) encode the same in
+    the type name; :func:`flops.flop_reset` reads both. Every
     other producer (``$dff``, ``$sdff``, ``$aldff``, …) has no async
     reset value, so there is nothing to compare: ``None`` (#306).
     """
-    if producer.type in ("$adff", "$adffe"):
-        return _trailing_bit(producer.parameters.get("ARST_VALUE", "0"))
-    if producer.type in ("$dffsr", "$dffsre"):
-        return "0"
-    return None
+    rst = flop_reset(producer)
+    if rst is None or rst.role not in ("arst", "clr"):
+        return None
+    return rst.value
 
 
 def check_rdc_002(
@@ -3772,7 +3786,7 @@ def _unconstrained_srst_captures(
 
     out: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for f in ctx.flops:
-        srst_bits = f.cell.connections.get("SRST", ())
+        srst_bits = flop_reset_bits(f.cell, "srst")
         if not srst_bits:
             continue
         dst_clk = ctx.domains.get(f.cell.name)
@@ -4543,7 +4557,7 @@ def check_cdc_015(
 
         offending: set[tuple[str, str]] = set()
         for chain_flop in chain:
-            arst_bits = chain_flop.cell.connections.get("ARST", ())
+            arst_bits = flop_reset_bits(chain_flop.cell, "arst")
             if not arst_bits:
                 continue
             fanin = _backward_flop_fanin(module, arst_bits, ctx.bit_drivers)
@@ -4588,25 +4602,15 @@ def _clk_polarity(flop: Flop) -> int:
     1. Parametric Yosys FF cells (``$dff`` / ``$adff`` / ``$sdff`` /
        ``$dffe`` / etc.) — read the ``CLK_POLARITY`` parameter.
        Yosys encodes scalar params as ``"0"`` or ``"1"``.
-    2. Gate-level cells (``$_DFF_N_``, ``$_DFF_P_``, ``$_DFFE_PP0P_``,
-       ``$_SDFFE_PP0P_``, ``$_ALDFF_*_``, …) — the first letter after
-       the family prefix encodes the clock-edge polarity (``P`` /
-       ``N``). Covered by walking the underscore-separated segments
-       and picking the first ``P`` / ``N`` token.
+    2. Gate-level cells (``$_DFF_N_``, ``$_DFF_NN0_``, ``$_DFFE_PP0P_``,
+       ``$_SDFFE_PP0P_``, ``$_ALDFF_*_``, …) — the first letter of the
+       type suffix is the clock edge (``P`` / ``N``), decoded by
+       :func:`cells.parse_gate_storage_cell`.
     3. Fall back to positive — unknown cell types are treated as
        posedge, which keeps the rule false-negative-biased on
        library cells the heuristic can't classify.
     """
-    params = flop.cell.parameters or {}
-    p = params.get("CLK_POLARITY")
-    if p is not None:
-        return 1 if p == "1" else 0
-    for seg in flop.cell.type.split("_"):
-        if seg == "P":
-            return 1
-        if seg == "N":
-            return 0
-    return 1
+    return flop_clk_polarity(flop.cell)
 
 
 def _clk_polarity_str(flop: Flop) -> str:
