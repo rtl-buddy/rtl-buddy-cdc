@@ -24,6 +24,10 @@ FIX_ROOT = Path(__file__).parent / "fixtures"
 # crossing path on each fixture.
 GOOD_FIXTURES = [
     ("good_2ff_sync", 1),
+    # 2FF sync whose LAST stage is exported to a port and also feeds a
+    # two-register pipeline: the tap ends the chain at depth 2, so no
+    # CDC-018 cascade either (rtl-buddy-cdc#344).
+    ("good_exported_sync_stage", 1),
     ("good_registered_before_sync", 1),
     ("good_registered_source", 1),
     ("good_reset_sync", 1),

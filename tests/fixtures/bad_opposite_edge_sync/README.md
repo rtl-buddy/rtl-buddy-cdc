@@ -57,6 +57,7 @@ flowchart LR
 
 ## Files
 
+- `bad_opposite_edge_sync.gates.json`
 - `bad_opposite_edge_sync.json`
 - `bad_opposite_edge_sync.sdc`
 - `bad_opposite_edge_sync.sv`
