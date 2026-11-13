@@ -48,20 +48,6 @@ schema = 1
 # analyzer is fixed the affected design's test fails; update its counts,
 # drop the finding / missed entry, and remove the gap here.
 
-[gaps.gray-xor-operand-order]
-kind = "false_positive"
-rules = ["CDC-004"]
-summary = """
-The structural gray-code recogniser (_is_gray_encoded_source) matches
-an $xor whose B operand is the right-shifted A (b ^ (b >> 1)) only.
-XOR is commutative; the same encoder written (b >> 1) ^ b is not
-recognised, so a correct gray pointer into a multi-bit 2FF synchroniser
-reports CDC-004."""
-reproducer = """
-4-bit binary counter in clk_a; gray <= (bnext >> 1) ^ bnext; gray into a
-two-stage 4-bit synchroniser in clk_b (async groups). CDC-004 fires on
-both frontends; writing gray <= bnext ^ (bnext >> 1) is clean."""
-
 [gaps.gray-sync-srst]
 kind = "false_positive"
 rules = ["CDC-004"]
@@ -171,20 +157,15 @@ sources = [
 ]
 top = "async_fifo"
 sdc = "sdc/dpretet_async_fifo.sdc"
-expect = { clocks = ["wclk", "rclk"], crossings = 2, rules = { "CDC-004" = 2 } }
+expect = { clocks = ["wclk", "rclk"], crossings = 2, rules = {} }
 slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-concat-lvalue" }
-
-[[design.finding]]
-rule = "CDC-004"
-count = 2
-classification = "false_positive"
-gap = "gray-xor-operand-order"
-reason = """
-Both pointer crossings (wptr -> sync_w2r, rptr -> sync_r2w) carry a
-gray code: wgraynext = (wbinnext >> 1) ^ wbinnext, registered, into a
-two-stage 5-bit synchroniser ({wq2, wq1} <= {wq1, rptr}). That is the
-gray-coded multi-bit synchroniser CDC-004 exempts; the recogniser only
-misses it because the shifted operand is on the left of the XOR."""
+notes = """
+Clean on the Yosys path. Both pointer crossings (wptr -> sync_w2r,
+rptr -> sync_r2w) carry a gray code, wgraynext = (wbinnext >> 1) ^
+wbinnext, registered, into a two-stage 5-bit synchroniser ({wq2, wq1}
+<= {wq1, rptr}): the gray-coded multi-bit synchroniser CDC-004 exempts.
+The shifted operand sits on the left of the XOR, which the gray
+recogniser matches since rtl-buddy-cdc#365 (2 false CDC-004 before)."""
 
 [[design]]
 name = "axis_async_fifo"

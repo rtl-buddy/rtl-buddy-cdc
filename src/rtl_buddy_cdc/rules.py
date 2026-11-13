@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from functools import cached_property
-from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping
+from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, Sequence
 
 from rtl_buddy_cdc.domain import (
     Crossing,
@@ -1901,6 +1901,26 @@ def _is_gated_bus_crossing(
     return all(domains.get(name) == dst_clock for name in s_fanin_flops)
 
 
+def _is_gray_xor_pair(plain: Sequence[Bit], shifted: Sequence[Bit]) -> bool:
+    """``shifted`` is ``plain >> 1``: ``shifted[i] == plain[i+1]`` for every
+    ``i < N-1`` and ``shifted[N-1]`` is the constant the logical shift fills
+    in. The two operands of a gray encoder's ``$xor``, in either order — the
+    caller tries both because XOR is commutative (rtl-buddy-cdc#365).
+    """
+    n = len(plain)
+    return (
+        n >= 2
+        and len(shifted) == n
+        and all(
+            isinstance(plain[i + 1], int)
+            and isinstance(shifted[i], int)
+            and plain[i + 1] == shifted[i]
+            for i in range(n - 1)
+        )
+        and isinstance(shifted[n - 1], str)
+    )
+
+
 def _is_gray_encoded_source(
     module: Module,
     src_flop: Flop,
@@ -1922,7 +1942,9 @@ def _is_gray_encoded_source(
     We walk the source flop's D fanin backward through combinational
     cells (bounded by ``max_back_hops``) looking for any ``$xor``
     whose A/B pair satisfies ``A[i+1] == B[i]`` for ``i < N-1`` and
-    ``B[N-1]`` is a constant. That signature is essentially unique to
+    ``B[N-1]`` is a constant — or the same with A and B swapped, since
+    ``(b >> 1) ^ b`` is the same encoder (rtl-buddy-cdc#365; see
+    :func:`_is_gray_xor_pair`). That signature is essentially unique to
     gray encoding and is what async-FIFO pointers produce.
     """
     seen: set[Bit] = set()
@@ -1945,17 +1967,10 @@ def _is_gray_encoded_source(
             if cell.type == "$xor":
                 a_bits = cell.connections.get("A", ())
                 b_bits = cell.connections.get("B", ())
-                n = len(a_bits)
-                if (
-                    n >= 2
-                    and len(b_bits) == n
-                    and all(
-                        isinstance(a_bits[i + 1], int)
-                        and isinstance(b_bits[i], int)
-                        and a_bits[i + 1] == b_bits[i]
-                        for i in range(n - 1)
-                    )
-                    and isinstance(b_bits[n - 1], str)
+                # XOR is commutative: ``(b >> 1) ^ b`` puts the shifted
+                # operand on A (rtl-buddy-cdc#365).
+                if _is_gray_xor_pair(a_bits, b_bits) or _is_gray_xor_pair(
+                    b_bits, a_bits
                 ):
                     return True
             for in_port, in_bits in cell.connections.items():

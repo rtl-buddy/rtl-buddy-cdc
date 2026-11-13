@@ -342,6 +342,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CDC-004 missed a gray encoder written `(b >> 1) ^ b`**
+  (rtl-buddy-cdc#365). The structural gray detector
+  (`_is_gray_encoded_source`) accepted the `$xor` only with the
+  right-shifted operand on `B`; XOR is commutative, and the swapped
+  order (common in async FIFOs) made every gray pointer crossing report
+  CDC-004. Either operand may now be the shifted one; a shift by two, a
+  left shift and a rotate are still rejected in both orders. The
+  gate-level truth-table fallback compares functions and was already
+  order-free. New fixture `good_gray_xor_swapped`. No other committed
+  fixture changes verdict.
+
 - **`set_input_delay` / `set_output_delay` silently ignored a typo'd
   clock and glob port targets** (rtl-buddy-cdc#357).
   - A `-clock` naming no `create_clock` / `create_generated_clock` now

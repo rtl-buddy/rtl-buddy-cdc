@@ -335,6 +335,9 @@ GOOD_FIXTURES = [
             "2FF synchroniser (no combinational logic) still fires",
         ),
     ),
+    # Gray encoder written (b >> 1) ^ b, into an ungated 4-bit 2FF
+    # (rtl-buddy-cdc#365); one 4-bit crossing.
+    ("good_gray_xor_swapped", 1),
 ]
 
 
