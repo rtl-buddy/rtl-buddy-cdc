@@ -124,6 +124,7 @@ without one the tool prints the structural summary and exits 0.
 | `gate_eval.py` | Truth tables of small combinational cones (functional gray recognition on gate netlists) | `cone_tables` |
 | `flops.py` | Recognise the 11 Yosys FF cell variants and extract CLK / D / Q | `Flop`, `FF_CELL_TYPES` |
 | `domain.py` | Trace clock roots, find flop→flop crossings | `FlopDomain`, `Crossing`, `trace_clock_root`, `find_crossings` |
+| `memory.py` | Decode inferred-memory cells into ports; rewrite them for the crossing walk (#326) | `Memory`, `MemPort`, `find_memories`, `crossing_view` |
 | `abstract.py` | Detect + summarise single-clock subtrees to a port boundary (#256) | `is_single_clock_subtree`, `summarise_subtree` |
 | `hierarchy.py` | Compositional boundary walk: summarise each shared module once (#257) | `compose_boundaries`, `CompositionStats` |
 | `sdc.py` | Parse the CDC-relevant SDC subset | `ClockSpec`, `Clock` |
@@ -199,7 +200,11 @@ output. Port connections alias the child's internal-port variables
 to the parent's connection expression bits so net identity is
 preserved across the hierarchy boundary; aliasing rewrites
 propagate globally across `_var_bits` / `_ports` / `_netnames` so
-chains like parent `a_q` ← child `q` collapse to a single net.
+chains like parent `a_q` ← child `q` collapse to a single net. A
+continuous `assign` additionally rewrites every cell emitted *earlier
+in source order* that read the net's placeholder bits (applied once at
+the end of the walk), so `if (pop && !empty)` above
+`assign empty = …` reads the flag's real driver (#326).
 Expression shapes lower to the Yosys cell zoo (binary →
 `$and`/`$or`/`$xor`/…; unary → `$not`/`$logic_not`/`$neg`/
 `$reduce_*`; conditional → `$mux`; element- and range-select →
@@ -1760,6 +1765,10 @@ records with `width = 1`.
   crossing model.
 - **Same-domain crossings.** Filtered out at record-creation time —
   if `dst_clock == src_clock`, no record is created.
+- **The storage path of a memory.** Memory *ports* are walked (§7.5),
+  but write data is never propagated to read data: that path is
+  CDC-026's subject (§8.21), because the sanctioned async FIFO crosses
+  it without a synchroniser by design.
 
 ### 7.4 Boundary re-seeding and the compositional walk
 
@@ -1881,6 +1890,54 @@ on the real top-level destination flops, and `foreign_input_no_abstract`
 proves a foreign-domain signal driven *into* an abstracted subtree's
 input still surfaces its CDC-004 (anchored on the boundary input pin via
 `dst_boundary`) — identical to the flattened run.
+
+### 7.5 Inferred memories (issue #326)
+
+Yosys keeps an inferred RAM as memory cells, not flops, and the walk
+above could not cross them — a dual-clock RAM, the storage of almost
+every async FIFO, was invisible to every rule (the #176 coverage-gap
+sentinel). What reaches the analyzer, checked on yosys 0.64 (rtl-buddy
+fork):
+
+| Flow | Cells |
+|---|---|
+| `lint` (`read_verilog` or `read_slang`; `proc; flatten; opt_clean`) | one `$memwr_v2` per write port; one **asynchronous** `$memrd` (`read_verilog`) / `$memrd_v2` (`read_slang`) per read, `CLK_ENABLE=0` — a registered read is that port feeding an ordinary flop; `$meminit_v2` for initialisers |
+| `memory_dff` | the same, with an output register merged into a **clocked** `$memrd_v2` where it can be (`CLK_ENABLE=1`, `ARST` / `SRST` / `EN` / `CE_OVER_SRST` …) |
+| `memory_collect` / `memory -nomap` | one `$mem_v2` per memory, every per-port field packed side by side: `WR_CLK` / `RD_CLK` one bit per port, `WR_ADDR` / `RD_ADDR` `ABITS` per port, `WR_DATA` / `WR_EN` / `RD_DATA` `WIDTH` per port, `RD_EN` one bit per port, and per-port flags (`WR_CLK_ENABLE`, `RD_CLK_ENABLE`, …) as bit strings, port *i* the *i*-th character from the right |
+| `memory_map` | plain flops and muxes — ordinary flop crossings, out of CDC-026's scope |
+| slang frontend | mirrors `lint`: a run-time-indexed write to a one-dimensional unpacked array in `always_ff` lowers to `$memwr_v2` (`EN` = the enclosing conditions), a run-time-indexed read anywhere to an asynchronous `$memrd_v2`; constant-indexed selects stay bit selects. Before #326 the write was dropped and the read became an opaque `$_UNKNOWN_` |
+
+`memory.find_memories` decodes every form (v1 `$memwr` / `$memrd` /
+`$mem` too) into one `Memory` per `MEMID` with its `MemPort`s, in one
+pass over the cells; `$meminit*` is constant initialisation with no
+clock and is ignored. An unclocked *write* port has no domain and is
+left out, like a flop whose clock does not resolve.
+
+`find_crossings` walks memories through `memory.crossing_view`, which
+removes the memory cells from a copy of the module and stands in for
+each port with something the existing walk already understands:
+
+- a **write port** becomes a virtual sink flop (`$mem_port`, `D` =
+  address + data + enable, no `Q`) in its write-clock domain;
+- a **clocked read port** becomes a virtual flop with `D` = address +
+  enable and `Q` = read data — a sink *and* a source in its read clock;
+- an **asynchronous read port** becomes a transit cell
+  (`$mem_async_read`, `A` = address + enable → `Y` = read data), so a
+  foreign-domain address reaches whatever registers the read data
+  exactly as through a mux.
+
+Port clocks are resolved by `domain.bit_clock_resolver` — the same
+tracer, generated-clock pins and canonical names `assign_domains`
+uses. Virtual flops are named after the port cell (`<cell>[wr<i>]` /
+`<cell>[rd<i>]` for a packed `$mem_v2`), so findings anchored on them
+resolve the cell's `src` and instance path; like the blackbox
+`$boundary_sink` they are never in `Module.cells`, and their type is
+not an FF type. The consequence for the rule pack is that **memory
+ports are ordinary crossing endpoints**: a wrong-domain write address
+is an unsynchronised multi-bit crossing into the write port (CDC-004;
+`bad_ram_write_addr_wrong_domain`), with no memory-specific rule. A
+design without memory cells pays one type check per cell and walks the
+unmodified module — every pre-#326 fixture report is byte-identical.
 
 ## 8. The rule pack
 
@@ -2770,6 +2827,76 @@ the flag, clean with it) and `bad_scan_mode_functional_crossing` (the
 same scan mux plus an ordinary functional crossing that must survive
 the flag — a tool that cleared that design would be hiding a real bug
 behind a DFT annotation).
+
+### 8.21 CDC-026 — dual-clock memory read with no synchronised control (issue #326)
+
+**The hazard.** A word written on clock W and read on an asynchronous
+clock R crosses through the storage array. The read data is never
+synchronised — in a correct design it does not need to be, because the
+reader only reads words it *knows* are stable. That knowledge has to
+come from W: in the async FIFO, the gray-coded write pointer crosses
+into R through a multi-flop synchroniser, the empty flag compares
+against it, and the read pointer — the read address — only advances
+while not empty. Without any such path the reader cannot know which
+words are stable and can sample one mid-write.
+
+**Model.** `rules.memory_crossings` produces one `MemoryCrossing` per
+(memory, read port, read clock R, write clock W ≠ R). The read clock of
+a clocked port is its `CLK`; of an asynchronous port, the domain(s) of
+the flops its data reaches through combinational logic; and when it
+reaches none (a FWFT `assign rdata = mem[raddr]` straight to an output),
+the domain its address is computed in — its fanin flops and
+SDC-typed input ports. A read port whose domain still does not resolve
+gets no record (never a guessed one).
+
+**What counts as sanctioned.** A record's `control` is every crossing
+from W into R (the list the rule pack runs on) whose destination flop
+lies in the read port's **control cone**: the transitive fanin of its
+address + enable, walking through combinational cells and through
+R-domain flops' `D` / `EN` (not their resets — a reset synchronised from
+W is not a handshake), stopping at flops of any other domain. The
+async-FIFO cone reaches the read pointer, the empty flag, the
+synchroniser's last stage and then its first stage — the pointer
+crossing's destination. **CDC-026 fires when `control` is empty** and
+the SDC declares W and R asynchronous; one finding per (memory, R),
+anchored on the read port cell, naming the memory and every uncovered
+write clock.
+
+**Why not more, and why not less.** The rule proves a structural
+dependence of the read side on write-domain information — nothing more:
+
+- It does not judge the control crossing. A binary (non-gray) pointer
+  or a single-flop sync is a broken crossing that CDC-004 / CDC-001
+  already report on the crossing itself; repeating it as CDC-026 would
+  double-report one bug. The domain map's verdict separates the two:
+  `synchronizer: "fifo"` only when one control crossing is itself
+  recognised by `crossing_synchronizer`.
+- It cannot prove the reader never addresses the word being written,
+  that the pointers' full/empty arithmetic is right, that two write
+  clocks do not collide, or that the writer cannot overwrite unread
+  data (no R→W path is required: a read-only-after-configuration table
+  has none). Those are protocol properties.
+- A memory whose reads are separated from writes by a protocol outside
+  the netlist (quasi-static tables, an external handshake) fires and is
+  waived by memory name — the same trade CDC-001 makes for a
+  `(* cdc_static *)`-less config register.
+
+**Severity `error`.** With no control path inside the analysed design
+the hazard is as unambiguous as an unsynchronised flop crossing.
+
+**No silent pass.** The recognised FIFO raises nothing, but it is not
+invisible: the domain map lists every memory crossing (`memory_crossings`,
+an additive key present only when the design has memory cells) with
+its `control` destinations, `synchronizer` (`"fifo"` / `null`) and
+`findings`. That is where the recognised-safe flop crossings live too.
+
+**Fixtures.** `bad_dualport_ram_crossing` (registered read, no control
+— the former #176 sentinel), `bad_dualport_ram_async_read` (async read
+through logic into an R register), `good_async_fifo_inferred_ram`
+(gray pointers + 2FF syncs; registered and FWFT read ports, both
+recognised), `good_same_clock_ram` (silent), and
+`bad_ram_write_addr_wrong_domain` (CDC-004 on the write port, no
+CDC-026). Both frontends reach the same verdict on all five.
 
 ### 8.21 CDC-024 — top-level output launched asynchronously to its contract (issue #323)
 

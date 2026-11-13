@@ -23,6 +23,7 @@ from rtl_buddy_cdc.flops import (
     is_ff_cell,
     is_latch_cell,
 )
+from rtl_buddy_cdc.memory import crossing_view, find_memories
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module
 
 if TYPE_CHECKING:
@@ -1098,6 +1099,48 @@ def flop_domain_resolver(
     return resolve
 
 
+def bit_clock_resolver(
+    module: Module,
+    pin_clocks: dict[str, str] | None = None,
+    *,
+    clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
+    case_analysis: Mapping[str, str] | None = None,
+) -> Callable[[Bit], str | None]:
+    """Resolve any clock-pin bit exactly as :func:`assign_domains` resolves
+    a flop's ``CLK`` — same tracer, same generated-clock pins, same
+    canonical names — memoised per bit.
+
+    For clock pins that are not flops: memory write / read ports
+    (issue #326). Building it costs one driver map, so callers create it
+    only when they have such a pin.
+    """
+    drivers = _bit_drivers(module)
+    bit_to_clock = _build_bit_to_clock(module, pin_clocks)
+    clock_identity = _clock_identity_fn(clock_for_port, set(bit_to_clock.values()))
+    case_bits = _build_case_bits(module, case_analysis)
+    cache: dict[Bit, str | None] = {}
+
+    def resolve(bit: Bit) -> str | None:
+        if bit in cache:
+            return cache[bit]
+        root = trace_clock_root(
+            module,
+            bit,
+            drivers,
+            max_depth=max_depth,
+            bit_to_clock=bit_to_clock,
+            clock_identity=clock_identity,
+            case_bits=case_bits,
+        )
+        if root is not None and clock_for_port is not None:
+            root = clock_for_port(root) or root
+        cache[bit] = root
+        return root
+
+    return resolve
+
+
 # Default minimum number of flop CLK pins a candidate net must drive
 # before it is reported as a possible undeclared generated clock. Four
 # is a deliberately conservative floor: a forwarded/divided clock in an
@@ -1610,8 +1653,21 @@ def find_crossings(
     reshapes a crossing, so a run that passes it and a run that does
     not produce the same crossings in the same order.
 
+    Inferred memories (issue #326) are walked through
+    :func:`~rtl_buddy_cdc.memory.crossing_view`: write ports and clocked
+    read ports become virtual flops in their port-clock domain (so a
+    foreign-domain address / data / enable is an ordinary crossing into
+    them, and clocked read data an ordinary source), and asynchronous
+    read ports become transit cells from address to read data. The
+    write→read storage path is not walked — CDC-026 owns it. A design
+    without memory cells walks exactly as before.
+
     ``case_analysis`` is forwarded to :func:`assign_domains` (#325).
     """
+    memories = find_memories(module)
+    mem_view = crossing_view(module, memories) if memories else None
+    if mem_view is not None:
+        module = mem_view.module
     domains = {
         fd.flop.cell.name: fd
         for fd in assign_domains(
@@ -1622,6 +1678,18 @@ def find_crossings(
             case_analysis=case_analysis,
         )
     }
+    if mem_view is not None and mem_view.port_flops:
+        port_clock_of = bit_clock_resolver(
+            module,
+            pin_clocks,
+            clock_for_port=clock_for_port,
+            max_depth=max_depth,
+            case_analysis=case_analysis,
+        )
+        for vflop, _mem_port in mem_view.port_flops:
+            domains[vflop.cell.name] = FlopDomain(
+                flop=vflop, clock=port_clock_of(vflop.clk)
+            )
     consumers = _build_bit_consumers(module)
 
     # Synthetic boundary-*sink* flops (P3/#257): a blackbox input pin in

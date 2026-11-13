@@ -250,6 +250,14 @@ GOOD_FIXTURES = [
     # neither the D-pin crossing walk nor the SRST walk added in #272
     # can produce a finding. Single-clock — zero async crossings.
     ("good_typed_sync_reset", 0),
+    # Async FIFO on an inferred dual-clock RAM (#326): the two gray
+    # pointer crossings are the async flop crossings; the RAM's own
+    # wr_clk -> rd_clk storage path is recognised by CDC-026 as gated by
+    # the synchronised write pointer and stays silent.
+    ("good_async_fifo_inferred_ram", 2),
+    # Single-clock RAM next to one unrelated 2FF-synchronised bit (#326):
+    # the memory never crosses a clock, so it adds nothing.
+    ("good_same_clock_ram", 1),
     # CDC-024 (#323) positive shape: every top-level output carries a
     # set_output_delay contract RELATED to its launch clock — the same
     # clock, a virtual clock never declared async, a forwarded

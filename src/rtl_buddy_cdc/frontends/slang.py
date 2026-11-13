@@ -54,7 +54,14 @@ good_false_path_pair                (none)
 good_generated_clock_div2           (none)
 good_port_typed_sync                (none)
 marked_user_sync                    (none — attribute suppression)
+bad_dualport_ram_crossing           CDC-026 (memory ports, #326)
+bad_dualport_ram_async_read         CDC-026
+bad_ram_write_addr_wrong_domain     CDC-004 (into a write port)
+good_async_fifo_inferred_ram        (none — sanctioned FIFO)
+good_same_clock_ram                 (none)
 ==================================  =================
+
+(The memory rows are driven by ``tests/test_memory_crossings.py``.)
 
 What currently works
 ~~~~~~~~~~~~~~~~~~~~
@@ -558,6 +565,13 @@ class _ModuleBuilder:
         # for the typical ``q <= '0`` reset and keeps the netlist
         # valid when the reset RHS isn't a recognised literal.
         self._proc_resets: dict[tuple[Bit, ...], int] = {}
+        # Placeholder bit -> RHS bit for every continuously-assigned net,
+        # applied to all cells at the end of the walk so procedural reads
+        # that precede the ``assign`` in source order see its driver.
+        self._forward_renames: dict[Bit, Bit] = {}
+        # Next write-port index per memory (``MEMID``) — the ``PORTID``
+        # parameter of each emitted ``$memwr_v2`` (#326).
+        self._memory_write_ports: dict[str, int] = {}
 
     # -- public ----------------------------------------------------------
 
@@ -566,6 +580,7 @@ class _ModuleBuilder:
         # child instances contribute flops / comb / netnames into the
         # same flat namespace, hierarchically prefixed (``u_b0.q``).
         self._walk_instance(self.top, hier_prefix="", bound_internals=frozenset())
+        self._apply_forward_renames()
         return Module(
             name=self.top.name,
             ports=self._ports,
@@ -2158,7 +2173,7 @@ class _ModuleBuilder:
         the parameters here are kept for signature symmetry with the
         pre-deferred-emission walker but only ``src_node`` is read.
         """
-        del clk_sym, reset_sym, reset_active_low  # captured at block level
+        del reset_sym, reset_active_low  # captured at block level
         if type(expr).__name__ != "AssignmentExpression":
             return
         if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
@@ -2168,6 +2183,13 @@ class _ModuleBuilder:
             return
         lhs = expr.left
         rhs = expr.right
+        # ``mem[addr] <= data`` with a run-time ``addr`` is a memory
+        # write port, not a flop (#326) — emitted immediately as the
+        # ``$memwr_v2`` Yosys' ``proc`` produces for the same source.
+        mem_select = self._memory_select(lhs)
+        if mem_select is not None:
+            self._emit_memory_write(*mem_select, rhs, clk_sym, src_node)
+            return
         # Resolve the LHS to the subset of a variable's bits that the
         # flop's Q should drive. Supports bare ``NamedValueExpression``
         # (full width), ``ElementSelectExpression`` (single bit), and
@@ -2741,7 +2763,12 @@ class _ModuleBuilder:
         if kind == "ConditionalExpression":
             return self._lower_conditional(expr)
         if kind == "ElementSelectExpression":
-            return self._element_select_bits(expr)
+            bits = self._element_select_bits(expr)
+            if bits is None:
+                mem_select = self._memory_select(expr)
+                if mem_select is not None:
+                    return self._emit_memory_read(*mem_select, expr)
+            return bits
         if kind == "RangeSelectExpression":
             return self._range_select_bits(expr)
         if kind == "ConcatenationExpression":
@@ -3016,6 +3043,138 @@ class _ModuleBuilder:
             attributes=attrs,
         )
         return y_bits
+
+    # -- inferred memories (#326) ---------------------------------------
+
+    def _memory_select(self, expr: Any) -> tuple[Any, Any] | None:
+        """``mem[addr]`` with a run-time ``addr`` on a one-dimensional
+        unpacked array → ``(array_symbol, selector)``; else ``None``.
+
+        A constant (or loop-bound) selector is not a memory access —
+        ``_element_select_bits`` already lowers it to the element's
+        bits, which is what an unrolled sync chain (``chain[i]``) needs.
+        Multi-dimensional and packed selects stay unmodelled.
+        """
+        if type(expr).__name__ != "ElementSelectExpression":
+            return None
+        base = getattr(expr, "value", None)
+        if type(base).__name__ != "NamedValueExpression":
+            return None
+        sym = getattr(base, "symbol", None)
+        t = getattr(sym, "type", None)
+        if t is None or not getattr(t, "isUnpackedArray", False):
+            return None
+        elem = getattr(t, "elementType", None)
+        if elem is None or getattr(elem, "isUnpackedArray", False):
+            return None
+        selector = getattr(expr, "selector", None)
+        if selector is None or self._const_int(selector) is not None:
+            return None
+        return sym, selector
+
+    def _memory_params(self, sym: Any, abits: int) -> dict[str, str]:
+        elem = sym.type.elementType
+        width = int(
+            getattr(elem, "selectableWidth", None)
+            or getattr(elem, "bitWidth", None)
+            or 1
+        )
+        return {
+            "MEMID": f"\\{self._hier_stack[-1]}{sym.name}",
+            "ABITS": _param_int32(abits),
+            "WIDTH": _param_int32(width),
+        }
+
+    def _memory_cell(
+        self,
+        cell_type: str,
+        connections: dict[str, tuple[Bit, ...]],
+        parameters: dict[str, str],
+        src_node: Any,
+    ) -> None:
+        attrs: dict[str, str] = {}
+        src = self._src_attr(src_node) if src_node is not None else None
+        if src is not None:
+            attrs["src"] = src
+        name = self._fresh_cell_name(cell_type)
+        self._cells[name] = Cell(
+            name=name,
+            type=cell_type,
+            connections=connections,
+            parameters=parameters,
+            attributes=attrs,
+        )
+
+    def _emit_memory_write(
+        self, sym: Any, selector: Any, rhs: Any, clk_sym: Any, src_node: Any
+    ) -> None:
+        """Emit a ``$memwr_v2`` for ``mem[addr] <= data`` in ``always_ff``.
+
+        Same shape as Yosys ``proc``: ``CLK`` the block's clock,
+        ``CLK_ENABLE`` 1, ``EN`` the enclosing conditions (``_enable_stack``)
+        replicated per data bit. Unlowerable address / data expressions
+        get an ``$_UNKNOWN_`` driver, as for any other unmodelled RHS.
+        """
+        addr = self._bits_of_expression(selector) or self._unknown_driver(1)
+        params = self._memory_params(sym, len(addr))
+        width = int(params["WIDTH"], 2)
+        data = self._bits_of_expression(rhs)
+        if data is None:
+            data = self._unknown_driver(width)
+        data = (tuple(data) + ("0",) * width)[:width]
+        enable = self._combine_enable_stack()
+        en: tuple[Bit, ...] = ((enable if enable is not None else "1"),) * width
+        portid = self._memory_write_ports.get(params["MEMID"], 0)
+        self._memory_write_ports[params["MEMID"]] = portid + 1
+        params.update(
+            {
+                "CLK_ENABLE": "1",
+                "CLK_POLARITY": "0" if getattr(self, "_clk_negedge", False) else "1",
+                "PORTID": _param_int32(portid),
+                "PRIORITY_MASK": "",
+            }
+        )
+        self._memory_cell(
+            "$memwr_v2",
+            {"CLK": self._alloc_bits(clk_sym), "ADDR": addr, "DATA": data, "EN": en},
+            params,
+            src_node,
+        )
+
+    def _emit_memory_read(self, sym: Any, selector: Any, node: Any) -> tuple[Bit, ...]:
+        """Emit an asynchronous ``$memrd_v2`` for an R-value ``mem[addr]``
+        and return its data bits — what Yosys ``proc`` leaves too; a
+        registered read is this port followed by the ordinary flop."""
+        addr = self._bits_of_expression(selector) or self._unknown_driver(1)
+        params = self._memory_params(sym, len(addr))
+        width = int(params["WIDTH"], 2)
+        data = self._alloc_anon_bits(width)
+        params.update(
+            {
+                "CLK_ENABLE": "0",
+                "CLK_POLARITY": "0",
+                "TRANSPARENCY_MASK": "",
+                "COLLISION_X_MASK": "",
+                "CE_OVER_SRST": "0",
+                "ARST_VALUE": "x" * width,
+                "SRST_VALUE": "x" * width,
+                "INIT_VALUE": "x" * width,
+            }
+        )
+        self._memory_cell(
+            "$memrd_v2",
+            {
+                "CLK": ("x",),
+                "EN": ("1",),
+                "ARST": ("0",),
+                "SRST": ("0",),
+                "ADDR": addr,
+                "DATA": data,
+            },
+            params,
+            node,
+        )
+        return data
 
     def _unknown_driver(self, width: int) -> tuple[Bit, ...]:
         """Allocate a fresh net driven by a stub ``$_UNKNOWN_`` cell.
@@ -3524,7 +3683,47 @@ class _ModuleBuilder:
         # the RHS's bits so any reader of the LHS sees the RHS source
         # directly. This matches Yosys' post-opt_clean output for
         # ``assign out = sig`` and means we don't need a $buf cell.
+        old_bits = self._var_bits.get(self._canonical_var(lhs.symbol))
         self._rewrite_aliased(lhs, rhs_bits)
+        # A continuous assign holds for the whole simulation, so a cell
+        # emitted *earlier in source order* that already read the net
+        # (``if (pop && !empty)`` above ``assign empty = …``) must see
+        # the RHS too, not the net's now-undriven placeholder bits.
+        # Recorded here, applied to every cell once the walk is done
+        # (#326: the async-FIFO flags are the canonical forward use).
+        if old_bits is not None:
+            for o, n in zip(old_bits, rhs_bits):
+                if isinstance(o, int) and o != n:
+                    self._forward_renames[o] = n
+
+    def _apply_forward_renames(self) -> None:
+        """Rewrite every cell connection through ``_forward_renames``
+        (see :meth:`_emit_continuous_assign`), following chains
+        (``assign a = b; assign b = c;`` in either order)."""
+        renames = self._forward_renames
+        if not renames:
+            return
+
+        def resolve(b: Bit) -> Bit:
+            seen: set[Bit] = set()
+            while b in renames and b not in seen:
+                seen.add(b)
+                b = renames[b]
+            return b
+
+        for name, cell in list(self._cells.items()):
+            conns = {
+                pin: tuple(resolve(b) for b in bits)
+                for pin, bits in cell.connections.items()
+            }
+            if conns != cell.connections:
+                self._cells[name] = Cell(
+                    name=cell.name,
+                    type=cell.type,
+                    connections=conns,
+                    parameters=cell.parameters,
+                    attributes=cell.attributes,
+                )
 
     def _rewrite_aliased(self, lhs: Any, rhs_bits: tuple[Bit, ...]) -> None:
         """Make every alias that currently holds ``lhs``'s bits point at
