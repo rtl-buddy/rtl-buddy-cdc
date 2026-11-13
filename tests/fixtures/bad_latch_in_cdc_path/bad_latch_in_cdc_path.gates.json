@@ -1,0 +1,152 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_latch_in_cdc_path": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:14.1-37.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "latch_en": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 6 ]
+        }
+      },
+      "cells": {
+        "$auto$ff.cc:337:slice$91": {
+          "hide_name": 1,
+          "type": "$_DLATCH_P_",
+          "parameters": {
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:28.17-28.17"
+          },
+          "port_directions": {
+            "D": "input",
+            "E": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "D": [ 7 ],
+            "E": [ 4 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$92": {
+          "hide_name": 1,
+          "type": "$_DFF_P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:33.5-33.52"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "C": [ 3 ],
+            "D": [ 8 ],
+            "Q": [ 6 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$93": {
+          "hide_name": 1,
+          "type": "$_DFF_P_",
+          "parameters": {
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:23.5-23.48"
+          },
+          "port_directions": {
+            "C": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "C": [ 2 ],
+            "D": [ 5 ],
+            "Q": [ 7 ]
+          }
+        }
+      },
+      "netnames": {
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:18.18-18.22"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:16.18-16.25"
+          }
+        },
+        "latch_en": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:17.18-17.26"
+          }
+        },
+        "latch_q": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:27.11-27.18"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:19.18-19.23"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:15.18-15.25"
+          }
+        },
+        "src_q": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:22.11-22.16"
+          }
+        },
+        "sync_q": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_latch_in_cdc_path/bad_latch_in_cdc_path.sv:32.11-32.17"
+          }
+        }
+      }
+    }
+  }
+}

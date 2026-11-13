@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Gate-level fixture corpus** (#331) — *test-only, no output change.*
+  `tests/test_gate_level_corpus.py` rebuilds every fixture through two
+  Yosys gate flows (`techmap`, and `opt_dff; techmap; abc`) and asserts
+  the analyzer's per-rule verdict matches the committed RTL netlist.
+  It runs in CI's yosys job. Eight fixtures also commit a gate-level
+  netlist, so the default job exercises `$_DFF_*` / `$_DFFE_*` /
+  `$_SDFF_*` / `$_DLATCH_*` / `$_MUX_` netlists without Yosys. The new
+  `flop_zoo_crossing` fixture covers `$aldff`, `$dffsr`, `$sdffce`,
+  `$adffe` and `$dffe`, which no fixture produced before. Known
+  gate-level divergences are listed with their root causes in a
+  strict allowlist; the analyzer gaps behind them (reset pin `R`,
+  `$_DFF_NN0_` clock polarity, `$_MUX_`, gate-level clock gating,
+  bit-blasted buses) are tracked separately.
+
 ### Changed
 
 - **Faster analysis on large flat netlists** (#324) — *patch: no
