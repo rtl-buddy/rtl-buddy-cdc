@@ -1053,6 +1053,13 @@ class _ModuleBuilder:
         src = self._src_attr(inst)
         if src is not None:
             attrs["src"] = src
+        # Pin directions, as ``write_json`` records them: a boundary
+        # cell's output pins are drivers, not readers (rtl-buddy-cdc#344).
+        port_directions = {
+            member.name: _port_direction(member)
+            for member in inst.body
+            if self._kind_name(member) == "PortSymbol" and member.name in connections
+        }
         cell_name = f"{parent_prefix}{inst.name}"
         self._cells[cell_name] = Cell(
             name=cell_name,
@@ -1060,6 +1067,7 @@ class _ModuleBuilder:
             connections=connections,
             parameters=parameters,
             attributes=attrs,
+            port_directions=port_directions,
         )
         if defn_name in self._siblings:
             return

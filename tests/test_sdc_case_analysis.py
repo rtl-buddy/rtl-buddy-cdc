@@ -187,10 +187,11 @@ def test_mux_resolves_to_selected_leg(mux_type: str) -> None:
 
 
 def test_unanalysed_mux_unchanged() -> None:
-    """No case analysis: $mux first-resolves-wins, $_MUX_ not followed."""
+    """No case analysis: first-resolves-wins, for ``$mux`` and (since
+    rtl-buddy-cdc#336 reads gate-level muxes) ``$_MUX_`` alike."""
     assert _root(_mux("$mux"), None) == "clk_a"
     assert _root(_mux("$mux"), {}) == "clk_a"
-    assert _root(_mux("$_MUX_"), None) is None
+    assert _root(_mux("$_MUX_"), None) == "clk_a"
 
 
 def test_rising_is_not_a_constant() -> None:
