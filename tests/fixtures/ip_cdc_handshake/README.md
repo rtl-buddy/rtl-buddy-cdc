@@ -57,6 +57,11 @@ flowchart LR
 ## Expected analyzer behaviour
 
 - **Golden run** (this fixture as-is): zero violations.
+- **`ip_cdc_handshake.noclean.json`**: the same design written without
+  `opt_clean`, so it still carries the unread `for`-loop counter
+  registers `proc` leaves in each synchroniser's reset branch. Also zero
+  violations: the analyzer ignores cells no output can observe
+  (rtl-buddy-cdc#338, `tests/test_liveness.py`).
 - **Mutated runs** (future negative tests, generate by editing copies of the SV):
   - Reduce a synchronizer's `STAGES` to 1 → expect CDC-002.
   - Wire `src_data` straight into a `dst_clk` flop → expect CDC-001 / CDC-004.

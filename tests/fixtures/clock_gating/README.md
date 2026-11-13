@@ -28,6 +28,7 @@ flowchart LR
 ## Files
 
 - `clock_gating.json`
+- `clock_gating.noclean.json`
 - `clock_gating.sdc`
 - `clock_gating.sv`
 

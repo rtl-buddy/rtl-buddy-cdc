@@ -33,6 +33,8 @@ Each CDC rule has at least one **bad fixture** (designed to fire it) and one **g
 | `test_smoke.py` | `--help` and `version` CLI smoke |
 | `test_rule_corners.py` | Hand-built synthetic `Module`s exercising rule-pack branches no fixture naturally hits (CDC-006 clock-port suppression, `find_crossings` hop-budget boundary) |
 | `test_rules_perf.py` | Synthetic 500-flop micro-benchmark — regression sentinel for the `_RuleContext` memoisation |
+| `test_gate_level_corpus.py` | Every fixture rebuilt through a Yosys gate flow; per-rule verdict must match the committed RTL netlist (see [Gate-level corpus](#gate-level-corpus)) |
+| `test_flop_zoo_crossing.py` | `flop_zoo_crossing`: one `$aldff` / `$dffsr` / `$sdffce` / `$adffe` / `$dffe` capture each, the flop families no other fixture produces |
 
 ### JSON Fixtures
 
@@ -125,6 +127,56 @@ The suite records two kinds of known-wrong result:
   added were closed by #345 (pyslang blackbox support and plain `always`
   lowering); the CDC-019 `case_n8` row, where the Yosys path is the one
   that misses, remains.
+
+### Gate-level corpus
+
+Committed fixture netlists are RTL-level (`$dff`, `$mux`, `$and`), so
+`tests/test_gate_level_corpus.py` (rtl-buddy-cdc#331) rebuilds every
+fixture that has a `.sv`, `.sdc` and committed `.json` and asserts the
+analyzer reaches the same verdict at gate level. The front half
+reproduces the committed build (`read_verilog -sv; hierarchy -top;
+blackbox <stubs>; proc; flatten; opt_clean`, with the top and the stub
+list read from the committed JSON). Three legs follow:
+
+- **`rtl`** — nothing more. A control: it must match the committed
+  verdict exactly, so a gate-leg divergence is never front-half drift
+  between Yosys versions.
+- **`gates`** — `techmap; opt_clean`. Pure lowering: `$_DFF_*`,
+  `$_MUX_`, `$_AND_`/`$_OR_`/`$_XOR_`/`$_NOT_`, and every W-bit flop
+  bit-blasted into W cells.
+- **`synth`** — `opt_dff; techmap; abc -g AND,OR,XOR,MUX; opt_clean`.
+  Enable and sync-reset muxes fold into `$_DFFE_*` / `$_SDFF_*` /
+  `$_SDFFE_*` first, then ABC restructures the logic. Full `opt` is
+  avoided because `opt_merge` collapses the duplicated synchronisers
+  of the reconvergence fixtures.
+
+"Agree" is equality of the per-rule fired-count dict, as in the
+cross-frontend fuzz oracle. Counts rather than the rule-id set,
+because violations are meant to be grouped per bus and per
+synchroniser, so one W-bit CDC-004 turning into W CDC-001s is the
+regression being looked for. Divergences live in
+`_KNOWN_GATE_DIVERGENCES`, keyed by fixture and leg with a one-line
+root cause, and the list is strict both ways: an unlisted divergence
+fails, and a listed fixture that starts agreeing fails until its row
+is removed. Comparisons are on verdicts, never netlist bytes; the
+result is identical on Yosys 0.33 (the CI apt package) and 0.64.
+
+The sweep is marked `gate_level`, skips without `yosys`, caches built
+netlists under `tests/.gate_level_cache/` (keyed by Yosys version,
+script and source bytes), and runs in the CI `fuzz + sim` job. Nine
+fixtures also commit a `<name>.gates.json` or `<name>.synth.json`
+(2FF sync, async-reset crossing, enable-flop pulse synchroniser,
+enable-flop toggle without XOR tail, bus crossing, clock mux, latch,
+sync-reset chain, opposite-edge chain), so the default no-Yosys job
+exercises real `$_DFF_*` netlists against the same allowlist.
+
+The same module also rebuilds every fixture with the front half's
+`opt_clean` dropped and asserts the verdict is unchanged
+(`test_verdict_invariant_under_opt_clean`, rtl-buddy-cdc#338): the
+analyzer drops unobservable cells itself, so dead logic cannot add or
+remove a finding. The three fixtures whose verdict used to change also
+commit that `<name>.noclean.json` for the no-Yosys job
+(`tests/test_liveness.py`).
 
 ## Extension Points
 

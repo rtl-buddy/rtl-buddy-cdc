@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from rtl_buddy_cdc.cells import MUX_PINS
 from rtl_buddy_cdc.domain import assign_domains
 from rtl_buddy_cdc.flops import Flop, find_flops
 from rtl_buddy_cdc.netlist import Bit, Module
@@ -327,7 +328,7 @@ def _control_kind_for(control_pin: str, cell_type: str) -> ControlKind:
     enable). The pin-name list is the same heuristic the rule pack uses
     in :data:`rtl_buddy_cdc.rules._CDC_010_HEURISTIC_PINS`.
     """
-    if cell_type in {"$mux", "$pmux", "$_MUX_", "$_MUX4_", "$_MUX8_", "$_MUX16_"}:
+    if cell_type in MUX_PINS:
         return "mux-select"
     if control_pin.upper() in _GATE_ENABLE_PINS:
         return "gate-enable"

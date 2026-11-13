@@ -28,6 +28,7 @@ from rtl_buddy_cdc.domain import (
     find_crossings,
     find_inferred_clock_candidates,
 )
+from rtl_buddy_cdc.liveness import prune_dead_cells
 from rtl_buddy_cdc.hierarchy import (
     compose_boundaries,
     reconvergence_unsafe_instances,
@@ -151,7 +152,10 @@ _SYNC_PRIMITIVE_OPT = typer.Option(
     "crossing landing in an instance of it is safe by construction, the "
     "instance is summarised at its destination clock instead of being "
     "declined as a multi-clock blackbox (no CDC-BBX), and its "
-    "`DEST_SYNC_FF` parameter is checked by CDC-022. Repeatable. The "
+    "`DEST_SYNC_FF` parameter is checked by CDC-022. The destination clock "
+    "is found from the clock pin names: with two or more clock pins, one "
+    "must contain `dest` or `dst` (a `src` pin is the source side), or the "
+    "instance is still declined with CDC-BBX. Repeatable. The "
     "Xilinx XPM CDC family (xpm_cdc_single / _array_single / _gray / "
     "_handshake / _pulse / _sync_rst / _async_rst) is recognised "
     "built-in — use this only for an in-house or other-vendor macro. "
@@ -808,6 +812,18 @@ def _analyze_module_and_report(
     rule evaluation is skipped, the normal report is suppressed, and
     the exit code is 0 on successful map emission (elaboration failure
     still exits 2 from the lint wrapper before we get here)."""
+    # Drop the cells no observation point can see (rtl-buddy-cdc#338), so
+    # the verdict is the same whether or not the netlist flow ran
+    # ``opt_clean``: an unloaded ``$not`` of a clock is not clock-as-data,
+    # and a register nothing reads is not a crossing destination. Greybox
+    # bodies get the same treatment against their own ports, since the
+    # compositional pass analyses them.
+    module = prune_dead_cells(module, blackboxes)
+    if blackboxes:
+        blackboxes = {
+            name: prune_dead_cells(body, blackboxes) if body.cells else body
+            for name, body in blackboxes.items()
+        }
     # Load --reset-hints early so an unreadable / malformed file
     # fails the run before any analysis cost — same pattern the SDC
     # loader uses. Loud failure with file:line context; see #129.
@@ -992,6 +1008,20 @@ def _analyze_module_and_report(
                         "port is captured in more than one internal clock domain, "
                         "which a single boundary sink cannot represent. Flatten it "
                         "or split the port "
+                        f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                    )
+                elif cell.type in comp_stats.undirected_primitive_modules:
+                    # rtl-buddy-cdc#344: registered as a synchroniser primitive, but the
+                    # primitive path needs to know which clock pin is the
+                    # destination and could not tell. Declining is the
+                    # safe outcome; say why so the promise of
+                    # ``--sync-primitive`` ("no CDC-BBX") is not a mystery.
+                    reason = (
+                        "left opaque — registered as a synchroniser primitive, "
+                        "but its destination clock pin could not be identified: "
+                        "with more than one clock pin, one must carry a `dest` / "
+                        "`dst` name hint, and it must trace to a declared clock. "
+                        "Rename the destination clock pin, or flatten it "
                         f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
                     )
                 else:
@@ -1226,16 +1256,19 @@ def _analyze_module_and_report(
         flop_clocks = {fd.flop.cell.name: fd.clock for fd in domains}
         reset_domains_map = assign_reset_domains(module)
         polarity_overrides = user_reset_polarity_overrides(module, hints=reset_hints)
+        # One reset classification for all three consumers (#324).
         recognised_syncs = find_reset_synchronizers(
             module,
             flop_clocks,
             extra_synchronizers=user_reset_sync_flop_names(module, hints=reset_hints),
+            reset_domains=reset_domains_map,
         )
         reset_crossings = find_reset_crossings(
             module,
             flop_clocks,
             recognised_syncs=recognised_syncs,
             polarity_overrides=polarity_overrides,
+            reset_domains=reset_domains_map,
         )
         reset_payload = build_reset_domain_map(
             module,

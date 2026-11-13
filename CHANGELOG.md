@@ -7,7 +7,159 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Gate-level fixture corpus** (#331) — *test-only, no output change.*
+  `tests/test_gate_level_corpus.py` rebuilds every fixture through two
+  Yosys gate flows (`techmap`, and `opt_dff; techmap; abc`) and asserts
+  the analyzer's per-rule verdict matches the committed RTL netlist.
+  It runs in CI's yosys job. Eight fixtures also commit a gate-level
+  netlist, so the default job exercises `$_DFF_*` / `$_DFFE_*` /
+  `$_SDFF_*` / `$_DLATCH_*` / `$_MUX_` netlists without Yosys. The new
+  `flop_zoo_crossing` fixture covers `$aldff`, `$dffsr`, `$sdffce`,
+  `$adffe` and `$dffe`, which no fixture produced before. Known
+  gate-level divergences are listed with their root causes in a
+  strict allowlist; the analyzer gaps behind them (reset pin `R`,
+  `$_DFF_NN0_` clock polarity, `$_MUX_`, gate-level clock gating,
+  bit-blasted buses) are tracked separately.
+
+### Changed
+
+- **Faster analysis on large flat netlists** (#324) — *patch: no
+  output change.* Text, JSON, SARIF, domain-map and reset-domain-map
+  outputs are byte-identical. On a synthetic 44k-cell, 8-clock
+  netlist `analyze` drops from 6.0 s to 3.1 s.
+  - The RDC rules each rebuilt the per-flop reset classification, the
+    reset-synchroniser set and the flop list / driver map under them:
+    one run classified every flop's reset 11 times. They are now
+    built once per run in the shared rule context. CDC-008 and CDC-010
+    likewise share one clock-network walk.
+  - `Module.port_of_bit` scanned every port's bits on each call; it is
+    now a dict lookup built once per module.
+  - The JSON and SARIF reports are serialised with `json.dumps`, which
+    can use the C encoder, instead of `json.dump`.
+
 ### Fixed
+
+- **CDC-001 missed a synchroniser stage exported straight to an output
+  port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
+  walk counted cell input pins only, so a first stage whose `Q` drove a
+  top-level output *and* a second flop looked like a clean two-stage
+  chain. A module output (or inout) port is now a reader, so the
+  exported stage ends the chain and CDC-001 fires — the same verdict as
+  when the tap goes through a gate. The last stage of a synchroniser
+  still drives outputs freely.
+
+- **CDC-018 over-counted a cascade behind an exported stage** (rtl-buddy-cdc#344).
+  Same cause: a 2FF synchroniser whose output is exported and also
+  pipelined was reported as a 4-or-more-flop cascade. The tap now ends
+  the chain at the synchroniser.
+
+- **CDC-008 reported a blackbox's clock output pin as clock-as-data**
+  (rtl-buddy-cdc#344). When a blackbox's forwarded clock clocked a flop in the
+  parent, the stub's own `clk_out` pin — the clock's driver — was
+  listed as a reader. Cell pins are now classified by the netlist's
+  `port_directions`, so output pins are never readers (CDC-008, and the
+  reader counts above). The CDC-BBX finding for the clock output is
+  unchanged.
+
+- **CDC-019 missed a one-hot decoder that Yosys lowers to a ROM**
+  (rtl-buddy-cdc#344). `proc` turns a full constant `case` table into an
+  asynchronous `$memrd_v2`; the rule only accepted a comb cell's `Y` as
+  the shared driver. An asynchronous memory read port's `DATA` is now
+  accepted too, matching the slang frontend, which keeps the mux.
+
+- **`--sync-primitive` decline now says why** (rtl-buddy-cdc#344). A registered
+  module whose destination clock pin cannot be identified (two or more
+  clock pins, none named `dest` / `dst`) is still declined, which is the
+  safe outcome, but the CDC-BBX message now names that cause instead of
+  the generic "not provably single-clock", and the option's help text
+  says a destination pin hint is needed.
+
+- **Gate-level netlists: reset pins, clock edge, `$_MUX_` and gate-cell
+  clock gating are read** (#336). On a netlist after `techmap` /
+  `abc` the analyzer misread information the netlist carries:
+  - Reset and set pins of gate-level flops (`$_DFF_PN0_`,
+    `$_SDFF_PP0_`, `$_DFFSR_*`, `$_ALDFF_*` …) are on pins `R` / `S` /
+    `L`, with polarity and reset value in the cell-type name. The RDC
+    rules, CDC-015 and CDC-011's sync-reset walk read only `ARST` /
+    `SRST` / `CLR` / `ALOAD`, so they went silent. The gated-bus check
+    (CDC-004) read `EN`, but gate-level enable flops use `E`.
+  - CDC-016 read `$_DFF_NN0_` (negedge, async reset) as posedge.
+  - `$_MUX_` was not treated as a mux by the sync-reset mux
+    look-through (false CDC-014), the scan-mode / clock-mux tracer, or
+    the CDC-013 toggle classifier.
+  - The clock tracer did not walk `$_AND_` / `$_OR_` / `$_NAND_` …, so
+    CDC-023 / CDC-011 lost gated and combined clocks.
+
+  A new `cells.py` decodes every gate-level flop / latch family
+  (`$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`,
+  `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`, `$_DLATCH_`,
+  `$_DLATCHSR_`, `$_SR_`) in one place. A test checks the decoder
+  against the local Yosys's cell descriptions. `flops.flop_reset` /
+  `flop_enable_pin` / `flop_clk_polarity` read coarse and gate-level
+  flops the same way, and the rules go through them. 43 of the 99
+  gate-level corpus allowlist rows are gone. No RTL-level fixture
+  verdict changes.
+
+- **A clock gate's domain no longer depends on which input carries the
+  clock** (found via #336). The rule context traced flop clocks without
+  the SDC's clock set, so in `en & clk` first-leg-wins picked the
+  enable port, and CDC-021 reported it as an undeclared clock (`clk &
+  en` was fine). The rule context now tells the tracer which ports are
+  `create_clock` ports. It does this for leg choice only; root names
+  are not normalised, so CDC-021 still sees raw port names.
+  `set_input_delay`-typed data ports never count as clocks.
+
+- **Gate-level netlists: bit-blasted buses are regrouped into their
+  registers** (#337). After `techmap` / `abc` a W-bit register is W
+  one-bit `$_DFF_*` cells, so every bus rule lost the bus:
+  `bad_bus_crossing` was silent at gate level, and a load-gated bus
+  (`good_dffe_gated_bus_crossing`) reported CDC-001 once per bit. The
+  loader now rebuilds each register as one wide coarse flop cell, keyed
+  on the register's multi-bit netname plus matching clock, reset,
+  enable and `always` block (new `regroup.py`), and rebuilds the
+  lane-wise enable / reset muxes and gray-encoder XORs in front of it.
+  The rebuilt cell is named after the register (`src_q`), not a
+  generated `$auto$…` cell name. Also on gate-level netlists:
+  - The gray-code acceptance recognises a gray code `abc` re-derived
+    without the `b ^ (b >> 1)` XOR, by comparing truth tables of the
+    register's `D` with the gray code of another register's `D` / `Q`
+    (new `gate_eval.py`).
+  - CDC-019 groups a decoder split into per-lane gates by its output
+    netname (`one_hot`).
+  - Where no register name survives, the bits stay one-bit and CDC-004
+    reports bits of one `always` block crossing together as a possible
+    bus (`warning`) rather than going silent.
+
+  RTL-level netlists are not touched: no RTL-level fixture verdict
+  changes. All 53 bit-blast / decoder rows of the gate-level corpus
+  allowlist are gone, and three more committed gate netlists cover the
+  regrouping in the default CI job.
+
+- **CDC-013 recognises a toggle folded into an enable flop** (#338).
+  `opt_dff` (so any synthesis-shaped flow) turns `if (en) q <= ~q;`
+  into an enable flop with `D = ~Q` and `en` on the enable pin, instead
+  of the hold mux `D = en ? ~Q : Q` that `proc` leaves. The toggle
+  classifier knew only the mux, so CDC-013 (and the domain map's
+  `pulse` synchroniser label) was lost on optimised netlists. It now
+  accepts both shapes, on coarse (`$dffe` / `$adffe` / `$sdffe` /
+  `$sdffce` …) and gate-level (`$_DFFE_*` / `$_SDFFE_*` …, `$_NOT_`)
+  cells and either enable polarity. `D = ~Q` without an enable (or
+  with a constant one) is a divider, not a toggle, and stays silent.
+  The slang frontend never emits enable flops, so it was not affected.
+
+- **Verdicts no longer depend on dead cells** (#338). Without
+  `opt_clean` in the netlist flow, an unloaded `$not` of a clock fired
+  CDC-008, and the `for`-loop counter register `proc` leaves in a reset
+  branch (read by nothing but itself) fired CDC-004 and CDC-011 as a
+  crossing destination. `analyze` / `lint` now drop every cell whose
+  outputs reach no output / inout port, `keep` net, or instance /
+  memory / formal-cell pin before analysis. A crossing into a flop
+  whose `Q` reaches none of those is not reported. Unknown cell types
+  are never dropped, and a module with no observation point at all is
+  analysed whole. The design summary's cell count is the observable
+  count. No committed fixture verdict changes.
 
 - **slang frontend: plain `always` blocks and blackbox instances**
   (#345) — two gaps that made `lint --frontend slang` report nothing
