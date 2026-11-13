@@ -14,7 +14,7 @@ Five dst_clk flops, one per Yosys flop family the rest of the corpus never produ
   q_dffe    $dffe    enable
 ```
 
-Every capture is a single-flop crossing, so CDC-001 fires five times. RDC-006 also fires once, on `q_dffsr`: its SET and CLR pins are driven by logic derived from `rst_n` and `set_n`. The gate-level corpus (tests/test_gate_level_corpus.py) lowers the same source to `$_ALDFF_*`, `$_DFFSR_*`, `$_SDFFCE_*`, `$_DFFE_*` cells.
+Every capture is a single-flop crossing, so CDC-001 fires five times, and nothing else: `q_dffsr`'s CLR is `rst_n ? 0 : 1`, an inverter of one reset, not a reset mux (rtl-buddy-cdc#354). The gate-level corpus (tests/test_gate_level_corpus.py) lowers the same source to `$_ALDFF_*`, `$_DFFSR_*`, `$_SDFFCE_*`, `$_DFFE_*` cells.
 
 - **Status:** auxiliary
 - **Top module:** `flop_zoo_crossing`

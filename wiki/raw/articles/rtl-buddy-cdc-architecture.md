@@ -2143,7 +2143,14 @@ Detection is intentionally narrow in v1:
    itself is fine; its own ARST is the muxed source by design)
    and flops marked `(* reset_sync *)`.
 2. Require `ResetDomain.reset.source == "comb"` and that the
-   immediate driver of the reset bit is `$mux` / `$pmux`.
+   immediate driver of the reset bit is `$mux` / `$pmux` (or a
+   gate-level `$_MUX_` family cell) with at least one *non-constant*
+   data lane behind that bit. A mux whose data legs are all
+   constants (`rst_n ? 1'b0 : 1'b1`) is an inverter or buffer of its
+   select, not a choice between reset sources, and is skipped
+   (rtl-buddy-cdc#354) — synthesis rewrites it into the `$_NOT_` it
+   is, which RDC-006 never matched, so both netlists agree. The same
+   cell gets no RDC-005 mux exemption either: it selects nothing.
 3. Walk the mux's *data* legs (`A`, `B`) — not its select pin
    (`S`) — via `_backward_port_fanin` so the message lists the
    reset sources without conflating the control signal.

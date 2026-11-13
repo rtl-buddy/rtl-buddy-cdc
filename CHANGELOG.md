@@ -283,6 +283,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RDC-006 fired on a constant-leg mux driving an async reset**
+  (rtl-buddy-cdc#354). A `$mux` / `$_MUX_` (or `$pmux`) whose data legs
+  are all constants, such as the `rst_n ? 1'b0 : 1'b1` Yosys builds for
+  a `$dffsr` clear pin, is an inverter or buffer of its select, not a
+  selection between reset sources. RDC-006 now skips it, judged per
+  output lane, so the RTL netlist and the synthesised one (where `abc`
+  turns the mux into a `$_NOT_`) agree. RDC-005's explicit-mux
+  exemption no longer covers such a mux either: two resets combined on
+  its select converge as they would through the inverter. Verdict
+  change: `flop_zoo_crossing` loses its RDC-006 (now 5 × CDC-001 only),
+  and its gate-level allowlist row is removed.
+
 - **CDC-001 missed a synchroniser stage exported straight to an output
   port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
   walk counted cell input pins only, so a first stage whose `Q` drove a
