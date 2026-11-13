@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Object-scoped and `-through` `set_false_path` are interpreted**
+  (#328) — `set_false_path -from [get_cells u_cfg/mode_q_reg*]`, the
+  usual way to constrain a quasi-static configuration register, was
+  dropped with a warning, so designs whose SDC already carried that
+  intent reported the crossing again. Object endpoints
+  (`get_cells` / `get_pins` / `get_ports` / `get_nets`, globs,
+  `-hierarchical`, edge variants) and `-through` are now recorded on
+  `ClockSpec.false_path_exceptions` and resolved against the netlist by
+  the new `sdc_objects` module — registers by their `Q` net name with an
+  optional `_reg` suffix and bit select, on both frontends. A crossing a
+  statement fully covers is a declared, reviewed exception: when the
+  statement names the source by object (or via `-through`, where every
+  path must pass the through point), CDC-001 / -002 / -003 / -004 /
+  -019 / -020 — exactly what `(* cdc_static *)` silences — are reported
+  as **suppressed** with the SDC statement as the reason (text
+  "Suppressed by waivers and SDC exceptions", JSON
+  `suppressed[].waiver.sdc`, SARIF `suppressions`), never dropped and
+  never exit-code driving. Reconvergence, broken-synchroniser, reset and
+  clock-network rules are never suppressed by it. A pattern matching
+  nothing is warned about. Clock-pair false paths keep their meaning
+  byte for byte, and an object-scoped one never changes `are_async`.
+  `set_max_delay -datapath_only` object endpoints use the same resolver
+  and annotate the crossings they constrain; nothing is suppressed on
+  their account and the "recorded but not interpreted" warning is gone.
+  Domain map (schema 1.3, additive): top-level `false_path_exceptions`,
+  and per-crossing `sdc_exceptions` / `sdc_acknowledged` on covered
+  crossings only. Both SDC backends.
+
 - **`set_max_delay -datapath_only` is read as CDC intent** (#325) — the
   constraint that bounds an intentional async crossing's datapath was
   dropped as STA noise, so a pair related only by it looked synchronous
@@ -18,8 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set_false_path -from/-to` — and, unlike a false path, also wins over
   a generated→master relationship or an exclusive group for that pair
   (the more-reporting reading). Object endpoints (`[get_cells …]`,
-  `[get_pins …]`, `[get_ports …]`) are recorded but not interpreted
-  (warning; object resolution is #328's job); `-through` is not
+  `[get_pins …]`, `[get_ports …]`) are recorded (resolved since #328,
+  see above); `-through` is not
   interpreted (warning). Plain `set_max_delay` stays ignored exactly as
   before. Both SDC backends.
 - **`set_case_analysis` resolves clock muxes** (#325) — a clock mux

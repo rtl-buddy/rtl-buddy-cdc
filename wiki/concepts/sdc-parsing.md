@@ -49,6 +49,7 @@ set_clock_groups -asynchronous          -group {…} -group {…} …
 set_clock_groups -logically_exclusive   -group {…} -group {…} …
 set_clock_groups -physically_exclusive  -group {…} -group {…} …
 set_false_path  -from [get_clocks A] -to [get_clocks B]
+set_false_path  -from <clocks|objects> -through <objects> -to <clocks|objects>
 set_input_delay  -clock <name> … [get_ports <port>]
 set_output_delay -clock <name> … [get_ports <port>]
 set_max_delay <v> -datapath_only -from <clocks|objects> -to <clocks|objects>
@@ -65,19 +66,20 @@ Plus: `#` comments, `\` line continuation, and permissive flag-skipping for unre
 - **`-source` parsing** is shlex-tolerant: the bracketed expression after `-source` is consumed forward to the next `-` flag, so `-source [get_ports ck_a]` (split by shlex into two tokens) doesn't leak `ck_a]` into the trailing target list
 - **Interface-member ports** are addressed by their **dotted name** — `[get_ports i_axi.clk]`, *not* the Yosys escaped-id form `[get_ports {\i_axi.clk }]`. The escaped-id spelling parses but no longer matches the flattened port, so the SDC silently fails to type it (the usual symptom is an `<unconstrained>` input driving a `CDC-021`/`CDC-011` cascade). Use the canonical dotted name. (See rtl-buddy-cdc#245.)
 - **`set_false_path`** between clocks is treated as a pairwise async hint
-- **`set_max_delay -datapath_only`** between clocks (rtl-buddy-cdc#325) is an async hint too — a datapath-only bound exists only where the two clocks are not timed against each other. It is stronger than a false path: it also wins over a generated→master collapse, a shared `-group`, and an exclusive group, because the more-reporting reading keeps the crossing checked. Records land in `ClockSpec.datapath_only_delays`, clock pairs in `datapath_only_pairs`; object endpoints (`get_cells` / `get_pins` / `get_ports` / `get_nets`) are recorded as `(kind, name)` but not resolved (warning — #328 owns object resolution); `-through` is not interpreted (warning). Plain `set_max_delay` is gated off (`_COMMAND_GATES`) and dropped exactly as before
+- **Object-scoped / `-through` `set_false_path`** (rtl-buddy-cdc#328) — any `get_cells` / `get_pins` / `get_ports` / `get_nets` endpoint or a `-through` sends the statement to `ClockSpec.false_path_exceptions` as a `FalsePathException` (`SdcObject(kind, name, hierarchical)` patterns per side, one tuple per `-through` group, edge / check `qualifiers`, `line`, and a backend-independent canonical `statement`). Clock endpoints given alongside stay as clocks. It never adds a clock pair or changes `are_async`. A word with no object collection in it is read exactly as before (all names are clocks), so clock-pair false paths are byte-for-byte unchanged. A `-filter` in an object false path drops the statement (warning) rather than silently widening its side. The netlist side — name matching, coverage, which findings get acknowledged — is `sdc_objects.py`; see the architecture article §6.4
+- **`set_max_delay -datapath_only`** between clocks (rtl-buddy-cdc#325) is an async hint too — a datapath-only bound exists only where the two clocks are not timed against each other. It is stronger than a false path: it also wins over a generated→master collapse, a shared `-group`, and an exclusive group, because the more-reporting reading keeps the crossing checked. Records land in `ClockSpec.datapath_only_delays`, clock pairs in `datapath_only_pairs`; object endpoints (`get_cells` / `get_pins` / `get_ports` / `get_nets`) are recorded as `(kind, name)` and resolved by `sdc_objects` (#328) to annotate the crossings they constrain — no suppression, no async pair; `-through` is not interpreted (warning). Plain `set_max_delay` is gated off (`_COMMAND_GATES`) and dropped exactly as before
 - **`set_case_analysis`** on top-level ports (rtl-buddy-cdc#325) lands in `ClockSpec.case_analysis` (port → `"0"`/`"1"`/`"rising"`/`"falling"`, last write wins) and is consumed by the clock walker: a `$mux` / `$pmux` / `$_MUX_` whose select is a `0`/`1` case constant — directly or through buffers / inverters — follows only the selected leg ([[clock-domain-tracing]]). Bus bits must be braced (`{sel[3]}`): unbraced, the Tcl backend substitutes `[3]` as a command and the reader warns about the numeric command name. Pin / cell targets warn and are ignored; port targets that do not exist warn at analysis time (`domain.case_analysis_warnings`)
 - **Exclusive groups** (`-logically_exclusive`, `-physically_exclusive`) drop crossings as unreachable in `_filter_async` before any rule sees them
 
 ## Deliberately Ignored
 
 - **STA-only commands** (plain `set_max_delay`, `set_min_delay`, `set_load`, `set_drive`, `set_disable_timing`, …) — silently dropped at `logging.DEBUG` level. Users can point the tool at their existing constraint file without curating a CDC-only subset
-- **`-filter` clauses** and `set_false_path -through` — on both backends; these are path/property-specific, not clock-topology facts
+- **`-filter` clauses** — on both backends; property-specific, not a name the netlist index can match
 - **`set` variables / `expr` / command substitution** — evaluated by the `tcl` backend, *not* by the `tokenizer` fallback. On the fallback the first drop per file raises a `sdc.tokenizer_skipped` warning, and a worker that reports `kind: "unavailable"` raises one `sdc.tcl_unavailable` warning per run naming the fix (uv-managed Python, `python3-tkinter`, or Homebrew `python-tk@X.Y`)
 
 ## Diagnostics Policy
 
-`ClockSpec.partial_warnings` accumulates one-line descriptions when the parser sees a CDC-relevant command it can't fully understand (e.g. `set_false_path -through`, `[get_clocks -filter …]`). The CLI surfaces these once at the end of parsing to stderr. Truly unrecognised commands emit only `logging.DEBUG`.
+`ClockSpec.partial_warnings` accumulates one-line descriptions when the parser sees a CDC-relevant command it can't fully understand (e.g. `[get_clocks -filter …]`). Object patterns that match nothing in the netlist (rtl-buddy-cdc#328) are added to the same list by the CLI after `sdc_objects.resolve`. The CLI surfaces these once at the end of parsing to stderr. Truly unrecognised commands emit only `logging.DEBUG`.
 
 ## Related Pages
 
