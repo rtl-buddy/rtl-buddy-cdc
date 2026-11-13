@@ -90,7 +90,7 @@ Primary mode (`analyze`):
 
 | Input | Required | Purpose |
 |---|---|---|
-| Yosys netlist JSON | yes | Flattened design (output of `write_json`) |
+| Yosys netlist JSON | yes | Flattened design (output of `write_json`). `opt_clean` is not required: cells no output can observe are ignored, so the verdict is the same with or without it. |
 | **SDC** (`.sdc`) | recommended | Clock declarations + async groups; without it, rule checks are skipped and the run is just a structural summary. Cross-statement clock-graph diagnostics — same-port-in-multiple-clocks, unresolved master, master cycles, duplicate clock name — are surfaced as warnings (G-11 / rtl-buddy-cdc#218). |
 | Waiver file | optional | Per-violation suppression with reason (see [Waivers](#waivers)) |
 | `--baseline FILE.json` | optional | Filter out findings already present in a prior JSON report; the carried-over set is surfaced as a separate tally and never drives the exit code. Useful for "fail PR only on new findings". Matches on `(rule_id, cell_name, message)`. |
@@ -296,7 +296,7 @@ rtl-buddy-cdc is a flop-based analyzer — the BFS walker traces nets between `$
 
 ## Pipeline
 
-1. **Ingest netlist** — load Yosys `write_json` output; build an in-memory cell/net graph (`netlist.py`).
+1. **Ingest netlist** — load Yosys `write_json` output; build an in-memory cell/net graph (`netlist.py`). Drop the cells whose outputs reach no output / inout port, `keep` net or instance pin (`liveness.py`): they cannot cause a CDC failure, and a register nothing reads is not reported as a crossing destination. This is what `opt_clean` would delete, so running it in the netlist flow is optional.
 2. **Identify flops** — recognise the 11 Yosys `$dff*` / `$adff*` / `$sdff*` / `$dffsr*` cell variants (`flops.py`).
 3. **Trace clock domains** — for each flop's `CLK` net, walk back through buffers, inverters, integrated clock gates, clock muxes, and clock dividers to find the originating top-level port (`domain.trace_clock_root`).
 4. **Find crossings** — BFS the combinational fanout from each flop's `Q` bits; record every flop→flop path that lands across domains. Group by `(src_flop, dst_flop)` so multi-bit buses and reconvergent fanout collapse to one record with `width` and `min_hops` (`domain.find_crossings`).

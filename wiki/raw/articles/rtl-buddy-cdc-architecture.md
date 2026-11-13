@@ -67,6 +67,10 @@ swappable so the rule pack doesn't depend on a specific toolchain.
         └──────────────────────────────────┘
                         ▼
         ┌──────────────────────────────────┐
+        │ liveness.prune_dead_cells (1a)   │  drop cells no output can observe
+        └──────────────────────────────────┘
+                        ▼
+        ┌──────────────────────────────────┐
         │ flops.find_flops    (2)          │  recognise FF cell zoo
         └──────────────────────────────────┘
                         ▼
@@ -252,6 +256,35 @@ the upstream flop (see `user_sync_flop_names` and
 *port*-scoped instead — `reset_polarity` (§8, RDC-002) and the
 scan-mode set (§8.20) — because what they declare is a property of the
 external pin, not of a producing flop.
+
+### 4.1a Unobservable cells (rtl-buddy-cdc#338)
+
+Before any analysis, `cli._analyze_module_and_report` passes the top
+module (and every greybox body) through `liveness.prune_dead_cells`.
+A cell is **live** iff it is backward-reachable from an observation
+point: an `output` / `inout` port bit, a netname bit with a truthy
+`keep` attribute, or an input pin of a cell that is not a known pure
+Yosys cell (blackbox / library / hierarchical instances, read through
+the blackbox definition's port directions when the netlist has one and
+as all-inputs otherwise; memories; `$assert` / `$print` …; any
+unlisted type; any cell with `keep`). A live pure cell makes all its
+input pins live, clock and enable pins included. Dead cells are
+dropped from `Module.cells`; ports and netnames are untouched.
+
+Consequences, deliberately:
+
+- A flop whose `Q` reaches no observation point is dead with its whole
+  input cone, so a crossing into it is **not reported**: nothing it
+  captures can reach an output. It is also the flop `opt_clean`
+  deletes, so the verdict on a netlist equals the verdict on that
+  netlist after `opt_clean` (held for the whole corpus by
+  `tests/test_gate_level_corpus.py::test_verdict_invariant_under_opt_clean`).
+- Conservative: unknown cell types are never pruned, and a module with
+  no observation point at all is analysed whole (a hand-made fragment,
+  not a design that computes nothing).
+- One linear pass per run; rules see only live cells and need no
+  liveness checks of their own. The design summary's cell count is the
+  live count.
 
 ### 4.1.1 Gate-level registers are regrouped at load (rtl-buddy-cdc#337)
 

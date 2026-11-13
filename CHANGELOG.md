@@ -137,6 +137,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allowlist are gone, and three more committed gate netlists cover the
   regrouping in the default CI job.
 
+- **CDC-013 recognises a toggle folded into an enable flop** (#338).
+  `opt_dff` (so any synthesis-shaped flow) turns `if (en) q <= ~q;`
+  into an enable flop with `D = ~Q` and `en` on the enable pin, instead
+  of the hold mux `D = en ? ~Q : Q` that `proc` leaves. The toggle
+  classifier knew only the mux, so CDC-013 (and the domain map's
+  `pulse` synchroniser label) was lost on optimised netlists. It now
+  accepts both shapes, on coarse (`$dffe` / `$adffe` / `$sdffe` /
+  `$sdffce` …) and gate-level (`$_DFFE_*` / `$_SDFFE_*` …, `$_NOT_`)
+  cells and either enable polarity. `D = ~Q` without an enable (or
+  with a constant one) is a divider, not a toggle, and stays silent.
+  The slang frontend never emits enable flops, so it was not affected.
+
+- **Verdicts no longer depend on dead cells** (#338). Without
+  `opt_clean` in the netlist flow, an unloaded `$not` of a clock fired
+  CDC-008, and the `for`-loop counter register `proc` leaves in a reset
+  branch (read by nothing but itself) fired CDC-004 and CDC-011 as a
+  crossing destination. `analyze` / `lint` now drop every cell whose
+  outputs reach no output / inout port, `keep` net, or instance /
+  memory / formal-cell pin before analysis. A crossing into a flop
+  whose `Q` reaches none of those is not reported. Unknown cell types
+  are never dropped, and a module with no observation point at all is
+  analysed whole. The design summary's cell count is the observable
+  count. No committed fixture verdict changes.
+
 ### Internal
 
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,

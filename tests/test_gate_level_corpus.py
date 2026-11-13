@@ -19,11 +19,12 @@ Front half, shared by every leg. It reproduces how the committed
 ``<top>`` and the ``blackbox`` list are read from the committed JSON
 (its ``top`` / ``blackbox`` module attributes), so the stub-blackboxed
 fixtures (``bbx_*``, ``xpm_*``, ``*_abstract`` …) keep the same
-boundary. ``opt_clean`` matters: the analyzer's verdict is not
-invariant under dead cells (an unloaded ``$not`` of a clock fires
-CDC-008), and most committed netlists were written after
-``opt_clean``. :data:`_FRONT_HALF_CLEANUP` lists the fixtures whose
-committed netlist used a different clean-up pass.
+boundary. ``opt_clean`` is there because most committed netlists were
+written after it; :data:`_FRONT_HALF_CLEANUP` lists the fixtures whose
+committed netlist used a different clean-up pass. The verdict itself
+no longer depends on it: the analyzer drops unobservable cells
+(rtl-buddy-cdc#338), and :func:`test_verdict_invariant_under_opt_clean`
+rebuilds every fixture without ``opt_clean`` to hold it to that.
 
 Legs, appended to the front half:
 
@@ -153,17 +154,13 @@ _FRONT_HALF_CLEANUP: dict[str, str] = {
 # at all) and the rule's structural definition does not reach it.
 
 # rtl-buddy-cdc#336 (reset pin R, gate-flop clock polarity, $_MUX_,
-# gate-level clock gating) is fixed; its rows are gone. The causes below
-# are what remains.
+# gate-level clock gating) and rtl-buddy-cdc#338 (the enable-flop toggle
+# opt_dff folds) are fixed; their rows are gone. The causes below are
+# what remains.
 
 _R_OPT_CONST_FLOP = (
     "inherent: opt_dff removes the stuck-at-0 `meta` flop that is the "
     "bug under test (optimisation changes the design, not the lowering)"
-)
-_R_ENABLE_TOGGLE = (
-    "analyzer bug (RTL-level): opt_dff folds the toggle into $adffe "
-    "(D=~Q on EN) and CDC-013 only recognises a toggle through a hold "
-    "$mux, so an enable-flop toggle is missed at RTL level too"
 )
 _R_ABC_RESET_INVERTER = (
     "lowering: abc rewrites the constant-leg $mux (rst_n ? 0 : 1) that "
@@ -180,8 +177,6 @@ _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     # Lowering / optimisation changes the structure under test.
     "bad_reset_sync_deassert_polarity": {"synth": _R_OPT_CONST_FLOP},
     "flop_zoo_crossing": {"synth": _R_ABC_RESET_INVERTER},
-    # RTL-level analyzer bug that the synth flow happens to expose.
-    "bad_toggle_no_xor_tail": {"synth": _R_ENABLE_TOGGLE},
 }
 
 
@@ -248,8 +243,11 @@ def yosys_available() -> bool:
     return shutil.which("yosys") is not None
 
 
-def yosys_script(fx: Fixture, leg: str, out: str) -> str:
+def yosys_script(fx: Fixture, leg: str, out: str, *, cleanup: bool = True) -> str:
     """The Yosys script for ``fx`` on ``leg``, writing ``out``.
+
+    ``cleanup=False`` drops the front half's clean-up pass, leaving the
+    dead cells ``proc`` creates in the netlist.
 
     Source paths are repo-relative (run Yosys from the repo root), so
     the script, the cache key and the netlists' ``src`` attributes do
@@ -258,7 +256,9 @@ def yosys_script(fx: Fixture, leg: str, out: str) -> str:
     sources = " ".join(p.relative_to(REPO_ROOT).as_posix() for p in fx.sources)
     steps = [f"read_verilog -sv {sources}", f"hierarchy -top {fx.top}"]
     steps += [f"blackbox {m}" for m in fx.blackboxes]
-    steps += ["proc", "flatten", _FRONT_HALF_CLEANUP.get(fx.name, _DEFAULT_CLEANUP)]
+    steps += ["proc", "flatten"]
+    if cleanup:
+        steps.append(_FRONT_HALF_CLEANUP.get(fx.name, _DEFAULT_CLEANUP))
     if LEGS[leg]:
         steps.append(LEGS[leg])
     steps.append(f"write_json {out}")
@@ -292,11 +292,11 @@ def _run_yosys(script: str) -> subprocess.CompletedProcess[str]:
         )
 
 
-def build(fx: Fixture, leg: str) -> Path:
+def build(fx: Fixture, leg: str, *, cleanup: bool = True) -> Path:
     """Build ``fx`` on ``leg`` and return the cached netlist path."""
     h = hashlib.sha256()
     h.update(_yosys_version().encode())
-    h.update(yosys_script(fx, leg, "<out>").encode())
+    h.update(yosys_script(fx, leg, "<out>", cleanup=cleanup).encode())
     for src in fx.sources:
         h.update(src.read_bytes())
     digest = h.hexdigest()
@@ -307,7 +307,7 @@ def build(fx: Fixture, leg: str) -> Path:
     # Write beside the entry and rename, so an interrupted build never
     # leaves a truncated netlist under the final name.
     tmp = out.with_name(f"{digest}.partial.json")
-    proc = _run_yosys(yosys_script(fx, leg, tmp.as_posix()))
+    proc = _run_yosys(yosys_script(fx, leg, tmp.as_posix(), cleanup=cleanup))
     if proc.returncode != 0:
         raise RuntimeError(
             f"yosys failed for {fx.name} ({leg}):\n"
@@ -401,6 +401,31 @@ def test_gate_level_verdict_matches_rtl(name: str, leg: str) -> None:
         )
         return
     _check(name, leg, _committed_fired(name), rebuilt)
+
+
+# Fixtures whose front-half clean-up does more than ``opt_clean``: without
+# it the netlist differs by more than dead cells, so there is nothing to
+# hold invariant.
+_INVARIANCE_CASES = [fx.name for fx in _FIXTURES if fx.name not in _FRONT_HALF_CLEANUP]
+
+
+@pytest.mark.gate_level
+@pytest.mark.skipif(not yosys_available(), reason="yosys not on PATH")
+@pytest.mark.parametrize("name", _INVARIANCE_CASES)
+def test_verdict_invariant_under_opt_clean(name: str) -> None:
+    """The verdict on ``proc; flatten`` alone equals the committed
+    (``opt_clean``-ed) verdict: dead cells cannot change it
+    (rtl-buddy-cdc#338). Without the analyzer's liveness pass this
+    failed on ``clock_gating`` / ``clock_combine_latch`` (an unloaded
+    ``$not`` of a clock read as clock-as-data, CDC-008) and on
+    ``ip_cdc_handshake`` (the unread ``for``-loop counter register,
+    CDC-004 + CDC-011)."""
+    fx = _BY_NAME[name]
+    raw = fired(build(fx, "rtl", cleanup=False), fx.sdc)
+    assert raw == _committed_fired(name), (
+        f"{name}: verdict without opt_clean {raw} differs from the committed "
+        f"netlist's {_committed_fired(name)}: a dead cell changed the verdict"
+    )
 
 
 # --- Committed gate-level netlists (no yosys needed) ------------------------

@@ -151,12 +151,20 @@ result is identical on Yosys 0.33 (the CI apt package) and 0.64.
 
 The sweep is marked `gate_level`, skips without `yosys`, caches built
 netlists under `tests/.gate_level_cache/` (keyed by Yosys version,
-script and source bytes), and runs in the CI `fuzz + sim` job. Eight
+script and source bytes), and runs in the CI `fuzz + sim` job. Nine
 fixtures also commit a `<name>.gates.json` or `<name>.synth.json`
-(2FF sync, async-reset crossing, enable-flop pulse synchroniser, bus
-crossing, clock mux, latch, sync-reset chain, opposite-edge chain), so
-the default no-Yosys job exercises real `$_DFF_*` netlists against
-the same allowlist.
+(2FF sync, async-reset crossing, enable-flop pulse synchroniser,
+enable-flop toggle without XOR tail, bus crossing, clock mux, latch,
+sync-reset chain, opposite-edge chain), so the default no-Yosys job
+exercises real `$_DFF_*` netlists against the same allowlist.
+
+The same module also rebuilds every fixture with the front half's
+`opt_clean` dropped and asserts the verdict is unchanged
+(`test_verdict_invariant_under_opt_clean`, rtl-buddy-cdc#338): the
+analyzer drops unobservable cells itself, so dead logic cannot add or
+remove a finding. The three fixtures whose verdict used to change also
+commit that `<name>.noclean.json` for the no-Yosys job
+(`tests/test_liveness.py`).
 
 ## Extension Points
 

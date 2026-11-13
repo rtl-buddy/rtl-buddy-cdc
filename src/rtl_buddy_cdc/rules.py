@@ -4249,7 +4249,10 @@ def check_cdc_013(
       CDC-009's threshold).
     - The src flop's ``D`` pin matches the toggle pattern
       ``D = en ? ~Q : Q`` per
-      :func:`rtl_buddy_cdc.pulse.classify_toggle_d_pin`.
+      :func:`rtl_buddy_cdc.pulse.classify_toggle_d_pin` — through a
+      hold ``$mux``, or folded into an enable flop as ``D = ~Q`` with
+      ``en`` on the enable pin (what ``opt_dff`` produces,
+      rtl-buddy-cdc#338).
 
     Severity ``warning`` — many designs use this pattern correctly
     by rate-limiting events at the application level (or by
@@ -4287,7 +4290,9 @@ def check_cdc_013(
             continue
         if c.src_flop.cell.name in ctx.user_handshakes:
             continue  # (* cdc_handshake *) — req toggle is backpressured until ack (#247)
-        shape = classify_toggle_d_pin(d_bits[0], q_bits[0], module, ctx.bit_drivers)
+        shape = classify_toggle_d_pin(
+            d_bits[0], q_bits[0], module, ctx.bit_drivers, flop=c.src_flop.cell
+        )
         if shape != "toggle":
             continue
         # Suppress on the canonical pulse-synchroniser shape
@@ -5928,8 +5933,11 @@ def _is_pulse_synchronizer_source(module: Module, src: Flop, ctx: _RuleContext) 
     q_bits = src.cell.connections.get("Q", ())
     if len(d_bits) != 1 or len(q_bits) != 1:
         return False
-    return classify_toggle_d_pin(d_bits[0], q_bits[0], module, ctx.bit_drivers) == (
-        "toggle"
+    return (
+        classify_toggle_d_pin(
+            d_bits[0], q_bits[0], module, ctx.bit_drivers, flop=src.cell
+        )
+        == "toggle"
     )
 
 
