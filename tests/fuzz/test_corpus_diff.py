@@ -90,30 +90,14 @@ _CASES = collect_cases()
 # ``_alias_indexed_assign`` for the three lowering additions.
 # rtl-buddy-cdc#224 closed alongside them.
 #
-# rtl-buddy-cdc#331 added the rows below with the per-rule templates.
-# Each value names the root cause; none is fixed by that test-only
-# change. Two are slang-frontend gaps; the case_n8 row is the reverse
-# (the Yosys path is the one that misses).
-_NO_BLACKBOX = (
-    "rtl-buddy-cdc#331: the pyslang frontend has no blackbox support "
-    "(frontend.elaborate_with_blackboxes returns no siblings for it); a "
-    "bodyless (* blackbox *) stub elaborates as an empty module, so the "
-    "instance, its parameters and every crossing through it vanish and "
-    "slang reports nothing"
-)
+# rtl-buddy-cdc#331 added four rows with the per-rule templates. Three
+# were slang-frontend gaps closed by rtl-buddy-cdc#345: the
+# ``cdc022_primitive_sync_depth`` and ``cdc_bbx_blackbox_boundary``
+# families (no blackbox support: a ``(* blackbox *)`` stub elaborated as
+# an empty module) and ``fuzz_cdc023_clock_combine_and_s1_v2001`` (plain
+# ``always @(posedge clk)`` blocks were dropped). The remaining row is the
+# reverse direction (the Yosys path is the one that misses).
 _KNOWN_SLANG_PARITY_GAPS: dict[str, str] = {
-    # CDC-022 / CDC-BBX need the macro instance; slang drops it. The
-    # ``_ok`` families (Yosys silent too) agree vacuously and are not here.
-    "cdc022_primitive_sync_depth": _NO_BLACKBOX,
-    "cdc_bbx_blackbox_boundary": _NO_BLACKBOX,
-    # Plain Verilog-2001 ``always @(posedge clk)``: the pyslang frontend
-    # lowers only always_ff / always_comb / always_latch and silently
-    # drops a plain ``always`` block (frontends/slang.py
-    # _emit_procedural_block returns on any other procedure kind), so the
-    # flop is missing and the combined clock reads as clock-as-data.
-    "fuzz_cdc023_clock_combine_and_s1_v2001": (
-        "rtl-buddy-cdc#331: pyslang frontend drops plain `always` flops"
-    ),
     # The reverse direction: slang is right, the Yosys path misses.
     # Yosys proc lowers a full 8-entry constant case table to a ROM
     # ($memrd_v2); CDC-019 accepts only a comb cell's Y port as the shared

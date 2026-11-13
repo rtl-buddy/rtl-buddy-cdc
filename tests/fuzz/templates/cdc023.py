@@ -26,8 +26,8 @@ combine, run through the CLI analysis path; the rule has no attribute.
 
 Every case elaborates with ``opt_clean`` (as ``lint`` does) — see
 ``_OPT_CLEAN``. ``and_s1_v2001`` repeats ``and_s1`` with plain
-``always @(posedge ...)`` flops; it is on the cross-frontend allowlist
-because the pyslang frontend drops plain ``always`` blocks.
+``always @(posedge ...)`` flops, which the pyslang frontend dropped
+until rtl-buddy-cdc#345.
 """
 
 from __future__ import annotations
@@ -206,10 +206,9 @@ class ClockCombine:
         )
 
         # Plain Verilog-2001 ``always @(posedge ...)`` flops. Same design
-        # as ``and_s1`` otherwise. On the cross-frontend allowlist: the
-        # pyslang frontend only lowers ``always_ff`` / ``always_comb`` /
-        # ``always_latch`` and silently drops a plain ``always`` block, so
-        # slang sees no flop at all.
+        # as ``and_s1`` otherwise. The cross-frontend sentinel for plain
+        # ``always`` lowering: the pyslang frontend dropped these blocks
+        # (no flop at all) until rtl-buddy-cdc#345.
         top = f"fuzz_{n}_and_s1_v2001"
         yield RenderedCase(
             template_name=n,
