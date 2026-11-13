@@ -533,6 +533,12 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
                     "source_line": s.waiver.source_line,
                     "origin": s.waiver.origin,
                     "end_line": s.waiver.end_line,
+                    # ``inst:`` scope (#327); null when the line has none.
+                    "inst_regex": (
+                        s.waiver.inst_regex.pattern
+                        if s.waiver.inst_regex is not None
+                        else None
+                    ),
                 },
             }
             for s in result.suppressed

@@ -3,6 +3,8 @@
 Format (one statement per line; ``#`` and blank lines ignored)::
 
     waive <RULE-ID|*> <regex> [reason ...]
+    waive <RULE-ID|*> inst:<inst-regex> [reason ...]
+    waive <RULE-ID|*> <regex> inst:<inst-regex> [reason ...]
 
 Examples::
 
@@ -18,6 +20,20 @@ Matching:
   the violation's ``cell_name``, the offending crossing's
   ``"src_flop -> dst_flop"`` text (when present), or the violation
   ``message``. A hit anywhere counts.
+- ``inst:<inst-regex>`` (optional, #327) scopes the waiver to a part
+  of the hierarchy. It is matched against the violation's
+  ``instance_path`` joined with ``/`` and no spaces (``u_block_a/u_sync``;
+  the empty string for a top-level finding), with ``re.search`` — the
+  same unanchored search the object regex uses, so both patterns on one
+  line behave alike. Anchor it yourself: ``inst:^u_ip(/|$)`` is
+  "``u_ip`` and everything under it", ``inst:^$`` is "top level only".
+  A finding anchored on a blackbox instance itself (``CDC-BBX``, or a
+  finding lifted out of an analysed boundary module) is scoped to that
+  instance — the caller supplies that via ``instance_scope``. Written
+  alone (``waive R inst:X``) it waives every finding of the rule in
+  scope; written after an object regex both must match. An ``inst:``
+  token is only recognised as the third or fourth word, so a line
+  without one parses exactly as before.
 - ``reason`` is free text echoed in the report next to suppressed
   entries — required in spirit, optional in syntax so partial files
   still parse.
@@ -78,6 +94,38 @@ class Waiver:
     # entry, which has no line scope at all.
     start_line: int | None = None
     end_line: int | None = None
+    # Instance scope (#327), waiver-file entries only: ``re.search``-ed
+    # against the violation's ``/``-joined instance scope (see
+    # ``apply``). ``None`` means "anywhere in the hierarchy" — every
+    # waiver written before the ``inst:`` form existed.
+    inst_regex: re.Pattern[str] | None = None
+
+
+# The ``inst:`` scope prefix on a waiver-file word (#327).
+INST_PREFIX = "inst:"
+
+# The object regex an instance-only line (``waive R inst:X``) carries:
+# it matches every candidate string, so the instance scope alone
+# decides. Kept a real pattern rather than ``None`` so ``Waiver.regex``
+# (and the JSON ``waiver.regex`` key) stay non-null.
+_ANY_OBJECT = ".*"
+
+
+def _compile(lineno: int, pattern: str, what: str) -> re.Pattern[str]:
+    try:
+        return re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"line {lineno}: invalid {what} {pattern!r}: {e}") from e
+
+
+def _compile_inst(lineno: int, word: str) -> re.Pattern[str]:
+    pattern = word[len(INST_PREFIX) :]
+    if not pattern:
+        raise ValueError(
+            f"line {lineno}: empty `{INST_PREFIX}` scope "
+            f"(use `{INST_PREFIX}^$` for top-level findings only)"
+        )
+    return _compile(lineno, pattern, "inst regex")
 
 
 def parse(text: str) -> list[Waiver]:
@@ -93,17 +141,30 @@ def parse(text: str) -> list[Waiver]:
                 f"got: {raw!r}"
             )
         _, rule, pattern, *rest = parts
-        try:
-            compiled = re.compile(pattern)
-        except re.error as e:
-            raise ValueError(f"line {lineno}: invalid regex {pattern!r}: {e}") from e
+        inst: re.Pattern[str] | None = None
+        if pattern.startswith(INST_PREFIX):
+            # ``waive R inst:X [reason]`` — instance scope only.
+            inst = _compile_inst(lineno, pattern)
+            compiled = re.compile(_ANY_OBJECT)
+        else:
+            compiled = _compile(lineno, pattern, "regex")
+            if rest and rest[0].startswith(INST_PREFIX):
+                # ``waive R <regex> inst:X [reason]`` — both must match.
+                # Re-split the tail: the reason is what follows the scope.
+                scope, *rest = rest[0].split(maxsplit=1)
+                inst = _compile_inst(lineno, scope)
         reason = rest[0].strip() if rest else ""
+        if inst is not None and reason.startswith(INST_PREFIX):
+            raise ValueError(
+                f"line {lineno}: more than one `{INST_PREFIX}` scope on one line"
+            )
         out.append(
             Waiver(
                 rule_pattern=rule,
                 regex=compiled,
                 reason=reason,
                 source_line=lineno,
+                inst_regex=inst,
             )
         )
     return out
@@ -174,11 +235,24 @@ def _in_line_scope(w: Waiver, line: int | None) -> bool:
     return w.end_line is None or line < w.end_line
 
 
+def instance_path_text(path: tuple[str, ...]) -> str:
+    """The canonical text an ``inst:`` scope is matched against:
+    components joined with ``/`` and no spaces, ``""`` for the top
+    instance. ``/`` rather than ``.`` so a pattern doesn't have to
+    escape every separator (hierarchical-reporting §7 item 5)."""
+    return "/".join(path)
+
+
+def _default_instance_scope(v: Violation) -> str:
+    return instance_path_text(v.instance_path)
+
+
 def apply(
     violations: list[Violation],
     waivers: list[Waiver],
     *,
     locate: Callable[[Violation], SourceRef | None] | None = None,
+    instance_scope: Callable[[Violation], str] | None = None,
 ) -> tuple[list[Violation], list[SuppressedViolation]]:
     """Split violations into (still-active, suppressed-by-a-waiver).
 
@@ -193,15 +267,23 @@ def apply(
     it matches the source path plus the line range and nothing else,
     never the cell name or the message. Without a resolver (or a
     violation whose location is unknown) a pragma waiver simply doesn't
-    match: no location, no file-scoped suppression."""
+    match: no location, no file-scoped suppression.
+
+    ``instance_scope`` gives the ``/``-joined text an ``inst:`` scope is
+    searched in. It defaults to the violation's own ``instance_path``,
+    so callers must populate that field *before* applying waivers; the
+    CLI also passes a resolver that scopes a finding anchored on a
+    blackbox instance to that instance."""
     if not waivers:
         return list(violations), []
+    scope_of = instance_scope or _default_instance_scope
     kept: list[Violation] = []
     suppressed: list[SuppressedViolation] = []
     for v in violations:
         match: Waiver | None = None
         cands = _candidates(v)
         loc: SourceRef | None = locate(v) if locate is not None else None
+        scope: str | None = None
         for w in waivers:
             if w.rule_pattern != "*" and not _rule_pattern_matches(
                 w.rule_pattern, v.rule_id
@@ -216,6 +298,11 @@ def apply(
                     match = w
                     break
                 continue
+            if w.inst_regex is not None:
+                if scope is None:
+                    scope = scope_of(v)
+                if not w.inst_regex.search(scope):
+                    continue
             if any(w.regex.search(c) for c in cands):
                 match = w
                 break

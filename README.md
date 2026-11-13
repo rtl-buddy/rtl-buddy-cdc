@@ -330,6 +330,25 @@ Format: `waive <RULE-ID|*> <regex> [reason ...]`
 
 The regex is matched against the offending cell name, the canonical `"src_flop -> dst_flop"` text (when there's a crossing), and the violation message; a hit on any one suppresses. The first matching waiver wins. Suppressed findings are still reported (with the matching reason and waiver-line number) but don't drive the exit code, so a fully-waived run returns 0.
 
+### Instance-scoped waivers
+
+An `inst:<regex>` word scopes a waiver to part of the hierarchy (#327). It goes where the object regex goes, or right after it:
+
+```
+waive CDC-002 inst:^u_ip(/|$)              IP signed off standalone
+waive CDC-001 .*dst_q.* inst:^u_a/u_sync$  only this instance's dst_q
+waive *       inst:^$                      top-level findings only
+```
+
+- **What it matches.** The violation's `instance_path` (the same one the reports print), joined with `/` and no spaces: `u_block_a/u_sync`, or the empty string for a top-level finding. The path is the same under the Yosys and slang frontends.
+- **Anchoring.** `re.search`, like the object regex — unanchored unless you anchor it. `inst:u_ip` also matches `u_ip2` and `u_top/u_ip`. To waive an instance *and everything under it*, write `inst:^u_ip(/|$)`; `inst:u_block_a/.*` covers only `u_block_a`'s children, not findings in `u_block_a` itself.
+- **Top-level findings** have an empty path, so they never match a pattern that needs a character (`inst:u_ip`); `inst:^$` selects them alone.
+- **With an object regex** on the same line, both must match. With `inst:` alone, every finding of that rule in scope is waived.
+- **Blackbox instances.** A `CDC-BBX` finding, or a finding lifted out of an analysed boundary module, is reported in the parent but is scoped to the blackbox instance it names, so `inst:^u_ip(/|$)` also waives the `u_ip` coverage gap.
+- **Compatibility.** `inst:` is only recognised as the third or fourth word of a line, so existing waiver lines keep their meaning. One that starts its object regex or its reason with a literal `inst:` must now write it some other way (for example `[i]nst:`). An empty `inst:`, a bad regex, or two scopes on one line are errors.
+
+In `--format json` the `suppressed[].waiver` object gains `inst_regex`: the scope's pattern, or `null` for a line without one. An instance-only line reports `regex` as `.*`.
+
 ## In-RTL pragmas
 
 A suppression can also be written next to the RTL it applies to, as a magic comment in the `rbcdc:` namespace (each rtl-buddy tool owns one — `rbsch:`, `rbxeno:`, …; there is no SV-attribute form and no alternative spelling):
@@ -539,6 +558,7 @@ Implemented:
 - [x] `lint` standalone wrapper (yosys → analyzer)
 - [x] Text / JSON / SARIF reporters with source locations
 - [x] Waiver file suppression
+- [x] **Instance-scoped waivers** (#327) — `waive CDC-001 inst:^u_block_a(/|$)` waives by hierarchy, matched with `re.search` against the `/`-joined `instance_path`; combinable with the object regex on the same line, and `CDC-BBX` / lifted boundary findings are scoped to their own blackbox instance. See [Instance-scoped waivers](#instance-scoped-waivers).
 - [x] **In-RTL pragmas** (#41 / #42 / #43) — `// rbcdc: disable-rule CDC-001[,CDC-002] [reason]` written next to the RTL, scanned as text (no frontend) and applied on the `lint` path alongside `--waivers`. Block-scoped via a closing `// rbcdc: enable-rule`, half-open on `[disable_line, enable_line)`; unclosed runs to end of file. Matched by source location, reported with the pragma's own file:line (and range, when closed). See [In-RTL pragmas](#in-rtl-pragmas).
 - [x] `(* cdc_sync *)`, `(* cdc_gray *)`, and `(* cdc_static *)` SV-attribute support
 - [x] XPM CDC macro recognition (`xpm_cdc_*` family recognised by module name as synchronisers; `--sync-primitive` for site-local macros; CDC-022 checks the `DEST_SYNC_FF` depth parameter; uppercase `(* ASYNC_REG *)` case-fold — rtl-buddy-cdc#275)
@@ -560,9 +580,8 @@ Implemented:
 Not yet:
 
 - [ ] CDC-006 refinements — comb-source severity tuning (downgrade for paths that hit a registered output before leaving the module)
-- [ ] CDC-007 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
+- [ ] RDC-001 refinements — recognise multi-source reset synchronizer trees and shared reset distribution networks
 - [ ] DFT / scan-mode awareness — exempt scan_en, scan_in, test-mode controls from CDC checks under a configurable scan-mode pragma
-- [ ] Instance-scoped waivers (`waive CDC-001 inst:u_block_a/.*`) — natural follow-on to hierarchical reporting now that `instance_path` is on every violation
 - [ ] Glitch detection on data path through async muxes / clock-gate enables
 
 ## License

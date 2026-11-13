@@ -2314,9 +2314,20 @@ output and in SARIF as `suppressions`. They don't drive the exit
 code, so a fully-waived run returns 0.
 
 This deliberately mimics the common `.swl` waiver-file workflow at a much
-smaller surface — no scope qualifiers, no severity overrides, no
+smaller surface — one scope qualifier (below), no severity overrides, no
 expiry dates. Add those when a real project asks for them, not
 preemptively.
+
+**Instance scope (#327).** An `inst:<regex>` word, as the third word
+(instance-only) or the fourth (after the object regex), sets
+`Waiver.inst_regex`. `waivers.apply` `re.search`es it against the
+violation's instance scope — by default `"/".join(instance_path)`,
+`""` at top; the CLI passes an `instance_scope` resolver that appends
+the blackbox instance itself when `cell_name` names a blackbox cell
+(`CDC-BBX`, greybox-lifted findings). Both patterns must match. The
+CLI resolves `instance_path` *before* applying waivers so the scope is
+always populated. JSON `suppressed[].waiver` gains `inst_regex`
+(pattern or null) — an added key, like `origin` / `end_line`.
 
 ### 9.1 In-RTL pragmas (`pragma.py`)
 
