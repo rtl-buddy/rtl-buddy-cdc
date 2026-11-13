@@ -11,7 +11,7 @@
 - [[cdc-analysis-pipeline]] — The pure-function pipeline from elaborated `Module` to text/JSON/SARIF report
 - [[cdc-data-model]] — All immutable dataclasses: Module, Flop, FlopDomain, Crossing, ClockSpec, Violation, AnalysisResult
 - [[cdc-rule-pack]] — CDC-001..-008 rule functions, shared structural helpers, severity policy, and recognition vs. annotation
-- [[cdc-testing-strategy]] — Paired bad/good fixtures, test organization, and extension points for rules/attributes/SDC/formats/frontends
+- [[cdc-testing-strategy]] — Paired bad/good fixtures, fuzz / gate-level / open-source integration corpora, test organization, and extension points for rules/attributes/SDC/formats/frontends
 - [[clock-domain-tracing]] — `trace_clock_root` algorithm: buffer/ICG/mux/divider cell categories, walk mechanics, CDC-008 role
 - [[crossing-detection]] — BFS-based `find_crossings`: walk, grouping by (src,dst), intentional exclusions, complexity
 - [[elaboration-frontends]] — Yosys + slang frontends behind `--frontend`; shared `Module` contract; how to add a new frontend

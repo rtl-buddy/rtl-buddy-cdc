@@ -12,6 +12,7 @@ on:
       - 'tests/**/*.py'
       - 'tests/**/*.sv'
       - 'tests/**/*.sdc'
+      - 'tests/integration/**'
   pull_request:
     paths:
       - '.github/workflows/test.yml'
@@ -22,6 +23,7 @@ on:
       - 'tests/**/*.py'
       - 'tests/**/*.sv'
       - 'tests/**/*.sdc'
+      - 'tests/integration/**'
 
 jobs:
   # Primary job: install with the [slang] extra so the pyslang-backed

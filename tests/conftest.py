@@ -36,6 +36,44 @@ def pytest_configure(config) -> None:
         "(gated; needs yosys on PATH + RTL_BUDDY_SLANG_PLUGIN pointing at "
         "a built slang.so; run via `pytest -m yosys_slang`)",
     )
+    config.addinivalue_line(
+        "markers",
+        "integration: open-source integration corpus fetched from upstream "
+        "repositories at pinned commits (opt-in: skipped unless selected with "
+        "`pytest -m integration` or RB_CDC_INTEGRATION=1; needs yosys and "
+        "network access for designs not yet cached)",
+    )
+
+
+# Opt-in switch for the ``integration`` marker (rtl-buddy-cdc#331).
+INTEGRATION_ENV = "RB_CDC_INTEGRATION"
+
+
+def integration_selected(config) -> bool:
+    """True when the run asked for the integration corpus: a ``-m``
+    expression naming ``integration`` positively, or
+    ``RB_CDC_INTEGRATION=1``. A plain ``pytest`` never fetches anything."""
+    import os
+    import re
+
+    if os.environ.get(INTEGRATION_ENV, "") not in ("", "0"):
+        return True
+    expr = config.getoption("markexpr", default="") or ""
+    return bool(re.search(r"(?<!not )\bintegration\b", expr))
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    if integration_selected(config):
+        return
+    skip = pytest.mark.skip(
+        reason="integration corpus is opt-in: run `pytest -m integration` "
+        f"or set {INTEGRATION_ENV}=1"
+    )
+    for item in items:
+        # The marker, not ``item.keywords``: keywords also hold parent
+        # node names, and the corpus lives in ``tests/integration/``.
+        if item.get_closest_marker("integration") is not None:
+            item.add_marker(skip)
 
 
 @pytest.fixture(params=["tcl", "tokenizer"])

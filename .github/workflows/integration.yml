@@ -1,0 +1,95 @@
+name: Integration corpus
+
+# Open-source integration corpus (rtl-buddy-cdc#331): real multi-clock
+# designs fetched from upstream repositories at pinned commits
+# (tests/integration/corpus.toml), built with Yosys and analysed against
+# reviewed expectations, plus the slang-frontend comparison.
+#
+# Deliberately NOT on pull_request: the job needs the network (GitHub
+# fetches of third-party repositories) and a pinned Yosys, and an
+# upstream outage must never block a PR. It runs after every merge that
+# touches the analyzer or the corpus, weekly (to notice an upstream
+# commit becoming unfetchable), and on demand. A failure here is a
+# triage signal: a changed count is either an analyzer improvement
+# (update corpus.toml) or a regression. Run it locally with
+# `uv run pytest -m integration`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/integration.yml'
+      - 'src/**/*.py'
+      - 'tests/integration/**'
+      - 'uv.lock'
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: integration corpus (yosys ${{ matrix.yosys }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The expectations were recorded with Yosys 0.64; the same
+        # pinned build the yosys-slang plugin job uses, so the cache key
+        # below is shared with it.
+        yosys: [v0.64]
+    env:
+      RB_CDC_INTEGRATION_CACHE: ${{ github.workspace }}/.integration-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # Build and runtime dependencies (readline / tcl / libffi are
+      # needed by the cached binary too, so this runs on a cache hit).
+      - name: Install Yosys dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config git gperf bison flex libfl-dev \
+            libreadline-dev gawk tcl-dev libffi-dev zlib1g-dev
+
+      - name: Cache Yosys ${{ matrix.yosys }}
+        id: cache-yosys
+        uses: actions/cache@v4
+        with:
+          path: ~/yosys-install
+          key: yosys-${{ runner.os }}-${{ matrix.yosys }}
+
+      - name: Build Yosys ${{ matrix.yosys }} (cache miss only)
+        if: steps.cache-yosys.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --recursive --branch "${{ matrix.yosys }}" \
+            https://github.com/YosysHQ/yosys.git yosys_build
+          make -C yosys_build config-gcc
+          echo "ENABLE_ABC := 0" >> yosys_build/Makefile.conf
+          make -C yosys_build -j"$(nproc)"
+          make -C yosys_build install DESTDIR="$HOME/yosys-install"
+
+      - name: Install Yosys
+        run: |
+          sudo cp -r "$HOME/yosys-install"/* /
+          yosys -V
+
+      # Upstream sources, keyed by the manifest: a pinned commit never
+      # changes, so the cache only misses when a design is added.
+      - name: Cache fetched corpus sources
+        uses: actions/cache@v4
+        with:
+          path: .integration-cache/src
+          key: integration-src-${{ hashFiles('tests/integration/corpus.toml') }}
+
+      - name: Install dependencies (with [slang])
+        run: uv sync --managed-python --extra slang --group test --python 3.13
+
+      - name: Run integration corpus
+        run: uv run --managed-python --no-sync --python 3.13 pytest -m integration -v

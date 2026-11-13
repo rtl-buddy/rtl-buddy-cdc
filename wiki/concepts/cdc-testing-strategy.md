@@ -1,9 +1,9 @@
 ---
 title: CDC Testing Strategy
 created: 2026-05-11
-updated: 2026-11-13
+updated: 2026-11-14
 type: concept
-tags: [testing, cdc, architecture, extension-point, frontend, fuzz]
+tags: [testing, cdc, architecture, extension-point, frontend, fuzz, integration]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
 confidence: high
 ---
@@ -35,6 +35,7 @@ Each CDC rule has at least one **bad fixture** (designed to fire it) and one **g
 | `test_rules_perf.py` | Synthetic 500-flop micro-benchmark — regression sentinel for the `_RuleContext` memoisation |
 | `test_gate_level_corpus.py` | Every fixture rebuilt through a Yosys gate flow; per-rule verdict must match the committed RTL netlist (see [Gate-level corpus](#gate-level-corpus)) |
 | `test_flop_zoo_crossing.py` | `flop_zoo_crossing`: one `$aldff` / `$dffsr` / `$sdffce` / `$adffe` / `$dffe` capture each, the flop families no other fixture produces |
+| `integration/test_integration_corpus.py` | Real open-source multi-clock designs fetched at pinned commits, with reviewed per-rule expectations on both frontends (opt-in marker `integration`; see [Open-source integration corpus](#open-source-integration-corpus)) |
 
 ### JSON Fixtures
 
@@ -168,6 +169,115 @@ analyzer drops unobservable cells itself, so dead logic cannot add or
 remove a finding. The three fixtures whose verdict used to change also
 commit that `<name>.noclean.json` for the no-Yosys job
 (`tests/test_liveness.py`).
+
+## Open-Source Integration Corpus
+
+Every fixture above is a small design written to trigger one rule, in
+a coding style chosen to suit the tool. `tests/integration/`
+(rtl-buddy-cdc#331) runs the analyzer on real multi-clock RTL written
+by other people instead: async FIFOs, bus clock-domain bridges, a
+three-clock PTP time transfer and a CDC primitive library.
+
+### What is committed and what is not
+
+The upstream RTL is **never vendored**. `tests/integration/corpus.toml`
+lists, per design, the repository URL, a full pinned commit SHA, the
+licence and the file in which it was checked, the source list and the
+top module. What is committed is this project's own work: the
+manifest, one SDC per design under `sdc/` (clocks, async groups and
+`set_input_delay` / `set_output_delay` typing of every data port), and
+small parameter-binding wrappers under `wrappers/` where the slang path
+needs one (`lint --frontend slang` has no top-level parameter
+override).
+
+`runner.py` shallow-fetches each pinned commit (`git fetch --depth 1
+origin <sha>`, hooks disabled) into a cache —
+`$RB_CDC_INTEGRATION_CACHE`, else the gitignored
+`tests/integration/.cache/` — verifies the checked-out SHA and the
+licence file, builds the netlist with the `lint` recipe (`read_verilog
+-sv; hierarchy -top; proc; flatten; opt_clean`) from a `yosys -s`
+script file (some Yosys releases split a `-p` script at commas) and
+runs `analyze`. Fetched repositories are treated as untrusted data:
+nothing in them is executed, only their source files are passed to
+Yosys and the slang frontend as paths. Each design must flatten to at
+most 20,000 cells (asserted); the current seven are 14–406 cells and
+Yosys peaks at about 45 MB.
+
+### What the tests assert
+
+Per design, on the Yosys path: `analyze` completes (exit 0 or 1); the
+crossing count and the per-rule fired counts equal the manifest's;
+every clock the SDC declares reaches at least one flop; no flop is left
+with an unknown domain unless the manifest says why. Then `lint
+--frontend slang` on the same sources: either it matches the Yosys
+verdict, or the manifest pins the slang verdict and names the gap
+(strict both ways, like `_KNOWN_SLANG_PARITY_GAPS`: a pinned divergence
+that disappears fails too).
+
+The expectations are **reviewed, not recorded**. Every fired rule has a
+`[[design.finding]]` entry with a count, a classification and the
+reasoning:
+
+- `true_positive` — a real hazard in the design;
+- `false_positive` — the design is protected and the analyzer should be
+  silent (always names a gap);
+- `outside_model` — safe or unsafe only by something the structural
+  model cannot see: a bus protocol at the ports, an update rate and
+  clock ratio, or an environment assumption about a reset.
+
+Findings the analyzer should have produced and did not are
+`[[design.missed]]` entries. Each analyzer gap is a `[gaps.<name>]`
+entry with a summary and a minimal, self-written reproducer; today's
+behaviour is pinned, so fixing a gap fails the affected design's test
+until its counts and entries are updated. The manifest checks (pins,
+licences, classifications adding up to the pinned counts, gaps
+referenced) run in the default suite without the network.
+
+### Running it
+
+The tests carry the `integration` marker and are **opt-in**: they are
+skipped unless the run selects them (`uv run pytest -m integration`,
+or `RB_CDC_INTEGRATION=1`), and also skip without `yosys` (Yosys path),
+without pyslang (slang path), or without network access for a design
+not yet cached. A plain `pytest` never touches the network.
+`uv run python -m tests.integration.runner [NAME ...] [--slang]`
+prints each design's cells, clocks, crossings and findings — the view
+to review a new design from.
+
+CI runs the marker in a separate workflow, `integration.yml`, after
+merges to `main` that touch `src/` or the corpus, weekly, and on
+demand — never on pull requests, so an upstream outage cannot block a
+PR. It builds the pinned Yosys 0.64 the expectations were recorded
+with (sharing the yosys-slang job's cache) and caches the fetched
+sources by manifest hash.
+
+### Adding a design
+
+1. Pick a design with two or more genuinely asynchronous clocks and
+   real crossings, synthesizable Verilog / SystemVerilog that Yosys
+   `read_verilog -sv` reads without vendor primitives. Prefer a coding
+   style the corpus lacks over size.
+2. **Licence rule**: permissive only — MIT, BSD, Apache-2.0, ISC, CC0,
+   Solderpad, CERN-OHL-P (the SPDX ids in
+   `runner.PERMISSIVE_LICENSES`). Check the licence at the commit you
+   pin; skip anything GPL / LGPL / CERN-OHL-S or without a licence.
+   When the repository has no licence file, point `license_file` at
+   the source whose header grants it and explain in `license_note`.
+3. Pin the full SHA (`git ls-remote <url> HEAD`), list the sources and
+   top, and write the SDC: `create_clock` per clock,
+   `set_clock_groups -asynchronous`, and `set_input_delay` /
+   `set_output_delay -clock` for every data port (synchronous resets
+   are data; asynchronous resets stay untyped). Port names are exact —
+   the SDC reader does not expand wildcards.
+4. Check size first: estimate from line count and memories, build once
+   with `stat`, and drop a design over the cell cap.
+5. Run `uv run python -m tests.integration.runner <name> --slang` and
+   review **every** finding against the rule definitions in the
+   architecture spec. For a textbook structure (gray-pointer FIFO, 2FF
+   library) a finding is either a real bug in that design or an
+   analyzer false positive — say which. Pin the counts, classify each
+   finding, and file every analyzer gap as a `[gaps.*]` entry with a
+   reproducer of your own (never a copy of the upstream code).
 
 ## Extension Points
 
