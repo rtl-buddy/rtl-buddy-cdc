@@ -1225,16 +1225,19 @@ def _analyze_module_and_report(
         flop_clocks = {fd.flop.cell.name: fd.clock for fd in domains}
         reset_domains_map = assign_reset_domains(module)
         polarity_overrides = user_reset_polarity_overrides(module, hints=reset_hints)
+        # One reset classification for all three consumers (#324).
         recognised_syncs = find_reset_synchronizers(
             module,
             flop_clocks,
             extra_synchronizers=user_reset_sync_flop_names(module, hints=reset_hints),
+            reset_domains=reset_domains_map,
         )
         reset_crossings = find_reset_crossings(
             module,
             flop_clocks,
             recognised_syncs=recognised_syncs,
             polarity_overrides=polarity_overrides,
+            reset_domains=reset_domains_map,
         )
         reset_payload = build_reset_domain_map(
             module,
