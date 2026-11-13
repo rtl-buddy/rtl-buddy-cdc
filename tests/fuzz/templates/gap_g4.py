@@ -16,6 +16,11 @@ multiplier per the issue's Layer-A guidance.
 
 Asserts CDC-019 fires once per case on the shared decoder. Before
 the rule existed, ``run_all`` produced zero findings on this shape.
+
+The per-rule dimension sweep — lane count, decoder shape, the silent
+and attribute-suppressed variants — lives in ``cdc019.py`` (rtl-buddy-
+cdc#331); this file stays the single-shape regression sentinel and its
+expectation already names the rule.
 """
 
 from __future__ import annotations

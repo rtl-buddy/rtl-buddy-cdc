@@ -17,6 +17,7 @@ from rtl_buddy_cdc import (
     render as render_mod,
     reporter,
     sdc as sdc_mod,
+    sdc_objects,
     waivers as waivers_mod,
 )
 from rtl_buddy_cdc.abstract import instance_clock_pins
@@ -24,10 +25,12 @@ from rtl_buddy_cdc.domain import (
     Crossing,
     _bit_drivers,
     assign_domains,
+    case_analysis_warnings,
     filter_async as domain_filter_async,
     find_crossings,
     find_inferred_clock_candidates,
 )
+from rtl_buddy_cdc.liveness import prune_dead_cells
 from rtl_buddy_cdc.hierarchy import (
     compose_boundaries,
     reconvergence_unsafe_instances,
@@ -152,7 +155,10 @@ _SYNC_PRIMITIVE_OPT = typer.Option(
     "crossing landing in an instance of it is safe by construction, the "
     "instance is summarised at its destination clock instead of being "
     "declined as a multi-clock blackbox (no CDC-BBX), and its "
-    "`DEST_SYNC_FF` parameter is checked by CDC-022. Repeatable. The "
+    "`DEST_SYNC_FF` parameter is checked by CDC-022. The destination clock "
+    "is found from the clock pin names: with two or more clock pins, one "
+    "must contain `dest` or `dst` (a `src` pin is the source side), or the "
+    "instance is still declined with CDC-BBX. Repeatable. The "
     "Xilinx XPM CDC family (xpm_cdc_single / _array_single / _gray / "
     "_handshake / _pulse / _sync_rst / _async_rst) is recognised "
     "built-in — use this only for an in-house or other-vendor macro. "
@@ -460,8 +466,9 @@ def lint(
         help="Treat MODULE as a CDC boundary cell: keep it un-flattened "
         "(via read_slang `--blackboxed-module`) so a large subtree is "
         "analysed at its port boundary instead of being elaborated into "
-        "the design. Repeatable. Requires the yosys-slang plugin "
-        "(--yosys-plugin / RTL_BUDDY_SLANG_PLUGIN). The pre-elaborated "
+        "the design. Repeatable. With --frontend yosys it requires the "
+        "yosys-slang plugin (--yosys-plugin / RTL_BUDDY_SLANG_PLUGIN); "
+        "--frontend slang supports it natively. The pre-elaborated "
         "`analyze` path needs no flag — a netlist already containing "
         "blackbox boundary modules loads transparently. See issue #255.",
     ),
@@ -838,6 +845,18 @@ def _analyze_module_and_report(
     rule evaluation is skipped, the normal report is suppressed, and
     the exit code is 0 on successful map emission (elaboration failure
     still exits 2 from the lint wrapper before we get here)."""
+    # Drop the cells no observation point can see (rtl-buddy-cdc#338), so
+    # the verdict is the same whether or not the netlist flow ran
+    # ``opt_clean``: an unloaded ``$not`` of a clock is not clock-as-data,
+    # and a register nothing reads is not a crossing destination. Greybox
+    # bodies get the same treatment against their own ports, since the
+    # compositional pass analyses them.
+    module = prune_dead_cells(module, blackboxes)
+    if blackboxes:
+        blackboxes = {
+            name: prune_dead_cells(body, blackboxes) if body.cells else body
+            for name, body in blackboxes.items()
+        }
     # Load --reset-hints early so an unreadable / malformed file
     # fails the run before any analysis cost — same pattern the SDC
     # loader uses. Loud failure with file:line context; see #129.
@@ -860,6 +879,9 @@ def _analyze_module_and_report(
     # ``--no-findings``) — the domain map says "not checked" otherwise.
     rules_ran = False
     rule_ctx_kwargs: dict[str, Any] = {"max_depth": clock_trace_depth}
+    # Crossings an object-scoped SDC constraint fully covers (#328).
+    # Empty for every SDC without one, which leaves every report as it was.
+    sdc_coverage: dict[sdc_objects.CrossingKey, sdc_objects.CrossingCoverage] = {}
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
         # Synthesize sentinel entries for input ports the SDC didn't
@@ -872,6 +894,15 @@ def _analyze_module_and_report(
         # master, master cycles. Merged into partial_warnings so
         # they flow through the existing CLI warning surface.
         spec.partial_warnings.extend(sdc_mod.validate_clock_graph(spec))
+        # set_case_analysis targets that name no input port (#325) — the
+        # tracer ignores them, so say so through the same channel.
+        spec.partial_warnings.extend(case_analysis_warnings(module, spec.case_analysis))
+        # Object-scoped set_false_path / set_max_delay -datapath_only
+        # endpoints (#328): resolved against the netlist once, here, so a
+        # pattern that names nothing is reported with the other SDC
+        # diagnostics.
+        sdc_resolution = sdc_objects.resolve(module, spec)
+        spec.partial_warnings.extend(sdc_resolution.warnings)
         if spec.partial_warnings and fmt is OutputFormat.text and not no_findings:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)
@@ -880,6 +911,7 @@ def _analyze_module_and_report(
             pin_clocks=spec.pin_clocks,
             clock_for_port=spec.clock_for_port,
             max_depth=clock_trace_depth,
+            case_analysis=spec.case_analysis,
         )
         # Auto-abstract single-clock subtrees (#256/#257): summarise each
         # blackbox sibling whose whole clock set sits in one async-safe
@@ -911,6 +943,7 @@ def _analyze_module_and_report(
                 pin_clocks=spec.pin_clocks,
                 clock_for_port=spec.clock_for_port,
                 max_depth=clock_trace_depth,
+                case_analysis=spec.case_analysis,
             )
         )
         crossings = find_crossings(
@@ -921,6 +954,7 @@ def _analyze_module_and_report(
             boundaries=boundaries,
             max_depth=clock_trace_depth,
             scan_mode_flops=scan_mode_flops,
+            case_analysis=spec.case_analysis,
         )
         # FIX 3 (reconvergence gate): a single-clock block that IS
         # abstracted but has >=2 distinct foreign-domain crossings entering
@@ -975,6 +1009,7 @@ def _analyze_module_and_report(
                 boundaries=boundaries,
                 max_depth=clock_trace_depth,
                 scan_mode_flops=scan_mode_flops,
+                case_analysis=spec.case_analysis,
             )
         # FIX 2 (now an error): every declined/opaque blackbox (multi-clock /
         # unresolved per FIX 1) is a coverage gap — its zero-cell internals
@@ -1022,6 +1057,20 @@ def _analyze_module_and_report(
                         "port is captured in more than one internal clock domain, "
                         "which a single boundary sink cannot represent. Flatten it "
                         "or split the port "
+                        f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
+                    )
+                elif cell.type in comp_stats.undirected_primitive_modules:
+                    # rtl-buddy-cdc#344: registered as a synchroniser primitive, but the
+                    # primitive path needs to know which clock pin is the
+                    # destination and could not tell. Declining is the
+                    # safe outcome; say why so the promise of
+                    # ``--sync-primitive`` ("no CDC-BBX") is not a mystery.
+                    reason = (
+                        "left opaque — registered as a synchroniser primitive, "
+                        "but its destination clock pin could not be identified: "
+                        "with more than one clock pin, one must carry a `dest` / "
+                        "`dst` name hint, and it must trace to a declared clock. "
+                        "Rename the destination clock pin, or flatten it "
                         f"(waive {BBOX_RULE_ID} if intentionally not checked here)."
                     )
                 else:
@@ -1081,6 +1130,7 @@ def _analyze_module_and_report(
                 if pb.user_synchronised:
                     boundary_user_syncs.add(sink)
         async_crossings = _filter_async(crossings, spec)
+        sdc_coverage = sdc_objects.coverage(module, crossings, sdc_resolution, spec)
         # The tally the reporter prints. Counted on the SAME list the
         # rule pack is about to filter, so "N suppressed" and "N fewer
         # crossings checked" are the same N by construction.
@@ -1158,6 +1208,20 @@ def _analyze_module_and_report(
             locate=lambda v: _violation_source_ref(module, v),
             instance_scope=lambda v: _waiver_instance_scope(module, blackboxes, v),
         )
+    # Object-scoped set_false_path (#328): a finding the constraint
+    # declares reviewed moves to ``suppressed`` with the SDC statement as
+    # its justification — visible in every format, never exit-code
+    # driving. After the waivers, so an existing waiver keeps claiming
+    # the findings it already claimed.
+    if sdc_coverage:
+        violations, sdc_suppressed = sdc_objects.acknowledge(
+            module,
+            violations,
+            async_crossings,
+            sdc_coverage,
+            sdc_file=str(sdc_path) if sdc_path is not None else None,
+        )
+        suppressed.extend(sdc_suppressed)
 
     # --baseline filter: partition findings against a prior JSON report.
     # Carryover entries stay in the report (separate tally) but never
@@ -1233,6 +1297,7 @@ def _analyze_module_and_report(
             # After waivers / pragmas; baseline carry-over is still a
             # raised finding (it only stops driving the exit code).
             findings=[*violations, *baseline_carryover] if rules_ran else None,
+            crossing_exceptions=sdc_objects.domain_map_exceptions(sdc_coverage),
         )
         # Create the parent dir (#245): an emit target under an
         # uncommitted dir like ``.rtl-buddy/overlays/`` would otherwise
@@ -1246,16 +1311,19 @@ def _analyze_module_and_report(
         flop_clocks = {fd.flop.cell.name: fd.clock for fd in domains}
         reset_domains_map = assign_reset_domains(module)
         polarity_overrides = user_reset_polarity_overrides(module, hints=reset_hints)
+        # One reset classification for all three consumers (#324).
         recognised_syncs = find_reset_synchronizers(
             module,
             flop_clocks,
             extra_synchronizers=user_reset_sync_flop_names(module, hints=reset_hints),
+            reset_domains=reset_domains_map,
         )
         reset_crossings = find_reset_crossings(
             module,
             flop_clocks,
             recognised_syncs=recognised_syncs,
             polarity_overrides=polarity_overrides,
+            reset_domains=reset_domains_map,
         )
         reset_payload = build_reset_domain_map(
             module,

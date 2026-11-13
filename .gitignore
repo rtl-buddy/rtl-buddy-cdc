@@ -14,3 +14,6 @@ coverage.xml
 
 # workflow scratch (issue #263 run) — never committed
 .wf263/
+
+# gate-level corpus build cache (tests/test_gate_level_corpus.py)
+tests/.gate_level_cache/

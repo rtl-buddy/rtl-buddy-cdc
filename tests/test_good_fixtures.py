@@ -24,6 +24,10 @@ FIX_ROOT = Path(__file__).parent / "fixtures"
 # crossing path on each fixture.
 GOOD_FIXTURES = [
     ("good_2ff_sync", 1),
+    # 2FF sync whose LAST stage is exported to a port and also feeds a
+    # two-register pipeline: the tap ends the chain at depth 2, so no
+    # CDC-018 cascade either (rtl-buddy-cdc#344).
+    ("good_exported_sync_stage", 1),
     ("good_registered_before_sync", 1),
     ("good_registered_source", 1),
     ("good_reset_sync", 1),
@@ -37,6 +41,12 @@ GOOD_FIXTURES = [
     # set_false_path is equivalent to set_clock_groups -asynchronous
     # for CDC; 1 async crossing landing in a 2FF synchronizer.
     ("good_false_path_pair", 1),
+    # set_max_delay -datapath_only between two clocks marks the pair as an
+    # intended async crossing (#325); 1 crossing landing in a 2FF sync.
+    ("good_datapath_only_pair", 1),
+    # Port clk_a carries clk_a and clk_a2 (create_clock -add, #330); only
+    # clk_a2 is async to clk_b. Both directions cross through a 2FF sync.
+    ("good_multi_clock_port", 2),
     # set_input_delay -clock dst_clk types the data ports as same-
     # domain as the destination — CDC-006 must not fire.
     ("good_input_delay_domain", 0),
@@ -240,6 +250,25 @@ GOOD_FIXTURES = [
     # neither the D-pin crossing walk nor the SRST walk added in #272
     # can produce a finding. Single-clock — zero async crossings.
     ("good_typed_sync_reset", 0),
+    # CDC-024 (#323) positive shape: every top-level output carries a
+    # set_output_delay contract RELATED to its launch clock — the same
+    # clock, a virtual clock never declared async, a forwarded
+    # generated clock of the launch clock, and a second clock launching
+    # its own output. No internal crossings — the rule's subject is the
+    # external capture; tests/test_cdc_024_output_boundary.py pins that
+    # the rule really evaluates these contracts.
+    ("good_output_sync_contract", 0),
+    # CDC-025 (#329) positive shape for the asynchronous merge: the clk_a
+    # flag and the clk_b enable are each 2FF-synchronised into the other
+    # domain before they meet the output logic, so every output bit is
+    # launched from one domain. The two synchronised crossings are the
+    # two async crossings counted here.
+    ("good_output_async_merge_synced", 2),
+    # CDC-025 (#329) positive shape for the self-calibrating warning:
+    # every data output carries a set_output_delay contract (the
+    # mixed-domain pair split into one port per domain); the clock,
+    # constant and feed-through outputs need none. No crossings.
+    ("good_output_contracts_complete", 0),
 ]
 
 

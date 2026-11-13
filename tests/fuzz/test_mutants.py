@@ -71,9 +71,12 @@ def _canonical_parents() -> list:
     Mutating one parent per template gives sufficient coverage of
     the xeno operators' site enumeration — additional parents in a
     template's sweep differ only in SDC clock periods, which the
-    SV-only mutators don't see. Keeping the parent set at 35
-    bounds the CI cost at a few hundred mutant cases instead of
-    a few thousand.
+    SV-only mutators don't see. Keeping the parent set at one per
+    family (46 since rtl-buddy-cdc#331) bounds the CI cost at a few
+    hundred mutant cases instead of a few thousand. The #331
+    per-rule templates sweep structural dimensions too, but their
+    first case is always a firing one, so each family's parent
+    carries its rule's bug.
     """
     seen: dict[str, object] = {}
     for case in collect_cases():

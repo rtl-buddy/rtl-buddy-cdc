@@ -51,6 +51,13 @@ violation's *source location* instead of the three strings above,
 because its scope is a region of that file, not a name pattern. The
 region is ``[start_line, end_line)``, open-ended to the end of the
 file when no ``enable-rule`` closed it.
+
+A third producer reuses the same record without going through
+:func:`apply`: an object-scoped ``set_false_path`` in the SDC that
+covers a crossing acknowledges the findings a quasi-static source would
+not raise (rtl-buddy-cdc#328, :mod:`rtl_buddy_cdc.sdc_objects`). Such a
+:class:`Waiver` carries an :class:`SdcJustification` naming the
+statement, so reporters show the constraint as the reason.
 """
 
 from __future__ import annotations
@@ -72,6 +79,21 @@ from rtl_buddy_cdc.rules import Violation
 _LEGACY_RULE_ALIASES: dict[str, str] = {
     "CDC-007": "RDC-001",
 }
+
+
+@dataclass(frozen=True)
+class SdcJustification:
+    """The SDC statement behind a suppression (rtl-buddy-cdc#328).
+
+    ``statement`` is the constraint re-rendered canonically (identical
+    on both SDC backends); ``line`` is its line in ``file`` when the
+    reader tracked one (the Tcl backend does, the tokenizer does not);
+    ``file`` is the ``--sdc`` path as given.
+    """
+
+    statement: str
+    line: int | None = None
+    file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +121,11 @@ class Waiver:
     # ``apply``). ``None`` means "anywhere in the hierarchy" — every
     # waiver written before the ``inst:`` form existed.
     inst_regex: re.Pattern[str] | None = None
+    # Set when the suppression is an SDC exception rather than a waiver
+    # or pragma (rtl-buddy-cdc#328). ``origin`` / ``start_line`` /
+    # ``end_line`` are then ``None`` and ``source_line`` is the SDC line
+    # (``0`` when the reader tracked none).
+    sdc: SdcJustification | None = None
 
 
 # The ``inst:`` scope prefix on a waiver-file word (#327).
