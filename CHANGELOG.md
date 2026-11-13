@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Simulation oracle for CDC-004 and CDC-005** (rtl-buddy-cdc#331) — *test-only,
+  no output change.* `tests/sim/test_multibit_oracle.py` adds seven
+  DUTs, each checked on one source file by both the analyzer and an
+  Icarus run with per-lane metastability injection: a binary counter
+  through an ungated 4-bit 2FF (CDC-004 fires, simulation sees samples
+  the counter never held), its gray-coded and req/ack-handshake fixes
+  (silent, never incoherent), one bit fanned out to two recombined 2FF
+  chains and a one-hot state crossing one bit per 2FF (CDC-005, plus
+  CDC-020 for the one-hot register; simulation sees pairs the source
+  never presented), and their sync-once / encode-to-one-bit fixes. The
+  new `tb_bus_crossing.sv` scoreboard counts destination values not
+  held by the source within a latency window; eight fixed seed / clock
+  configurations per DUT. The analyzer half reads committed netlists
+  (built with plain-flop stand-ins, `meta_flop_synth.sv`), so it runs
+  without Yosys or Icarus. Analyzer and simulation agree on all seven.
+
 - **Gate-level fixture corpus** (#331) — *test-only, no output change.*
   `tests/test_gate_level_corpus.py` rebuilds every fixture through two
   Yosys gate flows (`techmap`, and `opt_dff; techmap; abc`) and asserts
