@@ -283,6 +283,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Text report printed an empty title for 13 rules** (rtl-buddy-cdc#355).
+  `CDC-009` … `CDC-013`, `CDC-018` … `CDC-021`, `RDC-006` … `RDC-008`
+  and `CDC-BBX` had no entry in the reporter's rule-title table, so the
+  text report's group header read `CDC-018 —` and the SARIF rule
+  `shortDescription` fell back to the bare rule id. Every rule now has
+  a one-line title in the README's wording, and a test fails if a rule
+  is registered without one.
+
 - **RDC-006 fired on a constant-leg mux driving an async reset**
   (rtl-buddy-cdc#354). A `$mux` / `$_MUX_` (or `$pmux`) whose data legs
   are all constants, such as the `rst_n ? 1'b0 : 1'b1` Yosys builds for
