@@ -17,6 +17,7 @@ from rtl_buddy_cdc import (
     render as render_mod,
     reporter,
     sdc as sdc_mod,
+    sdc_objects,
     waivers as waivers_mod,
 )
 from rtl_buddy_cdc.abstract import instance_clock_pins
@@ -830,6 +831,9 @@ def _analyze_module_and_report(
     # ``--no-findings``) — the domain map says "not checked" otherwise.
     rules_ran = False
     rule_ctx_kwargs: dict[str, Any] = {"max_depth": clock_trace_depth}
+    # Crossings an object-scoped SDC constraint fully covers (#328).
+    # Empty for every SDC without one, which leaves every report as it was.
+    sdc_coverage: dict[sdc_objects.CrossingKey, sdc_objects.CrossingCoverage] = {}
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
         # Synthesize sentinel entries for input ports the SDC didn't
@@ -845,6 +849,12 @@ def _analyze_module_and_report(
         # set_case_analysis targets that name no input port (#325) — the
         # tracer ignores them, so say so through the same channel.
         spec.partial_warnings.extend(case_analysis_warnings(module, spec.case_analysis))
+        # Object-scoped set_false_path / set_max_delay -datapath_only
+        # endpoints (#328): resolved against the netlist once, here, so a
+        # pattern that names nothing is reported with the other SDC
+        # diagnostics.
+        sdc_resolution = sdc_objects.resolve(module, spec)
+        spec.partial_warnings.extend(sdc_resolution.warnings)
         if spec.partial_warnings and fmt is OutputFormat.text and not no_findings:
             for w in spec.partial_warnings:
                 typer.echo(f"warning: {sdc_path}: {w}", err=True)
@@ -1058,6 +1068,7 @@ def _analyze_module_and_report(
                 if pb.user_synchronised:
                     boundary_user_syncs.add(sink)
         async_crossings = _filter_async(crossings, spec)
+        sdc_coverage = sdc_objects.coverage(module, crossings, sdc_resolution, spec)
         # The tally the reporter prints. Counted on the SAME list the
         # rule pack is about to filter, so "N suppressed" and "N fewer
         # crossings checked" are the same N by construction.
@@ -1120,6 +1131,20 @@ def _analyze_module_and_report(
             waivers,
             locate=lambda v: _violation_source_ref(module, v),
         )
+    # Object-scoped set_false_path (#328): a finding the constraint
+    # declares reviewed moves to ``suppressed`` with the SDC statement as
+    # its justification — visible in every format, never exit-code
+    # driving. After the waivers, so an existing waiver keeps claiming
+    # the findings it already claimed.
+    if sdc_coverage:
+        violations, sdc_suppressed = sdc_objects.acknowledge(
+            module,
+            violations,
+            async_crossings,
+            sdc_coverage,
+            sdc_file=str(sdc_path) if sdc_path is not None else None,
+        )
+        suppressed.extend(sdc_suppressed)
 
     # --baseline filter: partition findings against a prior JSON report.
     # Carryover entries stay in the report (separate tally) but never
@@ -1220,6 +1245,7 @@ def _analyze_module_and_report(
             # After waivers / pragmas; baseline carry-over is still a
             # raised finding (it only stops driving the exit code).
             findings=[*violations, *baseline_carryover] if rules_ran else None,
+            crossing_exceptions=sdc_objects.domain_map_exceptions(sdc_coverage),
         )
         # Create the parent dir (#245): an emit target under an
         # uncommitted dir like ``.rtl-buddy/overlays/`` would otherwise

@@ -412,7 +412,14 @@ def _waiver_provenance(w: Waiver) -> str:
     clickable and unambiguous against the waiver-file form. A pragma
     closed by an ``enable-rule`` renders its whole block as
     ``src.sv:42-58``, so a block-scoped suppression is visibly
-    narrower than one that runs to the end of the file."""
+    narrower than one that runs to the end of the file. A finding an
+    SDC false path acknowledged (#328) renders as ``sdc <file>:<line>``
+    (the file / line parts drop out when unknown)."""
+    if w.sdc is not None:
+        where = w.sdc.file or ""
+        if w.sdc.line is not None:
+            where = f"{where}:{w.sdc.line}" if where else f"line {w.sdc.line}"
+        return f"sdc {where}" if where else "sdc"
     if w.origin is None:
         return f"waiver line {w.source_line}"
     if w.end_line is not None:
@@ -423,7 +430,12 @@ def _waiver_provenance(w: Waiver) -> str:
 def _render_suppressed(result: AnalysisResult, out: IO[str], s: _Style) -> None:
     if not result.suppressed:
         return
-    out.write(f"\n{s.bold}Suppressed by waivers{s.reset} ({len(result.suppressed)})\n")
+    # The heading only grows when an SDC exception is among them (#328),
+    # so a waiver-only report is unchanged.
+    title = "Suppressed by waivers"
+    if any(sup.waiver.sdc is not None for sup in result.suppressed):
+        title = "Suppressed by waivers and SDC exceptions"
+    out.write(f"\n{s.bold}{title}{s.reset} ({len(result.suppressed)})\n")
     for sup in result.suppressed:
         rule_id = sup.violation.rule_id
         reason = sup.waiver.reason or "(no reason given)"
@@ -517,23 +529,7 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
         "suppressed": [
             {
                 **_violation_to_dict(s.violation, result.module),
-                "waiver": {
-                    "rule_pattern": s.waiver.rule_pattern,
-                    "regex": s.waiver.regex.pattern,
-                    "reason": s.waiver.reason,
-                    # ``source_line`` is a line in ``origin`` when that
-                    # is set (an in-RTL pragma), else in the --waivers
-                    # file. ``origin`` / ``end_line`` are added keys, so
-                    # a consumer that ignores them keeps reading the old
-                    # shape. ``end_line`` closes the pragma's half-open
-                    # ``[source_line, end_line)`` block; null means the
-                    # pragma runs to the end of its file (and is always
-                    # null for a waiver-file entry, which has no line
-                    # scope).
-                    "source_line": s.waiver.source_line,
-                    "origin": s.waiver.origin,
-                    "end_line": s.waiver.end_line,
-                },
+                "waiver": _waiver_to_dict(s.waiver),
             }
             for s in result.suppressed
         ],
@@ -543,6 +539,35 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
     }
     json.dump(payload, out, indent=2)
     out.write("\n")
+
+
+def _waiver_to_dict(w: Waiver) -> dict[str, object]:
+    out: dict[str, object] = {
+        "rule_pattern": w.rule_pattern,
+        "regex": w.regex.pattern,
+        "reason": w.reason,
+        # ``source_line`` is a line in ``origin`` when that
+        # is set (an in-RTL pragma), else in the --waivers
+        # file. ``origin`` / ``end_line`` are added keys, so
+        # a consumer that ignores them keeps reading the old
+        # shape. ``end_line`` closes the pragma's half-open
+        # ``[source_line, end_line)`` block; null means the
+        # pragma runs to the end of its file (and is always
+        # null for a waiver-file entry, which has no line
+        # scope).
+        "source_line": w.source_line,
+        "origin": w.origin,
+        "end_line": w.end_line,
+    }
+    if w.sdc is not None:
+        # Additive (#328): present only on a finding an SDC false path
+        # acknowledged — never on a waiver-file / pragma entry.
+        out["sdc"] = {
+            "statement": w.sdc.statement,
+            "line": w.sdc.line,
+            "file": w.sdc.file,
+        }
+    return out
 
 
 def _by_instance(violations: list[Violation]) -> list[dict]:
