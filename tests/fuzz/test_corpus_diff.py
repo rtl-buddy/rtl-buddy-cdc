@@ -90,23 +90,15 @@ _CASES = collect_cases()
 # ``_alias_indexed_assign`` for the three lowering additions.
 # rtl-buddy-cdc#224 closed alongside them.
 #
-# rtl-buddy-cdc#331 added four rows with the per-rule templates. Three
-# were slang-frontend gaps closed by rtl-buddy-cdc#345: the
+# rtl-buddy-cdc#331 added four rows with the per-rule templates; all are
+# gone. Three were slang-frontend gaps closed by rtl-buddy-cdc#345: the
 # ``cdc022_primitive_sync_depth`` and ``cdc_bbx_blackbox_boundary``
 # families (no blackbox support: a ``(* blackbox *)`` stub elaborated as
 # an empty module) and ``fuzz_cdc023_clock_combine_and_s1_v2001`` (plain
-# ``always @(posedge clk)`` blocks were dropped). The remaining row is the
-# reverse direction (the Yosys path is the one that misses).
-_KNOWN_SLANG_PARITY_GAPS: dict[str, str] = {
-    # The reverse direction: slang is right, the Yosys path misses.
-    # Yosys proc lowers a full 8-entry constant case table to a ROM
-    # ($memrd_v2); CDC-019 accepts only a comb cell's Y port as the shared
-    # decoder driver. slang keeps the $pmux and fires.
-    "fuzz_cdc019_decoder_lanes_case_n8": (
-        "rtl-buddy-cdc#331: Yosys ROM-lowers the case decoder; CDC-019 "
-        "ignores a $memrd DATA driver"
-    ),
-}
+# ``always @(posedge clk)`` blocks were dropped). The fourth,
+# ``fuzz_cdc019_decoder_lanes_case_n8``, was a Yosys-path CDC-019 miss
+# on a ROM-lowered decoder, fixed by rtl-buddy-cdc#344.
+_KNOWN_SLANG_PARITY_GAPS: dict[str, str] = {}
 
 
 pytestmark = [

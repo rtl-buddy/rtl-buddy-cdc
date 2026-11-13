@@ -105,19 +105,10 @@ The suite records two kinds of known-wrong result:
 - **`gap_note`** on a case whose expectation encodes today's verdict
   although it is believed wrong. When the analyzer is fixed the case
   fails and the note explains why. Cases added for #331:
-  - `cdc018_chain_depth_d6_tapport2`: a chain stage read by a top-level
-    output port still counts as a chain stage, so CDC-018 fires.
-  - `cdc019_decoder_lanes_case_n8`: Yosys lowers the 8-way case decoder
-    to a ROM, and CDC-019 misses it (also on the differential allowlist).
   - `cdc019_decoder_lanes_perbit_n{2,4}`: a decoder written one bit at a
     time is not seen as shared (documented scope).
   - `rdc008_primary_reset_asymmetric_chain_bus2`: one 2-bit register
     counts as one consumer.
-  - `cdc_bbx_blackbox_boundary_clock_output`: CDC-008 also reports the
-    stub's own clock output pin.
-  - `cdc_bbx_blackbox_boundary_multiclk_wr_rd_registered`: a primitive
-    registered with `--sync-primitive` whose clock pins carry no
-    `src` / `dest` hint is still reported as CDC-BBX.
 - **`_KNOWN_SLANG_PARITY_GAPS`** in `test_corpus_diff.py` for a
   Yosys/slang disagreement. Keys are template families or single case
   ids. The list is strict both ways: an allowlisted case that agrees
@@ -125,8 +116,8 @@ The suite records two kinds of known-wrong result:
   those cases by id or split the family by verdict (`cdc022_*` /
   `cdc022_*_ok`). The CDC-022, CDC-BBX and plain-`always` rows #331
   added were closed by #345 (pyslang blackbox support and plain `always`
-  lowering); the CDC-019 `case_n8` row, where the Yosys path is the one
-  that misses, remains.
+  lowering), and the CDC-019 `case_n8` row, where the Yosys path was the
+  one that missed, by #344. The list is empty today.
 
 ### Gate-level corpus
 
