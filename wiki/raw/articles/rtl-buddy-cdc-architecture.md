@@ -116,6 +116,8 @@ without one the tool prints the structural summary and exits 0.
 | `frontends/yosys.py` | Yosys frontend: shell out to `yosys` then `netlist.load` the JSON | `elaborate`, `YosysError` |
 | `frontends/slang.py` | slang frontend: elaborate SystemVerilog via pyslang directly | `elaborate`, `SlangFrontendUnavailable`, `SlangElaborationError` |
 | `netlist.py` | Parse Yosys `write_json` output into typed structs | `Module`, `Cell`, `Port`, `Netname`, `BoundarySummary`, `PortBoundary` |
+| `regroup.py` | Loader normalisation: rebuild bit-blasted gate-level registers (and the lane-wise logic in front of them) as wide coarse cells (rtl-buddy-cdc#337) | `regroup_flops`, `REGROUPED_ATTR`, `ORPHAN_ATTR` |
+| `gate_eval.py` | Truth tables of small combinational cones (functional gray recognition on gate netlists) | `cone_tables` |
 | `flops.py` | Recognise the 11 Yosys FF cell variants and extract CLK / D / Q | `Flop`, `FF_CELL_TYPES` |
 | `domain.py` | Trace clock roots, find flop→flop crossings | `FlopDomain`, `Crossing`, `trace_clock_root`, `find_crossings` |
 | `abstract.py` | Detect + summarise single-clock subtrees to a port boundary (#256) | `is_single_clock_subtree`, `summarise_subtree` |
@@ -250,6 +252,49 @@ the upstream flop (see `user_sync_flop_names` and
 *port*-scoped instead — `reset_polarity` (§8, RDC-002) and the
 scan-mode set (§8.20) — because what they declare is a property of the
 external pin, not of a producing flop.
+
+### 4.1.1 Gate-level registers are regrouped at load (rtl-buddy-cdc#337)
+
+After `techmap` / `abc` a W-bit register is W one-bit `$_DFF_*`
+cells, and every rule that reasons about a bus (CDC-004 / 012 / 019 /
+020, the gated- and gray-bus acceptances, CDC-014's width guard) keys
+on one flop cell carrying the bus. `netlist.load_with_blackboxes` runs
+`regroup.regroup_flops` on every module it parses, so the analyzer —
+crossing enumeration, abstraction and the rule pack alike — sees the
+shape `proc` would have produced:
+
+- **Registers.** Gate flops are grouped by their `Q` bits' owner
+  netname (public, ≥ 2 bits; the narrowest wins, so a concatenating
+  wire never merges two registers; a port name is passed over when the
+  bit has a name of its own; `splitnets`-style `q[3]` names are
+  rebuilt into `q`) and split by control key: family, clock net and
+  edge, reset / set / load / enable nets and polarities, and the
+  cell's `src` (the `always` block). Each group of ≥ 2 lanes becomes
+  one coarse cell (`$dff` / `$adff` / `$dffe` / `$adffe` / `$sdff*` /
+  `$dffsr*` / `$aldff*`) named after the netname, lanes in netname
+  order, per-bit reset values in `ARST_VALUE` / `SRST_VALUE`. The cell
+  carries `REGROUPED_ATTR` listing the replaced cells.
+- **Lane-wise logic.** From each rebuilt register's `D`, a vector whose
+  bits are the outputs of distinct one-bit gates of one type
+  (`$_MUX_` with one shared `S`, `$_AND_` / `$_OR_` / `$_XOR_` /
+  `$_XNOR_` / `$_NOT_` / `$_BUF_`) is rebuilt as the equivalent wide
+  `$mux` / `$and` / … / `$pos`, recursively. That restores the enable
+  and sync-reset muxes and the gray encoder's `$xor` exactly.
+- **Not regrouped.** Coarse cells are never touched (an RTL netlist is
+  returned unchanged). A flop with no qualifying netname, or a bit of a
+  register whose name names one flop twice (merged bits), stays one bit
+  wide; if it also has no one-bit name of its own it is tagged
+  `ORPHAN_ATTR`, and CDC-004 reports orphans of one `always` block that
+  cross together as a possible bus (`warning`) rather than letting W
+  clean one-bit chains go silent.
+
+Where synthesis re-derived the logic (`abc`), two rule helpers fall back
+to the gate-level form: `_is_gray_encoded_source` checks, by truth
+table (`gate_eval.cone_tables`, ≤ 10 leaves), whether a rebuilt
+register's `D` is the gray code of another register's `D` or `Q`; and
+CDC-019 groups one-bit gate drivers by the multi-bit netname their
+outputs share (§8.7). Both apply only to gate-level cells, so no
+RTL-level verdict depends on them.
 
 ### 4.2 Flop recognition
 
@@ -1711,6 +1756,12 @@ captures "the user has handled the multi-bit coherence" for the
 whole decoder. Suppression when the immediate driver is itself a
 flop is structural: chained registers are CDC-001 / CDC-002's
 territory.
+
+On a gate-level netlist the decoder is one gate per lane, so no driver
+has ≥2 output bits. A lane whose driver is a one-bit gate-level cell
+(`$_*`) is grouped instead by the narrowest public multi-bit netname
+holding its `D` bit — the decoder's output vector (`one_hot`), which
+survives `techmap` and `abc` (rtl-buddy-cdc#337).
 
 ### 8.8 CDC-021 — flop CLK driven by undeclared port
 

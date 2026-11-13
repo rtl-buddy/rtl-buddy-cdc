@@ -178,6 +178,16 @@ def _is_blackbox(raw: dict) -> bool:
 
 
 def _parse_module(name: str, raw: dict, *, is_blackbox: bool) -> Module:
+    """One raw Yosys-JSON module, with bit-blasted gate-level flops
+    regrouped into their registers (:func:`regroup.regroup_flops`,
+    rtl-buddy-cdc#337; a no-op on a coarse netlist)."""
+    # Imported here: ``regroup`` builds ``Cell`` / ``Module`` from this module.
+    from rtl_buddy_cdc.regroup import regroup_flops
+
+    return regroup_flops(_parse_raw_module(name, raw, is_blackbox=is_blackbox))
+
+
+def _parse_raw_module(name: str, raw: dict, *, is_blackbox: bool) -> Module:
     ports = {
         pn: Port(name=pn, direction=pd["direction"], bits=_bits(pd["bits"]))
         for pn, pd in raw.get("ports", {}).items()

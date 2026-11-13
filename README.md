@@ -543,6 +543,7 @@ Implemented:
 - [x] `(* cdc_sync *)`, `(* cdc_gray *)`, and `(* cdc_static *)` SV-attribute support
 - [x] XPM CDC macro recognition (`xpm_cdc_*` family recognised by module name as synchronisers; `--sync-primitive` for site-local macros; CDC-022 checks the `DEST_SYNC_FF` depth parameter; uppercase `(* ASYNC_REG *)` case-fold — rtl-buddy-cdc#275)
 - [x] Gray-coded bus recognition for CDC-004 (canonical `g = b ^ (b >> 1)` structural detection + multi-bit 2FF chain at the destination)
+- [x] **Gate-level buses** (rtl-buddy-cdc#337) — on a `techmap` / `abc` netlist the loader regroups the one-bit `$_DFF_*` cells of each register into one wide flop, by the register's surviving multi-bit netname (or `splitnets`-style `q[3]` names) plus matching clock / reset / enable / `always` block, and rebuilds the lane-wise enable muxes and gray XORs in front of it, so the bus rules (CDC-004 / 012 / 019 / 020, gated- and gray-bus acceptance) reach their RTL verdict. A gray code `abc` re-derived is recognised by truth table. Bits whose register name was lost stay one-bit, and CDC-004 reports them as a possible bus (`warning`) instead of going silent.
 - [x] Paired positive (`good_*`) fixtures for every implemented rule
 - [x] rtl-buddy `rb cdc` / `rb cdc-regression` integration (lives in the rtl_buddy repo)
 - [x] Configurable CDC-002 sync depth via `--sync-depth N` (also accepted as `sync-depth:` under `cfg-cdc-tools` opts)

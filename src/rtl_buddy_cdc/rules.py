@@ -30,6 +30,7 @@ from rtl_buddy_cdc.flops import (
     is_ff_cell,
     is_latch_cell,
 )
+from rtl_buddy_cdc.gate_eval import cone_tables
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.primitives import (
     is_sync_primitive,
@@ -37,6 +38,7 @@ from rtl_buddy_cdc.primitives import (
     normalise_type as normalise_primitive_type,
     sync_depths as primitive_sync_depths,
 )
+from rtl_buddy_cdc.regroup import ORPHAN_ATTR, REGROUPED_ATTR
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.reset_hints import ResetHints
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
@@ -1855,6 +1857,77 @@ def _is_gray_encoded_source(
                     if isinstance(b, int):
                         nxt.append((b, depth + 1))
         frontier = nxt
+    if REGROUPED_ATTR in src_flop.cell.attributes:
+        return _is_functional_gray_source(module, src_flop, drivers)
+    return False
+
+
+def _is_functional_gray_source(
+    module: Module,
+    src_flop: Flop,
+    drivers: dict[Bit, tuple[str, str, int]],
+    max_candidates: int = 8,
+) -> bool:
+    """Gate-level fallback of :func:`_is_gray_encoded_source`
+    (rtl-buddy-cdc#337): ``src_flop``'s ``D`` *computes* the gray code
+    of another register's ``D`` or ``Q`` vector ``v`` —
+    ``D[i] == v[i] ^ v[i+1]`` and ``D[N-1] == v[N-1]`` as functions —
+    whatever gates synthesis built it from.
+
+    ``abc`` re-derives ``bin_next ^ (bin_next >> 1)`` straight from the
+    binary register (``g[0] = ~b[1]`` for an incrementer), so the
+    ``$xor`` the structural detector keys on is gone while the function
+    is not. ``v`` is looked for only among the registers whose ``Q``
+    feeds ``D``'s cone, and the cone must be small enough for
+    :func:`gate_eval.cone_tables`; anything else is "not gray". Only
+    consulted for a register :mod:`rtl_buddy_cdc.regroup` rebuilt from
+    gate-level flops, so an RTL-level netlist's verdict never depends on
+    it.
+    """
+    d = tuple(src_flop.d)
+    n = len(d)
+    if n < 2 or not all(isinstance(b, int) for b in d):
+        return False
+    cone = cone_tables(module, [d], drivers)
+    if cone is None:
+        return False
+    # Registers whose Q is a leaf of D's cone (the leaves are exactly the
+    # cone bits with no comb driver).
+    regs: list[str] = []
+    stack: list[Bit] = list(d)
+    seen: set[Bit] = set()
+    while stack and len(regs) < max_candidates:
+        bit = stack.pop()
+        if not isinstance(bit, int) or bit in seen:
+            continue
+        seen.add(bit)
+        drv = drivers.get(bit)
+        if drv is None:
+            continue
+        cell = module.cells[drv[0]]
+        if drv[1] == "Q":
+            if cell.name != src_flop.cell.name and cell.name not in regs:
+                regs.append(cell.name)
+            continue
+        if drv[1] != "Y":
+            continue  # a blackbox output: a leaf, like a port
+        for pin, bits in cell.connections.items():
+            if pin not in _OUTPUT_PINS:
+                stack.extend(bits)
+    for name in regs:
+        cell = module.cells[name]
+        for pin in ("D", "Q"):
+            v = tuple(cell.connections.get(pin, ()))
+            if len(v) != n:
+                continue
+            tables = cone_tables(module, [d, v], drivers)
+            if tables is None:
+                continue
+            dt, vt = tables
+            if dt[n - 1] == vt[n - 1] and all(
+                dt[i] == vt[i] ^ vt[i + 1] for i in range(n - 1)
+            ):
+                return True
     return False
 
 
@@ -1954,9 +2027,12 @@ def check_cdc_004(
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
+    orphan_lanes: list[Crossing] = []
 
     for c in crossings:
         if c.width <= 1:
+            if c.src_flop is not None and ORPHAN_ATTR in c.src_flop.cell.attributes:
+                orphan_lanes.append(c)
             continue
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_grays:
             # Explicit user assertion of gray-coding.
@@ -1995,7 +2071,65 @@ def check_cdc_004(
                 cell_name=c.dst_flop.cell.name,
             )
         )
+    violations.extend(_orphan_bus_violations(module, orphan_lanes, ctx))
     return violations
+
+
+def _orphan_bus_violations(
+    module: Module, lanes: list[Crossing], ctx: _RuleContext
+) -> list[Violation]:
+    """CDC-004's conservative fallback for gate-level flops that
+    :mod:`rtl_buddy_cdc.regroup` could not rebuild into a register
+    (tagged :data:`~rtl_buddy_cdc.regroup.ORPHAN_ATTR`: no surviving
+    netname, or bits synthesis merged; rtl-buddy-cdc#337).
+
+    Without the register, a bus whose bits each pass a 2FF synchroniser
+    is W clean one-bit crossings — the CDC-004 bug, silenced. Orphans
+    assigned in the same ``always`` block (the cell's ``src``) that
+    cross between the same two domains are reported as one possible
+    bus instead, unless every lane is load-gated in the destination
+    domain (:func:`_is_gated_bus_crossing`). Gray coding cannot be
+    recognised without the register, so it is not an exemption.
+    ``warning``, not ``error``: the grouping is a guess — two scalar
+    registers of one block whose names were both lost look the same.
+    """
+    groups: dict[tuple[str, str, str], dict[str, Crossing]] = {}
+    for c in lanes:
+        assert c.src_flop is not None
+        src = c.src_flop.cell.attributes.get("src")
+        if not src:
+            continue
+        key = (src, c.src_clock, c.dst_clock)
+        groups.setdefault(key, {}).setdefault(c.src_flop.cell.name, c)
+    out: list[Violation] = []
+    for (_src, src_clock, dst_clock), by_src in sorted(groups.items()):
+        if len(by_src) < 2:
+            continue
+        group = [by_src[name] for name in sorted(by_src)]
+        if all(
+            _is_gated_bus_crossing(module, c, ctx.domains, ctx.bit_drivers)
+            for c in group
+        ):
+            continue
+        first = group[0]
+        out.append(
+            Violation(
+                rule_id="CDC-004",
+                severity="warning",
+                message=(
+                    f"possible unprotected bus crossing on {src_clock} → "
+                    f"{dst_clock}: {len(group)} one-bit gate-level flops "
+                    f"assigned in one block cross independently, and their "
+                    f"register could not be rebuilt from the netlist's names, "
+                    f"so gating or gray-coding cannot be checked "
+                    f"(src: {', '.join(sorted(by_src)[:4])}"
+                    f"{', …' if len(group) > 4 else ''})"
+                ),
+                crossing=first,
+                cell_name=first.dst_flop.cell.name,
+            )
+        )
+    return out
 
 
 def check_cdc_005(
@@ -4746,6 +4880,33 @@ def check_cdc_017(
     return violations
 
 
+# CDC-019 group key of a bit-blasted decoder: its output vector's netname.
+_NET_GROUP_PREFIX = "\0net:"
+
+
+def _decoder_desc(group: str) -> str:
+    if group.startswith(_NET_GROUP_PREFIX):
+        name = group[len(_NET_GROUP_PREFIX) :]
+        return f"the bit-blasted comb logic driving {name!r}"
+    return f"comb cell {group}"
+
+
+def _bit_vector_names(module: Module) -> dict[Bit, str]:
+    """Each net bit -> the narrowest public multi-bit netname holding it
+    (ties broken by name). One pass over the netnames."""
+    best: dict[Bit, tuple[int, str]] = {}
+    for nn in module.netnames.values():
+        if len(nn.bits) < 2 or nn.name.startswith("$"):
+            continue
+        rank = (len(nn.bits), nn.name)
+        for b in nn.bits:
+            if isinstance(b, int):
+                cur = best.get(b)
+                if cur is None or rank < cur:
+                    best[b] = rank
+    return {b: name for b, (_n, name) in best.items()}
+
+
 def check_cdc_019(
     module: Module,
     crossings: list[Crossing],
@@ -4802,6 +4963,7 @@ def check_cdc_019(
     # multiple crossings to the same dst clock.
     groups: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
     suppressed_groups: set[tuple[str, str]] = set()
+    vector_of: dict[Bit, str] | None = None  # built on first gate-level lane
 
     for crossing in crossings:
         if crossing.src_flop is None:
@@ -4827,9 +4989,21 @@ def check_cdc_019(
         # fan-out, not a one-hot decode.
         y_bits = drv_cell.connections.get("Y", ())
         int_y_bits = [b for b in y_bits if isinstance(b, int)]
+        group = drv_cell_name
         if len(int_y_bits) < 2:
-            continue
-        key = (drv_cell_name, crossing.dst_clock)
+            # Gate level (rtl-buddy-cdc#337): ``techmap`` / ``abc`` split
+            # the decoder into one gate per lane, but its output vector
+            # survives as a multi-bit netname (``one_hot``). Lanes whose
+            # one-bit gate drives a bit of the same vector share it.
+            if not drv_cell.type.startswith("$_"):
+                continue
+            if vector_of is None:
+                vector_of = _bit_vector_names(module)
+            vec = vector_of.get(src_d[0])
+            if vec is None:
+                continue
+            group = f"{_NET_GROUP_PREFIX}{vec}"
+        key = (group, crossing.dst_clock)
         # Suppression: any participating src flop tagged by the user.
         if (
             src_name in ctx.user_grays
@@ -4855,8 +5029,8 @@ def check_cdc_019(
                 rule_id="CDC-019",
                 severity="warning",
                 message=(
-                    f"independently-synced one-hot decode across CDC: comb "
-                    f"cell {driver} drives {len(src_names)} separate WIDTH=1 "
+                    f"independently-synced one-hot decode across CDC: "
+                    f"{_decoder_desc(driver)} drives {len(src_names)} separate WIDTH=1 "
                     f"source flops ({lane_desc}) that each cross independently "
                     f"to clock domain {dst_clock}. The shared decoder makes "
                     f"the lanes change together at the source, but each "
