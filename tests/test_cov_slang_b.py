@@ -196,12 +196,9 @@ def test_function_call_rhs_emits_unknown_driver(tmp_path: Path) -> None:
 # --- non-lowerable LHS: assignment site skipped ---------------------------
 
 
-def test_struct_member_lhs_is_skipped(tmp_path: Path) -> None:
-    """``q.a <= d`` writes a struct member — ``_lvalue_bits`` only
-    resolves NamedValue / ElementSelect / RangeSelect lvalues, so a
-    struct-member LHS returns ``None`` and the write is skipped. The
-    block contributes no flop (rather than emitting a malformed cell)
-    — the documented "other LHS shapes are skipped" contract."""
+def test_struct_member_lhs_lowers(tmp_path: Path) -> None:
+    """``q.a <= d`` writes a packed-struct member: resolved through the
+    field's bit offset (rtl-buddy-cdc#370), one flop on ``q``'s bits."""
     src = """
     typedef struct packed { logic [3:0] a; } s_t;
     module m (input logic clk, rst_n, input logic [3:0] d, output s_t q);
@@ -211,10 +208,24 @@ def test_struct_member_lhs_is_skipped(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _flop_count(mod) == 0, (
-        f"struct-member LHS should be skipped (no flop emitted); "
-        f"got {_flop_count(mod)} flops, cells {sorted(_cell_types(mod))}"
-    )
+    (flop,) = [c for c in mod.cells.values() if c.type == "$adff"]
+    assert flop.connections["Q"] == mod.ports["q"].bits
+    assert flop.connections["D"] == mod.ports["d"].bits
+
+
+def test_unresolvable_lhs_is_reported(tmp_path: Path, caplog) -> None:
+    """``{>>{q}} <= d`` (a streaming concatenation) has no lowering, so
+    the write contributes no flop — and says so with a WARNING rather
+    than vanishing (rtl-buddy-cdc#370)."""
+    src = """
+    module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
+        always_ff @(posedge clk) {>>{q}} <= d;
+    endmodule
+    """
+    with caplog.at_level("WARNING", logger="rtl_buddy_cdc.frontends.slang"):
+        mod = _elaborate(tmp_path, src)
+    assert _flop_count(mod) == 0
+    assert any("assignment not lowered" in r.getMessage() for r in caplog.records)
 
 
 # --- non-lowerable case-expr: conservative bail ---------------------------

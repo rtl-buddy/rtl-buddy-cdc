@@ -114,25 +114,40 @@ back into clk_a, equals the toggle; clk_b synchronises the toggle
 through three flops and captures both registers when s2 ^ s3. CDC-001
 fires on the flag on both frontends; the 8-bit bus is accepted."""
 
-[gaps.slang-concat-lvalue]
+[gaps.slang-comb-forward-read]
 kind = "frontend"
 rules = []
 summary = """
-The slang frontend drops any assignment whose target is a concatenation
-l-value ({a, b} <= ... / {c, s} = ...): _lvalue_bits has no
-ConcatenationExpression case, so the registers it writes vanish from
-the netlist. In a clocked block this is silent; in a combinational block
-it can surface as a 'procedural block not lowered' warning for the whole
-block. Downstream, the liveness pass removes logic that only fed the
-dropped registers, so whole synchronisers and crossings disappear (and
-CDC-026 can fire on a memory whose pointer crossing was dropped)."""
+On the slang path a value computed by a procedural combinational block
+(always @* / always_comb) does not reach logic that reads it earlier in
+source order. The frontend lowers such a block by re-pointing the
+written variable at its new driver; continuous assigns also re-point
+every cell built before them (rtl-buddy-cdc#326), procedural blocks do
+not, so an earlier reader keeps the variable's undriven placeholder.
+Combinational blocks are order-independent in the language and on the
+Yosys path."""
 reproducer = """
-A two-flop synchroniser written `always @(posedge clk_b) {q, meta} <=
-{meta, a_q};` with a_q a clk_a register: Yosys sees 3 flops and 1
-crossing; slang sees 0 flops and 0 crossings and reports PASS with no
-diagnostic. Writing the two stages as separate statements makes the
-frontends agree. Combinational variant: `always @* {carry, sum} = acc +
-inc;` drops the acc register on the slang path."""
+a_q is a clk_a register; `always @(posedge clk_b) begin s1 <= x; q <=
+s1; end` followed by `always @* x = a_q;`. Yosys: 3 flops, 1 crossing;
+slang: the s1 stage reads nothing, a_q is pruned, 0 crossings. Moving
+the always @* above the clocked block makes the frontends agree."""
+
+[gaps.slang-incomplete-comb-block]
+kind = "frontend"
+rules = []
+summary = """
+The slang frontend drops (with a 'procedural block not lowered'
+warning) a level-sensitive always block in which some variable is not
+assigned on every path, unless the block is the single `if (en) q = d;`
+latch shape. Yosys lowers the complete targets as combinational logic
+and infers a latch only for the incomplete one, so one scratch variable
+assigned under a condition costs every other output of the block on
+the slang path."""
+reproducer = """
+a_q is a clk_a register; `always @* begin x = a_q; if (v) t = a_q;
+end` with x captured by a two-flop clk_b synchroniser (t unused).
+Yosys: 3 flops, 1 crossing; slang: the block is dropped with a
+warning, 2 flops, 0 crossings."""
 
 # --- Designs -----------------------------------------------------------------
 
@@ -156,7 +171,7 @@ sources = [
 top = "async_fifo"
 sdc = "sdc/dpretet_async_fifo.sdc"
 expect = { clocks = ["wclk", "rclk"], crossings = 2, rules = { "CDC-004" = 2 } }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-concat-lvalue" }
+slang = { reads = true, matches_yosys = true }
 
 [[design.finding]]
 rule = "CDC-004"
@@ -238,13 +253,15 @@ sources = ["rtl/afifo.v"]
 top = "afifo"
 sdc = "sdc/zipcpu_afifo.sdc"
 expect = { clocks = ["i_wclk", "i_rclk"], crossings = 2, rules = {} }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = { "CDC-026" = 1 }, gap = "slang-concat-lvalue" }
+slang = { reads = true, matches_yosys = false, crossings = 2, rules = { "CDC-026" = 1 }, gap = "slang-comb-forward-read" }
 notes = """
 Clean on the Yosys path, as expected for a textbook gray-pointer FIFO.
-On the slang path the {wr_rgray, rgray_cross} / {rd_wgray, wgray_cross}
-synchroniser assignments are dropped, so both pointer crossings vanish
-and CDC-026 (false positive) fires on the RAM: no write-clock crossing
-reaches the read address cone any more."""
+On the slang path both pointer crossings are found (the packed
+{rd_wgray, wgray_cross} <= {wgray_cross, wgray} synchronisers lower
+since rtl-buddy-cdc#370), but CDC-026 fires on the RAM (false
+positive): the rd_addr register's enable reads lcl_read / lcl_rd_empty,
+which always @(*) blocks further down the file compute, so the
+synchronised write pointer never reaches the read address cone."""
 
 [[design]]
 name = "zipcpu_apbxclk"
@@ -262,7 +279,7 @@ sources = ["rtl/apbxclk.v"]
 top = "apbxclk"
 sdc = "sdc/zipcpu_apbxclk.sdc"
 expect = { clocks = ["S_APB_PCLK", "M_APB_PCLK"], crossings = 2, rules = { "CDC-024" = 7, "RDC-001" = 1, "RDC-008" = 1 } }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = { "CDC-024" = 7 }, gap = "slang-concat-lvalue" }
+slang = { reads = true, matches_yosys = true }
 
 [[design.finding]]
 rule = "CDC-024"
@@ -317,7 +334,19 @@ sources = ["rtl/ptp_clock_cdc.v"]
 top = "ptp_clock_cdc"
 sdc = "sdc/ptp_clock_cdc.sdc"
 expect = { clocks = ["input_clk", "output_clk", "sample_clk"], crossings = 9, rules = { "CDC-001" = 1, "CDC-012" = 3 } }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-concat-lvalue" }
+slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-incomplete-comb-block" }
+notes = """
+Both next-state always @* blocks (dest_* at line 358, ts_* at line 551)
+assign a scratch overflow variable (dest_ovf / ptp_ovf) only under a
+condition, so each is dropped with a warning, and with them every
+register that feeds the outputs; dead-logic pruning then removes the
+source and sample domains. The concatenation targets in those blocks
+({dest_update_next, dest_phase_next} = ..., ...) lower since
+rtl-buddy-cdc#370. The clocked block at line 429 also reads values the
+line-551 block computes (slang-comb-forward-read). Lowering both blocks
+and forward reads (an experiment, not shipped) reaches 28 of Yosys' 77
+flops and 3 of 9 crossings, so further, untriaged slang gaps remain
+behind these two."""
 
 [[design.finding]]
 rule = "CDC-001"
