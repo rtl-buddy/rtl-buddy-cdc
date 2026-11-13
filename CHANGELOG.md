@@ -228,6 +228,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `good_output_async_merge_synced` and `bad_output_missing_contract` /
   `good_output_contracts_complete`.
 
+- **Instance-scoped waivers** (#327) — a waiver line can carry an
+  `inst:<regex>` scope, alone (`waive CDC-002 inst:^u_ip(/|$) signed
+  off`) or after the object regex (`waive CDC-001 .*q.* inst:^u_a$`).
+  It is matched with `re.search`, like the object regex, against the
+  violation's `instance_path` joined with `/`; a top-level finding's
+  path is the empty string (`inst:^$`). A `CDC-BBX` finding, or one
+  lifted out of an analysed boundary module, is scoped to the blackbox
+  instance it names. Instance paths are now resolved before waivers are
+  applied, on every path. The JSON `suppressed[].waiver` object gains
+  an `inst_regex` key (`null` without a scope); nothing else in the
+  output changes. Existing waiver lines keep their meaning, except one
+  whose object regex or reason starts with a literal `inst:`.
+
 ### Changed
 
 - **Faster analysis on large flat netlists** (#324) — *patch: no

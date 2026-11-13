@@ -564,6 +564,8 @@ def _waiver_to_dict(w: Waiver) -> dict[str, object]:
         "source_line": w.source_line,
         "origin": w.origin,
         "end_line": w.end_line,
+        # ``inst:`` scope (#327); null when the line has none.
+        "inst_regex": (w.inst_regex.pattern if w.inst_regex is not None else None),
     }
     if w.sdc is not None:
         # Additive (#328): present only on a finding an SDC false path

@@ -49,6 +49,7 @@ from rtl_buddy_cdc.frontends.slang import (
 from rtl_buddy_cdc.frontends.yosys import YosysError
 from rtl_buddy_cdc.reporter import (
     TOOL_VERSION,
+    _FLATTEN_PREFIX,
     AnalysisResult,
     _instance_path,
     _source_location,
@@ -726,6 +727,36 @@ def _violation_source_ref(
     return waivers_mod.SourceRef(file=loc["file"], line=loc.get("start_line"))
 
 
+def _waiver_instance_scope(
+    module: netlist.Module,
+    blackboxes: dict[str, netlist.Module] | None,
+    v: Violation,
+) -> str:
+    """The ``/``-joined text a waiver's ``inst:`` scope is matched
+    against (#327).
+
+    Normally the violation's own ``instance_path``. A finding anchored
+    on a *blackbox instance* — ``CDC-BBX``, or a finding lifted out of
+    an analysed boundary module, whose ``cell_name`` is re-anchored on
+    the instance — is about that instance, not about its parent, so it
+    is scoped to the instance itself: ``inst:^u_ip(/|$)`` then waives
+    the ``u_ip`` coverage gap along with everything under ``u_ip``.
+    The reported ``instance_path`` is untouched (still the parent)."""
+    path = v.instance_path
+    name = v.cell_name
+    if name is not None and blackboxes:
+        cell = module.cells.get(name)
+        # A ``$flatten\`` name already resolved every non-``$`` token
+        # (the instance included) into ``instance_path``.
+        if (
+            cell is not None
+            and cell.type in blackboxes
+            and not name.startswith(_FLATTEN_PREFIX)
+        ):
+            path = (*path, name.rsplit(".", 1)[-1])
+    return waivers_mod.instance_path_text(path)
+
+
 def _analyze_and_report(
     netlist_path: Path,
     sdc_path: Path | None,
@@ -1147,6 +1178,20 @@ def _analyze_module_and_report(
         domains = assign_domains(module, max_depth=clock_trace_depth)
         crossings = find_crossings(module, max_depth=clock_trace_depth)
 
+    # Resolve each violation's hierarchical instance path from its
+    # ``cell_name``. Done here, at the CLI boundary, so the rule pack
+    # stays frontend-agnostic (no ``reporter`` import in ``rules.py``).
+    # See ``wiki/raw/articles/hierarchical-reporting.md`` for the
+    # resolver contract and the parent issue #46 for the rendering
+    # phases that consume the field. Resolved *before* the waivers so
+    # an ``inst:`` scope (#327) sees it; the suppressed and
+    # baseline-carried lists below are carved out of this one, so they
+    # inherit it.
+    violations = [
+        dataclasses.replace(v, instance_path=_instance_path(module, v.cell_name))
+        for v in violations
+    ]
+
     # In-RTL pragma waivers lead the list so a suppression written next
     # to the RTL wins over a broad waiver-file regex (first match wins).
     # ``extra_waivers`` is only ever non-empty on the ``lint`` path —
@@ -1161,6 +1206,7 @@ def _analyze_module_and_report(
             violations,
             waivers,
             locate=lambda v: _violation_source_ref(module, v),
+            instance_scope=lambda v: _waiver_instance_scope(module, blackboxes, v),
         )
     # Object-scoped set_false_path (#328): a finding the constraint
     # declares reviewed moves to ``suppressed`` with the SDC statement as
@@ -1200,31 +1246,6 @@ def _analyze_module_and_report(
             dataclasses.replace(v, severity="error") if v.severity == "warning" else v
             for v in violations
         ]
-
-    # Resolve each violation's hierarchical instance path from its
-    # ``cell_name``. Done here, at the CLI boundary, so the rule pack
-    # stays frontend-agnostic (no ``reporter`` import in ``rules.py``).
-    # See ``wiki/raw/articles/hierarchical-reporting.md`` for the
-    # resolver contract and the parent issue #46 for the rendering
-    # phases that consume the field.
-    violations = [
-        dataclasses.replace(v, instance_path=_instance_path(module, v.cell_name))
-        for v in violations
-    ]
-    suppressed = [
-        dataclasses.replace(
-            s,
-            violation=dataclasses.replace(
-                s.violation,
-                instance_path=_instance_path(module, s.violation.cell_name),
-            ),
-        )
-        for s in suppressed
-    ]
-    baseline_carryover = [
-        dataclasses.replace(v, instance_path=_instance_path(module, v.cell_name))
-        for v in baseline_carryover
-    ]
 
     # Advisory inferred-clock candidates (P3/#263): internal nets that
     # fan out to many flop CLK pins but carry no declared clock identity.
