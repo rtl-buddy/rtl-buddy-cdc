@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Literal
+from functools import cached_property
+from typing import TYPE_CHECKING, Callable, Iterable, Literal
 
 from rtl_buddy_cdc.domain import (
     Crossing,
@@ -30,6 +31,9 @@ from rtl_buddy_cdc.primitives import (
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.reset_hints import ResetHints
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
+
+if TYPE_CHECKING:
+    from rtl_buddy_cdc.reset_domain import ResetDomain, ResetSyncChain
 
 
 @dataclass(frozen=True)
@@ -181,6 +185,78 @@ class _RuleContext:
     # combine report — must use the SAME budget as ``domains`` above, or the
     # two views of the clock network could disagree at a non-default depth.
     max_depth: int = 16
+
+    # --- views built on first use (issue #324) -----------------------------
+    #
+    # The RDC rules each used to rebuild the reset-side views from
+    # ``module``: one run called ``assign_reset_domains`` 11x and
+    # ``find_reset_synchronizers`` 5x; CDC-008 and CDC-010 each walked the
+    # clock network. They are ``cached_property`` rather than fields so
+    # contexts that never reach those rules (the domain map's, a standalone
+    # CDC rule's, the compositional pass's) don't pay for them, and so they
+    # stay out of ``==`` / ``repr``. Each is a pure function of the fields
+    # above, built at most once per context. Callers must treat the results
+    # as read-only: every rule sees the same objects.
+
+    @cached_property
+    def reset_bit_drivers(self) -> dict[Bit, tuple[str, str]]:
+        """``bit_drivers`` in :mod:`rtl_buddy_cdc.reset_domain`'s
+        ``(cell, output-port)`` shape. Both maps scan the same cells and
+        pins in the same order with last-writer-wins, so dropping the
+        index gives exactly ``reset_domain._bit_drivers(module)``."""
+        return {b: (cell, port) for b, (cell, port, _) in self.bit_drivers.items()}
+
+    @cached_property
+    def reset_domains(self) -> dict[str, ResetDomain]:
+        """Per-flop reset classification:
+        :func:`~rtl_buddy_cdc.reset_domain.assign_reset_domains`."""
+        from rtl_buddy_cdc.reset_domain import assign_reset_domains
+
+        return assign_reset_domains(
+            self.module, flops=self.flops, drivers=self.reset_bit_drivers
+        )
+
+    @cached_property
+    def reset_synchronizers(self) -> frozenset[str]:
+        """Recognised reset-synchroniser members (structural chains plus
+        the user's ``reset_sync`` marks): the ``recognised_syncs`` set
+        RDC-002 / -004 / -005 / -006 / -008 skip."""
+        from rtl_buddy_cdc.reset_domain import find_reset_synchronizers
+
+        return frozenset(
+            find_reset_synchronizers(
+                self.module,
+                self.domains,
+                extra_synchronizers=self.reset_sync_flop_names,
+                reset_domains=self.reset_domains,
+                flops=self.flops,
+                bit_drivers=self.reset_bit_drivers,
+            )
+        )
+
+    @cached_property
+    def reset_sync_chains(self) -> tuple[ResetSyncChain, ...]:
+        """Structurally recognised reset-synchroniser chains (RDC-007):
+        :func:`~rtl_buddy_cdc.reset_domain.iter_reset_sync_chains`."""
+        from rtl_buddy_cdc.reset_domain import iter_reset_sync_chains
+
+        return tuple(
+            iter_reset_sync_chains(
+                self.module,
+                self.domains,
+                reset_domains=self.reset_domains,
+                flops=self.flops,
+                bit_drivers=self.reset_bit_drivers,
+            )
+        )
+
+    @cached_property
+    def clock_network_cells(self) -> frozenset[str]:
+        """:func:`_clock_network_cells` for this module. CDC-008 and
+        CDC-010 both consult it; built once."""
+        return frozenset(
+            _clock_network_cells(self.module, self.bit_drivers, flops=self.flops)
+        )
 
 
 def _build_context(
@@ -2234,6 +2310,8 @@ def check_cdc_006(
 def _clock_network_cells(
     module: Module,
     drivers: dict[Bit, tuple[str, str, int]],
+    *,
+    flops: Iterable[Flop] | None = None,
 ) -> set[str]:
     """Cells whose output transitively drives some flop's ``CLK`` pin.
 
@@ -2242,11 +2320,13 @@ def _clock_network_cells(
     signal on one of their input pins is *expected*, not a bug.
     Used by CDC-008 to suppress false positives on intentional clock
     gating / muxing structures.
+
+    ``flops`` is ``find_flops(module)`` when the caller already has it.
     """
     cells: set[str] = set()
     seen_bits: set[Bit] = set()
     frontier: list[Bit] = []
-    for f in find_flops(module):
+    for f in find_flops(module) if flops is None else flops:
         if isinstance(f.clk, int):
             frontier.append(f.clk)
     while frontier:
@@ -2334,7 +2414,7 @@ def check_cdc_008(
 
     # Compute the clock-distribution network once: every cell whose
     # output eventually feeds some flop CLK is exempt.
-    clock_net_cells = _clock_network_cells(module, ctx.bit_drivers)
+    clock_net_cells = ctx.clock_network_cells
 
     # Walk every cell connection and report each (clock_bit, cell, pin)
     # triple where the bit appears on a non-CLK input pin. We dedupe
@@ -2635,7 +2715,7 @@ def check_cdc_010(
         cb = clock_spec.clock_for_port(b) or b
         return clock_spec.are_async(ca, cb)
 
-    clock_net_cells = _clock_network_cells(module, ctx.bit_drivers)
+    clock_net_cells = ctx.clock_network_cells
     seen: set[tuple[str, str, str]] = set()
 
     for cell_name in sorted(clock_net_cells):
@@ -2918,17 +2998,10 @@ def check_rdc_004(
     chain member by :func:`find_reset_synchronizers` (intentional
     comb-on-reset patterns inside a vetted sync stage stay silent).
     """
-    from rtl_buddy_cdc.reset_domain import (
-        assign_reset_domains,
-        find_reset_synchronizers,
-    )
-
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(
-        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
-    )
+    reset_domains = ctx.reset_domains
+    recognised_syncs = ctx.reset_synchronizers
 
     violations: list[Violation] = []
     for f in ctx.flops:
@@ -3006,17 +3079,10 @@ def check_rdc_005(
     Suppressed when the consumer is recognised as a reset-
     synchroniser chain member.
     """
-    from rtl_buddy_cdc.reset_domain import (
-        assign_reset_domains,
-        find_reset_synchronizers,
-    )
-
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(
-        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
-    )
+    reset_domains = ctx.reset_domains
+    recognised_syncs = ctx.reset_synchronizers
 
     violations: list[Violation] = []
     for f in ctx.flops:
@@ -3163,17 +3229,10 @@ def check_rdc_006(
       escape hatch, threaded through
       :attr:`_RuleContext.reset_sync_flop_names`).
     """
-    from rtl_buddy_cdc.reset_domain import (
-        assign_reset_domains,
-        find_reset_synchronizers,
-    )
-
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(
-        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
-    )
+    reset_domains = ctx.reset_domains
+    recognised_syncs = ctx.reset_synchronizers
 
     violations: list[Violation] = []
     for f in ctx.flops:
@@ -3300,17 +3359,10 @@ def check_rdc_002(
     This is a structural rule — it does not depend on the SDC clock
     declarations. It runs whether or not ``clock_spec`` is supplied.
     """
-    from rtl_buddy_cdc.reset_domain import (
-        assign_reset_domains,
-        find_reset_synchronizers,
-    )
-
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(
-        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
-    )
+    reset_domains = ctx.reset_domains
+    recognised_syncs = ctx.reset_synchronizers
     polarity_overrides = ctx.reset_polarity_overrides
 
     # Group by (producer, producer_arst_value, consumer_polarity_bit)
@@ -3482,12 +3534,10 @@ def check_rdc_007(
     * Sync-reset (``SRST``) chains are out of scope; RDC-007 stays
       scoped to the async-assert / sync-deassert async-reset idiom.
     """
-    from rtl_buddy_cdc.reset_domain import iter_reset_sync_chains
-
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
-    for chain in iter_reset_sync_chains(module, ctx.domains):
+    for chain in ctx.reset_sync_chains:
         head_d = _trailing_bit(chain.head_d_constant)
         # Deassertion bit is the inverse of the assertion polarity.
         deassert_bit = "0" if chain.polarity == "high" else "1"
@@ -3570,17 +3620,10 @@ def check_rdc_008(
     * Port has no sync chain anywhere in the design (the
       "every-consumer-uses-the-raw-port" simplification).
     """
-    from rtl_buddy_cdc.reset_domain import (
-        assign_reset_domains,
-        find_reset_synchronizers,
-    )
-
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    reset_domains = assign_reset_domains(module)
-    recognised_syncs = find_reset_synchronizers(
-        module, ctx.domains, extra_synchronizers=ctx.reset_sync_flop_names
-    )
+    reset_domains = ctx.reset_domains
+    recognised_syncs = ctx.reset_synchronizers
 
     # First pass: collect every unsynced port-sourced ARST consumer,
     # grouped by (port, consumer_clock).

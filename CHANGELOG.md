@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$_DFF_NN0_` clock polarity, `$_MUX_`, gate-level clock gating,
   bit-blasted buses) are tracked separately.
 
+### Changed
+
+- **Faster analysis on large flat netlists** (#324) — *patch: no
+  output change.* Text, JSON, SARIF, domain-map and reset-domain-map
+  outputs are byte-identical. On a synthetic 44k-cell, 8-clock
+  netlist `analyze` drops from 6.0 s to 3.1 s.
+  - The RDC rules each rebuilt the per-flop reset classification, the
+    reset-synchroniser set and the flop list / driver map under them:
+    one run classified every flop's reset 11 times. They are now
+    built once per run in the shared rule context. CDC-008 and CDC-010
+    likewise share one clock-network walk.
+  - `Module.port_of_bit` scanned every port's bits on each call; it is
+    now a dict lookup built once per module.
+  - The JSON and SARIF reports are serialised with `json.dumps`, which
+    can use the C encoder, instead of `json.dump`.
+
 ## [0.7.3] — 2026-10-31
 
 ### Changed
