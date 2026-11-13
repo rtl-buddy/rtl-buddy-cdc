@@ -1,0 +1,327 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_clock_groups_two_statements": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:16.1-65.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "clk_c": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "d_a": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "d_b": {
+          "direction": "input",
+          "bits": [ 7 ]
+        },
+        "q_b": {
+          "direction": "output",
+          "bits": [ 8 ]
+        },
+        "q_c": {
+          "direction": "output",
+          "bits": [ 9 ]
+        }
+      },
+      "cells": {
+        "$procdff$16": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:59.5-62.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 4 ],
+            "D": [ 10 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$procdff$21": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:52.5-55.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 4 ],
+            "D": [ 12 ],
+            "Q": [ 13 ]
+          }
+        },
+        "$procdff$26": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:39.5-47.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 3 ],
+            "D": [ 12 ],
+            "Q": [ 14 ]
+          }
+        },
+        "$procdff$31": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:39.5-47.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 3 ],
+            "D": [ 14 ],
+            "Q": [ 8 ]
+          }
+        },
+        "$procdff$36": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:32.5-35.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 3 ],
+            "D": [ 7 ],
+            "Q": [ 10 ]
+          }
+        },
+        "$procdff$41": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:28.5-31.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 5 ],
+            "CLK": [ 2 ],
+            "D": [ 6 ],
+            "Q": [ 12 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:63$11": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:63.18-63.30"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 11 ],
+            "B": [ 13 ],
+            "Y": [ 9 ]
+          }
+        }
+      },
+      "netnames": {
+        "a_q": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:27.11-27.14"
+          }
+        },
+        "b_q": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:27.16-27.19"
+          }
+        },
+        "b_s1": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:38.11-38.15"
+          }
+        },
+        "b_s2": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:38.17-38.21"
+          }
+        },
+        "c_cap": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:51.11-51.16"
+          }
+        },
+        "c_s1": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:58.11-58.15"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:17.18-17.23"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:18.18-18.23"
+          }
+        },
+        "clk_c": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:19.18-19.23"
+          }
+        },
+        "d_a": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:21.18-21.21"
+          }
+        },
+        "d_b": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:22.18-22.21"
+          }
+        },
+        "q_b": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:23.18-23.21"
+          }
+        },
+        "q_c": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:24.18-24.21"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_clock_groups_two_statements/bad_clock_groups_two_statements.sv:20.18-20.23"
+          }
+        }
+      }
+    }
+  }
+}
