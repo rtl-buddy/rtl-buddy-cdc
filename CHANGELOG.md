@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SDC-variety and multi-clock fixtures** (rtl-buddy-cdc#331) —
+  *test-only, no output change.* 27 new fixtures, checked end to end
+  through `analyze` on both SDC backends by
+  `tests/test_sdc_clock_variety_fixtures.py`. SDC forms: generated
+  clocks with `-multiply_by`, `-edges`, `-invert`, `-combinational`, a
+  generated clock of a generated clock, and one declared asynchronous
+  to its own master; two `set_clock_groups` statements; a one-way
+  clock-pair `set_false_path`; `set_false_path -through` on a bus;
+  `set_max_delay -datapath_only` beating a generated relation and an
+  exclusive group; `set_case_analysis` on a braced bus bit selecting
+  either mux leg; virtual clocks on `set_input_delay` /
+  `set_output_delay`; and constraints generated with Tcl variables,
+  `expr`, lists and `foreach` (the `tokenizer` fallback's verdict is
+  pinned). Clock structures: a three-domain relay, four clocks (two
+  synchronous, two asynchronous, a crossing for every pair), five
+  clocks mixing asynchronous and exclusive groups, reconvergence into a
+  third domain, and a handshake whose acknowledge returns through a
+  third domain. Four fixtures expose analyzer gaps and carry strict
+  `xfail`s: a 2FF synchroniser clocked by a pin-declared generated
+  clock reads as depth 1 (false CDC-001), CDC-012 misses an
+  acknowledge relayed through a third domain, and CDC-006 fires on a
+  typed input port wired straight into a 2FF synchroniser. All 27 agree
+  across the gate-level legs (no new allowlist rows).
+
 - **Gate-level fixture corpus** (#331) — *test-only, no output change.*
   `tests/test_gate_level_corpus.py` rebuilds every fixture through two
   Yosys gate flows (`techmap`, and `opt_dff; techmap; abc`) and asserts

@@ -1,0 +1,400 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_case_analysis_mode_sel0": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:18.1-73.10"
+      },
+      "ports": {
+        "clk_a": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "clk_b": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "clk_c": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "mode": {
+          "direction": "input",
+          "bits": [ 5, 6 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 7 ]
+        },
+        "d_a": {
+          "direction": "input",
+          "bits": [ 8 ]
+        },
+        "d_b": {
+          "direction": "input",
+          "bits": [ 9 ]
+        },
+        "q_m": {
+          "direction": "output",
+          "bits": [ 10 ]
+        },
+        "q_c": {
+          "direction": "output",
+          "bits": [ 11 ]
+        }
+      },
+      "cells": {
+        "$procdff$16": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:62.5-70.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 4 ],
+            "D": [ 12 ],
+            "Q": [ 13 ]
+          }
+        },
+        "$procdff$21": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:62.5-70.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 4 ],
+            "D": [ 13 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$procdff$26": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:47.5-57.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 14 ],
+            "D": [ 15 ],
+            "Q": [ 16 ]
+          }
+        },
+        "$procdff$31": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:47.5-57.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 14 ],
+            "D": [ 17 ],
+            "Q": [ 18 ]
+          }
+        },
+        "$procdff$36": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:47.5-57.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 14 ],
+            "D": [ 18 ],
+            "Q": [ 12 ]
+          }
+        },
+        "$procdff$41": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:40.5-43.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 3 ],
+            "D": [ 9 ],
+            "Q": [ 17 ]
+          }
+        },
+        "$procdff$46": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": {
+            "ARST_POLARITY": "00000000000000000000000000000000",
+            "ARST_VALUE": "0",
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:36.5-39.8"
+          },
+          "port_directions": {
+            "ARST": "input",
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "ARST": [ 7 ],
+            "CLK": [ 2 ],
+            "D": [ 8 ],
+            "Q": [ 15 ]
+          }
+        },
+        "$ternary$tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:33$2": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:33.20-33.41"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 2 ],
+            "B": [ 3 ],
+            "S": [ 6 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$xor$tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:58$9": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:58.18-58.30"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 16 ],
+            "B": [ 12 ],
+            "Y": [ 10 ]
+          }
+        }
+      },
+      "netnames": {
+        "a_q": {
+          "hide_name": 0,
+          "bits": [ 15 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:35.11-35.14"
+          }
+        },
+        "b_q": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:35.16-35.19"
+          }
+        },
+        "c_s1": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:61.11-61.15"
+          }
+        },
+        "c_s2": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:61.17-61.21"
+          }
+        },
+        "clk_a": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:19.24-19.29"
+          }
+        },
+        "clk_b": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:20.24-20.29"
+          }
+        },
+        "clk_c": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:21.24-21.29"
+          }
+        },
+        "clk_m": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:31.18-31.23"
+          }
+        },
+        "d_a": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:24.24-24.27"
+          }
+        },
+        "d_b": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:25.24-25.27"
+          }
+        },
+        "m_cap": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:46.11-46.16"
+          }
+        },
+        "m_s1": {
+          "hide_name": 0,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:46.18-46.22"
+          }
+        },
+        "m_s2": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:46.24-46.28"
+          }
+        },
+        "mode": {
+          "hide_name": 0,
+          "bits": [ 5, 6 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:22.24-22.28"
+          }
+        },
+        "q_c": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:27.24-27.27"
+          }
+        },
+        "q_m": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:26.24-26.27"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/good_case_analysis_mode_sel0/good_case_analysis_mode_sel0.sv:23.24-23.29"
+          }
+        }
+      }
+    }
+  }
+}

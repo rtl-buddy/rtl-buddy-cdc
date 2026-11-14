@@ -277,6 +277,64 @@ GOOD_FIXTURES = [
     # mixed-domain pair split into one port per domain); the clock,
     # constant and feed-through outputs need none. No crossings.
     ("good_output_contracts_complete", 0),
+    # --- rtl-buddy-cdc#331: three-to-five-clock structures ---
+    # A → B → C relay, 2FF at both hops.
+    ("good_three_domain_chain", 2),
+    # clk_a / clk_a2x (generated ×2, one group) + clk_b + clk_c: one
+    # crossing per pair, the same-root pair synchronous, five async 2FF.
+    ("good_four_clock_mixed", 5),
+    # Five async clocks, two exclusive pairs: the two raw captures inside
+    # an exclusive pair are unreachable, the five live crossings are 2FF.
+    ("good_five_clock_exclusive", 5),
+    # Two unrelated sources (clk_a, clk_b) synchronised once each into
+    # clk_c and combined: not CDC-005 (no shared source flop).
+    ("good_reconvergence_two_source_domains", 2),
+    # Req/ack handshake whose ack returns clk_b → clk_c → clk_a.
+    pytest.param(
+        "good_handshake_ack_via_third_domain",
+        4,
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="false CDC-012: the data-hold feedback walk stays in the "
+            "source domain and misses an ack relayed through clk_c",
+        ),
+    ),
+    # --- rtl-buddy-cdc#331: SDC forms ---
+    # Generated clock of a generated clock on internal pins; clk_ext
+    # crosses into ck_div4 through a 2FF synchroniser.
+    pytest.param(
+        "good_gen_clock_chain",
+        2,
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="false CDC-001: the rule context assigns domains without "
+            "pin_clocks, so a 2FF synchroniser clocked by a pin-declared "
+            "generated clock reads as depth 1",
+        ),
+    ),
+    # -edges / -invert / -combinational generated clocks: every path among
+    # them is synchronous; only clk_x → clk (2FF) is async.
+    ("good_gen_clock_edges_invert", 1),
+    # Two set_clock_groups statements; clk_a / clk_c never separated.
+    ("good_clock_groups_two_statements", 2),
+    # A one-way clock-pair set_false_path covers both directions.
+    ("good_false_path_one_direction", 2),
+    # set_max_delay -datapath_only beats a generated relation and an
+    # exclusive group; both crossings 2FF.
+    ("good_datapath_only_overrides", 2),
+    # set_case_analysis 0 on mode[1]: the raw a_q → m_cap path is
+    # same-domain; the clk_b and clk_c crossings are 2FF.
+    ("good_case_analysis_mode_sel0", 2),
+    # Virtual clocks typing the I/O: one async input into a 2FF.
+    pytest.param(
+        "good_virtual_clock_io",
+        1,
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="false CDC-006: a typed input port wired straight into a "
+            "2FF synchroniser (no combinational logic) still fires",
+        ),
+    ),
 ]
 
 
