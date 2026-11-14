@@ -98,6 +98,7 @@ uv run ruff format --check     # format check (CI enforces this)
 uv run mypy                    # type check (must pass; src/ scope only)
 uv run pytest -q               # full unit suite
 uv run pytest tests/test_<x>.py -q   # single file
+uv run pytest -m integration   # opt-in open-source corpus (needs yosys + network)
 
 # end-to-end smoke
 uv run rtl-buddy-cdc analyze \

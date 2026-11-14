@@ -305,6 +305,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (built with plain-flop stand-ins, `meta_flop_synth.sv`), so it runs
   without Yosys or Icarus. Analyzer and simulation agree on all seven.
 
+- **Open-source integration corpus** (rtl-buddy-cdc#331) — *test-only, no output
+  change.* `tests/integration/` runs the analyzer on seven real
+  multi-clock designs written by other people (three async FIFOs, two
+  bus clock-domain bridges, a three-clock PTP time transfer and a CDC
+  primitive library), each fetched on demand at a pinned upstream
+  commit under a permissive licence — no third-party RTL is vendored.
+  The manifest (`corpus.toml`) pins, per design, the crossing count and
+  per-rule finding counts on the Yosys path and the `lint --frontend
+  slang` verdict, and classifies every finding (true positive, false
+  positive, outside the structural model) with its reasoning. The six
+  analyzer gaps the review found (four false positives, one false
+  negative, and slang dropping concatenation l-values) are pinned as
+  today's behaviour and described with self-written reproducers. The
+  tests carry the new `integration` marker and are opt-in (`pytest -m
+  integration` or `RB_CDC_INTEGRATION=1`); a default `pytest` only
+  validates the manifest and never touches the network. CI runs them
+  in a separate `integration.yml` workflow (after merges to `main`,
+  weekly, and on demand), not on pull requests.
+
 ### Changed
 
 - **Faster analysis on large flat netlists** (#324) — *patch: no

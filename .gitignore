@@ -17,3 +17,6 @@ coverage.xml
 
 # gate-level corpus build cache (tests/test_gate_level_corpus.py)
 tests/.gate_level_cache/
+
+# integration corpus fetch/build cache (tests/integration/runner.py)
+tests/integration/.cache/
