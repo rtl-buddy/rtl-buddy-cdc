@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from functools import cached_property
-from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping
+from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, Sequence
 
 from rtl_buddy_cdc.domain import (
     Crossing,
@@ -1574,6 +1574,153 @@ def _chain_has_inter_stage_comb(head: Flop, ctx: _RuleContext) -> Flop | None:
     return None
 
 
+def _carries_synchronised_control(
+    module: Module,
+    flop: Flop,
+    src_clock: str,
+    dst_clock: str,
+    ctx: _RuleContext,
+    *,
+    max_hops: int = 8,
+) -> bool:
+    """``flop`` holds a properly synchronised ``src_clock`` control
+    (rtl-buddy-cdc#368): it sits past the first stage on a straight line
+    of single-bit ``dst_clock`` flops whose first stage samples a
+    ``src_clock`` flop's ``Q`` directly, and the synchroniser chain at
+    the head of that line (:func:`_sync_chain_flops`) is at least two
+    stages deep. ``flop`` is then a chain stage after the first, or a
+    plain delay of one (the ``s3`` of an ``s2 ^ s3`` edge detector).
+
+    The line is walked back from ``flop`` along ``Q → D`` links,
+    stepping over each flop's own local synchronous-reset mux as the
+    chain walk does. A first stage (possibly metastable), a line whose
+    first stage is read twice (no synchroniser), a line from another
+    domain, a head fed through logic or a multi-bit flop all answer
+    ``False``.
+    """
+    if ctx.domains.get(flop.cell.name) != dst_clock:
+        return False
+    cur = flop
+    head: Flop | None = None
+    for _ in range(max_hops):
+        if len(cur.d) != 1 or len(cur.q) != 1:
+            return False
+        d_bit = cur.d[0]
+        leg = _constant_leg_reset_mux_data_bits(
+            cur, module, ctx.bit_drivers, ctx.reader_counts
+        )
+        if leg is not None and _srst_select_is_local(
+            module, cur, dst_clock, ctx.domains, ctx.bit_drivers
+        ):
+            d_bit = leg[0]
+        drv = ctx.bit_drivers.get(d_bit) if isinstance(d_bit, int) else None
+        if drv is None or drv[1] != "Q":
+            return False
+        prev_dom = ctx.domains.get(drv[0])
+        if prev_dom == src_clock:
+            head = cur
+            break
+        if prev_dom != dst_clock:
+            return False
+        prev_d = module.cells[drv[0]].connections.get("D", ())
+        prev = ctx.d_bit_to_single_bit_flop.get(prev_d[0]) if len(prev_d) == 1 else None
+        if prev is None or tuple(prev.q) != (d_bit,):
+            return False
+        cur = prev
+    if head is None or head is flop:
+        return False
+    chain = _sync_chain_flops(
+        module,
+        head,
+        dst_clock,
+        ctx.domains,
+        ctx.reader_counts,
+        ctx.d_bit_to_single_bit_flop,
+        ctx.srst_mux_data_bit_to_single_bit_flop,
+    )
+    return len(chain) >= 2
+
+
+def _single_bit_handshake_capture(
+    module: Module,
+    c: Crossing,
+    ctx: _RuleContext,
+    flops_by_name: dict[str, Flop] | None = None,
+    fanin_cache: dict[str, set[str]] | None = None,
+) -> Literal["handshake", "open"] | None:
+    """Single-bit crossing captured like a gated bus (rtl-buddy-cdc#368).
+
+    ``"handshake"`` when all of the following hold, ``"open"`` when only
+    the last fails, ``None`` otherwise:
+
+    1. The destination captures only under a dst-domain enable — the
+       gated-bus test (:func:`_gated_capture_fanin`, which
+       :func:`_is_gated_bus_crossing` runs for CDC-004) with the hold
+       required: an ``EN`` pin (``$dffe`` / ``$_DFFE_*`` …) or a mux on
+       ``D`` whose other leg is the flop's own ``Q``. A constant or
+       port-only enable, a foreign-domain flop in the enable, a reset
+       mux or a data-select mux is not a gate.
+    2. That enable is derived only from a properly synchronised control
+       from the crossing's *own* source domain: *every* flop in its
+       fanin is a stage past the first of a depth >= 2 single-bit
+       synchroniser whose first stage samples a ``c.src_clock`` flop,
+       or a delay of one (:func:`_carries_synchronised_control`). A
+       free-running dst enable, a single-stage capture or a control
+       synchronised from a third domain does not qualify, and neither
+       does an enable that mixes one of them in (``edge | free_run``
+       would sample the source between transfers). An enable qualified
+       by an unrelated dst register (``edge & mode``) is rejected too;
+       the narrower test keeps CDC-001 conservative.
+    3. The source holds the bit until the destination has sampled it: a
+       synced-back acknowledge reaches the source register's
+       neighbourhood (:func:`_has_dst_to_src_feedback`, the test CDC-012
+       applies to a gated bus). A port-sourced crossing cannot show
+       this.
+
+    CDC-001 accepts ``"handshake"`` only. For a bus, an open-loop gated
+    crossing is CDC-012's (warning); a single bit has no such rule, so
+    ``"open"`` stays CDC-001 with a message naming the missing
+    acknowledge — one bit captured from a source that may change at any
+    time is still a single-flop metastability hazard.
+
+    ``flops_by_name`` / ``fanin_cache`` are per-run caches; a caller
+    checking many crossings should pass them (CDC-001 does). Without
+    them the name index is built only once the gated test has passed.
+    """
+    if c.width != 1:
+        return None
+    fanin = _gated_capture_fanin(
+        module,
+        c,
+        ctx.domains,
+        ctx.bit_drivers,
+        require_hold=True,
+        reader_counts=ctx.reader_counts,
+    )
+    if fanin is None:
+        return None
+    if flops_by_name is None:
+        flops_by_name = {f.cell.name: f for f in ctx.flops}
+    if not all(
+        name in flops_by_name
+        and _carries_synchronised_control(
+            module, flops_by_name[name], c.src_clock, c.dst_clock, ctx
+        )
+        for name in sorted(fanin)
+    ):
+        return None
+    if c.src_flop is not None and _has_dst_to_src_feedback(
+        module,
+        c,
+        ctx.domains,
+        ctx.bit_drivers,
+        flops_by_name,
+        fanin_cache=fanin_cache,
+    ):
+        return "handshake"
+    return "open"
+
+
 # --- rules ------------------------------------------------------------------
 
 
@@ -1594,10 +1741,19 @@ def check_cdc_001(
 
     Multi-bit (bus) crossings deliberately bypass this check — their
     correctness pattern is gating or gray-coding, handled by CDC-004.
+
+    A single bit captured the way a gated bus is — only under an enable
+    synchronised from its own source domain, from a source that holds it
+    until a synced-back acknowledge — is a qualified crossing, not an
+    unsynchronised one, and is accepted (rtl-buddy-cdc#368; see
+    :func:`_single_bit_handshake_capture`). The same capture without the
+    acknowledge still fires, with a message naming the open loop.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
+    flops_by_name: dict[str, Flop] | None = None
+    fanin_cache: dict[str, set[str]] = {}
 
     for c in crossings:
         if c.width != 1:
@@ -1617,9 +1773,26 @@ def check_cdc_001(
             # mislead the user into adding a stage they already have.
             if _chain_has_inter_stage_comb(c.dst_flop, ctx) is not None:
                 continue
+            if flops_by_name is None:
+                flops_by_name = {f.cell.name: f for f in ctx.flops}
+            gated = _single_bit_handshake_capture(
+                module, c, ctx, flops_by_name, fanin_cache
+            )
+            if gated == "handshake":
+                continue  # qualified: synced enable + held source (#368)
             src_desc = (
                 f"flop {c.src_flop.name}" if c.src_flop is not None else c.src_name
             )
+            if gated == "open":
+                detail = (
+                    f"captures only under an enable synchronised from "
+                    f"{c.src_clock}, but nothing holds the source until the "
+                    f"destination has sampled it (no synchronised-back "
+                    f"acknowledge); add the acknowledge or a second-stage "
+                    f"synchronizer (chain depth = {depth})"
+                )
+            else:
+                detail = f"has no second-stage synchronizer (chain depth = {depth})"
             violations.append(
                 Violation(
                     rule_id="CDC-001",
@@ -1628,8 +1801,7 @@ def check_cdc_001(
                         f"unsynchronized control crossing "
                         f"{c.src_clock} → {c.dst_clock} "
                         f"(src: {src_desc}): destination flop "
-                        f"{c.dst_flop.name} has no second-stage "
-                        f"synchronizer (chain depth = {depth})"
+                        f"{c.dst_flop.name} {detail}"
                     ),
                     crossing=c,
                     cell_name=c.dst_flop.cell.name,
@@ -1872,12 +2044,49 @@ def _is_gated_bus_crossing(
 
     A more rigorous check would also verify that the mux's
     hold-input is the destination flop's own ``Q`` (proper feedback
-    hold), but we leave that as a follow-up — the current shape
-    catches the bus crossing patterns we care about without
-    false-positives on the golden fixture.
+    hold), but we leave that as a follow-up for buses — the current
+    shape catches the bus crossing patterns we care about without
+    false-positives on the golden fixture. The single-bit acceptance
+    (:func:`_is_qualified_single_bit_capture`) runs the same test with
+    that hold requirement (``require_hold``).
+    """
+    return _gated_capture_fanin(module, crossing, domains, drivers) is not None
+
+
+def _gated_capture_fanin(
+    module: Module,
+    crossing: Crossing,
+    domains: dict[str, str | None],
+    drivers: dict[Bit, tuple[str, str, int]],
+    *,
+    require_hold: bool = False,
+    reader_counts: dict[Bit, int] | None = None,
+) -> set[str] | None:
+    """The gated-capture test behind :func:`_is_gated_bus_crossing`:
+    the flops the destination's enable (``EN`` pin, or the gating mux's
+    ``S``) fans in from when the capture is gated, else ``None``. The
+    set is non-empty and every member is in the destination domain — a
+    constant or port-only enable, or one with a flop of any other
+    domain, is not a gate.
+
+    ``require_hold`` (the single-bit acceptance, rtl-buddy-cdc#368)
+    narrows the mux form to a real *hold* mux: the mux drives ``D``
+    directly (no buffer, so no inverting ``$not``) and one of its legs
+    is the destination flop's own ``Q``, lane for lane. A mux that
+    selects between two data sources, or a synchronous-reset mux
+    (constant other leg), samples on every edge and is not a gate. The
+    flop's own synchronous reset may sit in front of that hold mux
+    (``if (rst) q <= 0; else if (en) q <= d;`` after ``proc``) when it
+    is the shape :func:`_constant_leg_reset_mux_data_bits` accepts and
+    its select is local (:func:`_srst_select_is_local`). The ``EN``
+    form is a hold by construction and is unchanged.
     """
     dst_clock = crossing.dst_clock
-    dst_cell = crossing.dst_flop.cell
+    dst_flop = crossing.dst_flop
+    dst_cell = dst_flop.cell
+
+    def _local(fanin: set[str]) -> bool:
+        return bool(fanin) and all(domains.get(n) == dst_clock for n in fanin)
 
     # Shape 1: $dffe-style EN gating. Cheap to test (one cell-type
     # lookup plus one pin walk); try first so EN-gated designs skip
@@ -1888,38 +2097,110 @@ def _is_gated_bus_crossing(
         en_int_bits = tuple(b for b in en_bits if isinstance(b, int))
         if en_int_bits:
             en_fanin_flops = _backward_flop_fanin(module, en_int_bits, drivers)
-            if en_fanin_flops and all(
-                domains.get(name) == dst_clock for name in en_fanin_flops
-            ):
-                return True
+            if _local(en_fanin_flops):
+                return en_fanin_flops
+
+    if require_hold:
+        return _hold_mux_select_fanin(
+            module, dst_flop, dst_clock, domains, drivers, reader_counts, _local
+        )
 
     # Shape 2: mux-on-D, optionally through a short chain of
     # transparent buffers. All D bits must trace back to the same
     # origin cell — a bus split across multiple drivers can't be a
     # single gating mux.
     driver_cells: set[str] = set()
-    for d_bit in crossing.dst_flop.d:
+    for d_bit in dst_flop.d:
         if not isinstance(d_bit, int):
             continue
         drv = _trace_through_bus_buffers(module, d_bit, drivers)
         if drv is None:
-            return False
+            return None
         driver_cells.add(drv[0])
     if len(driver_cells) != 1:
-        return False
+        return None
     drv_cell = module.cells[next(iter(driver_cells))]
     if drv_cell.type not in MUX2_TYPES:
-        return False
+        return None
     s_bits = drv_cell.connections.get("S", ())
     if not s_bits:
-        return False
-    s_fanin_flops = _backward_flop_fanin(module, s_bits, drivers)
-    if not s_fanin_flops:
-        return False
+        return None
     # Every flop reached in the select-fanin must be in the dst clock
     # domain. A single src-domain flop in there means the "gate" is
     # itself a cross-domain signal — not a valid handshake.
-    return all(domains.get(name) == dst_clock for name in s_fanin_flops)
+    s_fanin_flops = _backward_flop_fanin(module, s_bits, drivers)
+    return s_fanin_flops if _local(s_fanin_flops) else None
+
+
+def _hold_mux_select_fanin(
+    module: Module,
+    dst_flop: Flop,
+    dst_clock: str,
+    domains: dict[str, str | None],
+    drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int] | None,
+    local: Callable[[set[str]], bool],
+) -> set[str] | None:
+    """Mux-form half of :func:`_gated_capture_fanin` with
+    ``require_hold``: the select fanin of a hold mux (one leg is
+    ``dst_flop``'s own ``Q``) driving ``D`` directly, or behind the
+    flop's own local synchronous-reset mux; ``None`` otherwise."""
+    d_bits: tuple[Bit, ...] = tuple(dst_flop.d)
+    if reader_counts is None:
+        reader_counts = _bit_reader_count(module)
+    leg = _constant_leg_reset_mux_data_bits(dst_flop, module, drivers, reader_counts)
+    if leg is not None and _srst_select_is_local(
+        module, dst_flop, dst_clock, domains, drivers
+    ):
+        d_bits = leg
+    q_bits = tuple(dst_flop.q)
+    if not d_bits or len(d_bits) != len(q_bits):
+        return None
+    mux: Cell | None = None
+    hold_pin: str | None = None
+    for i, d_bit in enumerate(d_bits):
+        drv = drivers.get(d_bit) if isinstance(d_bit, int) else None
+        if drv is None or drv[1] != "Y":
+            return None
+        cell = module.cells[drv[0]]
+        if cell.type not in MUX2_TYPES or (mux is not None and cell is not mux):
+            return None
+        mux = cell
+        idx = drv[2]
+        pins = [
+            p
+            for p in ("A", "B")
+            if idx < len(cell.connections.get(p, ()))
+            and cell.connections[p][idx] == q_bits[i]
+        ]
+        if len(pins) != 1 or (hold_pin is not None and pins[0] != hold_pin):
+            return None
+        hold_pin = pins[0]
+    if mux is None:
+        return None
+    s_bits = mux.connections.get("S", ())
+    s_fanin_flops = _backward_flop_fanin(module, s_bits, drivers)
+    return s_fanin_flops if local(s_fanin_flops) else None
+
+
+def _is_gray_xor_pair(plain: Sequence[Bit], shifted: Sequence[Bit]) -> bool:
+    """``shifted`` is ``plain >> 1``: ``shifted[i] == plain[i+1]`` for every
+    ``i < N-1`` and ``shifted[N-1]`` is the constant the logical shift fills
+    in. The two operands of a gray encoder's ``$xor``, in either order — the
+    caller tries both because XOR is commutative (rtl-buddy-cdc#365).
+    """
+    n = len(plain)
+    return (
+        n >= 2
+        and len(shifted) == n
+        and all(
+            isinstance(plain[i + 1], int)
+            and isinstance(shifted[i], int)
+            and plain[i + 1] == shifted[i]
+            for i in range(n - 1)
+        )
+        and isinstance(shifted[n - 1], str)
+    )
 
 
 def _is_gray_encoded_source(
@@ -1943,7 +2224,9 @@ def _is_gray_encoded_source(
     We walk the source flop's D fanin backward through combinational
     cells (bounded by ``max_back_hops``) looking for any ``$xor``
     whose A/B pair satisfies ``A[i+1] == B[i]`` for ``i < N-1`` and
-    ``B[N-1]`` is a constant. That signature is essentially unique to
+    ``B[N-1]`` is a constant — or the same with A and B swapped, since
+    ``(b >> 1) ^ b`` is the same encoder (rtl-buddy-cdc#365; see
+    :func:`_is_gray_xor_pair`). That signature is essentially unique to
     gray encoding and is what async-FIFO pointers produce.
     """
     seen: set[Bit] = set()
@@ -1966,17 +2249,10 @@ def _is_gray_encoded_source(
             if cell.type == "$xor":
                 a_bits = cell.connections.get("A", ())
                 b_bits = cell.connections.get("B", ())
-                n = len(a_bits)
-                if (
-                    n >= 2
-                    and len(b_bits) == n
-                    and all(
-                        isinstance(a_bits[i + 1], int)
-                        and isinstance(b_bits[i], int)
-                        and a_bits[i + 1] == b_bits[i]
-                        for i in range(n - 1)
-                    )
-                    and isinstance(b_bits[n - 1], str)
+                # XOR is commutative: ``(b >> 1) ^ b`` puts the shifted
+                # operand on A (rtl-buddy-cdc#365).
+                if _is_gray_xor_pair(a_bits, b_bits) or _is_gray_xor_pair(
+                    b_bits, a_bits
                 ):
                     return True
             for in_port, in_bits in cell.connections.items():
@@ -2076,6 +2352,8 @@ def _is_multibit_sync_first_stage(
     dst_clock: str,
     domains: dict[str, str | None],
     flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]] | None = None,
+    *,
+    ctx: _RuleContext | None = None,
 ) -> bool:
     """Test whether ``dst_flop`` is the first stage of a multi-bit
     synchronizer chain.
@@ -2095,9 +2373,22 @@ def _is_multibit_sync_first_stage(
     structural case; users who want stricter behaviour can keep
     asserting via ``set_clock_groups`` and the rule pass.
 
+    A **synchronous reset** on the second stage puts a ``$mux`` between
+    the stages after ``proc`` (``if (rst) s2 <= '0; else s2 <= s1;``),
+    so ``Q`` is that mux's data leg rather than the next flop's ``D``
+    (rtl-buddy-cdc#366). The mux is looked through when it is the shape
+    the single-bit chain walk already steps over
+    (:func:`_constant_leg_reset_mux_data_bits`: one ``$mux`` whose ``Y``
+    is exactly the next flop's ``D``, the other leg all-constant, ``Y``
+    read by nothing else) *and* its select is local to the destination
+    (:func:`_srst_select_is_local`). After ``opt_dff`` the reset is
+    folded into an ``$sdff`` whose ``D`` is ``Q`` directly, which the
+    plain lane test already accepts.
+
     ``flops_by_d`` is the rule context's :attr:`_RuleContext.flops_by_d`
-    index. Rule callers must pass it: without it this rescans every cell
-    of ``module``, which is O(cells) per crossing.
+    index. Rule callers must pass it, and ``ctx`` for the reset-mux
+    look-through's driver / reader / consumer maps: without them this
+    rescans every cell of ``module``, which is O(cells) per crossing.
     """
     if len(dst_flop.q) < 2:
         return False
@@ -2114,7 +2405,90 @@ def _is_multibit_sync_first_stage(
             continue
         if domains.get(f.cell.name) == dst_clock:
             return True
-    return False
+    nxt = _srst_mux_next_stage(module, q_bits, flops_by_d, ctx)
+    return (
+        nxt is not None
+        and nxt.cell.name != dst_flop.cell.name
+        and domains.get(nxt.cell.name) == dst_clock
+        and _srst_select_is_local(
+            module,
+            nxt,
+            dst_clock,
+            domains,
+            ctx.bit_drivers if ctx is not None else _bit_drivers(module),
+        )
+    )
+
+
+def _srst_mux_next_stage(
+    module: Module,
+    q_bits: tuple[Bit, ...],
+    flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]],
+    ctx: _RuleContext | None,
+) -> Flop | None:
+    """The flop behind a synchronous-reset ``$mux`` whose data leg is
+    exactly ``q_bits`` (rtl-buddy-cdc#366), or ``None``.
+
+    The candidate mux is found from ``q_bits[0]``'s consumers; the shape
+    test is :func:`_constant_leg_reset_mux_data_bits`, shared with the
+    single-bit chain walk (#301 / #304), so a mux it rejects (an enable
+    mux, a live other leg, a ``$pmux``, a mux output read elsewhere) is
+    not looked through here either.
+    """
+    if ctx is not None:
+        bit_drivers = ctx.bit_drivers
+        reader_counts = ctx.reader_counts
+        consumers: tuple[tuple[str, str, int], ...] = ctx.bit_consumers.get(
+            q_bits[0], ()
+        )
+    else:
+        bit_drivers = _bit_drivers(module)
+        reader_counts = _bit_reader_count(module)
+        consumers = tuple(
+            (cell.name, pin, i)
+            for cell in module.cells.values()
+            for pin in ("A", "B")
+            for i, b in enumerate(cell.connections.get(pin, ()))
+            if b == q_bits[0]
+        )
+    for cell_name, pin, _idx in consumers:
+        cell = module.cells.get(cell_name)
+        if cell is None or cell.type not in MUX2_TYPES or pin not in ("A", "B"):
+            continue
+        if tuple(cell.connections.get(pin, ())) != q_bits:
+            continue
+        for f in flops_by_d.get(tuple(cell.connections.get("Y", ())), ()):
+            if (
+                _constant_leg_reset_mux_data_bits(f, module, bit_drivers, reader_counts)
+                == q_bits
+            ):
+                return f
+    return None
+
+
+def _srst_select_is_local(
+    module: Module,
+    stage: Flop,
+    dst_clock: str,
+    domains: dict[str, str | None],
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+) -> bool:
+    """The select of the synchronous-reset ``$mux`` on ``stage``'s ``D``
+    is a reset of the destination domain: every flop in its fanin is
+    clocked by ``dst_clock`` (a synchronised local reset), or it has no
+    flop fanin at all (a primary reset port or a constant).
+
+    A select driven from another domain makes the mux part of a second
+    crossing, not a reset of this synchroniser, so the chain is not seen
+    through it. (That crossing into ``stage`` is reported on its own.)
+    """
+    first = stage.d[0] if stage.d else None
+    drv = bit_drivers.get(first) if isinstance(first, int) else None
+    if drv is None:
+        return False
+    s_bits = tuple(module.cells[drv[0]].connections.get("S", ()))
+    fanin = _backward_flop_fanin(module, s_bits, bit_drivers)
+    return all(domains.get(name) == dst_clock for name in fanin)
 
 
 def check_cdc_004(
@@ -2174,7 +2548,7 @@ def check_cdc_004(
         if (
             c.src_flop is not None
             and _is_multibit_sync_first_stage(
-                module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d
+                module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx
             )
             and _is_gray_encoded_source(module, c.src_flop, ctx.bit_drivers)
         ):
@@ -3076,6 +3450,22 @@ def check_cdc_010(
     return violations
 
 
+def _deasserting_reset_sync_members(ctx: _RuleContext) -> frozenset[str]:
+    """Members of ``ctx.reset_synchronizers`` that synchronise a reset
+    correctly: user-marked ``(* reset_sync *)`` flops, and the flops of
+    every structural chain whose head ``D`` is the deassertion value of
+    the chain's reset polarity (the test RDC-007 applies; a chain that
+    fails it is a one-shot, not a synchroniser). RDC-001 exempts these
+    from the foreign-domain reset check (rtl-buddy-cdc#367).
+    """
+    good: set[str] = set(ctx.reset_sync_flop_names)
+    for chain in ctx.reset_sync_chains:
+        deassert_bit = "0" if chain.polarity == "high" else "1"
+        if _trailing_bit(chain.head_d_constant) == deassert_bit:
+            good.update(chain.flops)
+    return frozenset(good & ctx.reset_synchronizers)
+
+
 def check_rdc_001(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -3102,10 +3492,23 @@ def check_rdc_001(
     Reset signals coming from top-level ports are intentionally
     accepted (they're the user's responsibility to drive correctly,
     e.g. the reset synchronizer's ARST input).
+
+    The flops of a reset synchroniser are exempt (rtl-buddy-cdc#367):
+    taking a foreign-domain reset on their own async pin is exactly what
+    an async-assert / sync-deassert synchroniser is for, and the reset
+    it produces is what the rest of the destination domain should use.
+    "Synchroniser" means a member of ``ctx.reset_synchronizers`` (the set
+    RDC-002..-006 / -008 skip) that is either user-marked
+    ``(* reset_sync *)`` or in a structural chain whose head loads the
+    *deassertion* value (:func:`_deasserting_reset_sync_members`). A
+    single flop, a chain whose head reloads the asserted value (RDC-007's
+    shape) and ordinary flops on the same foreign reset still fire, and
+    the finding is reported on, and lists, only the non-exempt flops.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
     violations: list[Violation] = []
+    exempt = _deasserting_reset_sync_members(ctx)
 
     def _async(a: str, b: str) -> bool:
         # If the user supplied an SDC, defer to its clock-groups
@@ -3127,6 +3530,8 @@ def check_rdc_001(
         arst_bits = flop_reset_bits(f.cell, "arst")
         if not arst_bits:
             continue
+        if f.cell.name in exempt:
+            continue  # reset-synchroniser stage: synchronising this reset (#367)
         my_clk = ctx.domains.get(f.cell.name)
         if my_clk is None:
             continue
@@ -5486,7 +5891,7 @@ def check_cdc_020(
         # Structural gray + multi-bit-sync suppression — mirrors CDC-004.
         if _is_gray_encoded_source(module, src_flop, ctx.bit_drivers) and any(
             _is_multibit_sync_first_stage(
-                module, dst, dst_clock, ctx.domains, ctx.flops_by_d
+                module, dst, dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx
             )
             for dst in dst_map.values()
         ):
@@ -7090,7 +7495,10 @@ def crossing_synchronizer(
       XOR-tail shape CDC-013 accepts as the pulse synchroniser
       (:func:`pulse.classify_toggle_d_pin` +
       :func:`_has_xor_tail_pulse_recovery`).
-    - ``"handshake"`` — the destination is tagged ``(* cdc_handshake *)``.
+    - ``"handshake"`` — the destination is tagged ``(* cdc_handshake *)``,
+      or it captures under an enable synchronised from the source domain
+      from a source held by a synced-back acknowledge
+      (:func:`_single_bit_handshake_capture`, rtl-buddy-cdc#368).
     - ``"static"`` — the source is tagged ``(* cdc_static *)``.
 
     Multi-bit crossings (CDC-004's exemptions, then CDC-012's):
@@ -7121,6 +7529,11 @@ def crossing_synchronizer(
             return "static"
         depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
         if depth < 2:
+            if (
+                _chain_has_inter_stage_comb(c.dst_flop, ctx) is None
+                and _single_bit_handshake_capture(module, c, ctx) == "handshake"
+            ):
+                return "handshake"
             return None
         if src is not None and _is_pulse_synchronizer_source(module, src, ctx):
             if _has_xor_tail_pulse_recovery(c.dst_flop, c.dst_clock, ctx, module):
@@ -7133,7 +7546,7 @@ def crossing_synchronizer(
     if (
         src is not None
         and _is_multibit_sync_first_stage(
-            module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d
+            module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx
         )
         and _is_gray_encoded_source(module, src, ctx.bit_drivers)
     ):
