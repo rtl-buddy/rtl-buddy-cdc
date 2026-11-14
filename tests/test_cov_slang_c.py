@@ -764,11 +764,11 @@ def test_latch_body_with_two_if_arms_emits_two_dlatches(tmp_path: Path) -> None:
     )
 
 
-def test_rangeselect_lhs_in_always_comb_is_not_aliased(tmp_path: Path) -> None:
+def test_rangeselect_lhs_in_always_comb_is_aliased(tmp_path: Path) -> None:
     """An ``always_comb`` blocking assign whose LHS is a range-select
-    (``y[3:0] = d``) isn't a bare ``NamedValueExpression`` nor an
-    element-select, so :meth:`_alias_assign` ignores it — ``y`` is not
-    rewritten to ``d`` and the downstream flop reads ``y``'s own bits."""
+    (``y[3:0] = d``) splices ``d`` into ``y``'s bits
+    (rtl-buddy-cdc#370; it used to be ignored), so the downstream flop
+    reads ``d``."""
     src = """
     module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
         logic [3:0] y;
@@ -779,10 +779,6 @@ def test_rangeselect_lhs_in_always_comb_is_not_aliased(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    d_bits = set(mod.netnames["d"].bits)
     ff = _flops(mod)
     assert len(ff) == 1
-    assert d_bits.isdisjoint(set(ff[0].connections["D"])), (
-        "a range-select LHS in always_comb is not modelled, so d must NOT "
-        f"reach the flop D; got D={ff[0].connections['D']} d={sorted(d_bits)}"
-    )
+    assert ff[0].connections["D"] == mod.netnames["d"].bits

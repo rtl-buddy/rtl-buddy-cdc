@@ -122,11 +122,26 @@ What currently works
   first-match-wins priority and ``default`` as the innermost
   fallback); LHS written in only one branch keeps the existing
   single-branch aliasing.
-- LHS bit-selects (``q[0] <= ...``) and contiguous ranges
-  (``bus[3:0] <= ...``, ``bus[i +: 2]``) — see :meth:`_lvalue_bits`.
-  Same shapes accepted on the RHS via :meth:`_bits_of_expression`.
-  Indices are translated through the declared range, so ``a[1]`` of
-  ``logic [4:1] a`` is its LSB and ``b[0]`` of ``logic [0:3] b`` its MSB.
+- LHS bit-selects (``q[0] <= ...``), contiguous ranges (``bus[3:0] <=
+  ...``, ``bus[i +: 2]``) and packed-struct members (``s.f <= ...``) —
+  see :meth:`_lvalue_bits`. Same shapes accepted on the RHS via
+  :meth:`_bits_of_expression`. Indices are translated through the
+  declared range, so ``a[1]`` of ``logic [4:1] a`` is its LSB and
+  ``b[0]`` of ``logic [0:3] b`` its MSB.
+- Concatenation targets (rtl-buddy-cdc#370): ``{q, meta} <= {meta, d}``,
+  ``{carry, sum} = a + b``, nested and with any of the part shapes above,
+  in clocked, combinational and latch blocks, continuous assigns, reset
+  arms and output-port connections. The RHS is sized to the total target
+  width by SystemVerilog rules (:meth:`_sized_bits`) and split with the
+  rightmost part taking the LSBs; the parts of one register forming a
+  contiguous range are one flop (:meth:`_group_parts`). Combinational
+  and continuous writes to part of a variable splice into its other bits
+  (:meth:`_splice_assign`). Every assignment's RHS is sized to its target.
+- An assignment target this frontend cannot lower — a streaming
+  concatenation, a run-time index outside the memory-write and
+  ``$shl``-decoder shapes, an unpacked-struct member, a hierarchical
+  reference — is reported once per location with a ``WARNING`` (see
+  :meth:`_ModuleBuilder._warn_lvalue_dropped`), never dropped silently.
 - Concatenation (``{a, b, c}``) and replication (``{N{x}}``) on the
   RHS — see :meth:`_lower_concatenation` and
   :meth:`_lower_replication`. Pure bit-tuple aliasing, no Yosys
@@ -584,6 +599,9 @@ class _ModuleBuilder:
         # Next write-port index per memory (``MEMID``) — the ``PORTID``
         # parameter of each emitted ``$memwr_v2`` (#326).
         self._memory_write_ports: dict[str, int] = {}
+        # ``(location, reason)`` of every assignment already reported by
+        # :meth:`_warn_lvalue_dropped` (rtl-buddy-cdc#370).
+        self._lvalue_warned: set[tuple[str | None, str]] = set()
 
     # -- public ----------------------------------------------------------
 
@@ -930,7 +948,7 @@ class _ModuleBuilder:
         init_expr = getattr(member, "initializer", None)
         if init_expr is None:
             return
-        rhs_bits = self._bits_of_expression(init_expr)
+        rhs_bits = self._sized_rhs_bits(init_expr, len(self._alloc_bits(member)))
         if rhs_bits is None:
             return
         canonical = self._canonical_var(member)
@@ -1064,7 +1082,16 @@ class _ModuleBuilder:
             return None
         kind = type(ex).__name__
         if kind == "AssignmentExpression":
-            return self._lvalue_bits(ex.left)
+            bits = self._lvalue_bits(ex.left)
+            if bits is None and type(ex.left).__name__ != "EmptyArgumentExpression":
+                # An output bound to something with no bits here: the
+                # child's driver would be cut off from the parent net.
+                self._warn_dropped(
+                    ex,
+                    self._lvalue_unsupported_reason(ex.left),
+                    f"output port connection `{pc.port.name}`",
+                )
+            return bits
         if kind == "EmptyArgumentExpression":
             return None
         return self._bits_of_expression(ex)
@@ -1637,6 +1664,24 @@ class _ModuleBuilder:
         if type(expr).__name__ != "AssignmentExpression":
             return
         if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
+            return
+        if type(expr.left).__name__ == "ConcatenationExpression":
+            # ``{q, meta} <= 2'b01``: each register takes its slice of
+            # the constant (rtl-buddy-cdc#370), keyed as the data arm's
+            # :meth:`_concat_writes` keys its writes.
+            targets = self._lvalue_targets(expr.left)
+            val = self._const_int(expr.right)
+            if targets is None or val is None:
+                return
+            total = sum(width for _sym, _start, width in targets)
+            val_bits: tuple[Bit, ...] = tuple(
+                "1" if (val >> i) & 1 else "0" for i in range(total)
+            )
+            for sym, start, bits in self._group_parts(
+                targets, self._split_rhs(val_bits, targets)
+            ):
+                q_part = self._alloc_bits(sym)[start : start + len(bits)]
+                self._proc_resets[q_part] = int("".join(map(str, bits[::-1])), 2)
             return
         q_bits = self._lvalue_bits(expr.left)
         if q_bits is None:
@@ -2269,15 +2314,28 @@ class _ModuleBuilder:
         if mem_select is not None:
             self._emit_memory_write(*mem_select, rhs, clk_sym, src_node)
             return
+        if type(lhs).__name__ == "ConcatenationExpression":
+            # ``{q, meta} <= {meta, d}`` (rtl-buddy-cdc#370): one write
+            # per register, each taking its slice of the sized RHS.
+            writes = self._concat_writes(lhs, rhs)
+            if writes is None:
+                self._warn_lvalue_dropped(expr, lhs)
+                return
+            enable = self._combine_enable_stack()
+            for q_part, d_part in writes:
+                self._proc_writes.setdefault(q_part, []).append((enable, d_part))
+            return
         # Resolve the LHS to the subset of a variable's bits that the
-        # flop's Q should drive. Supports bare ``NamedValueExpression``
-        # (full width), ``ElementSelectExpression`` (single bit), and
-        # ``RangeSelectExpression`` (a contiguous range). Other LHS
-        # shapes (struct member, hierarchical reference, …) are skipped.
+        # flop's Q should drive: a bare ``NamedValueExpression`` (full
+        # width), a constant ``ElementSelectExpression`` /
+        # ``RangeSelectExpression`` or a packed-struct member. Anything
+        # else (run-time index, streaming concatenation, hierarchical
+        # reference, …) is reported, not dropped silently.
         q_bits = self._lvalue_bits(lhs)
         if q_bits is None:
+            self._warn_lvalue_dropped(expr, lhs)
             return
-        d_bits = self._bits_of_expression(rhs)
+        d_bits = self._sized_rhs_bits(rhs, len(q_bits))
         if d_bits is None:
             # RHS isn't a bare named value yet — we'd need primitive
             # lowering to model it. Emit a $_UNKNOWN_ driver so the
@@ -2554,15 +2612,224 @@ class _ModuleBuilder:
 
     def _lvalue_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """Resolve an LHS expression to the variable-bit subset it
-        writes."""
+        writes. A concatenation target gives its parts' bits joined
+        LSB-first (an output port bound to ``{a, b}``); procedural and
+        continuous writes split one first, see :meth:`_concat_writes`."""
         kind = type(expr).__name__
         if kind == "NamedValueExpression":
             return self._alloc_bits(expr.symbol)
-        if kind == "ElementSelectExpression":
+        if kind in {"ElementSelectExpression", "MemberAccessExpression"}:
             return self._element_select_bits(expr)
         if kind == "RangeSelectExpression":
             return self._range_select_bits(expr)
+        if kind == "ConcatenationExpression":
+            targets = self._lvalue_targets(expr)
+            if targets is None:
+                return None
+            out: list[Bit] = []
+            for sym, start, width in reversed(targets):
+                out.extend(self._alloc_bits(sym)[start : start + width])
+            return tuple(out)
         return None
+
+    # -- concatenation / partial l-values (rtl-buddy-cdc#370) -------------
+
+    def _lvalue_targets(self, expr: Any) -> list[tuple[Any, int, int]] | None:
+        """The bit ranges an assignment target writes, as ``(variable,
+        start, width)`` triples listed MSB-first (source order of a
+        concatenation), ``start`` counted LSB-first within the
+        variable's bits. ``None`` when any part is not a constant
+        select of a variable (a run-time index, a streaming
+        concatenation, a hierarchical reference, …).
+
+        A part is a whole variable, a bit / part select (any declared
+        range, ``+:`` / ``-:`` included, via :meth:`_range_select_span`),
+        a packed-struct member, or a nested concatenation.
+        """
+        kind = type(expr).__name__
+        if kind == "ConcatenationExpression":
+            out: list[tuple[Any, int, int]] = []
+            for op in getattr(expr, "operands", None) or []:
+                sub = self._lvalue_targets(op)
+                if sub is None:
+                    return None
+                out.extend(sub)
+            return out or None
+        if kind == "NamedValueExpression":
+            sym = self._canonical_var(expr.symbol)
+            return [(sym, 0, len(self._alloc_bits(sym)))]
+        if kind in {"ElementSelectExpression", "MemberAccessExpression"}:
+            sym, bits, start, width = self._resolve_select_chain(expr)
+        elif kind == "RangeSelectExpression":
+            span = self._range_select_span(expr)
+            if span is None:
+                return None
+            sym, bits, start, width = span
+        else:
+            return None
+        if sym is None or width < 1 or start < 0 or start + width > len(bits):
+            return None
+        return [(self._canonical_var(sym), start, width)]
+
+    @staticmethod
+    def _group_parts(
+        targets: list[tuple[Any, int, int]], pieces: list[tuple[Bit, ...]]
+    ) -> list[tuple[Any, int, tuple[Bit, ...]]]:
+        """Pair each target with its right-hand side ``piece`` and merge
+        the parts of one variable into contiguous runs, whatever their
+        order in the concatenation: ``{q[3], b, q[2:0]}`` and ``{hi[1:2],
+        hi[0], hi[3]}`` write ``q[3:0]`` / all of ``hi`` as one register,
+        as Yosys ``proc`` groups them; ``{g[3], g[1:0]}`` stays two.
+        Returns ``(variable, start, bits)`` with ``bits`` LSB-first."""
+        by_var: dict[Any, list[tuple[int, tuple[Bit, ...]]]] = {}
+        for (sym, start, _width), piece in zip(targets, pieces):
+            by_var.setdefault(sym, []).append((start, piece))
+        out: list[tuple[Any, int, tuple[Bit, ...]]] = []
+        for sym, parts in by_var.items():
+            parts.sort(key=lambda p: p[0])
+            run_start, run_bits = parts[0][0], list(parts[0][1])
+            for start, piece in parts[1:]:
+                if start == run_start + len(run_bits):
+                    run_bits.extend(piece)
+                else:
+                    out.append((sym, run_start, tuple(run_bits)))
+                    run_start, run_bits = start, list(piece)
+            out.append((sym, run_start, tuple(run_bits)))
+        return out
+
+    @staticmethod
+    def _resize_bits(
+        bits: tuple[Bit, ...], width: int, signed: bool = False
+    ) -> tuple[Bit, ...]:
+        """Truncate ``bits`` (LSB-first) to ``width``, or extend them with
+        zeros, or with copies of the MSB when ``signed``."""
+        if len(bits) >= width:
+            return tuple(bits[:width])
+        pad: Bit = bits[-1] if signed and bits else "0"
+        return tuple(bits) + (pad,) * (width - len(bits))
+
+    def _sized_bits(self, expr: Any) -> tuple[Bit, ...] | None:
+        """:meth:`_bits_of_expression`, except that the implicit width
+        conversions slang wraps around an assignment's right-hand side
+        are applied: zero extension, sign extension of a signed operand,
+        truncation. Operator results are already sized by their type
+        (``acc + inc`` assigned to a 5-bit target is a 5-bit ``$add``, so
+        its top bit is the real carry)."""
+        if type(expr).__name__ == "ConversionExpression":
+            operand = getattr(expr, "operand", None)
+            if operand is None:
+                return None
+            inner = self._sized_bits(operand)
+            if inner is None:
+                return None
+            width = self._expr_width(expr) or len(inner)
+            signed = bool(getattr(getattr(operand, "type", None), "isSigned", False))
+            return self._resize_bits(inner, width, signed)
+        return self._bits_of_expression(expr)
+
+    def _sized_rhs_bits(self, expr: Any, width: int) -> tuple[Bit, ...] | None:
+        """Right-hand side bits sized to a ``width``-bit target."""
+        bits = self._sized_bits(expr)
+        if bits is None:
+            return None
+        return self._resize_bits(bits, width)
+
+    @staticmethod
+    def _split_rhs(
+        rhs_bits: tuple[Bit, ...], targets: list[tuple[Any, int, int]]
+    ) -> list[tuple[Bit, ...]]:
+        """Slice LSB-first ``rhs_bits`` across MSB-first ``targets``:
+        the last target takes the least significant bits."""
+        pieces: list[tuple[Bit, ...]] = [()] * len(targets)
+        offset = 0
+        for i in range(len(targets) - 1, -1, -1):
+            width = targets[i][2]
+            pieces[i] = tuple(rhs_bits[offset : offset + width])
+            offset += width
+        return pieces
+
+    def _concat_writes(
+        self, lhs: Any, rhs: Any
+    ) -> list[tuple[tuple[Bit, ...], tuple[Bit, ...]]] | None:
+        """Split ``{a, b, …} <= rhs`` into one ``(target bits, rhs
+        bits)`` write per register run (see :meth:`_group_parts`) — what a register / latch
+        lowering needs. ``rhs`` is sized to the concatenation's total
+        width first; an unlowerable ``rhs`` gets an ``$_UNKNOWN_`` driver
+        like any other register input. ``None`` when a part cannot be
+        resolved (the caller reports the assignment)."""
+        targets = self._lvalue_targets(lhs)
+        if targets is None:
+            return None
+        total = sum(width for _sym, _start, width in targets)
+        rhs_bits = self._sized_rhs_bits(rhs, total)
+        if rhs_bits is None:
+            rhs_bits = self._unknown_driver(total)
+        return [
+            (self._alloc_bits(sym)[start : start + len(bits)], bits)
+            for sym, start, bits in self._group_parts(
+                targets, self._split_rhs(rhs_bits, targets)
+            )
+        ]
+
+    def _splice_assign(self, lhs: Any, rhs: Any, *, continuous: bool) -> bool:
+        """Lower a combinational write to a concatenation or to part of a
+        variable (``{c, s} = a + b``, ``bus[3:0] = x``, ``st.f = y``):
+        each written range of each variable is re-pointed at its slice of
+        the right-hand side, the variable's other bits keep their current
+        driver. ``False`` when the target cannot be resolved.
+
+        ``continuous`` records the re-pointing for
+        :meth:`_apply_forward_renames` as :meth:`_emit_continuous_assign`
+        does for a whole-variable ``assign``.
+        """
+        targets = self._lvalue_targets(lhs)
+        if targets is None:
+            return False
+        total = sum(width for _sym, _start, width in targets)
+        rhs_bits = self._sized_rhs_bits(rhs, total)
+        if rhs_bits is None:
+            # Unlowerable right-hand side: left undriven, as for a
+            # whole-variable target.
+            return True
+        for (sym, start, width), piece in zip(
+            targets, self._split_rhs(rhs_bits, targets)
+        ):
+            old = self._alloc_bits(sym)
+            new = old[:start] + piece + old[start + width :]
+            self._merge_canonical_var(sym, old, new)
+            if continuous:
+                for o, n in zip(old, new):
+                    if isinstance(o, int) and o != n:
+                        self._forward_renames[o] = n
+        return True
+
+    def _lvalue_unsupported_reason(self, expr: Any) -> str:
+        """Why :meth:`_lvalue_targets` cannot resolve ``expr``."""
+        kind = type(expr).__name__
+        if kind == "ConcatenationExpression":
+            for op in getattr(expr, "operands", None) or []:
+                if self._lvalue_targets(op) is None:
+                    return self._lvalue_unsupported_reason(op)
+        if kind == "StreamingConcatenationExpression":
+            return "target is a streaming concatenation"
+        if kind in {"ElementSelectExpression", "RangeSelectExpression"}:
+            return "target select has a run-time index or is out of range"
+        if kind == "MemberAccessExpression":
+            return "target is a member of an unpacked or indexed aggregate"
+        if kind == "HierarchicalValueExpression":
+            return "target is a hierarchical reference"
+        return f"target `{kind}` is not modelled"
+
+    def _warn_lvalue_dropped(self, node: Any, lhs: Any) -> None:
+        """:meth:`_warn_dropped` for an assignment whose target cannot be
+        lowered, once per source location (an unrolled ``for`` body is
+        walked once per iteration)."""
+        reason = self._lvalue_unsupported_reason(lhs)
+        key = (self._src_attr(node), reason)
+        if key in self._lvalue_warned:
+            return
+        self._lvalue_warned.add(key)
+        self._warn_dropped(node, reason, "assignment")
 
     def _element_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """``var[i]`` (and ``var[i][j]``, ``var[i][j][k]``, ...) —
@@ -2649,6 +2916,30 @@ class _ModuleBuilder:
             if span is None:
                 return None, (), 0, 0
             return span
+        if kind == "MemberAccessExpression":
+            # A member of a packed struct / union (rtl-buddy-cdc#370):
+            # ``FieldSymbol.bitOffset`` counts from the aggregate's LSB,
+            # as Yosys lays the struct out. Unpacked aggregates have no
+            # integral layout here and stay unresolved.
+            value = getattr(expr, "value", None)
+            value_type = getattr(value, "type", None)
+            member = getattr(expr, "member", None)
+            offset = getattr(member, "bitOffset", None)
+            if (
+                value is None
+                or not getattr(value_type, "isIntegral", False)
+                or offset is None
+            ):
+                return None, (), 0, 0
+            inner_sym, inner_bits, inner_offset, _inner_stride = (
+                self._resolve_select_chain(value)
+            )
+            if inner_sym is None:
+                return None, (), 0, 0
+            width = int(getattr(getattr(member, "type", None), "bitWidth", 0) or 0)
+            if width < 1:
+                return None, (), 0, 0
+            return inner_sym, inner_bits, inner_offset + int(offset), width
         return None, (), 0, 0
 
     @staticmethod
@@ -2897,7 +3188,10 @@ class _ModuleBuilder:
         - :class:`ReplicationExpression` — ``{N{x}}`` repeats the inner
           concat's bits ``N`` times. See :meth:`_lower_replication`.
 
-        Anything else (part-select, function call, struct member access,
+        - :class:`MemberAccessExpression` on a packed struct / union —
+          the field's bits (rtl-buddy-cdc#370).
+
+        Anything else (function call, unpacked-struct member access,
         …) returns ``None``; the caller substitutes an ``$_UNKNOWN_``
         driver so the rule pack treats the upstream as opaque rather
         than crashing.
@@ -2924,6 +3218,8 @@ class _ModuleBuilder:
                 if mem_select is not None:
                     return self._emit_memory_read(*mem_select, expr)
             return bits
+        if kind == "MemberAccessExpression":
+            return self._element_select_bits(expr)
         if kind == "RangeSelectExpression":
             return self._range_select_bits(expr)
         if kind == "ConcatenationExpression":
@@ -3410,10 +3706,19 @@ class _ModuleBuilder:
         # we'd rather surface as "latch dropped" than silently model.
         if getattr(expr, "isNonBlocking", False) and not self._plain_always:
             return
+        if type(expr.left).__name__ == "ConcatenationExpression":
+            writes = self._concat_writes(expr.left, expr.right)
+            if writes is None:
+                self._warn_lvalue_dropped(expr, expr.left)
+                return
+            for q_part, d_part in writes:
+                self._emit_dlatch_cell(en_bit, q_part, d_part, src_node=stmt)
+            return
         q_bits = self._lvalue_bits(expr.left)
         if q_bits is None:
+            self._warn_lvalue_dropped(expr, expr.left)
             return
-        d_bits = self._bits_of_expression(expr.right)
+        d_bits = self._sized_rhs_bits(expr.right, len(q_bits))
         if d_bits is None:
             d_bits = self._unknown_driver(width=len(q_bits))
         self._emit_dlatch_cell(en_bit, q_bits, d_bits, src_node=stmt)
@@ -3733,18 +4038,30 @@ class _ModuleBuilder:
             return
         if getattr(expr, "isNonBlocking", False) and not self._plain_always:
             return  # nonblocking in always_comb is a SV style violation
-        lhs_kind = type(expr.left).__name__
-        if lhs_kind == "ElementSelectExpression":
-            self._alias_indexed_assign(expr.left, expr.right)
+        lhs = expr.left
+        lhs_kind = type(lhs).__name__
+        if lhs_kind == "NamedValueExpression":
+            rhs_bits = self._sized_rhs_bits(
+                expr.right, len(self._alloc_bits(lhs.symbol))
+            )
+            if rhs_bits is None:
+                return
+            self._rewrite_aliased(lhs, rhs_bits)
             return
-        if lhs_kind != "NamedValueExpression":
+        if (
+            lhs_kind == "ElementSelectExpression"
+            and self._const_int(getattr(lhs, "selector", None)) is None
+        ):
+            # Run-time index: the ``$shl`` decoder shape (CDC-019).
+            if not self._alias_indexed_assign(lhs, expr.right):
+                self._warn_lvalue_dropped(expr, lhs)
             return
-        rhs_bits = self._bits_of_expression(expr.right)
-        if rhs_bits is None:
-            return
-        self._rewrite_aliased(expr.left, rhs_bits)
+        # Concatenation, constant bit / part select, struct member
+        # (rtl-buddy-cdc#370): splice the RHS into the written bits.
+        if not self._splice_assign(lhs, expr.right, continuous=False):
+            self._warn_lvalue_dropped(expr, lhs)
 
-    def _alias_indexed_assign(self, lhs: Any, rhs: Any) -> None:
+    def _alias_indexed_assign(self, lhs: Any, rhs: Any) -> bool:
         """Lower ``base[idx] = rhs;`` in an ``always_comb`` body.
 
         Models the SV semantics ``base = base | (rhs << idx)`` (1-bit
@@ -3763,20 +4080,16 @@ class _ModuleBuilder:
         any multi-output comb cell with the right fan-out matches —
         ``$shl`` and ``$shift`` are equivalent here.
 
-        Indexed-write shapes we *don't* model (silently ignored):
-
-        - LHS chain (``base[a].field[b] = …``); only the simple
-          ``NamedValue[idx]`` form is recognised.
-        - Range selects (``base[3:1] = …``); the rule pack's CDC-019
-          detector keys off per-bit fan-out, so a range write would
-          need a different lowering shape.
-        - RHS wider than 1 bit; the shift-based encoding assumes a
-          single-bit indexed write (the only shape the corpus
-          templates exercise).
+        Only a run-time index reaches here; a constant one is spliced
+        exactly by :meth:`_splice_assign`. Returns ``False`` for the
+        shapes not modelled — an LHS chain (``base[a].field[b] = …``),
+        a 1-bit base, an index that does not lower — and the caller
+        reports the assignment. A multi-bit RHS is zero-extended into
+        the shift as is.
         """
         base = getattr(lhs, "value", None)
         if base is None or type(base).__name__ != "NamedValueExpression":
-            return
+            return False
         base_sym = base.symbol
         canonical = self._canonical_var(base_sym)
         prev_bits = self._var_bits.get(canonical)
@@ -3784,18 +4097,18 @@ class _ModuleBuilder:
             prev_bits = self._alloc_bits(base_sym)
         width = len(prev_bits)
         if width <= 1:
-            return  # nothing to spread across; not a CDC-019 shape
+            return False  # nothing to spread across; not a CDC-019 shape
 
         selector = getattr(lhs, "selector", None)
         if selector is None:
-            return
+            return False
         idx_bits = self._bits_of_expression(selector)
         if idx_bits is None:
-            return
+            return False
 
         rhs_bits = self._bits_of_expression(rhs)
         if rhs_bits is None or len(rhs_bits) == 0:
-            return
+            return True  # unlowerable RHS: left undriven, as elsewhere
         # Zero-extend rhs to base width so the shift operand and the
         # ``base | shl(rhs, idx)`` widths line up.
         a_bits: tuple[Bit, ...] = rhs_bits + ("0",) * (width - len(rhs_bits))
@@ -3820,6 +4133,7 @@ class _ModuleBuilder:
                 src_node=lhs,
             )
         self._merge_canonical_var(canonical, prev_bits, new_bits)
+        return True
 
     # -- continuous assigns ---------------------------------------------
 
@@ -3829,8 +4143,12 @@ class _ModuleBuilder:
             return
         lhs, rhs = a.left, a.right
         if type(lhs).__name__ != "NamedValueExpression":
+            # ``assign {c, s} = a + b;`` / ``assign bus[3:0] = x;``
+            # (rtl-buddy-cdc#370).
+            if not self._splice_assign(lhs, rhs, continuous=True):
+                self._warn_lvalue_dropped(member, lhs)
             return
-        rhs_bits = self._bits_of_expression(rhs)
+        rhs_bits = self._sized_rhs_bits(rhs, len(self._alloc_bits(lhs.symbol)))
         if rhs_bits is None:
             # Comb-driven port — primitive lowering will handle this.
             return
