@@ -1,0 +1,819 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "dut_bus_handshake": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "dut_bus_handshake.sv:20.1-70.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "inc": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "q_out": {
+          "direction": "output",
+          "bits": [ 5, 6, 7, 8 ]
+        }
+      },
+      "cells": {
+        "$add$dut_bus_handshake.sv:30$6": {
+          "hide_name": 1,
+          "type": "$add",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000100",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000100",
+            "Y_WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:30.41-30.51"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 9, 10, 11, 12 ],
+            "B": [ "1", "0", "0", "0" ],
+            "Y": [ 13, 14, 15, 16 ]
+          }
+        },
+        "$and$dut_bus_handshake.sv:59$15": {
+          "hide_name": 1,
+          "type": "$and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:59.19-59.34"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 17 ],
+            "B": [ 18 ],
+            "Y": [ 19 ]
+          }
+        },
+        "$flatten\\u_ack_meta.$procdff$38": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "meta_flop_synth.sv:53.5-53.37"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 20 ],
+            "Q": [ 21 ]
+          }
+        },
+        "$flatten\\u_capture.$procdff$37": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "meta_flop_synth.sv:67.5-67.45"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 22, 23, 24, 25 ],
+            "Q": [ 5, 6, 7, 8 ]
+          }
+        },
+        "$flatten\\u_capture.$procmux$26": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "src": "meta_flop_synth.sv:67.34-67.36|meta_flop_synth.sv:67.30-67.45"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 5, 6, 7, 8 ],
+            "B": [ 26, 27, 28, 29 ],
+            "S": [ 19 ],
+            "Y": [ 22, 23, 24, 25 ]
+          }
+        },
+        "$flatten\\u_req_meta.$procdff$36": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "meta_flop_synth.sv:53.5-53.37"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 30 ],
+            "Q": [ 31 ]
+          }
+        },
+        "$logic_and$dut_bus_handshake.sv:38$10": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:38.13-38.30"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 32 ],
+            "B": [ 33 ],
+            "Y": [ 34 ]
+          }
+        },
+        "$logic_and$dut_bus_handshake.sv:38$11": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:38.13-38.37"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 34 ],
+            "B": [ 4 ],
+            "Y": [ 35 ]
+          }
+        },
+        "$logic_and$dut_bus_handshake.sv:41$12": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:41.22-41.37"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 30 ],
+            "B": [ 36 ],
+            "Y": [ 37 ]
+          }
+        },
+        "$logic_not$dut_bus_handshake.sv:38$8": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:38.13-38.17"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 30 ],
+            "Y": [ 32 ]
+          }
+        },
+        "$logic_not$dut_bus_handshake.sv:38$9": {
+          "hide_name": 1,
+          "type": "$logic_not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:38.21-38.30"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 36 ],
+            "Y": [ 33 ]
+          }
+        },
+        "$not$dut_bus_handshake.sv:59$14": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:59.30-59.34"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 20 ],
+            "Y": [ 18 ]
+          }
+        },
+        "$procdff$39": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "dut_bus_handshake.sv:67.5-67.55"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 21 ],
+            "Q": [ 36 ]
+          }
+        },
+        "$procdff$40": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "dut_bus_handshake.sv:52.5-55.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 31 ],
+            "Q": [ 17 ]
+          }
+        },
+        "$procdff$41": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "dut_bus_handshake.sv:52.5-55.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 17 ],
+            "Q": [ 20 ]
+          }
+        },
+        "$procdff$42": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "dut_bus_handshake.sv:37.5-44.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 38 ],
+            "Q": [ 30 ]
+          }
+        },
+        "$procdff$43": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "dut_bus_handshake.sv:37.5-44.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 39, 40, 41, 42 ],
+            "Q": [ 26, 27, 28, 29 ]
+          }
+        },
+        "$procdff$44": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "dut_bus_handshake.sv:30.5-30.52"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 13, 14, 15, 16 ],
+            "Q": [ 9, 10, 11, 12 ]
+          }
+        },
+        "$procmux$29": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000100"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "dut_bus_handshake.sv:38.13-38.37|dut_bus_handshake.sv:38.9-43.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 26, 27, 28, 29 ],
+            "B": [ 9, 10, 11, 12 ],
+            "S": [ 35 ],
+            "Y": [ 39, 40, 41, 42 ]
+          }
+        },
+        "$procmux$31": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "dut_bus_handshake.sv:41.22-41.37|dut_bus_handshake.sv:41.18-43.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 30 ],
+            "B": [ "0" ],
+            "S": [ 37 ],
+            "Y": [ 43 ]
+          }
+        },
+        "$procmux$34": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "full_case": "00000000000000000000000000000001",
+            "src": "dut_bus_handshake.sv:38.13-38.37|dut_bus_handshake.sv:38.9-43.12"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 43 ],
+            "B": [ "1" ],
+            "S": [ 35 ],
+            "Y": [ 38 ]
+          }
+        },
+        "u_ack_meta": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_src": "dut_bus_handshake.sv:66.9-66.58",
+            "module": "$paramod$1d1de2190ac5280256bd502eb8a6aa98c1d1a5aa\\meta_flop_bus",
+            "module_dynports": "00000000000000000000000000000001",
+            "module_hdlname": "meta_flop_bus",
+            "module_src": "meta_flop_synth.sv:44.1-54.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_capture": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_src": "dut_bus_handshake.sv:62.9-62.73",
+            "module": "$paramod$c583619a5fd3e456d4600f341dd998d0e4305bb1\\meta_flop_bus_en",
+            "module_dynports": "00000000000000000000000000000001",
+            "module_hdlname": "meta_flop_bus_en",
+            "module_src": "meta_flop_synth.sv:57.1-68.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        },
+        "u_req_meta": {
+          "hide_name": 0,
+          "type": "$scopeinfo",
+          "parameters": {
+            "TYPE": "module"
+          },
+          "attributes": {
+            "cell_src": "dut_bus_handshake.sv:51.9-51.58",
+            "module": "$paramod$4078e151824c32faf5d093e216815eca79fd40ac\\meta_flop_bus",
+            "module_dynports": "00000000000000000000000000000001",
+            "module_hdlname": "meta_flop_bus",
+            "module_src": "meta_flop_synth.sv:44.1-54.10"
+          },
+          "port_directions": {
+          },
+          "connections": {
+          }
+        }
+      },
+      "netnames": {
+        "$0\\cnt[3:0]": {
+          "hide_name": 1,
+          "bits": [ 13, 14, 15, 16 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:30.5-30.52"
+          }
+        },
+        "$0\\req[0:0]": {
+          "hide_name": 1,
+          "bits": [ 38 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:37.5-44.8"
+          }
+        },
+        "$0\\src_data[3:0]": {
+          "hide_name": 1,
+          "bits": [ 39, 40, 41, 42 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:37.5-44.8"
+          }
+        },
+        "$flatten\\u_capture.$0\\q[3:0]": {
+          "hide_name": 1,
+          "bits": [ 22, 23, 24, 25 ],
+          "attributes": {
+            "src": "meta_flop_synth.sv:67.5-67.45"
+          }
+        },
+        "$logic_and$dut_bus_handshake.sv:38$10_Y": {
+          "hide_name": 1,
+          "bits": [ 34 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:38.13-38.30"
+          }
+        },
+        "$logic_and$dut_bus_handshake.sv:38$11_Y": {
+          "hide_name": 1,
+          "bits": [ 35 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:38.13-38.37"
+          }
+        },
+        "$logic_and$dut_bus_handshake.sv:41$12_Y": {
+          "hide_name": 1,
+          "bits": [ 37 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:41.22-41.37"
+          }
+        },
+        "$logic_not$dut_bus_handshake.sv:38$8_Y": {
+          "hide_name": 1,
+          "bits": [ 32 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:38.13-38.17"
+          }
+        },
+        "$logic_not$dut_bus_handshake.sv:38$9_Y": {
+          "hide_name": 1,
+          "bits": [ 33 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:38.21-38.30"
+          }
+        },
+        "$not$dut_bus_handshake.sv:59$14_Y": {
+          "hide_name": 1,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:59.30-59.34"
+          }
+        },
+        "$procmux$31_Y": {
+          "hide_name": 1,
+          "bits": [ 43 ],
+          "attributes": {
+          }
+        },
+        "ack": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "init": "0",
+            "src": "dut_bus_handshake.sv:49.11-49.14"
+          }
+        },
+        "ack_meta": {
+          "hide_name": 0,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:32.11-32.19"
+          }
+        },
+        "ack_sync": {
+          "hide_name": 0,
+          "bits": [ 36 ],
+          "attributes": {
+            "init": "0",
+            "src": "dut_bus_handshake.sv:33.11-33.19"
+          }
+        },
+        "cnt": {
+          "hide_name": 0,
+          "bits": [ 9, 10, 11, 12 ],
+          "attributes": {
+            "init": "0000",
+            "src": "dut_bus_handshake.sv:29.17-29.20"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:22.24-22.31"
+          }
+        },
+        "dst_data": {
+          "hide_name": 0,
+          "bits": [ 5, 6, 7, 8 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:60.17-60.25"
+          }
+        },
+        "inc": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:23.24-23.27"
+          }
+        },
+        "load": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:58.11-58.15"
+          }
+        },
+        "q_out": {
+          "hide_name": 0,
+          "bits": [ 5, 6, 7, 8 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:24.24-24.29"
+          }
+        },
+        "req": {
+          "hide_name": 0,
+          "bits": [ 30 ],
+          "attributes": {
+            "init": "0",
+            "src": "dut_bus_handshake.sv:34.11-34.14"
+          }
+        },
+        "req_meta": {
+          "hide_name": 0,
+          "bits": [ 31 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:47.11-47.19"
+          }
+        },
+        "req_sync": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "init": "0",
+            "src": "dut_bus_handshake.sv:48.11-48.19"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "dut_bus_handshake.sv:21.24-21.31"
+          }
+        },
+        "src_data": {
+          "hide_name": 0,
+          "bits": [ 26, 27, 28, 29 ],
+          "attributes": {
+            "init": "0000",
+            "src": "dut_bus_handshake.sv:36.17-36.25"
+          }
+        },
+        "u_ack_meta.clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "hdlname": "u_ack_meta clk",
+            "src": "meta_flop_synth.sv:49.30-49.33"
+          }
+        },
+        "u_ack_meta.d": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "hdlname": "u_ack_meta d",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "meta_flop_synth.sv:50.30-50.31"
+          }
+        },
+        "u_ack_meta.q": {
+          "hide_name": 0,
+          "bits": [ 21 ],
+          "attributes": {
+            "hdlname": "u_ack_meta q",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "meta_flop_synth.sv:51.30-51.31"
+          }
+        },
+        "u_capture.clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_capture clk",
+            "src": "meta_flop_synth.sv:62.30-62.33"
+          }
+        },
+        "u_capture.d": {
+          "hide_name": 0,
+          "bits": [ 26, 27, 28, 29 ],
+          "attributes": {
+            "hdlname": "u_capture d",
+            "src": "meta_flop_synth.sv:64.30-64.31"
+          }
+        },
+        "u_capture.en": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "hdlname": "u_capture en",
+            "src": "meta_flop_synth.sv:63.30-63.32"
+          }
+        },
+        "u_capture.q": {
+          "hide_name": 0,
+          "bits": [ 5, 6, 7, 8 ],
+          "attributes": {
+            "hdlname": "u_capture q",
+            "src": "meta_flop_synth.sv:65.30-65.31"
+          }
+        },
+        "u_req_meta.clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "hdlname": "u_req_meta clk",
+            "src": "meta_flop_synth.sv:49.30-49.33"
+          }
+        },
+        "u_req_meta.d": {
+          "hide_name": 0,
+          "bits": [ 30 ],
+          "attributes": {
+            "hdlname": "u_req_meta d",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "meta_flop_synth.sv:50.30-50.31"
+          }
+        },
+        "u_req_meta.q": {
+          "hide_name": 0,
+          "bits": [ 31 ],
+          "attributes": {
+            "hdlname": "u_req_meta q",
+            "single_bit_vector": "00000000000000000000000000000001",
+            "src": "meta_flop_synth.sv:51.30-51.31"
+          }
+        }
+      }
+    }
+  }
+}

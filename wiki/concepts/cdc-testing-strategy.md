@@ -3,7 +3,7 @@ title: CDC Testing Strategy
 created: 2026-05-11
 updated: 2026-11-13
 type: concept
-tags: [testing, cdc, architecture, extension-point, frontend, fuzz]
+tags: [testing, cdc, architecture, extension-point, frontend, fuzz, sim]
 sources: [raw/articles/rtl-buddy-cdc-architecture.md]
 confidence: high
 ---
@@ -199,6 +199,56 @@ analyzer drops unobservable cells itself, so dead logic cannot add or
 remove a finding. The three fixtures whose verdict used to change also
 commit that `<name>.noclean.json` for the no-Yosys job
 (`tests/test_liveness.py`).
+
+## Simulation Oracle
+
+`tests/sim/` (marker `sim`) simulates small DUTs under Icarus with a
+behavioural metastability model (`meta_flop_lib.sv`: a flop whose `D`
+changed since the previous edge may capture a random bit) and checks
+that the functional failure the analyzer predicts shows up, or does
+not. CI runs it in the `fuzz + sim oracle` job (apt `iverilog`); every
+other job skips it.
+
+| Test file | DUTs | Pairs with |
+|---|---|---|
+| `test_oracle.py` | unsynced crossing vs 2FF; latch "synchroniser" | CDC-001; gap G-1 |
+| `test_glitch_oracle.py` | combinational clock mux; clock sampled as data | CDC-010; CDC-008 |
+| `test_reset_oracle.py` | foreign-domain async reset vs reset sync (smoke only) | RDC-001 |
+| `test_multibit_oracle.py` | binary / gray / handshake bus; reconvergent fan-out, one-hot per-bit sync, and their fixes | CDC-004; CDC-005 (+ CDC-020) |
+
+The first three pair a DUT with a rule only in prose. The multi-bit
+oracle (rtl-buddy-cdc#331) checks both halves on **one source**: each
+DUT includes `meta_flop_lib.sv` for simulation, or, under
+`SIM_ORACLE_SYNTH`, the plain-flop stand-ins in `meta_flop_synth.sv`
+for the Yosys build (`runner.build_netlist`, a `-s` script). The
+netlists are committed under `tests/sim/netlists/` (regenerate with
+`uv run python -m tests.sim.runner`), so the analyzer half — exact
+per-rule counts from `rtl-buddy-cdc analyze` — runs without Yosys or
+Icarus; a Yosys-gated test checks each committed netlist still gives
+its source's verdict. The simulation half runs eight fixed seed /
+clock-ratio / phase configurations per DUT (plusargs, one compiled
+image), and the test asserts the analyzer fires exactly when every
+run fails, and is silent exactly when every run is clean.
+
+**Scoreboard property** (`tb_bus_crossing.sv`): at each destination
+edge, `q_out` must equal a value the source's `src_data` held at some
+instant in the last `WINDOW_DST_CYCLES` (6) destination periods. A
+correct crossing only delays values; an incoherent bus sample (lanes
+from two source values) or a reconvergent pair whose halves come from
+different source instants is a value the source never held. The
+window must cover the DUT's latency; widening it can only hide errors.
+A liveness count (`updates`) rejects a DUT that passes by never moving.
+
+**Model limit.** The injection aperture is a whole destination period,
+not the few picoseconds of silicon, so a lane that changed long before
+the edge still counts as uncertain. The multi-bit runs therefore keep
+src_clk slower than dst_clk: a gray counter advancing twice in one
+destination period would show two uncertain lanes, a model artifact.
+
+**Disagreements.** A bad DUT that never fails, or a good DUT that
+fails, is a finding, not something to tune away: record it as a
+strict `xfail` with a reproducer and leave `src/` alone in the oracle
+change. None is open today.
 
 ## Extension Points
 
