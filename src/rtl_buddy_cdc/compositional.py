@@ -287,15 +287,14 @@ def analyse_module(
         return None
 
     sub_spec = derive_sub_spec(spec, clock_pin_roots)
-    clock_for_port = sub_spec.clock_for_port
-    # ``clock_for_port`` is threaded into every domain view: inside the
-    # subtree a flop's clock traces back to the module's *pin* (``clk``),
-    # and only the derived spec knows that pin carries the parent's
-    # ``clk_d``. Without it the rule context and the crossing list would
-    # disagree about every domain name at module scope.
-    ctx = _build_context(
-        sub, sub_spec, max_depth=max_depth, clock_for_port=clock_for_port
-    )
+    # The derived spec's clock inputs are threaded into every domain view:
+    # inside the subtree a flop's clock traces back to the module's *pin*
+    # (``clk``), and only the derived spec knows that pin carries the
+    # parent's ``clk_d``. The rule context (here and the one ``run_all``
+    # builds below) takes them from ``sub_spec`` itself, the crossing walk
+    # from the same ``clock_root_inputs()`` bundle, so the two cannot
+    # disagree about a domain name at module scope (rtl-buddy-cdc#358).
+    ctx = _build_context(sub, sub_spec, max_depth=max_depth)
     domains: dict[str, str | None] = dict(ctx.domains)
 
     # A flop is resolved only when its domain is one of the roots the
@@ -308,7 +307,7 @@ def analyse_module(
     )
     clock_roots = frozenset(c for c in domains.values() if c is not None)
 
-    crossings = find_crossings(sub, clock_for_port=clock_for_port, max_depth=max_depth)
+    crossings = find_crossings(sub, max_depth=max_depth, **sub_spec.clock_root_inputs())
     async_crossings = filter_async(crossings, sub_spec)
     violations = [
         v

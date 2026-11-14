@@ -342,46 +342,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`set_input_delay` / `set_output_delay` silently ignored a typo'd
-  clock and glob port targets** (rtl-buddy-cdc#357).
-  - A `-clock` naming no `create_clock` / `create_generated_clock` now
-    raises an SDC warning. It is decided at the end of the file, so a
-    clock declared later counts, and a virtual clock (`create_clock
-    -name V -period P` with no port) is a declared clock. The typing
-    itself is kept, as before.
-  - Port targets are resolved against the top-level ports with the
-    object-pattern matcher of `sdc_objects.py`. A glob (`[get_ports
-    d*]`, `{d?}`, bare `d*`) types every matching port of the command's
-    direction that carries no declared clock; before, it was stored
-    literally and typed nothing. A bus index (`{d[3]}`) types the whole
-    port `d`, as it already did by accident (the name was split into
-    `d` and a stray `3`); port typing is per port, and a port whose
-    bits are given different clocks is now warned about. A target that
-    matches no port is warned about.
-  - `ClockSpec` gains `port_delays` (one `PortDelay` per statement,
-    targets as written); `sdc_objects.resolve_port_delays` rewrites
-    `port_clock`, and the CLI calls it right after parsing. No
-    committed fixture changes verdict.
+- **A correct synchroniser read as depth 1 when the rule context and the
+  crossing walk named its clock differently** (rtl-buddy-cdc#358). The
+  rule context traced every flop's clock without the SDC's
+  `create_generated_clock [get_pins …]` targets and without the
+  canonical clock names the crossing walk uses, so rules comparing a
+  flop's domain with a crossing's clock compared a port name with a
+  clock name. A 2FF synchroniser clocked by a pin-declared generated
+  clock reported a false CDC-001 (`good_gen_clock_chain`), and so did
+  every synchroniser on a clock whose `-name` differs from its port
+  (`create_clock -name core [get_ports clk]`), with CDC-004 / CDC-012 /
+  CDC-014 and others reading the same mismatch: on the committed
+  fixtures, 86 netlists changed verdict under a pure clock rename; none
+  do now. Every view of a flop's domain — the crossing walk, the rule
+  context (also inside a greybox's per-module pass), CDC-023, CDC-024,
+  the clock-network and boundary clock-pin walks — is now built from one
+  bundle, `ClockSpec.clock_root_inputs()`. CDC-021 still names the
+  undeclared port, from the same walk's raw root.
 
-- **Text report printed an empty title for 13 rules** (rtl-buddy-cdc#355).
-  `CDC-009` … `CDC-013`, `CDC-018` … `CDC-021`, `RDC-006` … `RDC-008`
-  and `CDC-BBX` had no entry in the reporter's rule-title table, so the
-  text report's group header read `CDC-018 —` and the SARIF rule
-  `shortDescription` fell back to the bare rule id. Every rule now has
-  a one-line title in the README's wording, and a test fails if a rule
-  is registered without one.
+- **An ICG whose enable is typed to a foreign clock was a "two-clock
+  combine"** (rtl-buddy-cdc#358). The crossing walk counted a
+  `set_input_delay -clock`-typed data port as a clock when choosing a
+  clock gate's leg, so `en & clk` with `en` launched by an asynchronous
+  (or virtual) clock left the flop domain-unknown and raised CDC-023.
+  Only `create_clock` ports count as clocks there now
+  (`ClockSpec.declared_clock_for_port`), as they already did in the rule
+  context; the boundary clock-pin walk also makes the same leg choice
+  and names a pin's clock canonically.
 
-- **RDC-006 fired on a constant-leg mux driving an async reset**
-  (rtl-buddy-cdc#354). A `$mux` / `$_MUX_` (or `$pmux`) whose data legs
-  are all constants, such as the `rst_n ? 1'b0 : 1'b1` Yosys builds for
-  a `$dffsr` clear pin, is an inverter or buffer of its select, not a
-  selection between reset sources. RDC-006 now skips it, judged per
-  output lane, so the RTL netlist and the synthesised one (where `abc`
-  turns the mux into a `$_NOT_`) agree. RDC-005's explicit-mux
-  exemption no longer covers such a mux either: two resets combined on
-  its select converge as they would through the inverter. Verdict
-  change: `flop_zoo_crossing` loses its RDC-006 (now 5 × CDC-001 only),
-  and its gate-level allowlist row is removed.
+- **CDC-012 took any destination signal reaching the payload for an
+  acknowledge** (rtl-buddy-cdc#369). A destination-domain bit
+  synchronised into the source and feeding only the payload's value
+  (`data <= mode ? ~d : d`) silenced the rule although nothing held the
+  payload. The acknowledge path is now defined once, for this and the
+  relayed acknowledge above: a register path from a destination register
+  to the payload register's load / hold control — its enable, or the
+  select of the mux that holds it — then register to register through
+  `D` / enable / synchronous-reset pins (source domain first, then other
+  domains). New fixture `bad_datahold_dst_mode_bit`. Every committed
+  CDC-012 good fixture keeps its verdict. The domain map's `"handshake"`
+  verdict uses the same walk, so a relayed acknowledge now reads
+  `"handshake"` there too.
+
+- **CDC-006 fired on a typed input wired straight into a synchroniser**
+  (rtl-buddy-cdc#360). Any foreign-clock port in the first stage's `D`
+  fanin was reported as a "combinational source", including a port that
+  *is* the `D` pin (`good_virtual_clock_io`); the typed-port good
+  fixtures escaped only through `(* cdc_sync *)`. CDC-006 now needs a
+  real combinational cell between the port and the first stage —
+  single-input buffers / inverters and the stage's own constant-leg
+  synchronous-reset `$mux` don't count. Comb logic of ports before a
+  synchroniser still fires.
+
+- **CDC-012 missed an acknowledge relayed through a third clock domain**
+  (rtl-buddy-cdc#359). The handshake-feedback walk stayed inside the
+  source domain, so a payload held until an ack that travels
+  destination → third domain → source was reported as an open-loop bus
+  (`good_handshake_ack_via_third_domain`; and next to the expected
+  CDC-001 in `bad_handshake_ack_via_third_domain`). When the
+  source-domain walk finds nothing, the walk now continues through
+  registers of other domains (bounded, following only `D` / enable /
+  synchronous-reset pins and skipping clock dividers and reset
+  synchronisers, so a shared reset or a free-running third-domain
+  register is not an acknowledge). Whether each relay hop is
+  synchronised stays CDC-001's job.
 
 - **CDC-001 missed a synchroniser stage exported straight to an output
   port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
@@ -571,6 +595,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `empty` / `full` flags) read undriven placeholder bits; it now reads
   the assign's driver.
 
+- **`set_input_delay` / `set_output_delay` silently ignored a typo'd
+  clock and glob port targets** (rtl-buddy-cdc#357).
+  - A `-clock` naming no `create_clock` / `create_generated_clock` now
+    raises an SDC warning. It is decided at the end of the file, so a
+    clock declared later counts, and a virtual clock (`create_clock
+    -name V -period P` with no port) is a declared clock. The typing
+    itself is kept, as before.
+  - Port targets are resolved against the top-level ports with the
+    object-pattern matcher of `sdc_objects.py`. A glob (`[get_ports
+    d*]`, `{d?}`, bare `d*`) types every matching port of the command's
+    direction that carries no declared clock; before, it was stored
+    literally and typed nothing. A bus index (`{d[3]}`) types the whole
+    port `d`, as it already did by accident (the name was split into
+    `d` and a stray `3`); port typing is per port, and a port whose
+    bits are given different clocks is now warned about. A target that
+    matches no port is warned about.
+  - `ClockSpec` gains `port_delays` (one `PortDelay` per statement,
+    targets as written); `sdc_objects.resolve_port_delays` rewrites
+    `port_clock`, and the CLI calls it right after parsing. No
+    committed fixture changes verdict.
+
+- **Text report printed an empty title for 13 rules** (rtl-buddy-cdc#355).
+  `CDC-009` … `CDC-013`, `CDC-018` … `CDC-021`, `RDC-006` … `RDC-008`
+  and `CDC-BBX` had no entry in the reporter's rule-title table, so the
+  text report's group header read `CDC-018 —` and the SARIF rule
+  `shortDescription` fell back to the bare rule id. Every rule now has
+  a one-line title in the README's wording, and a test fails if a rule
+  is registered without one.
+
+- **RDC-006 fired on a constant-leg mux driving an async reset**
+  (rtl-buddy-cdc#354). A `$mux` / `$_MUX_` (or `$pmux`) whose data legs
+  are all constants, such as the `rst_n ? 1'b0 : 1'b1` Yosys builds for
+  a `$dffsr` clear pin, is an inverter or buffer of its select, not a
+  selection between reset sources. RDC-006 now skips it, judged per
+  output lane, so the RTL netlist and the synthesised one (where `abc`
+  turns the mux into a `$_NOT_`) agree. RDC-005's explicit-mux
+  exemption no longer covers such a mux either: two resets combined on
+  its select converge as they would through the inverter. Verdict
+  change: `flop_zoo_crossing` loses its RDC-006 (now 5 × CDC-001 only),
+  and its gate-level allowlist row is removed.
+
 - **slang frontend: arrays of instances** (rtl-buddy-cdc#353) —
   `sync2 u_sync[1:0] (...)` produced no cells at all on the pyslang
   path, so the instances, their flops and every crossing through them
@@ -611,18 +676,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
-- **Fixture READMEs regenerated and drift-checked in CI**
-  (rtl-buddy-cdc#356). Thirteen generated fixture READMEs were stale or
-  missing (header comments, netlists and companion gate netlists had
-  changed since they were written); they are regenerated. The lint
-  workflow gains a `fixture-docs` job running
-  `scripts/gen_fixture_docs.py --check --committed-netlists-only`, and
-  now also triggers on `tests/fixtures/**`. The new flag skips the four
-  fixtures with no committed netlist, which would need Yosys to
-  elaborate (and whose READMEs depend on its cell naming); without the
-  flag they are also skipped, with a clear message, when `yosys` is not
-  on PATH.
-
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
   work item 2) — *test-only: no analyzer change.* CDC-022, CDC-023 and
   CDC-BBX had no fuzz template; CDC-018/019/020/021 and RDC-007/008 had
@@ -648,6 +701,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `proc` lowers an 8-way `case` decoder to a ROM.
   - Seven cases pin verdicts believed wrong, each with a `gap_note`. The
     list is in `wiki/concepts/cdc-testing-strategy.md`.
+
+- **Fixture READMEs regenerated and drift-checked in CI**
+  (rtl-buddy-cdc#356). Thirteen generated fixture READMEs were stale or
+  missing (header comments, netlists and companion gate netlists had
+  changed since they were written); they are regenerated. The lint
+  workflow gains a `fixture-docs` job running
+  `scripts/gen_fixture_docs.py --check --committed-netlists-only`, and
+  now also triggers on `tests/fixtures/**`. The new flag skips the four
+  fixtures with no committed netlist, which would need Yosys to
+  elaborate (and whose READMEs depend on its cell naming); without the
+  flag they are also skipped, with a clear message, when `yosys` is not
+  on PATH.
 
 ## [0.7.3] — 2026-10-31
 

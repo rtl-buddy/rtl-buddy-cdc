@@ -329,3 +329,13 @@ class _FakeSpec:
     @staticmethod
     def clock_for_port(name: str) -> str | None:
         return _identity(name)
+
+    declared_clock_for_port = clock_for_port
+
+    def clock_root_inputs(self) -> dict:
+        return {
+            "pin_clocks": self.pin_clocks,
+            "clock_for_port": self.clock_for_port,
+            "declared_clock_for_port": self.declared_clock_for_port,
+            "case_analysis": self.case_analysis,
+        }
