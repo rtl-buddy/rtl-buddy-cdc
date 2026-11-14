@@ -884,6 +884,10 @@ def _analyze_module_and_report(
     sdc_coverage: dict[sdc_objects.CrossingKey, sdc_objects.CrossingCoverage] = {}
     if sdc_path is not None:
         spec = sdc_mod.parse_file(sdc_path)
+        # set_*_delay targets written as a bus index (``{d[3]}``) or a glob
+        # (``d*``) resolve against the top-level ports (#357). Before the
+        # sentinel pass below, which must see the ports they type.
+        spec.partial_warnings.extend(sdc_objects.resolve_port_delays(module, spec))
         # Synthesize sentinel entries for input ports the SDC didn't
         # type via ``set_input_delay -clock``. Lets find_crossings's
         # existing port-walk emit port-sourced crossings for them so

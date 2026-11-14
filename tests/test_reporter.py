@@ -18,12 +18,13 @@ from rtl_buddy_cdc.reporter import (
     JSON_CONTRACT,
     TOOL_VERSION,
     AnalysisResult,
+    _RULE_DESCRIPTIONS,  # noqa: PLC2701
     _instance_path,
     render_json,
     render_sarif,
     render_text,
 )
-from rtl_buddy_cdc.rules import run_all as run_all_rules
+from rtl_buddy_cdc.rules import RULES, run_all as run_all_rules
 from rtl_buddy_cdc.waivers import apply as apply_waivers, parse as parse_waivers
 
 FIX_DIR = Path(__file__).parent / "fixtures" / "bad_single_ff_sync"
@@ -102,6 +103,37 @@ def test_sarif_minimum_shape(result: AnalysisResult) -> None:
     loc = results[0]["locations"][0]["physicalLocation"]
     assert loc["artifactLocation"]["uri"].endswith("bad_single_ff_sync.sv")
     assert "region" in loc and loc["region"]["startLine"] >= 1
+
+
+def test_rule_descriptions_cover_every_rule() -> None:
+    """Every rule the pack can emit, plus the analyzer's own CDC-BBX,
+    has a one-line title (rtl-buddy-cdc#355), and no title names a rule
+    that no longer exists."""
+    from rtl_buddy_cdc.cli import BBOX_RULE_ID
+
+    expected = set(RULES) | {BBOX_RULE_ID}
+    assert set(_RULE_DESCRIPTIONS) == expected
+    assert all(desc.strip() for desc in _RULE_DESCRIPTIONS.values())
+
+
+@pytest.mark.parametrize("rule_id", ["CDC-018", "RDC-006", "CDC-BBX"])
+def test_text_and_sarif_titles_for_late_added_rules(
+    result: AnalysisResult, rule_id: str
+) -> None:
+    """The text header and the SARIF ``shortDescription`` both read the
+    title table, so a rule missing from it printed ``CDC-018 —`` with
+    nothing after the dash and a SARIF description equal to the id."""
+    relabelled = dataclasses.replace(
+        result,
+        violations=[dataclasses.replace(v, rule_id=rule_id) for v in result.violations],
+    )
+    text = io.StringIO()
+    render_text(relabelled, text)
+    assert f"{rule_id} — {_RULE_DESCRIPTIONS[rule_id]}" in text.getvalue()
+    sarif = io.StringIO()
+    render_sarif(relabelled, sarif)
+    (rule,) = json.loads(sarif.getvalue())["runs"][0]["tool"]["driver"]["rules"]
+    assert rule["shortDescription"]["text"] == _RULE_DESCRIPTIONS[rule_id]
 
 
 def test_cli_format_dispatch_to_file(tmp_path: Path) -> None:

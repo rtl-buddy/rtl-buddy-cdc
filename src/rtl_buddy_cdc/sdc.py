@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import functools
 import json
 import logging
 import os
@@ -122,6 +123,7 @@ __all__ = [
     "ClockSpec",
     "DatapathOnlyDelay",
     "FalsePathException",
+    "PortDelay",
     "SdcObject",
     "TclReadError",
     "TclResourceLimitError",
@@ -162,6 +164,24 @@ class Clock:
     # ``create_generated_clock -source`` objects, as written (rtl-buddy-cdc#330).
     # Recorded for diagnostics only: the master comes from ``-master_clock``.
     source: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PortDelay:
+    """One ``set_input_delay`` / ``set_output_delay -clock`` statement
+    (rtl-buddy-cdc#357).
+
+    ``targets`` are the port operands as written, a bus index kept on its
+    name (``d[3]``) and globs (``d*``, ``a?``) unexpanded: the parser has
+    no netlist, so :func:`rtl_buddy_cdc.sdc_objects.resolve_port_delays`
+    resolves them against the top-level ports and rewrites
+    :attr:`ClockSpec.port_clock`. File order is application order.
+    """
+
+    command: str  # "set_input_delay" | "set_output_delay"
+    clock: str
+    targets: tuple[str, ...]
+    line: int | None = None
 
 
 @dataclass(frozen=True)
@@ -369,6 +389,11 @@ class ClockSpec:
     # domain to data ports that aren't reached by any flop's CLK
     # tracing.
     port_clock: dict[str, str] = field(default_factory=dict)
+    # Every ``set_*_delay -clock`` statement with a port target, in file
+    # order (rtl-buddy-cdc#357). ``port_clock`` holds their targets as
+    # written until ``sdc_objects.resolve_port_delays`` expands bus
+    # indices and globs against the netlist's ports.
+    port_delays: list[PortDelay] = field(default_factory=list)
     # Internal pin path (e.g. ``"u_a/clk_out"``) → generated clock name,
     # populated when a ``create_generated_clock`` target is a
     # ``[get_pins …]`` expression rather than a top-level port. The
@@ -762,7 +787,31 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
         parsed = dataclasses.replace(_slice(args, spec_for_cmd), line=command.line)
         _DISPATCH[cmd](spec, parsed)
     spec.multi_clock_ports = _index_multi_clock_ports(spec.clocks)
+    spec.partial_warnings.extend(_undeclared_delay_clocks(spec))
     return spec
+
+
+def _undeclared_delay_clocks(spec: ClockSpec) -> list[str]:
+    """One warning per ``set_*_delay -clock`` naming no declared clock.
+
+    Decided after the whole file is read, so a clock declared below the
+    delay that uses it counts; a virtual clock (``create_clock -name V
+    -period P`` with no source port) is a declared clock. A clock that a
+    later ``create_clock`` without ``-add`` replaced off its only port no
+    longer exists and is reported too (rtl-buddy-cdc#357).
+    """
+    out: list[str] = []
+    for d in spec.port_delays:
+        if d.clock in spec.clocks:
+            continue
+        out.append(
+            f"{d.command} -clock {d.clock}{_at_line(d.line)}: no create_clock "
+            f"or create_generated_clock declares clock '{d.clock}', so "
+            f"{', '.join(d.targets)} {'is' if len(d.targets) == 1 else 'are'} "
+            f"typed to a clock that does not exist — a typo, or a missing "
+            f"(virtual) clock declaration?"
+        )
+    return out
 
 
 def _index_multi_clock_ports(clocks: dict[str, Clock]) -> dict[str, tuple[str, ...]]:
@@ -1891,7 +1940,7 @@ def _handle_set_false_path(spec: ClockSpec, p: Parsed) -> None:
     )
 
 
-def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
+def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
     """Parse ``set_input_delay`` / ``set_output_delay``.
 
     The only CDC-relevant fields are ``-clock <name>`` and the
@@ -1916,8 +1965,18 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
             or "get_ports" in word
             or not _looks_numeric(word)
         ):
-            names, sf = _extract_names(word)
-            ports.extend(names)
+            # ``_split_collection`` keeps a bus index on its name
+            # (``{d[3]}`` → ``d[3]``, where ``_extract_names`` split it
+            # into ``d`` and ``3``); ``sdc_objects.resolve_port_delays``
+            # resolves indices and globs against the netlist (#357).
+            kind, names, sf = _split_collection(word)
+            if kind not in (None, "port"):
+                # ``[expr {$p * 0.4}]`` left unevaluated by the tokenizer
+                # is the delay value, not a target (its ``*`` would glob
+                # every port), and a pin / cell collection names no
+                # top-level port.
+                continue
+            ports.extend(n for n in names if not _looks_numeric(n))
             saw_filter = saw_filter or sf
 
     if saw_filter:
@@ -1940,6 +1999,9 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed) -> None:
             "set_input_transition / set_load for slew or load defaults."
         )
         return
+    spec.port_delays.append(
+        PortDelay(command=command, clock=clock, targets=tuple(ports), line=p.line)
+    )
     for port in ports:
         spec.port_clock[port] = clock
 
@@ -2090,13 +2152,15 @@ def _handle_set_case_analysis(spec: ClockSpec, p: Parsed) -> None:
         spec.case_analysis[port] = value
 
 
-_DISPATCH = {
+_DISPATCH: dict[str, Callable[[ClockSpec, Parsed], None]] = {
     "create_clock": _handle_create_clock,
     "create_generated_clock": _handle_create_generated_clock,
     "set_clock_groups": _handle_set_clock_groups,
     "set_false_path": _handle_set_false_path,
-    "set_input_delay": _handle_set_delay,
-    "set_output_delay": _handle_set_delay,
+    "set_input_delay": functools.partial(_handle_set_delay, command="set_input_delay"),
+    "set_output_delay": functools.partial(
+        _handle_set_delay, command="set_output_delay"
+    ),
     "set_max_delay": _handle_set_max_delay,
     "set_case_analysis": _handle_set_case_analysis,
 }
