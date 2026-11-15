@@ -1902,30 +1902,19 @@ class _ModuleBuilder:
             # A condition that does not lower becomes an opaque select
             # (reported), never an unconditional walk of both arms.
             cond_bit = self._condition_bit(statement)
-            self._enable_stack.append(cond_bit)
-            try:
+
+            def walk(arm: Any) -> None:
                 self._emit_assignments_in(
-                    statement.ifTrue,
-                    clk_sym,
-                    reset_sym,
-                    reset_active_low,
-                    src_node,
+                    arm, clk_sym, reset_sym, reset_active_low, src_node
                 )
-            finally:
-                self._enable_stack.pop()
+
+            base = self._blocking_values()
+            true_state = self._clocked_arm(cond_bit, statement.ifTrue, walk, base)
+            false_state = base
             if statement.ifFalse is not None:
                 not_cond = self._lower_not(cond_bit)
-                self._enable_stack.append(not_cond)
-                try:
-                    self._emit_assignments_in(
-                        statement.ifFalse,
-                        clk_sym,
-                        reset_sym,
-                        reset_active_low,
-                        src_node,
-                    )
-                finally:
-                    self._enable_stack.pop()
+                false_state = self._clocked_arm(not_cond, statement.ifFalse, walk, base)
+            self._merge_blocking(base, [(cond_bit, true_state)], false_state)
             return
         if kind == "CaseStatement":
             self._emit_case_statement(
@@ -2011,7 +2000,15 @@ class _ModuleBuilder:
         # value (rtl-buddy-cdc#377), never a walk of every arm as if
         # unconditional.
         case_expr_bits = self._case_expr_bits(statement)
+
+        def walk(arm: Any) -> None:
+            self._emit_assignments_in(
+                arm, clk_sym, reset_sym, reset_active_low, src_node
+            )
+
+        base = self._blocking_values()
         explicit_match_bits: list[Bit] = []
+        arm_states: list[tuple[Bit, dict[Any, tuple[Bit, ...]]]] = []
         for item in items:
             item_match_bits = [
                 self._case_label_match(case_expr_bits, match_expr, statement)
@@ -2022,29 +2019,21 @@ class _ModuleBuilder:
             item_stmt = getattr(item, "stmt", None)
             if item_enable is None:
                 continue  # an item with no labels never matches
-            self._enable_stack.append(item_enable)
-            try:
-                self._emit_assignments_in(
-                    item_stmt, clk_sym, reset_sym, reset_active_low, src_node
-                )
-            finally:
-                self._enable_stack.pop()
+            arm_states.append(
+                (item_enable, self._clocked_arm(item_enable, item_stmt, walk, base))
+            )
 
+        default_state = base
         if default_arm is not None:
             no_match = self._or_bits(explicit_match_bits)
-            default_enable = self._lower_not(no_match) if no_match is not None else None
-            if default_enable is None:
-                self._emit_assignments_in(
-                    default_arm, clk_sym, reset_sym, reset_active_low, src_node
-                )
+            if no_match is None:
+                walk(default_arm)
+                default_state = self._blocking_values()
             else:
-                self._enable_stack.append(default_enable)
-                try:
-                    self._emit_assignments_in(
-                        default_arm, clk_sym, reset_sym, reset_active_low, src_node
-                    )
-                finally:
-                    self._enable_stack.pop()
+                default_state = self._clocked_arm(
+                    self._lower_not(no_match), default_arm, walk, base
+                )
+        self._merge_blocking(base, arm_states, default_state)
 
     def _case_expr_bits(self, stmt: Any) -> tuple[Bit, ...]:
         """The bits of a ``case`` statement's expression, or a reported
@@ -2339,7 +2328,7 @@ class _ModuleBuilder:
                 (start, enable, bits)
             )
             if blocking:
-                self._forward_blocking_write(sym, net, start, bits, enable)
+                self._forward_blocking_write(sym, net, start, bits)
 
     def _forward_blocking_write(
         self,
@@ -2347,20 +2336,66 @@ class _ModuleBuilder:
         net: tuple[Bit, ...],
         start: int,
         bits: tuple[Bit, ...],
-        enable: Bit | None,
     ) -> None:
         """Make a blocking write in a clocked block visible to the reads
         after it in the same block, as synthesis does: ``t = a + 1; q <=
         t;`` loads ``q`` with ``a + 1``, not with the register ``t``
         (rtl-buddy-cdc#377; it read the register, which added a flop stage
         that is not in the hardware). The variable is still a register
-        (its writes drive its D); its value until the block ends is the
-        written value, behind a mux on the write's enable."""
+        (its writes drive its D); until the block ends its value is the
+        written one, within the ``if`` / ``case`` arm that wrote it and,
+        after the statement, behind the arms' merge mux
+        (:meth:`_clocked_arm`)."""
         self._blocking_nets.setdefault(sym, net)
         current = self._var_bits.get(sym, net)
-        old = current[start : start + len(bits)]
-        new = bits if enable is None else self._build_hold_mux(enable, old, bits)
-        self._var_bits[sym] = current[:start] + new + current[start + len(bits) :]
+        self._var_bits[sym] = current[:start] + bits + current[start + len(bits) :]
+
+    def _blocking_values(self) -> dict[Any, tuple[Bit, ...]]:
+        """The current value of every blocking-written variable."""
+        return {
+            sym: self._var_bits.get(sym, net)
+            for sym, net in self._blocking_nets.items()
+        }
+
+    def _clocked_arm(
+        self,
+        enable: Bit,
+        stmt: Any,
+        walk: Any,
+        base: dict[Any, tuple[Bit, ...]],
+    ) -> dict[Any, tuple[Bit, ...]]:
+        """Walk one arm of a clocked ``if`` / ``case`` with ``enable`` on the
+        enable stack; return the blocking-written values it leaves and
+        restore the values from before it. Inside the arm a blocking write
+        is seen as written, as Yosys ``proc`` evaluates the arm's
+        statements; :meth:`_merge_blocking` muxes the arms afterwards."""
+        self._enable_stack.append(enable)
+        try:
+            walk(stmt)
+        finally:
+            self._enable_stack.pop()
+        state = self._blocking_values()
+        for sym, net in self._blocking_nets.items():
+            self._var_bits[sym] = base.get(sym, net)
+        return state
+
+    def _merge_blocking(
+        self,
+        base: dict[Any, tuple[Bit, ...]],
+        arms: list[tuple[Bit, dict[Any, tuple[Bit, ...]]]],
+        fallback: dict[Any, tuple[Bit, ...]],
+    ) -> None:
+        """Merge the values blocking writes left in each arm (first arm
+        highest priority; ``fallback`` when none is selected) into one
+        ``$mux`` chain per variable."""
+        for sym, net in self._blocking_nets.items():
+            prior = base.get(sym, net)
+            chain = fallback.get(sym, prior)
+            for select, state in reversed(arms):
+                value = state.get(sym, prior)
+                if value != chain:
+                    chain = self._build_hold_mux(select, chain, value)
+            self._var_bits[sym] = chain
 
     def _lower_not(self, bit: Bit) -> Bit:
         """Allocate a ``$not`` cell over ``bit`` and return the output

@@ -1121,3 +1121,33 @@ endmodule
     (mul,) = _cells(module, "$mul")
     assert mul.connections["B"][:4] == ("0", "0", "0", "1")
     assert module.ports["z"].bits == mul.connections["Y"][:8]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "if (en) begin t = d + 2'd1; q <= t; end",
+        "case (d) 2'd0: begin t = ~d; q <= t; end default: q <= d; endcase",
+        "begin if (en) t = d; else t = ~d; q <= t; end",
+    ],
+    ids=["if_arm", "case_arm", "both_arms"],
+)
+def test_blocking_value_is_arm_local(tmp_path: Path, body: str) -> None:
+    """Inside the ``if`` / ``case`` arm that writes it, a blocking value is
+    the written one, as ``proc`` evaluates the arm; only after the
+    statement is it muxed with the prior value. Muxing at the write kept
+    the temporary's register alive (the corpus' ``rd_ptr_temp`` /
+    ``wr_ptr_temp`` in axis_async_fifo, 26 flop bits Yosys does not
+    have)."""
+    src = f"""module m (input clk, input en, input [1:0] d, output reg [1:0] q);
+    reg [1:0] t;
+    always @(posedge clk) {body}
+endmodule
+"""
+    module = prune_dead_cells(_slang(tmp_path, src), {})
+    if "else" not in body:
+        # ``t`` is never read before it is written: no register survives.
+        assert all(
+            c.connections["Q"] != module.netnames["t"].bits for c in _flops(module)
+        )
+    _agree_with_yosys(tmp_path, src, module)

@@ -456,6 +456,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     constant power such as `2**N` folds). With these the corpus designs
     lower on the slang path with no warning, and `ptp_clock_cdc` has
     the same 729 flop bits as on the Yosys path.
+  - Inside the `if` / `case` arm that writes it, a blocking value in a
+    clocked block is the written value, and the arms are muxed only after
+    the statement, as `proc` evaluates them. Muxing at each write with
+    the prior value kept a temporary's register alive (`rd_ptr_temp` /
+    `wr_ptr_temp` in the corpus' `axis_async_fifo`); every corpus design
+    now has the same flop bits on both paths.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,
