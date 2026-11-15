@@ -80,9 +80,25 @@ What currently works
   Plain ``always_ff @(posedge clk) q <= d;`` emits ``$dff``.
 - Verilog-2001 ``always`` blocks (rtl-buddy-cdc#345), by what they
   infer: edge-triggered → the ``always_ff`` lowering; ``@*`` or a
-  complete level-sensitive body → ``always_comb``; a latch of the
-  ``if (en) q = d;`` shape → ``$dlatch``. Anything else is reported
-  with a ``WARNING`` (see :meth:`_ModuleBuilder._warn_dropped`).
+  level-sensitive list → the ``always_comb`` lowering. Anything else is
+  reported with a ``WARNING`` (see :meth:`_ModuleBuilder._warn_dropped`).
+- Level-sensitive bodies (``always_comb``, ``always @*``,
+  ``always_latch``) lower the way Yosys ``proc`` does
+  (rtl-buddy-cdc#377): an ``if`` / ``case`` merges each variable with a
+  ``$mux``, an arm that does not write it contributing its prior value,
+  and a variable held on some path becomes a ``$dlatch`` enabled by the
+  condition it is written under (:meth:`_ModuleBuilder._infer_latches`);
+  the rest is combinational. The result reaches readers anywhere in the
+  module, earlier in the file included.
+- In clocked blocks a blocking write's value reaches the later reads of
+  the same block; each register is one flop per contiguous run of the
+  bits the block writes, as ``proc`` groups them (rtl-buddy-cdc#377).
+- User-defined function calls are inlined; ``for`` loops (SV and
+  Verilog-2001 forms) are unrolled in every block; ``n++`` and compound
+  assignments are writes; ``casez`` / ``casex`` labels compare their
+  non-wildcard bits; parameters, enum values and ``x`` / ``z`` literals
+  are constants; gate primitives lower to ``$and`` / ``$or`` / ``$xor``
+  / ``$not`` (rtl-buddy-cdc#377).
 - Blackbox boundaries (rtl-buddy-cdc#345): ``(* blackbox *)`` modules
   and ``--blackbox`` / ``--greybox`` names stay as one cell per
   instance, with a sibling module — see :func:`elaborate_with_blackboxes`.
@@ -142,6 +158,9 @@ What currently works
   ``$shl``-decoder shapes, an unpacked-struct member, a hierarchical
   reference — is reported once per location with a ``WARNING`` (see
   :meth:`_ModuleBuilder._warn_lvalue_dropped`), never dropped silently.
+- A right-hand side, condition or statement the frontend cannot lower
+  is reported with a ``WARNING`` and modelled as an opaque ``$_UNKNOWN_``
+  driver or skipped, never dropped silently (rtl-buddy-cdc#377).
 - Concatenation (``{a, b, c}``) and replication (``{N{x}}``) on the
   RHS — see :meth:`_lower_concatenation` and
   :meth:`_lower_replication`. Pure bit-tuple aliasing, no Yosys
@@ -158,10 +177,9 @@ What currently works
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- **``casex`` / ``casez`` wildcard cases** — the
-  :meth:`_walk_case_statement` lowering treats every label as a
-  full ``$eq`` match, so wildcard bits in the label aren't honored.
-  Uncommon in CDC-sensitive code and not yet wired up.
+- ``while`` / ``repeat`` / ``foreach`` loops, task calls, functions
+  with an early ``return`` or an ``output`` argument, tristate gates,
+  switches and user-defined primitives: reported, not lowered.
 - (was: ``CLK_POLARITY = "0"`` for negedge-clocked flops — landed
   in rtl-buddy-cdc#221 to close the CDC-016 cross-frontend parity
   gap. ``_analyse_event_list`` now reports the clock edge alongside
@@ -172,9 +190,6 @@ What is NOT yet implemented (next slices)
   Yosys-binary form per issue #40, and width comes straight from
   the Q bit-tuple, so multi-bit flops have correct parameter
   shape.)
-- **Gate primitives** (``and g (y, a, b);``, alone or in an instance
-  array) are not lowered; each one is reported with a ``WARNING``
-  (Yosys ``read_verilog`` does lower them).
 - **Yosys-only constructs** (``$_BUF_`` / ``$_NOT_`` primitives in SV
   source) are correctly rejected by slang — they're post-synthesis
   cells, not legal SV. Fixtures that rely on them
