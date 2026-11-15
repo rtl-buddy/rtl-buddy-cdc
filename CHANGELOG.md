@@ -369,9 +369,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     true when non-zero (`$reduce_bool`, in clocked blocks too, where it
     used to lose its enable); an `if` / `case` whose condition or labels
     do not lower is reported instead of being walked as unconditional.
-  - Integration corpus: `ptp_clock_cdc` goes from 0 crossings on the
-    slang path to 7 of Yosys' 9; the `slang-incomplete-comb-block` gap
-    is closed and the rest is pinned to `slang-system-call`.
   - A call to a user-defined function is inlined instead of becoming an
     opaque `$_UNKNOWN_` cell: the formal arguments take the actual
     arguments' bits and the body is lowered like a combinational block
@@ -401,10 +398,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     folds at elaboration time (`$bits(x)`). `$signed(x)` / `$unsigned(x)`
     lower to their operand. `casez` / `casex` (and `case inside`) labels
     leave their wildcard digits out of the comparison.
-  - Integration corpus: `ptp_clock_cdc` matches Yosys on the slang path
-    (the same 9 crossings and findings); `slang-system-call` is closed.
-    All seven corpus designs now agree across the two frontends and no
-    slang gap is pinned.
+  - Integration corpus: `ptp_clock_cdc` goes from 0 crossings on the
+    slang path to the same 9 crossings and findings as on Yosys (the
+    `slang-incomplete-comb-block` and `slang-system-call` gaps are
+    closed). All seven corpus designs now agree across the two frontends
+    and no slang gap is pinned.
   - A blocking `=` write in an `always_ff` is lowered instead of being
     skipped without a word (a register with only blocking writes
     vanished), and so is a nonblocking `<=` in `always_comb` /
