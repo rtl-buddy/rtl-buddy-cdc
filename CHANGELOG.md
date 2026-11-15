@@ -405,6 +405,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (the same 9 crossings and findings); `slang-system-call` is closed.
     All seven corpus designs now agree across the two frontends and no
     slang gap is pinned.
+  - A blocking `=` write in an `always_ff` is lowered instead of being
+    skipped without a word (a register with only blocking writes
+    vanished), and so is a nonblocking `<=` in `always_comb` /
+    `always @*` / `always_latch`. In a clocked block a blocking write's
+    value now reaches the reads after it in the same block, as synthesis
+    forwards it: `t = a + 1; q <= t;` loads `q` with `a + 1`. The slang
+    path used to read the register `t` there (with a warning since
+    rtl-buddy-cdc#345), which added a flop stage the hardware does not
+    have, so `s1 = x; q = s1;` counted as a two-flop synchroniser.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,

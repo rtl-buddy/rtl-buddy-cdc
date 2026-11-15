@@ -407,11 +407,11 @@ def test_reset_arm_with_task_call_is_not_sync(tmp_path: Path) -> None:
     )
 
 
-def test_reset_arm_with_blocking_assign_is_not_sync(tmp_path: Path) -> None:
-    """A *blocking* assign in the candidate reset arm (``if (rst) q =
-    0;``) likewise fails the constant-only check — the helper requires
-    nonblocking assigns (``isNonBlocking``), so it returns ``False``
-    and the block is not folded to ``$sdff``."""
+def test_reset_arm_with_blocking_assign_is_sync(tmp_path: Path) -> None:
+    """A *blocking* assign in the reset arm (``if (rst) q = 0;``) is a
+    constant write like a nonblocking one: the block folds to ``$sdff``
+    (rtl-buddy-cdc#377; blocking writes in ``always_ff`` used to be
+    skipped, which kept it a plain ``$dff``)."""
     src = """
     module m (input logic clk, rst, input logic [3:0] d, output logic [3:0] q);
         always_ff @(posedge clk) begin
@@ -422,10 +422,7 @@ def test_reset_arm_with_blocking_assign_is_not_sync(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     types = _cell_types(mod)
-    assert "$sdff" not in types, (
-        f"a blocking-assign reset arm must not classify as sync; got {sorted(types)}"
-    )
-    assert "$dff" in types, f"expected a plain $dff; got {sorted(types)}"
+    assert types == {"$sdff"}, sorted(types)
 
 
 # --- async event list but mismatched reset symbol -------------------------
@@ -757,12 +754,11 @@ def test_nonconstant_reset_arm_is_not_a_sync_reset(tmp_path: Path) -> None:
 # --- blocking assignment inside always_ff ---------------------------------
 
 
-def test_blocking_assign_in_always_ff_is_skipped(tmp_path: Path) -> None:
-    """A *blocking* assignment (``q = d``) inside an ``always_ff`` body
-    is an SV style violation; ``_emit_assignment_expression`` checks
-    ``isNonBlocking`` and skips it rather than modelling it. The data
-    arm here is blocking, so no flop is accumulated for it — the block
-    emits nothing once the reset fold has nothing to attach to."""
+def test_blocking_assign_in_always_ff_is_registered(tmp_path: Path) -> None:
+    """A *blocking* assignment (``q = d``) inside an ``always_ff`` body is
+    a style violation the language allows, and synthesis registers it
+    like a nonblocking one (rtl-buddy-cdc#377: it was skipped without a
+    word, so the block emitted no flop at all)."""
     src = """
     module m (input logic clk, rst_n, input logic [3:0] d, output logic [3:0] q);
         always_ff @(posedge clk or negedge rst_n) begin
@@ -772,7 +768,6 @@ def test_blocking_assign_in_always_ff_is_skipped(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _flop_count(mod) == 0, (
-        f"blocking assign in always_ff must be skipped (not emitted); "
-        f"got {_flop_count(mod)} flops"
-    )
+    (flop,) = _flops(mod)
+    assert flop.type == "$adff"
+    assert flop.connections["D"] == mod.ports["d"].bits

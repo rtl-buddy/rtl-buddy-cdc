@@ -535,10 +535,11 @@ class _ModuleBuilder:
         self._blackbox_names = blackbox_names
         self._greybox_names = greybox_names
         self._siblings: dict[str, Module] = siblings if siblings is not None else {}
-        # True while lowering a plain Verilog-2001 ``always`` block, which,
-        # unlike ``always_ff`` / ``always_comb``, carries no style rule
-        # about blocking vs nonblocking writes (rtl-buddy-cdc#345).
-        self._plain_always = False
+        # Blocking writes in the clocked block being lowered: variable ->
+        # its register bits (its net). Its entry in ``_var_bits`` holds
+        # the value written so far, which later reads in the block see
+        # (rtl-buddy-cdc#377).
+        self._blocking_nets: dict[Any, tuple[Bit, ...]] = {}
         self._next_bit_id = 2
         # Map canonical pyslang VariableSymbol → tuple of bit refs.
         # PortSymbols are normalised to their internal Variable before
@@ -1297,6 +1298,8 @@ class _ModuleBuilder:
         # the same target (the if/else both-arms case).
         self._proc_writes = {}
         self._proc_resets = {}
+        prev_blocking = self._blocking_nets
+        self._blocking_nets = {}
         block_reset_sym = reset_sym
         block_reset_active_low = reset_active_low
         block_reset_kind: str | None = None
@@ -1366,6 +1369,9 @@ class _ModuleBuilder:
                 reset_kind=block_reset_kind,
             )
         finally:
+            # Outside the block a blocking-written variable is its register.
+            self._var_bits.update(self._blocking_nets)
+            self._blocking_nets = prev_blocking
             self._proc_writes = {}
             self._proc_resets = {}
             self._clk_negedge = prev_clk_negedge
@@ -1439,26 +1445,21 @@ class _ModuleBuilder:
 
         Anything else (mixed edge / level lists, ``edge``, delays, event
         controls inside the body) is reported by :meth:`_warn_dropped`.
-        Blocking and nonblocking writes are both accepted.
+        Blocking and nonblocking writes are both accepted, here as in every
+        procedural block (rtl-buddy-cdc#377).
         """
         body = block.body
         form = self._plain_always_form(body)
-        prev = self._plain_always
-        self._plain_always = True
-        try:
-            if form == "ff":
-                self._emit_always_ff(block)
-                self._warn_blocking_temporaries(block, body.stmt)
-            elif form == "level":
-                self._lower_comb_body(body.stmt, block)
-            else:
-                self._warn_dropped(
-                    block,
-                    "`always` is not edge-triggered on every event, nor "
-                    "`@*` / level-sensitive",
-                )
-        finally:
-            self._plain_always = prev
+        if form == "ff":
+            self._emit_always_ff(block)
+        elif form == "level":
+            self._lower_comb_body(body.stmt, block)
+        else:
+            self._warn_dropped(
+                block,
+                "`always` is not edge-triggered on every event, nor "
+                "`@*` / level-sensitive",
+            )
 
     def _plain_always_form(self, body: Any) -> str | None:
         """``"ff"`` / ``"level"`` / ``None`` (not lowerable) for the
@@ -1504,74 +1505,6 @@ class _ModuleBuilder:
             return out
         return []
 
-    def _warn_blocking_temporaries(self, block: Any, stmt: Any) -> None:
-        """Warn when an edge-triggered plain ``always`` reads a variable
-        after writing it with a blocking ``=`` earlier in the same block.
-
-        Each written variable lowers to a register, so such a read sees
-        the registered value, where synthesis forwards the value written
-        earlier in the block (``t = a; q = t;`` makes ``q`` a copy of
-        ``a``, not of ``t``). The netlist can then show more flop stages
-        than the hardware has. Reading before writing (``n = n + 1``)
-        is exact and not reported."""
-        written: set[Any] = set()
-        late_reads: set[Any] = set()
-
-        def reads(node: Any) -> set[Any]:
-            found: set[Any] = set()
-
-            def visit(n: Any) -> bool:
-                if type(n).__name__ == "NamedValueExpression":
-                    found.add(self._canonical_var(n.symbol))
-                return True
-
-            if node is not None:
-                node.visit(visit)
-            return found
-
-        def walk(st: Any) -> None:
-            if st is None:
-                return
-            kind = self._kind_name(st)
-            if kind == "BlockStatement":
-                walk(st.body)
-            elif kind in {"StatementList", "ListStatement"}:
-                for s in getattr(st, "list", []) or []:
-                    walk(s)
-            elif kind == "ExpressionStatement":
-                expr = st.expr
-                if type(expr).__name__ != "AssignmentExpression":
-                    late_reads.update(reads(expr) & written)
-                    return
-                late_reads.update(reads(expr.right) & written)
-                if not getattr(expr, "isNonBlocking", False):
-                    written.update(self._lvalue_symbols(expr.left))
-            elif kind == "ConditionalStatement":
-                for cond in getattr(st, "conditions", []) or []:
-                    late_reads.update(reads(cond.expr) & written)
-                walk(st.ifTrue)
-                walk(st.ifFalse)
-            elif kind == "CaseStatement":
-                late_reads.update(reads(getattr(st, "expr", None)) & written)
-                for item in getattr(st, "items", []) or []:
-                    walk(getattr(item, "stmt", None))
-                walk(getattr(st, "defaultCase", None))
-            elif kind == "ForLoopStatement":
-                # Twice: a write in one iteration precedes the next one's reads.
-                walk(getattr(st, "body", None))
-                walk(getattr(st, "body", None))
-
-        walk(stmt)
-        if late_reads:
-            _log.warning(
-                "slang frontend: %s: blocking-assigned %s read later in the "
-                "same edge-triggered `always`; modelled as register(s), so "
-                "the read sees the registered value rather than the one "
-                "written earlier in the block",
-                self._src_attr(block) or "<unknown location>",
-                ", ".join(f"`{getattr(s, 'name', '?')}`" for s in late_reads),
-            )
-
     def _collect_reset_assignments(self, stmt: Any) -> None:
         """Walk an ``always_ff`` reset arm (``if (!rst_n) <stmt>``) and
         record per-LHS reset values into ``self._proc_resets``.
@@ -1598,8 +1531,6 @@ class _ModuleBuilder:
             return
         expr = stmt.expr
         if type(expr).__name__ != "AssignmentExpression":
-            return
-        if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
             return
         if type(expr.left).__name__ == "ConcatenationExpression":
             # ``{q, meta} <= 2'b01``: each register takes its slice of
@@ -1802,8 +1733,6 @@ class _ModuleBuilder:
             if expr is None or type(expr).__name__ != "AssignmentExpression":
                 # Non-assignment ExpressionStatement (e.g. function
                 # call) — not a reset assign; bail conservatively.
-                return False
-            if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
                 return False
             return self._const_int(expr.right) is not None
         if kind == "VariableDeclStatement":
@@ -2239,11 +2168,6 @@ class _ModuleBuilder:
         del reset_sym, reset_active_low  # captured at block level
         if type(expr).__name__ != "AssignmentExpression":
             return
-        if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
-            # Blocking inside always_ff is a SV style violation; skip
-            # rather than try to model it. A plain ``always`` has no such
-            # rule and synthesis registers both kinds (#345).
-            return
         lhs = expr.left
         rhs = expr.right
         # ``mem[addr] <= data`` with a run-time ``addr`` is a memory
@@ -2253,41 +2177,54 @@ class _ModuleBuilder:
         if mem_select is not None:
             self._emit_memory_write(*mem_select, rhs, clk_sym, src_node)
             return
-        if type(lhs).__name__ == "ConcatenationExpression":
-            # ``{q, meta} <= {meta, d}`` (rtl-buddy-cdc#370): one write
-            # per register, each taking its slice of the sized RHS.
-            writes = self._concat_writes(lhs, rhs)
-            if writes is None:
-                self._warn_lvalue_dropped(expr, lhs)
-                return
-            enable = self._combine_enable_stack()
-            for q_part, d_part in writes:
-                self._proc_writes.setdefault(q_part, []).append((enable, d_part))
-            return
-        # Resolve the LHS to the subset of a variable's bits that the
-        # flop's Q should drive: a bare ``NamedValueExpression`` (full
-        # width), a constant ``ElementSelectExpression`` /
-        # ``RangeSelectExpression`` or a packed-struct member. Anything
-        # else (run-time index, streaming concatenation, hierarchical
-        # reference, …) is reported, not dropped silently.
-        q_bits = self._lvalue_bits(lhs)
-        if q_bits is None:
+        # Resolve the target to ``(variable, start, width)`` parts: a whole
+        # variable, a constant bit / part select, a packed-struct member,
+        # or a concatenation of those (``{q, meta} <= {meta, d}``,
+        # rtl-buddy-cdc#370), one write per register run, each taking its
+        # slice of the sized RHS. Anything else (run-time index, streaming
+        # concatenation, hierarchical reference, …) is reported.
+        targets = self._lvalue_targets(lhs)
+        if targets is None:
             self._warn_lvalue_dropped(expr, lhs)
             return
+        total = sum(width for _sym, _start, width in targets)
         # An unlowerable RHS gets a reported $_UNKNOWN_ driver: the rule
         # pack treats the D input as opaque (no upstream flops trace
-        # through it).
-        d_bits = self._rhs_bits(rhs, len(q_bits))
-
-        # Combine the active enable stack into a single bit (chain
-        # $and cells). None when the stack is empty — the write is
-        # unconditional in the current control-flow context.
+        # through it). Read before the write: ``n = n + 1`` reads ``n``.
+        rhs_bits = self._rhs_bits(rhs, total)
+        # The enable stack combined into one bit (chained $and cells);
+        # None when the write is unconditional here.
         enable = self._combine_enable_stack()
-        # Stash the write source for cell-attribute use at drain time.
-        # We only need one src_node per LHS (the procedural block's
-        # range); the per-assignment fallback in the old code was
-        # rarely used.
-        self._proc_writes.setdefault(q_bits, []).append((enable, d_bits))
+        blocking = not getattr(expr, "isNonBlocking", False)
+        for sym, start, bits in self._group_parts(
+            targets, self._split_rhs(rhs_bits, targets)
+        ):
+            net = self._blocking_nets.get(sym) or self._alloc_bits(sym)
+            q_part = net[start : start + len(bits)]
+            self._proc_writes.setdefault(q_part, []).append((enable, bits))
+            if blocking:
+                self._forward_blocking_write(sym, net, start, bits, enable)
+
+    def _forward_blocking_write(
+        self,
+        sym: Any,
+        net: tuple[Bit, ...],
+        start: int,
+        bits: tuple[Bit, ...],
+        enable: Bit | None,
+    ) -> None:
+        """Make a blocking write in a clocked block visible to the reads
+        after it in the same block, as synthesis does: ``t = a + 1; q <=
+        t;`` loads ``q`` with ``a + 1``, not with the register ``t``
+        (rtl-buddy-cdc#377; it read the register, which added a flop stage
+        that is not in the hardware). The variable is still a register
+        (its writes drive its D); its value until the block ends is the
+        written value, behind a mux on the write's enable."""
+        self._blocking_nets.setdefault(sym, net)
+        current = self._var_bits.get(sym, net)
+        old = current[start : start + len(bits)]
+        new = bits if enable is None else self._build_hold_mux(enable, old, bits)
+        self._var_bits[sym] = current[:start] + new + current[start + len(bits) :]
 
     def _lower_not(self, bit: Bit) -> Bit:
         """Allocate a ``$not`` cell over ``bit`` and return the output
@@ -3833,11 +3770,6 @@ class _ModuleBuilder:
         expr = arm.expr
         if type(expr).__name__ != "AssignmentExpression":
             return
-        # Latch bodies should use blocking assigns (``=``); a
-        # nonblocking write here would be a SV style violation that
-        # we'd rather surface as "latch dropped" than silently model.
-        if getattr(expr, "isNonBlocking", False) and not self._plain_always:
-            return
         if type(expr.left).__name__ == "ConcatenationExpression":
             writes = self._concat_writes(expr.left, expr.right)
             if writes is None:
@@ -4296,8 +4228,10 @@ class _ModuleBuilder:
         the continuous-assign path uses."""
         if type(expr).__name__ != "AssignmentExpression":
             return
-        if getattr(expr, "isNonBlocking", False) and not self._plain_always:
-            return  # nonblocking in always_comb is a SV style violation
+        # A nonblocking write in a combinational block is a style
+        # violation the language allows; Yosys lowers it like a blocking
+        # one, and so does this frontend (rtl-buddy-cdc#377: it was
+        # skipped without a word).
         lhs = expr.left
         lhs_kind = type(lhs).__name__
         if lhs_kind == "NamedValueExpression":

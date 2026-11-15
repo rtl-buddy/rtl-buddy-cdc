@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 
 from rtl_buddy_cdc import netlist
 from rtl_buddy_cdc.cli import app
+from rtl_buddy_cdc.liveness import prune_dead_cells
 from rtl_buddy_cdc.netlist import Bit, Module
 
 if importlib.util.find_spec("pyslang") is None:
@@ -159,9 +160,13 @@ def _same_verdict(tmp_path: Path, src: str) -> tuple[int, dict[str, int]]:
 
 
 def _agree_with_yosys(tmp_path: Path, src: str, slang_mod: Module) -> None:
+    """Same flop lanes as the Yosys path, after the dead-logic pruning
+    ``lint`` applies to the slang netlist (Yosys' ``opt_clean`` removes a
+    register nothing reads)."""
     if not _HAVE_YOSYS:
         return
-    assert _flop_lanes(slang_mod) == _flop_lanes(_yosys(tmp_path, src))
+    pruned = prune_dead_cells(slang_mod, {})
+    assert _flop_lanes(pruned) == _flop_lanes(_yosys(tmp_path, src))
 
 
 def _warnings(caplog) -> list[str]:
@@ -663,3 +668,70 @@ endmodule
     s_bits = module.ports["s"].bits
     assert eqs == sorted([((s_bits[3],), ("1",)), (s_bits[2:], ("1", "0"))])
     _agree_with_yosys(tmp_path, src, module)
+
+
+# --- 5. blocking writes in clocked blocks ----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kw", "body"),
+    [
+        ("always_ff", "q = d;"),
+        ("always_ff", "begin t = d + 2'd1; q <= t; end"),
+        ("always", "begin t = d; if (en) t = ~d; q <= t ^ d; end"),
+        ("always", "begin q <= t; t = d; end"),
+    ],
+    ids=["ff_blocking", "ff_temp", "cond_temp", "read_first"],
+)
+def test_blocking_write_value_reaches_later_reads(
+    tmp_path: Path, caplog, kw: str, body: str
+) -> None:
+    """A blocking write in an ``always_ff`` used to be skipped without a
+    word; in a plain ``always`` it was registered, but a later read in
+    the same block saw the register (with a warning), where synthesis
+    forwards the value just written. Both are lowered as Yosys does:
+    each written variable is a register, and reads after the write see
+    the written value."""
+    src = f"""module m (input clk, input en, input [1:0] d, output reg [1:0] q);
+    reg [1:0] t;
+    {kw} @(posedge clk) {body}
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert not _warnings(caplog)
+    assert any(c.connections["Q"] == module.ports["q"].bits for c in _flops(module))
+    _agree_with_yosys(tmp_path, src, module)
+
+
+def test_blocking_temporary_does_not_add_a_sync_stage(tmp_path: Path) -> None:
+    """``s1 = x; q = s1;`` in one clocked block is one stage, not two: ``q``
+    loads ``x`` directly. The slang path counted a two-flop
+    synchroniser here; Yosys sees a single flop stage."""
+    src = """module m (input clk_a, input clk_b, input d, output reg q);
+    reg a_q, s1;
+    always @(posedge clk_a) a_q <= d;
+    always @(posedge clk_b) begin s1 = a_q; q = s1; end
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert ("q[0]", "a_q[0]", "clk_b[0]", 1) in _flop_lanes(module)
+    _agree_with_yosys(tmp_path, src, module)
+    crossings, rules = _same_verdict(tmp_path, src)
+    assert crossings >= 1 and rules
+
+
+def test_nonblocking_write_in_combinational_block(tmp_path: Path) -> None:
+    """``y <= a`` in ``always_comb`` / ``always @*`` was skipped (``y``
+    undriven); Yosys lowers it like ``y = a``."""
+    src = """module m (input clk, input a, input b, output reg q, output reg r);
+    logic y, z;
+    always_comb y <= a;
+    always @* z <= b;
+    always @(posedge clk) begin q <= y; r <= z; end
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    lanes = _flop_lanes(module)
+    assert ("q[0]", "a[0]", "clk[0]", 1) in lanes
+    assert ("r[0]", "b[0]", "clk[0]", 1) in lanes

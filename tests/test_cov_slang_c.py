@@ -615,10 +615,10 @@ def test_multibit_latch_enable_reduces_to_one_bit(tmp_path: Path) -> None:
     assert latch.connections["EN"] == red.connections["Y"]
 
 
-def test_nonblocking_latch_body_drops_latch(tmp_path: Path) -> None:
-    """A non-blocking write inside ``always_latch`` is a style violation;
-    :meth:`_walk_latch_statement` bails rather than model it, so no
-    ``$dlatch`` is emitted."""
+def test_nonblocking_latch_body_is_a_latch(tmp_path: Path) -> None:
+    """A non-blocking write inside ``always_latch`` is a style violation
+    synthesis lowers anyway: one ``$dlatch`` (rtl-buddy-cdc#377; it was
+    dropped without a word)."""
     src = """
     module m (input logic en, d, output logic q);
         always_latch begin
@@ -627,9 +627,7 @@ def test_nonblocking_latch_body_drops_latch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$dlatch" not in _cell_types(mod), (
-        f"non-blocking latch body must drop the latch; got {_cell_types(mod)}"
-    )
+    assert _cell_types(mod).count("$dlatch") == 1
 
 
 def test_no_conditional_latch_body_drops_latch(tmp_path: Path) -> None:
@@ -691,10 +689,10 @@ def test_latch_with_else_still_emits_single_dlatch(tmp_path: Path) -> None:
     )
 
 
-def test_nonblocking_assign_in_always_comb_is_ignored(tmp_path: Path) -> None:
+def test_nonblocking_assign_in_always_comb_is_lowered(tmp_path: Path) -> None:
     """A non-blocking ``y <= a`` inside ``always_comb`` is a style
-    violation; :meth:`_alias_assign` bails on it, so ``y`` keeps its own
-    fresh bits and the downstream flop does NOT alias through to ``a``."""
+    violation Yosys lowers like ``y = a``, and so does this frontend
+    (rtl-buddy-cdc#377; it was skipped, leaving ``y`` undriven)."""
     src = """
     module m (input logic clk, a, output logic q);
         logic y;
@@ -705,12 +703,7 @@ def test_nonblocking_assign_in_always_comb_is_ignored(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    a_bit = mod.ports["a"].bits[0]
-    ff = _one_dff(mod)
-    assert ff.connections["D"] != (a_bit,), (
-        "a non-blocking write in always_comb must NOT alias y onto a; "
-        f"got D={ff.connections['D']} a={a_bit}"
-    )
+    assert _one_dff(mod).connections["D"] == mod.ports["a"].bits
 
 
 def test_comb_if_with_unlowerable_selector_is_reported(tmp_path: Path, caplog) -> None:

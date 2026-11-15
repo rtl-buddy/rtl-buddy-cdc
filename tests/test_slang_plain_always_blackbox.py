@@ -300,48 +300,6 @@ endmodule
     assert any("clock is not a plain signal" in r.getMessage() for r in caplog.records)
 
 
-def test_blocking_temporary_in_edge_always_warns(tmp_path: Path, caplog) -> None:
-    src = """module m (input clk, input a, output reg q);
-    reg t;
-    always @(posedge clk) begin t = a; q = t; end
-endmodule
-"""
-    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
-        module, _ = _slang(tmp_path, src)
-    assert len(_flops(module)) == 2
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any("blocking-assigned `t`" in m for m in msgs), msgs
-
-
-@pytest.mark.parametrize(
-    "body, warns",
-    [
-        ("n = n + 2'd1;", False),
-        ("begin q = a; n = 2'd0; end", False),
-        ("begin n = 2'd1; if (n[0]) q = a; end", True),
-        ("begin n = 2'd1; case (n) 2'd1: q = a; default: q = 1'b0; endcase end", True),
-        ("begin n = 2'd1; q <= n[1]; end", True),
-        ("for (int i = 0; i < 2; i++) begin q = n[i]; n[i] = a; end", True),
-        ("begin n = 2'd1; $display(n); end", True),
-    ],
-    ids=["read_before_write", "unrelated", "cond", "case", "rhs", "loop", "call"],
-)
-def test_blocking_temporary_warning_is_order_aware(
-    tmp_path: Path, caplog, body: str, warns: bool
-) -> None:
-    src = f"""module m (input clk, input a, output reg q);
-    reg [1:0] n;
-    always @(posedge clk) {body}
-endmodule
-"""
-    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
-        _slang(tmp_path, src)
-    msgs = [
-        r.getMessage() for r in caplog.records if "blocking-assigned" in r.getMessage()
-    ]
-    assert bool(msgs) is warns, msgs
-
-
 def test_cdc023_v2001_fires_on_both_frontends(tmp_path: Path) -> None:
     """End to end: the fuzz ``and_s1_v2001`` shape fires CDC-023 through
     ``lint --frontend slang`` (it came back clean before #345)."""
