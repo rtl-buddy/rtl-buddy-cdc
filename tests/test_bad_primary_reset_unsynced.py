@@ -48,3 +48,29 @@ def test_rdc_001_stays_silent(context) -> None:
     violations = run_all_rules(module, crossings, spec)
     rdc_001 = [v for v in violations if v.rule_id == "RDC-001"]
     assert rdc_001 == []
+
+
+@pytest.mark.parametrize(
+    ("typed_clock", "fires"),
+    [("clk_b", False), ("clk_a", True)],
+    ids=["typed_to_consumer_clock", "typed_to_other_clock"],
+)
+def test_rdc_008_honours_a_reset_port_typed_to_the_consumer_clock(
+    typed_clock: str, fires: bool
+) -> None:
+    """``set_input_delay -clock clk_b [get_ports raw_rst_n]``: the
+    integrator guarantees the reset is synchronous to clk_b, so the clk_b
+    consumers need no synchroniser (rtl-buddy-cdc#378). Typed to clk_a
+    instead, the clk_b group still fires."""
+    if not JSON.exists():
+        pytest.skip(f"fixture not built: {JSON}")
+    module = netlist.load(JSON)
+    text = SDC.read_text() + (
+        f"set_input_delay -clock {typed_clock} 1.0 [get_ports raw_rst_n]\n"
+    )
+    spec = sdc_mod.parse(text, backend="tokenizer")
+    crossings = find_crossings(
+        module, port_clock=spec.port_clock, **spec.clock_root_inputs()
+    )
+    fired = [v.rule_id for v in run_all_rules(module, crossings, spec)]
+    assert fired.count("RDC-008") == (1 if fires else 0), fired

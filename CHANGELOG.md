@@ -340,6 +340,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The JSON and SARIF reports are serialised with `json.dumps`, which
     can use the C encoder, instead of `json.dump`.
 
+- **RDC-008 honours a reset port the SDC types to the consumers' clock**
+  (rtl-buddy-cdc#378). `set_input_delay -clock C [get_ports rst_n]`
+  states that the integrator times the reset against `C`, so its
+  deassertion is already synchronous to consumers clocked by `C`; RDC-008
+  reported them anyway, leaving a waiver as the only route. The group for
+  a clock on the typed clock's root is now silent; consumers in any other
+  clock still fire. No committed fixture changes verdict.
+
 ### Fixed
 
 - **slang frontend dropped assignments to a concatenation**

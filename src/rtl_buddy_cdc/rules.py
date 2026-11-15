@@ -4346,6 +4346,21 @@ def check_rdc_007(
     return violations
 
 
+def _port_typed_to_clock(
+    port_name: str, clock: str, clock_spec: ClockSpec | None
+) -> bool:
+    """``port_name`` carries ``set_input_delay -clock C`` with ``C`` on
+    ``clock``'s root (the same comparison CDC-006 makes for a typed
+    port): the port is launched synchronously to ``clock``. An
+    unconstrained-sentinel port is not typed."""
+    if clock_spec is None:
+        return False
+    port_clk = clock_spec.port_clock.get(port_name)
+    if port_clk is None or port_clk == UNCONSTRAINED_SENTINEL:
+        return False
+    return clock_spec.resolve(port_clk) == clock_spec.resolve(clock)
+
+
 def check_rdc_008(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -4398,6 +4413,11 @@ def check_rdc_008(
       to async-reset distribution only.
     * Port has no sync chain anywhere in the design (the
       "every-consumer-uses-the-raw-port" simplification).
+    * The SDC types the port to the consumers' clock
+      (``set_input_delay -clock <clk> [get_ports rst_n]``, compared on
+      the clock root): the integrator guarantees the reset is already
+      synchronous to that clock (rtl-buddy-cdc#378). A port typed to
+      another clock still fires for this one.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -4444,6 +4464,11 @@ def check_rdc_008(
         # the design likely just uses the raw port as-is in every
         # domain (a simplification we don't flag here).
         if not synced_clocks_by_port[port_name]:
+            continue
+        # ``set_input_delay -clock C`` on the reset port says the
+        # integrator times it against ``C``: its deassertion is already
+        # synchronous to consumers clocked by ``C`` (rtl-buddy-cdc#378).
+        if _port_typed_to_clock(port_name, consumer_clk, clock_spec):
             continue
         consumer_names = sorted(set(consumers))
         # Single-flop shortcut: one unsynced consumer in a domain that

@@ -2495,6 +2495,12 @@ This makes RDC-008 narrower than the strictest reading of the rule
 ratio under the strict reading was untenable on the existing test
 corpus. Future revisions can widen via an opt-in flag.
 
+**A typed reset port is synchronous.** When the SDC types the reset
+port with `set_input_delay -clock C` and `C` resolves to the
+consumers' clock root, the integrator guarantees the deassertion is
+timed against `C`, and the group for that clock does not fire
+(rtl-buddy-cdc#378). Consumers in any other clock still do.
+
 Severity `error` — methodology bug; the chain's absence is the
 root cause of a class of intermittent silicon issues.
 
