@@ -11,7 +11,7 @@ JSON fixtures for each, we construct the netlist directly as
 
 from __future__ import annotations
 
-from rtl_buddy_cdc.domain import find_crossings
+from rtl_buddy_cdc.domain import DepthCut, find_crossings
 from rtl_buddy_cdc.netlist import Cell, Module, Port
 from rtl_buddy_cdc.rules import (
     _build_context,  # noqa: PLC2701
@@ -171,27 +171,34 @@ def _build_deep_comb_module(num_buffers: int) -> Module:
     return Module(name="deep_comb_chain", ports=ports, cells=cells, netnames={})
 
 
-def test_find_crossings_hop_budget_drops_paths_beyond_default() -> None:
-    """The default ``max_hops=4`` budget caps comb-cone walks. A
-    crossing reached only via a 5-buffer chain is correctly classified
-    as "no longer directly connecting" — important load-bearing
-    contract because we don't want a rule false-fire on a path that
-    Yosys' synthesis might restructure beyond recognition.
-    """
-    module = _build_deep_comb_module(num_buffers=5)
-    crossings = find_crossings(module)  # default max_hops=4
-    assert crossings == [], (
-        "expected zero crossings at default max_hops=4 with a 5-buffer "
-        f"chain; got {[(c.src_name, c.dst_flop.name, c.min_hops) for c in crossings]}"
-    )
+def test_find_crossings_walks_the_whole_cone_by_default() -> None:
+    """No hop budget by default (rtl-buddy-cdc#347): a crossing behind
+    any number of combinational cells is found. The old default of 4
+    dropped this 5-buffer chain silently."""
+    module = _build_deep_comb_module(num_buffers=40)
+    (c,) = find_crossings(module)
+    assert c.src_flop is not None and c.src_flop.cell.name == "src_ff"
+    assert c.dst_flop.cell.name == "dst_ff"
+    assert c.min_hops == 40
 
 
-def test_find_crossings_hop_budget_finds_path_when_raised() -> None:
-    """Raising ``max_hops`` to ≥5 reveals the same crossing the default
-    budget hid. Pins the contract that the budget is the *only* knob
-    controlling discovery depth — there's no hidden second cap."""
+def test_find_crossings_cap_drops_deeper_paths_and_reports_them() -> None:
+    """An explicit cap (``--crossing-depth``) stops the walk, and says so:
+    the stopped path is reported as a :class:`DepthCut`, never dropped
+    silently."""
     module = _build_deep_comb_module(num_buffers=5)
-    crossings = find_crossings(module, max_hops=5)
+    cuts: list[DepthCut] = []
+    assert find_crossings(module, max_hops=4, on_depth_cut=cuts.append) == []
+    assert cuts == [DepthCut(src="src_ff", src_clock="src_clk", dst_clock="dst_clk")]
+
+
+def test_find_crossings_cap_finds_path_when_raised() -> None:
+    """Raising the cap to >=5 reveals the same crossing, with no cut. Pins
+    the contract that the cap is the *only* knob controlling discovery
+    depth — there's no hidden second cap."""
+    module = _build_deep_comb_module(num_buffers=5)
+    cuts: list[DepthCut] = []
+    crossings = find_crossings(module, max_hops=5, on_depth_cut=cuts.append)
     assert len(crossings) == 1, (
         f"expected exactly one crossing at max_hops=5; got {len(crossings)}"
     )
@@ -199,16 +206,19 @@ def test_find_crossings_hop_budget_finds_path_when_raised() -> None:
     assert c.src_flop is not None and c.src_flop.cell.name == "src_ff"
     assert c.dst_flop.cell.name == "dst_ff"
     assert c.min_hops == 5  # 5 buffers between them
+    assert cuts == []
 
 
-def test_find_crossings_hop_budget_boundary_at_exact_match() -> None:
-    """At a chain length exactly equal to ``max_hops``, the crossing is
-    detected. Pins the inclusive boundary — easy to flip by an off-by-
-    one in the BFS frontier check."""
+def test_find_crossings_cap_boundary_at_exact_match() -> None:
+    """At a chain length exactly equal to the cap, the crossing is
+    detected and nothing is reported cut. Pins the inclusive boundary —
+    easy to flip by an off-by-one in the BFS frontier check."""
     module = _build_deep_comb_module(num_buffers=4)
-    crossings = find_crossings(module)  # default max_hops=4
+    cuts: list[DepthCut] = []
+    crossings = find_crossings(module, max_hops=4, on_depth_cut=cuts.append)
     assert len(crossings) == 1
     assert crossings[0].min_hops == 4
+    assert cuts == []
 
 
 # --- _forward_reachable_flops (issue #32) -----------------------------------
