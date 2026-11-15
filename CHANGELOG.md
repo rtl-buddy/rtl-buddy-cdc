@@ -778,6 +778,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order-free. New fixture `good_gray_xor_swapped`. No other committed
   fixture changes verdict.
 
+- **A synchronous-reset mux was misread in `proc`-form netlists**
+  (rtl-buddy-cdc#376). `if (rst) q <= '0; else q <= x;` leaves, after
+  `proc`, a constant-leg `$mux` in front of `D`; `opt_dff` folds it
+  into an `$sdff`, and the two forms disagreed in two rules:
+  - CDC-004's gated-bus test took a reset mux selected by a
+    destination-domain register for a load-enable gate, so a binary bus
+    into a synchroniser with a local synchronous reset passed as gated
+    (CDC-012 at most) instead of reporting CDC-004.
+  - CDC-013 did not classify a toggle flop with a synchronous reset as
+    a toggle, and did not find the XOR tail's delayed copy behind its
+    own reset mux, so a toggle synchroniser with synchronous resets was
+    missed (no XOR tail) or misreported (XOR tail present).
+
+  One helper, `_own_srst_data_leg`, now answers "this mux is the flop's
+  own synchronous reset (the constant-leg shape the chain walk steps
+  over, select local to the flop's clock); read its data leg". The
+  gated-bus test, the CDC-013 toggle and tail tests, the single-bit
+  handshake hold test, `_carries_synchronised_control` and CDC-006 use
+  it. A reset mux in front of a real enable mux still leaves the enable
+  as the gate. New fixtures `bad_bus_sync_local_srst` and
+  `good_pulse_synchronizer_srst`, each in both netlist forms. No other
+  committed fixture changes verdict.
+
 ### Internal
 
 - **Fixture READMEs regenerated and drift-checked in CI**
