@@ -19,6 +19,7 @@ domain is reported (``summary.crossing_depth_cut``, the sampled
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -118,7 +119,10 @@ def test_cut_inside_an_analysed_boundary_module_is_lifted() -> None:
 
 def test_lint_accepts_the_option() -> None:
     r = runner.invoke(app, ["lint", "--help"])
-    assert "--crossing-depth" in r.output
+    # CI renders the help with colour, which splits the option name
+    # with escape codes; compare on the plain text.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", r.output)
+    assert "--crossing-depth" in plain
 
 
 def test_option_rejects_zero() -> None:
