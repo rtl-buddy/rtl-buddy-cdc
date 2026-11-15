@@ -221,13 +221,11 @@ def test_unresolvable_lhs_is_reported(tmp_path: Path, caplog) -> None:
 # --- non-lowerable case-expr: conservative bail ---------------------------
 
 
-def test_case_on_function_call_bails_to_unconditional_walk(tmp_path: Path) -> None:
-    """``case (f(sel))`` — the case expression is a function call that
-    ``_bits_of_expression`` can't lower, so the walker takes the
-    conservative bail: it walks every item (and the default) with no
-    per-arm enable. The single ``q <= d`` arm still surfaces as a flop;
-    no ``$eq`` gating cell is emitted because the case-expr never
-    lowered to bits."""
+def test_case_on_unlowerable_expr_compares_an_opaque_value(tmp_path: Path) -> None:
+    """``case ($countones(sel))`` — the case expression does not lower,
+    so it becomes a reported opaque value the arms' ``$eq`` enables
+    compare against (rtl-buddy-cdc#377: every arm used to be walked as
+    if unconditional). The ``q`` writes still surface as one flop."""
     src = """
     module m (
         input  logic       clk, rst_n,
@@ -235,9 +233,6 @@ def test_case_on_function_call_bails_to_unconditional_walk(tmp_path: Path) -> No
         input  logic [3:0] d,
         output logic [3:0] q
     );
-        function automatic logic [1:0] f(input logic [1:0] x);
-            f = x ^ 2'b01;
-        endfunction
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
             else case ($countones(sel))
@@ -250,10 +245,9 @@ def test_case_on_function_call_bails_to_unconditional_walk(tmp_path: Path) -> No
     mod = _elaborate(tmp_path, src)
     types = _cell_types(mod)
     assert "$adff" in types, f"expected an $adff for q; got {sorted(types)}"
-    assert "$eq" not in types, (
-        f"non-lowerable case-expr must NOT emit per-arm $eq gating cells "
-        f"(bail path walks unconditionally); got {sorted(types)}"
-    )
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    (eq,) = [c for c in mod.cells.values() if c.type == "$eq"]
+    assert eq.connections["A"] == unknown.connections["Y"]
     assert _flop_count(mod) == 1, (
         f"distinct lvalue ``q`` collapses to one flop; got {_flop_count(mod)}"
     )

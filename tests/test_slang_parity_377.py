@@ -407,15 +407,16 @@ endmodule
 
 
 def test_unlowerable_condition_warns(tmp_path: Path, caplog) -> None:
-    """A combinational ``if`` whose condition does not lower is reported,
-    not walked as if both arms were unconditional."""
+    """A combinational ``if`` whose condition does not lower is reported
+    and muxed on an opaque select (item 4), not walked as if both arms
+    were unconditional."""
     src = """module m (input [3:0] a, input [3:0] b, output reg [3:0] y);
     always @* begin y = b; if (a ==? 4'b1z0x) y = a; end
 endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
         _slang(tmp_path, src)
-    assert any("`if` statement not lowered" in m for m in _warnings(caplog))
+    assert any("`if` condition" in m for m in _warnings(caplog))
 
 
 # --- 3. user-defined functions are inlined --------------------------------
@@ -537,3 +538,128 @@ endmodule
     (flop,) = _flops(module)
     (unknown,) = _cells(module, "$_UNKNOWN_")
     assert flop.connections["D"] == unknown.connections["Y"]
+
+
+# --- 4. no right-hand side is left silently undriven ----------------------
+
+
+def test_signed_cast_in_condition(tmp_path: Path, caplog) -> None:
+    """The corpus' ``slang-system-call`` reproducer: ``$signed(x) > 4``
+    used to drop the ``if`` (and before that, walk it unconditionally).
+    ``$signed`` / ``$unsigned`` have no logic of their own."""
+    src = """module m (input clk, input [3:0] x, input a, input b, output reg q);
+    reg y;
+    always @* begin y = b; if ($signed(x) > 4 || $unsigned(x) == 4'd1) y = a; end
+    always @(posedge clk) q <= y;
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert not _warnings(caplog)
+    assert not _cells(module, "$_UNKNOWN_")
+    (gt,) = _cells(module, "$gt")
+    assert gt.connections["A"][:4] == module.ports["x"].bits
+    _agree_with_yosys(tmp_path, src, module)
+
+
+def test_constants_read_as_values(tmp_path: Path) -> None:
+    """A parameter, an enum value, ``'0`` / ``'1`` and an ``x`` / ``z``
+    literal are constants. Parameters and enum values read as undriven
+    nets; ``'0`` / ``'1`` and ``x`` / ``z`` literals became opaque
+    ``$_UNKNOWN_`` drivers."""
+    src = """typedef enum logic [1:0] {IDLE, RUN, DONE} st_t;
+module m #(parameter [3:0] P = 4'd5) (input clk, input sel, input [3:0] a,
+          output reg [3:0] q, output reg [3:0] r, output st_t s, output [3:0] w,
+          output [5:0] z);
+    localparam [3:0] L = P + 1;
+    always @(posedge clk) q <= a & P;
+    always @(posedge clk) r <= sel ? '1 : '0;
+    always @(posedge clk) s <= sel ? RUN : DONE;
+    assign w = L;
+    assign z = 4'bx01z;
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert not _cells(module, "$_UNKNOWN_")
+    (and_,) = _cells(module, "$and")
+    assert and_.connections["B"] == ("1", "0", "1", "0")
+    muxes = {c.connections["Y"]: c for c in _cells(module, "$mux")}
+    flops = {c.connections["Q"]: c for c in _flops(module)}
+    r_mux = muxes[flops[module.ports["r"].bits].connections["D"]]
+    assert (r_mux.connections["A"], r_mux.connections["B"]) == (("0",) * 4, ("1",) * 4)
+    s_mux = muxes[flops[module.ports["s"].bits].connections["D"]]
+    assert (s_mux.connections["A"], s_mux.connections["B"]) == (("0", "1"), ("1", "0"))
+    assert module.ports["w"].bits == ("0", "1", "1", "0")
+    assert module.ports["z"].bits == ("z", "1", "0", "x", "0", "0")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "assign y = $countones(a);",
+        "always_comb y = $countones(a);",
+        "always @* begin y = 4'd0; y[1:0] = $countones(a); end",
+        "wire [3:0] w = $countones(a); assign y = w;",
+        "sub u (.i($countones(a)), .o(y));",
+    ],
+    ids=["assign", "always_comb", "part_select", "wire_init", "port"],
+)
+def test_unlowerable_rhs_is_opaque_and_reported(
+    tmp_path: Path, caplog, body: str
+) -> None:
+    """A right-hand side with no lowering used to leave a combinational
+    target (or a child's input port) silently undriven; it now gets an
+    opaque ``$_UNKNOWN_`` driver and a warning, as a register input
+    already did (with no warning)."""
+    src = f"""module sub (input [3:0] i, output [3:0] o); assign o = i; endmodule
+module m (input [3:0] a, output logic [3:0] y);
+    {body}
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    unknown = {b for c in _cells(module, "$_UNKNOWN_") for b in c.connections["Y"]}
+    assert unknown & set(module.ports["y"].bits)
+    msgs = _warnings(caplog)
+    assert any(
+        "`$countones(a)` not lowered; modelled as an opaque driver" in m for m in msgs
+    ), msgs
+
+
+def test_unlowerable_register_input_is_reported(tmp_path: Path, caplog) -> None:
+    src = """module m (input clk, input [3:0] a, output reg [3:0] q);
+    always @(posedge clk) q <= $countones(a);
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    (flop,) = _flops(module)
+    (unknown,) = _cells(module, "$_UNKNOWN_")
+    assert flop.connections["D"] == unknown.connections["Y"]
+    assert len(_warnings(caplog)) == 1
+
+
+@pytest.mark.parametrize("kind", ["casez", "casex"])
+def test_wildcard_case_labels(tmp_path: Path, kind: str) -> None:
+    """``casez`` / ``casex`` labels compare only their non-wildcard bits;
+    a wildcard label used to fail to lower and its arm was lost."""
+    src = f"""module m (input clk, input [3:0] s, input a, input b, input c,
+          output reg q);
+    reg y;
+    always @* begin
+        {kind} (s)
+            4'b1???: y = a;
+            4'b01?{"x" if kind == "casex" else "?"}: y = b;
+            default: y = c;
+        endcase
+    end
+    always @(posedge clk) q <= y;
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    eqs = sorted(
+        (c.connections["A"], c.connections["B"]) for c in _cells(module, "$eq")
+    )
+    s_bits = module.ports["s"].bits
+    assert eqs == sorted([((s_bits[3],), ("1",)), (s_bits[2:], ("1", "0"))])
+    _agree_with_yosys(tmp_path, src, module)

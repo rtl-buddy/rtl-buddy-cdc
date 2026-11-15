@@ -197,16 +197,9 @@ def test_classify_reset_check_conditional_without_conditions_is_none() -> None:
     assert _builder()._classify_reset_check(inner, None, False) is None
 
 
-def test_bits_of_integer_literal_no_value_is_none() -> None:
+def test_literal_without_value_is_none() -> None:
     """A literal node with no ``value`` (malformed) lowers to ``None``."""
-    assert _builder()._bits_of_integer_literal(_node("IntegerLiteral")) is None
-
-
-def test_bits_of_integer_literal_uncoercible_value_is_none() -> None:
-    """A literal whose ``value`` can't be coerced to ``int`` (e.g. an
-    ``x``/``z`` SVInt) lowers to ``None`` rather than crashing."""
-    expr = _node("IntegerLiteral", value=_node("UnconvertibleSVInt"))
-    assert _builder()._bits_of_integer_literal(expr) is None
+    assert _builder()._bits_of_expression(_node("IntegerLiteral")) is None
 
 
 def test_width_of_typeless_symbol_defaults_to_one() -> None:
@@ -604,8 +597,8 @@ def test_alwaysff_const_case_no_match_no_default_emits_no_flop(tmp_path: Path) -
 
 def test_alwaysff_dynamic_case_unlowerable_expr_no_default(tmp_path: Path) -> None:
     """``case ($countones(sel)) 2'd0: q <= a; endcase`` (no default): the case
-    expr doesn't lower, so the walker emits each item unconditionally
-    and skips the (absent) default."""
+    expr doesn't lower, so the item's ``$eq`` compares a reported opaque
+    value (rtl-buddy-cdc#377) and the (absent) default is skipped."""
     src = """
     module m (input logic clk, input logic [3:0] sel, input logic a, output logic q);
         always_ff @(posedge clk)
@@ -615,8 +608,7 @@ def test_alwaysff_dynamic_case_unlowerable_expr_no_default(tmp_path: Path) -> No
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    # No $eq gating (case expr unlowerable) but the body flop still emits.
-    assert "$eq" not in _cell_types(mod)
+    assert "$eq" in _cell_types(mod) and "$_UNKNOWN_" in _cell_types(mod)
     assert _flops(mod)
 
 
@@ -644,7 +636,7 @@ def test_alwaysff_dynamic_case_lowerable_no_default_builds_eq(tmp_path: Path) ->
 
 def test_comb_case_unlowerable_selector_is_reported(tmp_path: Path, caplog) -> None:
     """``always_comb case ($countones(sel)) ...`` with an unlowerable selector:
-    ``_walk_case_statement`` reports the statement and lowers no arm
+    ``_walk_case_statement`` compares a reported opaque value
     (rtl-buddy-cdc#377; it used to walk every arm as unconditional)."""
     src = """
     module m (input logic [3:0] sel, input logic a, b, output logic y);
@@ -658,9 +650,10 @@ def test_comb_case_unlowerable_selector_is_reported(tmp_path: Path, caplog) -> N
     """
     with caplog.at_level(logging.WARNING):
         mod = _elaborate(tmp_path, src)
-    types = _cell_types(mod)
-    assert "$mux" not in types and "$eq" not in types
-    assert any("`case` statement not lowered" in r.getMessage() for r in caplog.records)
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    (eq,) = [c for c in mod.cells.values() if c.type == "$eq"]
+    assert eq.connections["A"] == unknown.connections["Y"][: len(eq.connections["A"])]
+    assert any("`case` expression" in r.getMessage() for r in caplog.records)
 
 
 def test_comb_case_no_default_multi_writer_uses_prior_value(tmp_path: Path) -> None:
@@ -849,9 +842,10 @@ def test_indexed_assign_unlowerable_selector_ignored(tmp_path: Path) -> None:
     assert "$shl" not in _cell_types(mod)
 
 
-def test_indexed_assign_unlowerable_rhs_ignored(tmp_path: Path) -> None:
-    """``base[i] = g(v)`` — the RHS doesn't lower, so the one-hot
-    lowering bails (``rhs_bits is None``)."""
+def test_indexed_assign_unlowerable_rhs_is_opaque(tmp_path: Path) -> None:
+    """``base[i] = $countones(v)`` — the RHS doesn't lower, so the one-hot
+    shift takes a reported opaque operand (rtl-buddy-cdc#377; ``base``
+    used to be left as it was)."""
     src = """
     module m (input logic [1:0] i, input logic [3:0] v, output logic [3:0] base);
         always_comb begin
@@ -861,7 +855,9 @@ def test_indexed_assign_unlowerable_rhs_ignored(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$shl" not in _cell_types(mod)
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    (shl,) = [c for c in mod.cells.values() if c.type == "$shl"]
+    assert shl.connections["A"][:1] == unknown.connections["Y"]
 
 
 # --- range / element select conservative bails ----------------------------

@@ -384,6 +384,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `axis_async_fifo` is now visible, so its false CDC-004 is gone and
     the design matches Yosys on the slang path (`slang-function-call`
     closed).
+  - No right-hand side is left silently undriven any more. One that does
+    not lower gets an opaque `$_UNKNOWN_` driver and a `WARNING` naming
+    the expression ("… not lowered; modelled as an opaque driver"), in
+    `assign`, `always_comb` / `always @*`, `wire x = …;`, part-select
+    and concatenation targets, latch data, memory ports and input port
+    connections, where it used to leave the target (or the child's
+    input) undriven, and in register inputs, which already had the
+    opaque driver but no warning. An `if` condition, `case` expression
+    or `case` label that does not lower is an opaque, reported value
+    too: such an `if` / `case` used to be walked as if every arm were
+    unconditional in clocked blocks.
+  - Constants that read as nets or opaque drivers lower to their value:
+    parameters and enum values (read as undriven nets), `'0` / `'1` and
+    literals with `x` / `z` digits (opaque drivers), and anything slang
+    folds at elaboration time (`$bits(x)`). `$signed(x)` / `$unsigned(x)`
+    lower to their operand. `casez` / `casex` (and `case inside`) labels
+    leave their wildcard digits out of the comparison.
+  - Integration corpus: `ptp_clock_cdc` matches Yosys on the slang path
+    (the same 9 crossings and findings); `slang-system-call` is closed.
+    All seven corpus designs now agree across the two frontends and no
+    slang gap is pinned.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,

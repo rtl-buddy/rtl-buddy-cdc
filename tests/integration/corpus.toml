@@ -48,19 +48,9 @@ schema = 1
 # analyzer is fixed the affected design's test fails; update its counts,
 # drop the finding / missed entry, and remove the gap here.
 
-[gaps.slang-system-call]
-kind = "frontend"
-rules = ["CDC-012"]
-summary = """
-The slang frontend does not lower a system function call such as
-`$signed(x)` / `$unsigned(x)` (a cast with no logic of its own): an
-`if` whose condition contains one is reported ('`if` statement not
-lowered') and its writes are missing, so the registers they feed lose
-their input logic."""
-reproducer = """
-In an `always @*` block, `y = b; if ($signed(x) > 4) y = a;` with y
-registered: Yosys emits a `$gt` and a `$mux`; slang warns and y is b.
-Writing the comparison without the cast makes the frontends agree."""
+# (none open: the slang-path gaps recorded here, slang-comb-forward-read,
+# slang-incomplete-comb-block, slang-function-call and slang-system-call,
+# were closed by rtl-buddy-cdc#377)
 
 # --- Designs -----------------------------------------------------------------
 
@@ -236,20 +226,19 @@ sources = ["rtl/ptp_clock_cdc.v"]
 top = "ptp_clock_cdc"
 sdc = "sdc/ptp_clock_cdc.sdc"
 expect = { clocks = ["input_clk", "output_clk", "sample_clk"], crossings = 9, rules = { "CDC-001" = 1, "CDC-012" = 3 } }
-slang = { reads = true, matches_yosys = false, crossings = 7, rules = { "CDC-001" = 1, "CDC-012" = 2 }, gap = "slang-system-call" }
+slang = { reads = true, matches_yosys = true }
 notes = """
 Both next-state always @* blocks (dest_* at line 358, ts_* at line 551)
 assign a scratch overflow variable (dest_ovf / ptp_ovf) only under a
 condition. The slang path used to drop each block whole, and with it
-every register feeding the outputs (0 crossings); since
+every register feeding the outputs (0 crossings). Since
 rtl-buddy-cdc#377 the overflow variables are latches and the rest is
-combinational, as on the Yosys path, and the clocked block at line 429
-sees the values the line-551 block computes although they come later in
-the file. The concatenation targets in those blocks
-({dest_update_next, dest_phase_next} = ..., ...) lower since
-rtl-buddy-cdc#370. Two crossings and one CDC-012 are still missing on
-the slang path: the lock-detector `if`s at lines 403 and 653 compare
-`$signed(...)` values, which the slang frontend does not lower."""
+combinational, as on the Yosys path; the clocked block at line 429 sees
+the values the line-551 block computes although they come later in the
+file; and the lock detectors' `$signed(...)` comparisons (lines 403 and
+653) and the gain-scheduling `casez` lower. The concatenation targets in
+those blocks ({dest_update_next, dest_phase_next} = ..., ...) lower
+since rtl-buddy-cdc#370."""
 
 [[design.finding]]
 rule = "CDC-001"

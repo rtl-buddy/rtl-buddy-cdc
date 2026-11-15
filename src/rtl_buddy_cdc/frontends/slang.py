@@ -965,9 +965,7 @@ class _ModuleBuilder:
         init_expr = getattr(member, "initializer", None)
         if init_expr is None:
             return
-        rhs_bits = self._sized_rhs_bits(init_expr, len(self._alloc_bits(member)))
-        if rhs_bits is None:
-            return
+        rhs_bits = self._rhs_bits(init_expr, len(self._alloc_bits(member)))
         canonical = self._canonical_var(member)
         # Allocate the net's bits if it's the first time we've seen it;
         # then merge them into the RHS bits via the same alias-rewrite
@@ -1115,7 +1113,9 @@ class _ModuleBuilder:
             return bits
         if kind == "EmptyArgumentExpression":
             return None
-        return self._bits_of_expression(ex)
+        return self._bits_of_expression(ex) or self._opaque(
+            ex, self._expr_width(ex), f"input port connection `{pc.port.name}`"
+        )
 
     # -- blackbox boundaries (rtl-buddy-cdc#345) --------------------------
 
@@ -1888,18 +1888,9 @@ class _ModuleBuilder:
             #   but with the explicit hold-feedback shape the rule
             #   pack's ``_is_gated_bus_crossing`` matches).
             #
-            # If the condition can't be lowered to a single bit
-            # (multi-pattern match, etc.) fall back to walking both
-            # arms unconditionally — same conservative policy as
-            # before, but rare on real RTL.
-            cond_bit = self._lower_condition_to_bit(statement.conditions)
-            if cond_bit is None:
-                for arm in (statement.ifTrue, statement.ifFalse):
-                    if arm is not None:
-                        self._emit_assignments_in(
-                            arm, clk_sym, reset_sym, reset_active_low, src_node
-                        )
-                return
+            # A condition that does not lower becomes an opaque select
+            # (reported), never an unconditional walk of both arms.
+            cond_bit = self._condition_bit(statement)
             self._enable_stack.append(cond_bit)
             try:
                 self._emit_assignments_in(
@@ -2007,61 +1998,22 @@ class _ModuleBuilder:
                 )
             return
 
-        # #85: dynamic case-expr — build per-item enables.
-        case_expr_bits = (
-            self._bits_of_expression(case_expr) if case_expr is not None else None
-        )
-        if case_expr_bits is None:
-            # Couldn't lower the case-expr. Conservative bail: walk
-            # every item with no enable so writes still surface as
-            # unconditional flops. Matches the pre-PR shape, so any
-            # design that hit the old path still does.
-            for item in items:
-                self._emit_assignments_in(
-                    getattr(item, "stmt", None),
-                    clk_sym,
-                    reset_sym,
-                    reset_active_low,
-                    src_node,
-                )
-            if default_arm is not None:
-                self._emit_assignments_in(
-                    default_arm, clk_sym, reset_sym, reset_active_low, src_node
-                )
-            return
-
+        # #85: dynamic case-expr — build per-item enables. A case
+        # expression or label that does not lower is a reported opaque
+        # value (rtl-buddy-cdc#377), never a walk of every arm as if
+        # unconditional.
+        case_expr_bits = self._case_expr_bits(statement)
         explicit_match_bits: list[Bit] = []
         for item in items:
-            item_match_bits: list[Bit] = []
-            for match_expr in getattr(item, "expressions", []) or []:
-                match_bits = self._bits_of_expression(match_expr)
-                if match_bits is None:
-                    continue
-                eq_y = self._alloc_anon_bits(1)
-                eq_name = self._fresh_cell_name("$eq")
-                self._cells[eq_name] = Cell(
-                    name=eq_name,
-                    type="$eq",
-                    connections={
-                        "A": case_expr_bits,
-                        "B": match_bits,
-                        "Y": eq_y,
-                    },
-                    parameters={},
-                    attributes={},
-                )
-                item_match_bits.append(eq_y[0])
-                explicit_match_bits.append(eq_y[0])
+            item_match_bits = [
+                self._case_label_match(case_expr_bits, match_expr, statement)
+                for match_expr in getattr(item, "expressions", []) or []
+            ]
+            explicit_match_bits.extend(item_match_bits)
             item_enable = self._or_bits(item_match_bits)
             item_stmt = getattr(item, "stmt", None)
             if item_enable is None:
-                # No lowerable match in this item (unmodelled pattern
-                # shape). Walk without enable so the body's flops still
-                # emit — same shape as the case-expr bail above.
-                self._emit_assignments_in(
-                    item_stmt, clk_sym, reset_sym, reset_active_low, src_node
-                )
-                continue
+                continue  # an item with no labels never matches
             self._enable_stack.append(item_enable)
             try:
                 self._emit_assignments_in(
@@ -2085,6 +2037,57 @@ class _ModuleBuilder:
                     )
                 finally:
                     self._enable_stack.pop()
+
+    def _case_expr_bits(self, stmt: Any) -> tuple[Bit, ...]:
+        """The bits of a ``case`` statement's expression, or a reported
+        opaque value of its width."""
+        expr = getattr(stmt, "expr", None)
+        bits = self._bits_of_expression(expr) if expr is not None else None
+        if bits:
+            return bits
+        return self._opaque(
+            expr if expr is not None else stmt,
+            self._expr_width(expr),
+            "`case` expression",
+        )
+
+    def _case_label_match(
+        self, sel_bits: tuple[Bit, ...], label: Any, stmt: Any
+    ) -> Bit:
+        """One bit: ``case`` expression ``sel_bits`` matches ``label``.
+
+        ``$eq`` of the two, like Yosys. In a ``casez`` a ``z`` / ``?``
+        digit of a constant label matches anything, in a ``casex`` (and
+        ``case … inside``) an ``x`` too, so those bit positions are left
+        out of the comparison (rtl-buddy-cdc#377: they were compared as
+        literal ``z`` / ``x`` values, and such a label used to drop its
+        arm). A label that does not lower (a ``case inside`` range, …) is
+        a reported opaque match."""
+        if self._kind_name(label) == "RangeExpression" or label is None:
+            return self._opaque(
+                label if label is not None else stmt, 1, "`case` label"
+            )[0]
+        bits = self._bits_of_expression(label)
+        if not bits:
+            return self._opaque(label, 1, "`case` label")[0]
+        width = max(len(bits), len(sel_bits))
+        bits = self._resize_bits(bits, width)
+        sel = self._resize_bits(sel_bits, width)
+        condition = str(getattr(stmt, "condition", "")).rsplit(".", 1)[-1]
+        wild = {
+            "WildcardJustZ": {"z"},
+            "WildcardXOrZ": {"x", "z"},
+            "Inside": {"x", "z"},
+        }.get(condition, set())
+        lanes = [i for i in range(width) if bits[i] not in wild]
+        if not lanes:
+            return "1"
+        return self._emit_comb_cell(
+            "$eq",
+            {"A": tuple(sel[i] for i in lanes), "B": tuple(bits[i] for i in lanes)},
+            output_width=1,
+            src_node=label,
+        )[0]
 
     def _emit_for_loop(
         self,
@@ -2271,13 +2274,10 @@ class _ModuleBuilder:
         if q_bits is None:
             self._warn_lvalue_dropped(expr, lhs)
             return
-        d_bits = self._sized_rhs_bits(rhs, len(q_bits))
-        if d_bits is None:
-            # RHS isn't a bare named value yet — we'd need primitive
-            # lowering to model it. Emit a $_UNKNOWN_ driver so the
-            # netlist isn't corrupt; the rule pack will treat the D
-            # input as opaque (no upstream flops trace through it).
-            d_bits = self._unknown_driver(width=len(q_bits))
+        # An unlowerable RHS gets a reported $_UNKNOWN_ driver: the rule
+        # pack treats the D input as opaque (no upstream flops trace
+        # through it).
+        d_bits = self._rhs_bits(rhs, len(q_bits))
 
         # Combine the active enable stack into a single bit (chain
         # $and cells). None when the stack is empty — the write is
@@ -2507,6 +2507,18 @@ class _ModuleBuilder:
             attributes=attrs,
         )
 
+    def _condition_bit(self, stmt: Any) -> Bit:
+        """The single-bit condition of an ``if`` statement, or, when it does
+        not lower (a pattern match, an unmodelled operator), a reported
+        opaque select (rtl-buddy-cdc#377: such an ``if`` used to be walked
+        as if both arms were unconditional)."""
+        conds = getattr(stmt, "conditions", None)
+        bit = self._lower_condition_to_bit(conds)
+        if bit is not None:
+            return bit
+        node = conds[0].expr if conds and len(conds) == 1 else stmt
+        return self._opaque(node, 1, "`if` condition")[0]
+
     def _lower_condition_to_bit(self, conditions: Any) -> Bit | None:
         """Lower a ``ConditionalStatement``'s condition list to a
         single Yosys-shape bit suitable for use as a mux ``S`` input.
@@ -2700,9 +2712,7 @@ class _ModuleBuilder:
         if targets is None:
             return None
         total = sum(width for _sym, _start, width in targets)
-        rhs_bits = self._sized_rhs_bits(rhs, total)
-        if rhs_bits is None:
-            rhs_bits = self._unknown_driver(total)
+        rhs_bits = self._rhs_bits(rhs, total)
         return [
             (self._alloc_bits(sym)[start : start + len(bits)], bits)
             for sym, start, bits in self._group_parts(
@@ -2725,11 +2735,7 @@ class _ModuleBuilder:
         if targets is None:
             return False
         total = sum(width for _sym, _start, width in targets)
-        rhs_bits = self._sized_rhs_bits(rhs, total)
-        if rhs_bits is None:
-            # Unlowerable right-hand side: left undriven, as for a
-            # whole-variable target.
-            return True
+        rhs_bits = self._rhs_bits(rhs, total)
         for (sym, start, width), piece in zip(
             targets, self._split_rhs(rhs_bits, targets)
         ):
@@ -3138,13 +3144,21 @@ class _ModuleBuilder:
         """
         kind = type(expr).__name__
         if kind == "NamedValueExpression":
+            if self._kind_name(expr.symbol) in self._CONSTANT_SYMBOLS:
+                # A parameter / enum value is its value, not a net
+                # (rtl-buddy-cdc#377: it read as an undriven placeholder).
+                return self._value_bits(
+                    getattr(expr.symbol, "value", None), self._expr_width(expr)
+                )
             return self._alloc_bits(expr.symbol)
         if kind == "ConversionExpression":
             inner = getattr(expr, "operand", None)
             if inner is not None:
                 return self._bits_of_expression(inner)
-        if kind == "IntegerLiteral":
-            return self._bits_of_integer_literal(expr)
+        if kind in {"IntegerLiteral", "UnbasedUnsizedIntegerLiteral"}:
+            return self._value_bits(
+                getattr(expr, "value", None), self._expr_width(expr)
+            )
         if kind == "BinaryExpression":
             return self._lower_binary(expr)
         if kind == "UnaryExpression":
@@ -3168,7 +3182,28 @@ class _ModuleBuilder:
             return self._lower_replication(expr)
         if kind == "CallExpression":
             return self._lower_call(expr)
-        return None
+        # Anything else slang folded at elaboration time (``$bits(x)``, …).
+        return self._constant_bits(expr)
+
+    # Symbols a NamedValueExpression reads as a constant.
+    _CONSTANT_SYMBOLS = frozenset(
+        {"ParameterSymbol", "EnumValueSymbol", "SpecparamSymbol"}
+    )
+
+    def _value_bits(self, value: Any, width: int) -> tuple[Bit, ...] | None:
+        """LSB-first bits of an elaboration-time value (``SVInt`` or
+        ``ConstantValue``) with ``x`` / ``z`` digits kept, sized to
+        ``width`` (its own width when ``width`` is 0): zero-extended, or
+        sign-extended when the value is signed."""
+        digits = _encode_param(value) if value is not None else None
+        if digits is None:
+            return None
+        bits: tuple[Bit, ...] = tuple(digits[::-1])
+        if width < 1:
+            return bits
+        inner = getattr(value, "value", value)
+        signed = bool(getattr(inner, "isSigned", False))
+        return self._resize_bits(bits, width, signed)
 
     # -- function calls (rtl-buddy-cdc#377) -------------------------------
 
@@ -3177,12 +3212,18 @@ class _ModuleBuilder:
     def _lower_call(self, expr: Any) -> tuple[Bit, ...] | None:
         """A function call on the right-hand side: its constant value when
         slang folds it (``$clog2(N)``, a constant function of parameters),
-        else the body of a user-defined function inlined
-        (:meth:`_inline_function`). ``None`` for anything else."""
+        the operand of a ``$signed`` / ``$unsigned`` cast (no logic of its
+        own; the width conversion around it does any extension), else the
+        body of a user-defined function inlined (:meth:`_inline_function`).
+        ``None`` for anything else (another system function)."""
         constant = self._constant_bits(expr)
         if constant is not None:
             return constant
         if getattr(expr, "isSystemCall", False):
+            args = list(getattr(expr, "arguments", None) or [])
+            name = getattr(expr, "subroutineName", "")
+            if name in {"$signed", "$unsigned"} and len(args) == 1:
+                return self._bits_of_expression(args[0])
             return None
         return self._inline_function(expr)
 
@@ -3195,11 +3236,7 @@ class _ModuleBuilder:
         width = self._expr_width(expr)
         if inner is None or width < 1 or getattr(inner, "bitWidth", None) is None:
             return None
-        digits = _encode_param(inner)
-        if digits is None:
-            return None
-        digits = digits.rjust(width, "0")[-width:]
-        return tuple(digits[::-1])
+        return self._value_bits(inner, width)
 
     def _inline_function(self, expr: Any) -> tuple[Bit, ...] | None:
         """Inline a call to a combinational user-defined function, as
@@ -3509,28 +3546,6 @@ class _ModuleBuilder:
             src_node=expr,
         )
 
-    def _bits_of_integer_literal(self, expr: Any) -> tuple[Bit, ...] | None:
-        """Map an :class:`IntegerLiteral` to Yosys constant bits.
-
-        Yosys represents constant bits as the strings ``"0"``, ``"1"``,
-        ``"x"``, ``"z"``. The bit tuple is LSB-first to match Yosys
-        write_json ordering.
-        """
-        # pyslang exposes the value via ``expr.value`` as an SVInt.
-        # SVInt has a ``__int__`` for small concrete values; bigger
-        # ones we'd need to walk per-bit. For our fixtures the literals
-        # are 1-bit (``1'b0`` / ``1'b1``).
-        val = getattr(expr, "value", None)
-        if val is None:
-            return None
-        try:
-            as_int = int(val)
-        except (TypeError, ValueError):
-            return None
-        width = self._expr_width(expr) or 1
-        # LSB-first per Yosys convention.
-        return tuple("1" if (as_int >> i) & 1 else "0" for i in range(width))
-
     def _expr_width(self, expr: Any) -> int:
         t = getattr(expr, "type", None)
         if t is None:
@@ -3643,13 +3658,12 @@ class _ModuleBuilder:
         replicated per data bit. Unlowerable address / data expressions
         get an ``$_UNKNOWN_`` driver, as for any other unmodelled RHS.
         """
-        addr = self._bits_of_expression(selector) or self._unknown_driver(1)
+        addr = self._bits_of_expression(selector) or self._opaque(
+            selector, 1, "memory address"
+        )
         params = self._memory_params(sym, len(addr))
         width = int(params["WIDTH"], 2)
-        data = self._bits_of_expression(rhs)
-        if data is None:
-            data = self._unknown_driver(width)
-        data = (tuple(data) + ("0",) * width)[:width]
+        data = self._rhs_bits(rhs, width)
         enable = self._combine_enable_stack()
         en: tuple[Bit, ...] = ((enable if enable is not None else "1"),) * width
         portid = self._memory_write_ports.get(params["MEMID"], 0)
@@ -3673,7 +3687,9 @@ class _ModuleBuilder:
         """Emit an asynchronous ``$memrd_v2`` for an R-value ``mem[addr]``
         and return its data bits — what Yosys ``proc`` leaves too; a
         registered read is this port followed by the ordinary flop."""
-        addr = self._bits_of_expression(selector) or self._unknown_driver(1)
+        addr = self._bits_of_expression(selector) or self._opaque(
+            selector, 1, "memory address"
+        )
         params = self._memory_params(sym, len(addr))
         width = int(params["WIDTH"], 2)
         data = self._alloc_anon_bits(width)
@@ -3703,6 +3719,47 @@ class _ModuleBuilder:
             node,
         )
         return data
+
+    def _rhs_bits(
+        self, expr: Any, width: int, what: str = "right-hand side"
+    ) -> tuple[Bit, ...]:
+        """``expr`` sized to ``width`` bits, or, when it does not lower, an
+        opaque driver reported by :meth:`_warn_opaque` — never nothing: an
+        undriven target reads as a clean run (rtl-buddy-cdc#377)."""
+        bits = self._sized_rhs_bits(expr, width)
+        if bits is not None:
+            return bits
+        return self._opaque(expr, width, what)
+
+    def _opaque(self, node: Any, width: int, what: str) -> tuple[Bit, ...]:
+        """An ``$_UNKNOWN_`` driver standing in for ``node``, reported."""
+        self._warn_opaque(node, what)
+        return self._unknown_driver(max(width, 1))
+
+    def _warn_opaque(self, node: Any, what: str) -> None:
+        """Report an expression replaced by an opaque ``$_UNKNOWN_`` driver,
+        once per source location (an unrolled loop or an inlined function
+        reaches it repeatedly). The logic behind it is invisible to the
+        rules, so a crossing through it can be missed."""
+        self._lowering_failures = getattr(self, "_lowering_failures", 0) + 1
+        where = self._src_attr(node)
+        key = (where, what)
+        if key in self._lvalue_warned:
+            return
+        self._lvalue_warned.add(key)
+        # An implicit conversion has no syntax of its own: name its operand.
+        while getattr(node, "syntax", None) is None and getattr(node, "operand", None):
+            node = node.operand
+        text = " ".join(str(getattr(node, "syntax", "") or "").split())
+        if len(text) > 60:
+            text = text[:57] + "..."
+        _log.warning(
+            "slang frontend: %s: %s%s not lowered; modelled as an opaque "
+            "driver, so the logic feeding it is invisible to the CDC rules",
+            where or "<unknown location>",
+            what,
+            f" `{text}`" if text else "",
+        )
 
     def _unknown_driver(self, width: int) -> tuple[Bit, ...]:
         """Allocate a fresh net driven by a stub ``$_UNKNOWN_`` cell.
@@ -3766,9 +3823,7 @@ class _ModuleBuilder:
             return
         if kind != "ConditionalStatement":
             return
-        en_bit = self._lower_condition_to_bit(getattr(stmt, "conditions", None))
-        if en_bit is None:
-            return
+        en_bit = self._condition_bit(stmt)
         # Drill through the optional BlockStatement on the ifTrue arm.
         arm = stmt.ifTrue
         while arm is not None and self._kind_name(arm) == "BlockStatement":
@@ -3795,9 +3850,7 @@ class _ModuleBuilder:
         if q_bits is None:
             self._warn_lvalue_dropped(expr, expr.left)
             return
-        d_bits = self._sized_rhs_bits(expr.right, len(q_bits))
-        if d_bits is None:
-            d_bits = self._unknown_driver(width=len(q_bits))
+        d_bits = self._rhs_bits(expr.right, len(q_bits))
         self._emit_dlatch_cell(en_bit, q_bits, d_bits, src_node=stmt)
         # An explicit ``else`` would write a second value and break
         # the single-arm-implicit-hold semantics — uncommon, and Yosys
@@ -4136,14 +4189,7 @@ class _ModuleBuilder:
             if live is not None:
                 self._walk_comb_statement(live)
             return
-        sel = self._lower_condition_to_bit(conds)
-        if sel is None:
-            self._warn_dropped(
-                stmt,
-                "condition is not a single-bit expression this frontend lowers",
-                "`if` statement",
-            )
-            return
+        sel = self._condition_bit(stmt)
         base = dict(self._var_bits)
         true_state, false_state = self._walk_branches([stmt.ifTrue, stmt.ifFalse])
         written = {
@@ -4190,29 +4236,18 @@ class _ModuleBuilder:
             if live is not None:
                 self._walk_comb_statement(live)
             return
-        sel_bits = self._bits_of_expression(stmt.expr)
-        if sel_bits is None:
-            self._warn_dropped(
-                stmt, "case expression is not lowered", "`case` statement"
-            )
-            return
+        sel_bits = self._case_expr_bits(stmt)
         if not items:
             if default_arm is not None:
                 self._walk_comb_statement(default_arm)
             return
         selects: list[Bit] = []
         for item in items:
-            match = self._lower_case_arm_selector(
-                sel_bits, list(getattr(item, "expressions", []) or []), stmt
+            labels = list(getattr(item, "expressions", []) or [])
+            match = self._or_bits(
+                [self._case_label_match(sel_bits, label, stmt) for label in labels]
             )
-            if match is None:
-                self._warn_dropped(
-                    stmt,
-                    "a case item label is not lowered",
-                    "`case` statement",
-                )
-                return
-            selects.append(match[0])
+            selects.append(match if match is not None else "0")
         fallback_arm = default_arm
         if fallback_arm is None and self._case_is_full(stmt, items, len(sel_bits)):
             fallback_arm = getattr(items[-1], "stmt", None)
@@ -4255,40 +4290,6 @@ class _ModuleBuilder:
                 seen.add(value & ((1 << width) - 1))
         return len(seen) == 1 << width
 
-    def _lower_case_arm_selector(
-        self,
-        sel_bits: tuple[Bit, ...],
-        label_exprs: list[Any],
-        src_node: Any,
-    ) -> tuple[Bit, ...] | None:
-        """Build the 1-bit ``$mux.S`` selector for a single case arm:
-        OR of ``(case_expr == label_i)`` ``$eq`` cells.
-
-        Returns ``None`` if none of the labels could be lowered, so
-        the caller can drop the arm rather than emit a broken mux.
-        """
-        sel_match: tuple[Bit, ...] | None = None
-        for label_expr in label_exprs:
-            lb = self._bits_of_expression(label_expr)
-            if lb is None:
-                continue
-            eq_y = self._emit_comb_cell(
-                cell_type="$eq",
-                inputs={"A": sel_bits, "B": lb},
-                output_width=1,
-                src_node=src_node,
-            )
-            if sel_match is None:
-                sel_match = eq_y
-            else:
-                sel_match = self._emit_comb_cell(
-                    cell_type="$or",
-                    inputs={"A": sel_match, "B": eq_y},
-                    output_width=1,
-                    src_node=src_node,
-                )
-        return sel_match
-
     def _alias_assign(self, expr: Any) -> None:
         """For a blocking assignment ``lhs = rhs``, rewrite ``lhs``'s
         bits to point at ``rhs``'s lowered bits — same aliasing trick
@@ -4300,11 +4301,7 @@ class _ModuleBuilder:
         lhs = expr.left
         lhs_kind = type(lhs).__name__
         if lhs_kind == "NamedValueExpression":
-            rhs_bits = self._sized_rhs_bits(
-                expr.right, len(self._alloc_bits(lhs.symbol))
-            )
-            if rhs_bits is None:
-                return
+            rhs_bits = self._rhs_bits(expr.right, len(self._alloc_bits(lhs.symbol)))
             self._rewrite_aliased(lhs, rhs_bits)
             return
         if (
@@ -4365,9 +4362,9 @@ class _ModuleBuilder:
         if idx_bits is None:
             return False
 
-        rhs_bits = self._bits_of_expression(rhs)
-        if rhs_bits is None or len(rhs_bits) == 0:
-            return True  # unlowerable RHS: left undriven, as elsewhere
+        rhs_bits = self._bits_of_expression(rhs) or self._opaque(
+            rhs, self._expr_width(rhs), "right-hand side"
+        )
         # Zero-extend rhs to base width so the shift operand and the
         # ``base | shl(rhs, idx)`` widths line up.
         a_bits: tuple[Bit, ...] = rhs_bits + ("0",) * (width - len(rhs_bits))
@@ -4407,10 +4404,7 @@ class _ModuleBuilder:
             if not self._splice_assign(lhs, rhs, continuous=True):
                 self._warn_lvalue_dropped(member, lhs)
             return
-        rhs_bits = self._sized_rhs_bits(rhs, len(self._alloc_bits(lhs.symbol)))
-        if rhs_bits is None:
-            # Comb-driven port — primitive lowering will handle this.
-            return
+        rhs_bits = self._rhs_bits(rhs, len(self._alloc_bits(lhs.symbol)))
         # Aliasing trick: rewrite the LHS variable's bits to point at
         # the RHS's bits so any reader of the LHS sees the RHS source
         # directly. This matches Yosys' post-opt_clean output for

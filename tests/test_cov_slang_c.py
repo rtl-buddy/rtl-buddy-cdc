@@ -343,14 +343,14 @@ def test_comb_case_multilabel_item_ors_equalities(tmp_path: Path) -> None:
 
 
 def test_indexed_assign_onehot_emits_shift(tmp_path: Path) -> None:
-    """``oh = '0; oh[idx] = 1'b1;`` — :meth:`_alias_indexed_assign`
+    """``oh = m; oh[idx] = 1'b1;`` — :meth:`_alias_indexed_assign`
     models ``oh = oh | (1 << idx)``, emitting a ``$shl`` whose B is the
-    index and (because the prior alias is not the literal zero constant)
-    an ``$or`` folding the shift onto the previous bits."""
+    index and (because the prior value is not the all-zero constant) an
+    ``$or`` folding the shift onto the previous bits."""
     src = """
-    module m (input logic [1:0] idx, output logic [3:0] oh);
+    module m (input logic [1:0] idx, input logic [3:0] m, output logic [3:0] oh);
         always_comb begin
-            oh = '0;
+            oh = m;
             oh[idx] = 1'b1;
         end
     endmodule
@@ -451,20 +451,20 @@ def test_unary_plus_is_identity_no_cell(tmp_path: Path) -> None:
     assert "$pos" not in _cell_types(mod), "unary plus must not emit a cell"
 
 
-def test_continuous_assign_unmodelled_rhs_emits_no_cell(tmp_path: Path) -> None:
-    """``assign y = $countones(a);`` where the RHS isn't modelled —
-    :meth:`_emit_continuous_assign` bails when ``_bits_of_expression``
-    returns ``None`` (the comb-driven-port leg), so no aliasing happens
-    and no cell is emitted for the assign."""
+def test_continuous_assign_unmodelled_rhs_is_opaque(tmp_path: Path, caplog) -> None:
+    """``assign y = $countones(a);`` where the RHS isn't modelled: ``y``
+    is driven by a reported ``$_UNKNOWN_`` cell (rtl-buddy-cdc#377; it
+    used to be left silently undriven)."""
     src = """
     module m (input logic [3:0] a, output logic [3:0] y);
         assign y = $countones(a);
     endmodule
     """
-    mod = _elaborate(tmp_path, src)
-    assert _cell_types(mod) == [], (
-        f"an unmodelled continuous-assign RHS should emit no cell; got {_cell_types(mod)}"
-    )
+    with caplog.at_level(logging.WARNING):
+        mod = _elaborate(tmp_path, src)
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    assert mod.ports["y"].bits == unknown.connections["Y"]
+    assert any("$countones(a)" in r.getMessage() for r in caplog.records)
 
 
 def test_arithmetic_shift_left_emits_sshl(tmp_path: Path) -> None:
@@ -715,9 +715,9 @@ def test_nonblocking_assign_in_always_comb_is_ignored(tmp_path: Path) -> None:
 
 def test_comb_if_with_unlowerable_selector_is_reported(tmp_path: Path, caplog) -> None:
     """When the ``if`` condition can't be lowered to bits (a system call
-    here), :meth:`_walk_conditional_statement` reports the statement and
-    lowers neither arm (rtl-buddy-cdc#377; it used to walk both arms as
-    if unconditional, so ``y`` silently read ``b``)."""
+    here), :meth:`_walk_conditional_statement` muxes the arms on a
+    reported opaque select (rtl-buddy-cdc#377; it used to walk both arms
+    as if unconditional, so ``y`` silently read ``b``)."""
     src = """
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
         logic [3:0] y;
@@ -730,9 +730,11 @@ def test_comb_if_with_unlowerable_selector_is_reported(tmp_path: Path, caplog) -
     """
     with caplog.at_level(logging.WARNING):
         mod = _elaborate(tmp_path, src)
-    assert "$mux" not in _cell_types(mod)
-    assert _one_dff(mod).connections["D"] != mod.ports["b"].bits
-    assert any("`if` statement not lowered" in r.getMessage() for r in caplog.records)
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    (mux,) = [c for c in mod.cells.values() if c.type == "$mux"]
+    assert mux.connections["S"] == unknown.connections["Y"]
+    assert _one_dff(mod).connections["D"] == mux.connections["Y"]
+    assert any("`if` condition" in r.getMessage() for r in caplog.records)
 
 
 def test_latch_body_with_two_if_arms_emits_two_dlatches(tmp_path: Path) -> None:
