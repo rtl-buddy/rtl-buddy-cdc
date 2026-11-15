@@ -11,8 +11,8 @@
 // `src_rst` and the consuming flop. The paired `good_*` counterpart
 // shows it.
 //
-// RDC-003 must fire once on `q_dst`; no other rule should fire
-// (q_dst's D = a port, so no data crossing).
+// RDC-003 must fire once on `q_dst`, and CDC-001 once on the same
+// unsynchronised crossing (the SRST pin captures, rtl-buddy-cdc#375).
 //
 // Build:
 //   yosys -p 'read_verilog -sv bad_rdc_003_sync_reset_crossing.sv;

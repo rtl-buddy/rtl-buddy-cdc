@@ -8,7 +8,7 @@ Negative-case fixture for RDC-003 — sync reset crossing without a reset synchr
 
 The classic fix is a 2FF reset synchroniser in `dst_clk` between `src_rst` and the consuming flop. The paired `good_*` counterpart shows it.
 
-RDC-003 must fire once on `q_dst`; no other rule should fire (q_dst's D = a port, so no data crossing).
+RDC-003 must fire once on `q_dst`, and CDC-001 once on the same unsynchronised crossing (the SRST pin captures, rtl-buddy-cdc#375).
 
 ```text
 Build:
@@ -23,7 +23,7 @@ Build:
 - **Status:** negative — analyzer must report a violation
 - **Top module:** `bad_rdc_003_sync_reset_crossing`
 - **Clocks:** `dst_clk` (7.5 ns), `src_clk` (10.0 ns)
-- **Crossings:** 0 structural (0 async-per-SDC, 0 sync)
+- **Crossings:** 1 structural (1 async-per-SDC, 0 sync)
 
 ## Clock-domain map
 
@@ -40,6 +40,7 @@ flowchart LR
     p_in_kill_req[/"kill_req⟨in⟩"/]:::ckcls_src_clk
     f_6c7c42e2["$procdff$12<br/><i>sv:27</i>"]:::ckcls_src_clk
   end
+  f_6c7c42e2 -. "⚠ async · 1b" .-> f_f473f8c3
   subgraph rb_legend["Legend"]
     direction LR
     lg_clk_dst_clk["flop · dst_clk (7.5 ns)"]:::ckcls_dst_clk

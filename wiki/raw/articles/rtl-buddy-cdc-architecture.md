@@ -1758,12 +1758,13 @@ For each source flop with a known clock:
 
 1. Start the BFS frontier at every bit on its `Q` pins, hop count 0.
 2. For each `(bit, hops)` on the frontier:
-   - If `bit` is connected to any flop's `D` pin in a *different*
-     clock domain, record the crossing (or update the existing record
-     for that `(src_flop, dst_flop)` pair).
+   - If `bit` is connected to any flop's `D` pin — or to one of its
+     capture-control pins (§7.3) — in a *different* clock domain,
+     record the crossing (or update the existing record for that
+     `(src_flop, dst_flop)` pair).
    - Else, push `bit` through every consumer cell that isn't a flop,
      emitting that cell's outputs at `hops + 1`. Flops are skipped as
-     transit nodes — landing on a `D` pin is the only way the BFS
+     transit nodes — landing on a capture pin is the only way the BFS
      terminates productively.
 3. Hop budget is `max_hops = 4` by default. Beyond that, signals are
    treated as no longer "directly connecting" the two flops; the rule
@@ -1801,18 +1802,37 @@ records with `width = 1`.
   no port-sourced crossings for untyped ports at all.
 - **CLK pins as transit bits.** `_build_bit_consumers` filters out
   clock connections so the data BFS doesn't follow them.
-- **Reset and control pins as crossing *sinks*.** `flop_by_d_bit` is
-  built from `Flop.d`, so the only pin the BFS can terminate on is
-  `D`. A signal arriving on `SRST` / `ARST` / `EN` / a clock-mux `S`
-  never produces a `Crossing`, no matter which domain it came from.
-  This is a real scope boundary, not an oversight — the rules that
-  consume crossings (sync-chain depth, gray coding, bus width,
-  reconvergence) all reason about a *data* path, and a reset pin is
-  not one. Rules that care about those pins walk them directly
-  instead: RDC-001 / RDC-003 from `ARST` / `SRST`, CDC-010 from
-  clock-network control pins, and CDC-011 from `SRST` (§8.18). When
-  adding a rule about a non-`D` pin, walk the pin — do not widen the
+- **Asynchronous reset and clock-network pins as crossing *sinks*.**
+  A signal arriving on `ARST` / `CLR` / `ALOAD` (gate-level `R` / `L`
+  of an async family) or on a clock-mux `S` never produces a
+  `Crossing`, no matter which domain it came from. Those pins are not
+  sampled by the flop's clock, so the rules that consume crossings
+  (sync-chain depth, gray coding, bus width, reconvergence) have
+  nothing to say about them. Rules that care walk them directly:
+  RDC-001 from `ARST`, CDC-010 from clock-network control pins. When
+  adding a rule about such a pin, walk the pin — do not widen the
   crossing model.
+
+  The **clock enable** and the **synchronous reset** are different:
+  they are capture inputs (rtl-buddy-cdc#375). After `proc` both are
+  muxes on `D` (a hold mux, a constant-leg reset mux), so a foreign
+  signal on either is in the `D` cone and its crossing is found;
+  `opt_dff` folds the same muxes into `$dffe` `EN` / `$sdff` `SRST`
+  (`E` / `R` on `$_DFFE_*` / `$_SDFF*`), and a walk that ended on `D`
+  only lost the crossing on every optimised or gate-level netlist.
+  `domain.capture_control_pins` names those pins per flop with the
+  number of folded muxes between each and `D` (1; 2 for the lower-
+  priority pin of `$sdffe` — enable — and `$sdffce` — reset), and the
+  walk lands on them at that depth, reaching every `D` bit (the folded
+  select fanned out to all lanes). The crossing model is therefore the
+  `proc` form's: the same `(src, dst)` pairs, `min_hops` and `width`
+  before and after `opt_dff`, which
+  `tests/test_gate_level_corpus.py::test_crossings_invariant_under_opt_dff`
+  holds over every fixture. RDC-003 still walks `SRST` directly, so a
+  foreign sync reset on a `$sdff` reports both RDC-003 (the reset view)
+  and CDC-001 on the crossing, where the `proc` form reports CDC-001;
+  CDC-011 unions its `SRST` walk with the crossings (§8.18), so it stays
+  one finding either way.
 - **Same-domain crossings.** Filtered out at record-creation time —
   if `dst_clock == src_clock`, no record is created.
 - **The storage path of a memory.** Memory *ports* are walked (§7.5),
@@ -2772,8 +2792,9 @@ legacy-id alias in `waivers.py`.
 ### 8.18 CDC-011 — the `SRST` supplement (issue #272)
 
 CDC-011 is defined over *ports*, but it was implemented over
-*crossings*, and crossings only sink on `D` pins (§7.3). That mismatch
-made one finding depend on a synthesis-pass detail.
+*crossings*, and crossings only sank on `D` pins (§7.3; the sync-reset
+pin is a capture input since rtl-buddy-cdc#375). That mismatch made one
+finding depend on a synthesis-pass detail.
 
 Take an untyped input used as a synchronous reset. If the consumer
 flop also has a real data input, `proc` leaves a `$dff` whose `D` is a

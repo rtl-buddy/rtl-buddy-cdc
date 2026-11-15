@@ -15,11 +15,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, TypedDict
 
-from rtl_buddy_cdc.cells import GATE_LOGIC_INPUTS, GATE_LOGIC_TYPES, MUX_PINS
+from rtl_buddy_cdc.cells import (
+    GATE_LOGIC_INPUTS,
+    GATE_LOGIC_TYPES,
+    MUX_PINS,
+    parse_gate_storage_cell,
+)
 from rtl_buddy_cdc.flops import (
     Flop,
     find_flops,
     flop_clk_pin,
+    flop_enable_pin,
+    flop_reset,
     is_ff_cell,
     is_latch_cell,
 )
@@ -143,7 +150,9 @@ class InferredClockCandidate:
 
 @dataclass(frozen=True)
 class Crossing:
-    """A fanout path that crosses domains, ending at a flop's ``D`` pin.
+    """A fanout path that crosses domains, ending at a flop's ``D`` pin
+    (or at a capture-control pin standing for a mux on it, see
+    :func:`capture_control_pins`).
 
     The source endpoint is either a flop (the typical case — register-
     to-register) or a top-level input port that the SDC has typed with
@@ -1595,11 +1604,75 @@ def _build_bit_consumers(
     return consumers
 
 
+def capture_control_pins(cell: Cell) -> tuple[tuple[str, int], ...]:
+    """The pins besides ``D`` through which flop ``cell`` captures data
+    on its clock edge, each with the cells it stands for.
+
+    ``opt_dff`` folds a flop's enable (hold) mux and its synchronous-reset
+    mux into the flop: the ``EN`` / ``E`` pin and the sync-reset ``SRST``
+    / ``R`` pin. A signal that reaches the flop only through one of them
+    was on its ``D`` cone before the fold, and is still sampled on the
+    clock edge, so the crossing walk treats these pins as capture inputs
+    too (rtl-buddy-cdc#375). Asynchronous resets / loads are not: they
+    are not sampled by the clock, and the RDC rules own them.
+
+    The int with each pin is the number of folded mux cells between the
+    pin and ``D`` in the ``proc`` form of the same flop, so a crossing
+    found through the pin reports the ``min_hops`` the ``proc`` form
+    does. One mux each, except when the flop has both: the higher
+    priority one is outermost (next to ``D``) and the other sits behind
+    it. ``$sdffe`` / ``$_SDFFE_*`` reset over enable (``EN`` is 2 deep);
+    ``$sdffce`` / ``$_SDFFCE_*`` reset only while enabled (``SRST`` is 2
+    deep).
+
+    Empty for anything that is not a flop (latches, memory ports,
+    boundary sinks).
+    """
+    if not is_ff_cell(cell.type):
+        return ()
+    en = flop_enable_pin(cell)
+    rst = flop_reset(cell)
+    srst = rst.pin if rst is not None and rst.role == "srst" else None
+    if en is not None and srst is not None:
+        gate = parse_gate_storage_cell(cell.type)
+        reset_gated = cell.type == "$sdffce" or (
+            gate is not None and gate.reset_gated_by_enable
+        )
+        if reset_gated:
+            return ((en, 1), (srst, 2))
+        return ((en, 2), (srst, 1))
+    if en is not None:
+        return ((en, 1),)
+    if srst is not None:
+        return ((srst, 1),)
+    return ()
+
+
+def _capture_sites(
+    flops: list[Flop],
+) -> tuple[dict[Bit, list[Flop]], dict[Bit, list[tuple[Flop, int]]]]:
+    """``(flop_by_d_bit, flop_by_ctrl_bit)`` for the crossing walks: the
+    flops whose ``D`` reads each bit, and the flops whose capture-control
+    pin (:func:`capture_control_pins`) reads it with that pin's depth."""
+    flop_by_d_bit: dict[Bit, list[Flop]] = defaultdict(list)
+    flop_by_ctrl_bit: dict[Bit, list[tuple[Flop, int]]] = defaultdict(list)
+    for f in flops:
+        for b in f.d:
+            if isinstance(b, int):
+                flop_by_d_bit[b].append(f)
+        for pin, depth in capture_control_pins(f.cell):
+            for b in f.cell.connections.get(pin, ()):
+                if isinstance(b, int):
+                    flop_by_ctrl_bit[b].append((f, depth))
+    return flop_by_d_bit, flop_by_ctrl_bit
+
+
 def _make_fanout_filter(
     module: Module,
     flop_by_d_bit: dict[Bit, list[Flop]],
     domains: dict[str, FlopDomain],
     max_hops: int,
+    flop_by_ctrl_bit: dict[Bit, list[tuple[Flop, int]]] | None = None,
 ) -> Callable[[Bit, int, str], bool]:
     """Build the pruning test for the flop-sourced walk in :func:`find_crossings`.
 
@@ -1644,36 +1717,50 @@ def _make_fanout_filter(
             if lane:
                 rev[yb].append(lane)
 
-    seeds_by_clock: dict[str, list[Bit]] = defaultdict(list)
+    # seeds_by_clock[clock][depth] = bits that capture into ``clock`` at
+    # ``depth`` cells: a D pin at 0, a capture-control pin at the depth of
+    # the mux it was folded from (:func:`capture_control_pins`).
+    seeds_by_clock: dict[str, dict[int, list[Bit]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for b, dst_flops in flop_by_d_bit.items():
         for f in dst_flops:
             clock = domains[f.cell.name].clock
             if clock is not None:
-                seeds_by_clock[clock].append(b)
+                seeds_by_clock[clock][0].append(b)
+    for b, sites in (flop_by_ctrl_bit or {}).items():
+        for f, depth in sites:
+            clock = domains[f.cell.name].clock
+            if clock is not None and depth <= max_hops:
+                seeds_by_clock[clock][depth].append(b)
 
-    # dist_to[bit][clock] = fewest cells from ``bit`` to a D pin of a flop
-    # in ``clock`` (only recorded up to ``max_hops``).
+    # dist_to[bit][clock] = fewest cells from ``bit`` to a capture pin of
+    # a flop in ``clock`` (only recorded up to ``max_hops``).
     dist_to: dict[Bit, dict[str, int]] = {}
-    for clock, seeds in seeds_by_clock.items():
-        frontier = list(dict.fromkeys(seeds))
-        for b in frontier:
-            dist_to.setdefault(b, {})[clock] = 0
+    for clock, levels in seeds_by_clock.items():
+        # Level-ordered BFS from seeds at several start depths: every bit
+        # is expanded once, at its final (smallest) depth.
         expanded: set[int] = set()
-        depth = 0
-        while frontier and depth < max_hops:
-            depth += 1
-            nxt: list[Bit] = []
-            for b in frontier:
+        for depth in range(max_hops + 1):
+            frontier: list[Bit] = []
+            for b in levels.get(depth, ()):
+                dists = dist_to.setdefault(b, {})
+                if dists.get(clock, depth + 1) > depth:
+                    dists[clock] = depth
+                if dists[clock] == depth:
+                    frontier.append(b)
+            if depth == max_hops:
+                break
+            for b in dict.fromkeys(frontier):
                 for preds in rev.get(b, ()):
                     if id(preds) in expanded:
                         continue
                     expanded.add(id(preds))
                     for pb in preds:
                         dists = dist_to.setdefault(pb, {})
-                        if clock not in dists:
-                            dists[clock] = depth
-                            nxt.append(pb)
-            frontier = nxt
+                        if dists.get(clock, depth + 2) > depth + 1:
+                            dists[clock] = depth + 1
+                            levels.setdefault(depth + 1, []).append(pb)
 
     def useful(bit: Bit, hops: int, src_clock: str) -> bool:
         dists = dist_to.get(bit)
@@ -1703,7 +1790,12 @@ def find_crossings(
     The walk starts from each flop's ``Q`` bits and follows readers up to
     ``max_hops`` combinational cells before giving up. Reaching another
     flop's ``D`` pin produces a :class:`Crossing` if the two flops are in
-    distinct, known domains.
+    distinct, known domains. So does reaching its clock-enable or
+    synchronous-reset pin (:func:`capture_control_pins`,
+    rtl-buddy-cdc#375): those are the hold and reset muxes ``opt_dff``
+    folds out of the ``D`` cone, and the walk counts them as the cells
+    they were, so a design reports the same crossings before and after
+    ``opt_dff``.
 
     When ``port_clock`` is supplied (typically from
     :class:`ClockSpec.port_clock`), every top-level input port that the
@@ -1796,21 +1888,41 @@ def find_crossings(
         for fd in sink_domains:
             domains[fd.flop.cell.name] = fd
 
-    flop_by_d_bit: dict[Bit, list[Flop]] = defaultdict(list)
-    for fd in domains.values():
-        for b in fd.flop.d:
-            if isinstance(b, int):
-                flop_by_d_bit[b].append(fd.flop)
+    flop_by_d_bit, flop_by_ctrl_bit = _capture_sites(
+        [fd.flop for fd in domains.values()]
+    )
 
     def _dst_boundary_of(dst_flop: Flop) -> tuple[str, str] | None:
         return boundary_sink_lookup.get(dst_flop.cell.name)
+
+    def _landings(bit: Bit, hops: int) -> list[tuple[Flop, int, tuple[Bit, ...]]]:
+        """Every flop that captures ``bit``: ``(flop, hops at its D, the D
+        bits it reaches)``. On ``D`` that is ``bit`` itself; on a capture
+        control pin (rtl-buddy-cdc#375) it is every ``D`` bit, which is
+        what the folded mux's select reached before ``opt_dff``, at the
+        folded mux's depth."""
+        d_sites = flop_by_d_bit.get(bit)
+        c_sites = flop_by_ctrl_bit.get(bit)
+        if not d_sites and not c_sites:
+            return []
+        out: list[tuple[Flop, int, tuple[Bit, ...]]] = [
+            (f, hops, (bit,)) for f in d_sites or ()
+        ]
+        for f, depth in c_sites or ():
+            if hops + depth > max_hops:
+                continue
+            d_bits: tuple[Bit, ...] = tuple(b for b in f.d if isinstance(b, int))
+            out.append((f, hops + depth, d_bits or (bit,)))
+        return out
 
     # Grouped per (src_flop, dst_flop) pair so a multi-bit bus or a fanout
     # that hits the same destination flop on multiple D bits collapses to
     # one Crossing record.
     grouped: dict[tuple[str, str], _CrossingGroup] = {}
 
-    useful = _make_fanout_filter(module, flop_by_d_bit, domains, max_hops)
+    useful = _make_fanout_filter(
+        module, flop_by_d_bit, domains, max_hops, flop_by_ctrl_bit
+    )
 
     for src_fd in domains.values():
         if src_fd.clock is None:
@@ -1829,8 +1941,8 @@ def find_crossings(
         while frontier:
             next_frontier: list[tuple[Bit, int]] = []
             for bit, hops in frontier:
-                # Did we land on any flop's D pin?
-                for dst_flop in flop_by_d_bit.get(bit, ()):
+                # Did we land on any flop's D (or capture-control) pin?
+                for dst_flop, at_hops, d_bits in _landings(bit, hops):
                     if dst_flop.cell.name == src_fd.flop.cell.name:
                         continue
                     dst_fd = domains[dst_flop.cell.name]
@@ -1844,13 +1956,13 @@ def find_crossings(
                             "src_clock": src_fd.clock,
                             "dst_flop": dst_fd.flop,
                             "dst_clock": dst_fd.clock,
-                            "min_hops": hops,
-                            "bits": {bit},
+                            "min_hops": at_hops,
+                            "bits": set(d_bits),
                         }
                     else:
-                        g["bits"].add(bit)
-                        if hops < g["min_hops"]:
-                            g["min_hops"] = hops
+                        g["bits"].update(d_bits)
+                        if at_hops < g["min_hops"]:
+                            g["min_hops"] = at_hops
                 if hops >= max_hops or not useful(bit, hops, src_fd.clock):
                     continue
                 # Push the bit through every consumer cell that isn't a
@@ -1905,7 +2017,7 @@ def find_crossings(
             while frontier:
                 next_frontier = []
                 for bit, hops in frontier:
-                    for dst_flop in flop_by_d_bit.get(bit, ()):
+                    for dst_flop, at_hops, d_bits in _landings(bit, hops):
                         dst_fd = domains[dst_flop.cell.name]
                         if dst_fd.clock is None:
                             continue
@@ -1921,13 +2033,13 @@ def find_crossings(
                                 "src_clock": port_clk_name,
                                 "dst_flop": dst_fd.flop,
                                 "dst_clock": dst_fd.clock,
-                                "min_hops": hops,
-                                "bits": {bit},
+                                "min_hops": at_hops,
+                                "bits": set(d_bits),
                             }
                         else:
-                            pg["bits"].add(bit)
-                            if hops < pg["min_hops"]:
-                                pg["min_hops"] = hops
+                            pg["bits"].update(d_bits)
+                            if at_hops < pg["min_hops"]:
+                                pg["min_hops"] = at_hops
                     if hops >= max_hops:
                         continue
                     for cell_name, cport, idx in consumers.get(bit, ()):
@@ -1987,7 +2099,7 @@ def find_crossings(
                 while bnd_frontier:
                     bnd_next: list[tuple[Bit, int]] = []
                     for bit, hops in bnd_frontier:
-                        for dst_flop in flop_by_d_bit.get(bit, ()):
+                        for dst_flop, at_hops, d_bits in _landings(bit, hops):
                             dst_fd = domains[dst_flop.cell.name]
                             if dst_fd.clock is None:
                                 continue
@@ -2007,13 +2119,13 @@ def find_crossings(
                                     else _UNKNOWN_BOUNDARY_CLOCK,
                                     "dst_flop": dst_fd.flop,
                                     "dst_clock": dst_fd.clock,
-                                    "min_hops": hops,
-                                    "bits": {bit},
+                                    "min_hops": at_hops,
+                                    "bits": set(d_bits),
                                 }
                             else:
-                                bg["bits"].add(bit)
-                                if hops < bg["min_hops"]:
-                                    bg["min_hops"] = hops
+                                bg["bits"].update(d_bits)
+                                if at_hops < bg["min_hops"]:
+                                    bg["min_hops"] = at_hops
                         if hops >= max_hops:
                             continue
                         for cell_name, _port, _idx in consumers.get(bit, ()):

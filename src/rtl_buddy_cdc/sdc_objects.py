@@ -62,7 +62,12 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from rtl_buddy_cdc.domain import Crossing, _build_bit_consumers, _lane_targets
+from rtl_buddy_cdc.domain import (
+    Crossing,
+    _build_bit_consumers,
+    _lane_targets,
+    capture_control_pins,
+)
 from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, Module
 from rtl_buddy_cdc.reporter import _instance_path
@@ -942,7 +947,7 @@ class _ThroughWalker:
     def __init__(self, module: Module) -> None:
         self.module = module
         self._consumers: dict[Bit, list[tuple[str, str, int]]] | None = None
-        self._cache: dict[tuple[str, str, int, int], frozenset[Bit]] = {}
+        self._cache: dict[tuple[str, str, int, int], dict[Bit, int]] = {}
 
     def _source_bits(
         self, c: Crossing
@@ -959,17 +964,30 @@ class _ThroughWalker:
             return False
         (kind, name), bits = src
         dst_bits = {b for b in c.dst_flop.d if isinstance(b, int)}
+        # The destination's capture-control pins (rtl-buddy-cdc#375)
+        # capture too, at the depth of the mux opt_dff folded into them.
+        dst_cell = c.dst_flop.cell
+        ctrl = [
+            (b, depth)
+            for pin, depth in capture_control_pins(dst_cell)
+            for b in dst_cell.connections.get(pin, ())
+            if isinstance(b, int)
+        ]
         for gi, group in enumerate(rc.through):
             key = (kind, name, rc.index, gi)
             reached = self._cache.get(key)
             if reached is None:
                 reached = self._walk(bits, group)
                 self._cache[key] = reached
-            if reached & dst_bits:
+            if not dst_bits.isdisjoint(reached):
                 return False
+            for b, depth in ctrl:
+                hops = reached.get(b)
+                if hops is not None and hops + depth <= _CROSSING_MAX_HOPS:
+                    return False
         return True
 
-    def _walk(self, start: Iterable[Bit], cut: frozenset[Bit]) -> frozenset[Bit]:
+    def _walk(self, start: Iterable[Bit], cut: frozenset[Bit]) -> dict[Bit, int]:
         if self._consumers is None:
             self._consumers = _build_bit_consumers(self.module)
         consumers = self._consumers
@@ -997,7 +1015,7 @@ class _ThroughWalker:
                             seen[ob] = hops + 1
                             nxt.append((ob, hops + 1))
             frontier = nxt
-        return frozenset(seen)
+        return seen
 
 
 # --- effect on findings --------------------------------------------------------

@@ -342,6 +342,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A crossing through a flop's enable or sync-reset pin was not found
+  after `opt_dff`** (rtl-buddy-cdc#375). `find_crossings` ended its walk
+  on flop `D` pins only. After `proc` a flop's enable is a hold mux and
+  its synchronous reset a constant-leg mux on `D`, so a foreign-domain
+  signal on either was found; `opt_dff` folds both into the flop
+  (`$dffe` `EN`, `$sdff` / `$sdffe` / `$sdffce` `SRST`, gate-level
+  `$_DFFE_*` / `$_SDFF*` `E` / `R`) and the crossing silently vanished
+  from optimised and gate-level netlists — e.g.
+  `always_ff @(posedge clk_b) if (en_a) q <= d_b;` with an
+  unsynchronised `clk_a` enable reported CDC-001 before `opt_dff` and
+  nothing after.
+  - The walk now lands on those pins too (`domain.capture_control_pins`),
+    at the depth of the mux they were folded from and reaching every
+    `D` bit, so `min_hops` and `width` match the `proc` form. The
+    port-, boundary- and `set_false_path -through` walks do the same.
+    Asynchronous reset / load pins are still not capture inputs.
+  - Verdict changes on committed fixtures: `bad_rdc_003_sync_reset_crossing`
+    (a `$sdff`) now reports CDC-001 on its unsynchronised sync-reset
+    crossing alongside RDC-003, as its `proc` form reports CDC-001;
+    `bad_untyped_sync_reset_srst` gains the `srst` port crossing (1 → 2
+    crossings, CDC-011 unchanged: it already unions its `SRST` walk with
+    the crossings).
+  - New fixture `bad_enable_pin_crossing` (the issue's reproducer in the
+    `proc`, `opt_dff` and gate-level forms) and a gate-level corpus check,
+    `test_crossings_invariant_under_opt_dff`, that every fixture keeps
+    the same register-to-register crossings after `opt_dff`.
+
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,
   a_q};` (a packed-shift synchroniser) lowered to no flops and no
