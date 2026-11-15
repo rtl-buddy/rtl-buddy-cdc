@@ -50,7 +50,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from rtl_buddy_cdc.domain import filter_async, find_crossings
+from rtl_buddy_cdc.domain import (
+    DepthCut,
+    filter_async,
+    filter_async_cuts,
+    find_crossings,
+)
 from rtl_buddy_cdc.flops import Flop, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, Module
 from rtl_buddy_cdc.rules import (
@@ -167,6 +172,9 @@ class ModuleAnalysis:
     ``violations`` are the module-internal findings, ready to be lifted
     into the parent's report once per module type. ``crossings`` is the
     internal async-crossing count, kept for stats / diagnostics.
+    ``depth_cuts`` are the asynchronous paths a ``--crossing-depth`` cap
+    stopped inside the module (rtl-buddy-cdc#347), lifted with the
+    findings so a cap is reported wherever it bites.
     """
 
     module: str
@@ -176,6 +184,7 @@ class ModuleAnalysis:
     reconvergent_inputs: frozenset[frozenset[str]] = frozenset()
     violations: tuple[Violation, ...] = ()
     crossings: int = 0
+    depth_cuts: tuple[DepthCut, ...] = ()
 
     @property
     def resolved(self) -> bool:
@@ -269,6 +278,7 @@ def analyse_module(
     max_depth: int = 16,
     required_depth: int = 2,
     sync_primitives: frozenset[str] = frozenset(),
+    crossing_depth: int | None = None,
 ) -> ModuleAnalysis | None:
     """Run the ordinary CDC pipeline over ``sub`` in isolation.
 
@@ -307,7 +317,14 @@ def analyse_module(
     )
     clock_roots = frozenset(c for c in domains.values() if c is not None)
 
-    crossings = find_crossings(sub, max_depth=max_depth, **sub_spec.clock_root_inputs())
+    cuts: list[DepthCut] = []
+    crossings = find_crossings(
+        sub,
+        crossing_depth,
+        max_depth=max_depth,
+        on_depth_cut=cuts.append,
+        **sub_spec.clock_root_inputs(),
+    )
     async_crossings = filter_async(crossings, sub_spec)
     violations = [
         v
@@ -342,6 +359,7 @@ def analyse_module(
         reconvergent_inputs=reconvergent,
         violations=tuple(violations),
         crossings=len(async_crossings),
+        depth_cuts=tuple(filter_async_cuts(cuts, sub_spec)),
     )
 
 

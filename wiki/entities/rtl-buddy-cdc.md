@@ -64,7 +64,7 @@ The subprocess boundary is intentional: it lets `rtl_buddy` pick up new analyzer
 
 Designed for **interactive run times on individual IP blocks**, not full-SoC scale. On the alu_accel design (~90 flops, ~545 cells) a full lint run is well under one second.
 
-Key complexity: `find_crossings` is `O(F · max_hops · avg_fanout)`, the rule pack is `O(C)` for most rules except CDC-005 (`O(C²)`) and CDC-008 (walks cell graph from every flop CLK).
+Key complexity: `find_crossings` is one backward pass per clock domain plus, per source flop, one visit per bit of its cross-domain fanout (no hop budget since rtl-buddy-cdc#347), the rule pack is `O(C)` for most rules except CDC-005 (`O(C²)`) and CDC-008 (walks cell graph from every flop CLK).
 
 ## Related Pages
 

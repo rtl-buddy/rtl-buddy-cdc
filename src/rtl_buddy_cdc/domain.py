@@ -232,6 +232,48 @@ class Crossing:
         return self.src_boundary is not None
 
 
+#: Internal stand-in for "no cap" on the crossing walk's hop count
+#: (``find_crossings(max_hops=None)``): larger than any netlist's depth.
+_NO_HOP_CAP = 1 << 62
+
+
+@dataclass(frozen=True, order=True)
+class DepthCut:
+    """A crossing-walk path stopped by a hop cap (rtl-buddy-cdc#347).
+
+    Reported by :func:`find_crossings` when it runs with ``max_hops`` set
+    (``--crossing-depth``) and the walk from source ``src`` (named like
+    :attr:`Crossing.src_name`), in ``src_clock``, stops at the cap on a bit
+    from which a capture pin of a flop in ``dst_clock`` is still
+    reachable. Crossings reached only through such paths are not in the
+    result, so the cap's effect is reported instead of being silent. One
+    record per distinct triple; it does not say whether some shorter path
+    already reached the same destination flop, only that a longer one was
+    not followed.
+    """
+
+    src: str
+    src_clock: str
+    dst_clock: str
+
+
+# Callback signature for :func:`find_crossings`'s ``on_depth_cut``.
+DepthCutSink = Callable[[DepthCut], None]
+
+
+def filter_async_cuts(cuts: list[DepthCut], spec: "ClockSpec") -> list[DepthCut]:
+    """Keep the :class:`DepthCut` records whose two clocks are
+    asynchronous and reachable, by :func:`filter_async`'s predicate: a cut
+    path into a synchronous domain hides no CDC finding."""
+    out: list[DepthCut] = []
+    for cut in cuts:
+        a = spec.clock_for_port(cut.src_clock) or cut.src_clock
+        b = spec.clock_for_port(cut.dst_clock) or cut.dst_clock
+        if spec.async_witness(a, b) is not None:
+            out.append(cut)
+    return out
+
+
 # Clock name stamped on a boundary-sourced crossing whose subtree
 # domain didn't resolve to a named clock. Mirrors the SDC
 # unconstrained sentinel so ``are_async`` treats it as async to every
@@ -1667,26 +1709,31 @@ def _capture_sites(
     return flop_by_d_bit, flop_by_ctrl_bit
 
 
-def _make_fanout_filter(
+def _capture_distances(
     module: Module,
     flop_by_d_bit: dict[Bit, list[Flop]],
     domains: dict[str, FlopDomain],
-    max_hops: int,
     flop_by_ctrl_bit: dict[Bit, list[tuple[Flop, int]]] | None = None,
-) -> Callable[[Bit, int, str], bool]:
-    """Build the pruning test for the flop-sourced walk in :func:`find_crossings`.
+) -> dict[Bit, dict[str, int]]:
+    """``dist_to[bit][clock]``: the fewest cells from ``bit`` to a capture
+    pin of a flop in ``clock`` — a ``D`` pin at 0 cells, a capture-control
+    pin at the depth of the mux it was folded from
+    (:func:`capture_control_pins`). Bits that reach no capture pin of a
+    clock have no entry for it.
 
-    The returned ``useful(bit, hops, src_clock)`` is False when no flop ``D``
-    pin in a clock other than ``src_clock`` is reachable from ``bit`` within
-    the ``max_hops - hops`` cells the walk has left. Expanding such a bit can
-    never produce a crossing, so the walk skips it. Most of a design's fanout
-    is same-domain logic, so this removes most of the walk.
+    One unbounded backward walk per clock domain over the exact reverse of
+    the forward walk's edges (every non-flop cell, every pin but ``CLK``,
+    lanes as :func:`_lane_targets` defines them). Level-ordered, so every
+    bit is expanded once per clock, at its final (smallest) distance; the
+    total is linear in the netlist per clock whose capture cone a bit is
+    in, which for most bits is one. Reverse edges are stored per cell, not
+    per bit pair, so a wide arithmetic cell costs O(width), not
+    O(width^2).
 
-    Distances come from one bounded backward walk per clock domain over the
-    exact reverse of the forward walk's edges (every non-flop cell, every pin
-    but ``CLK``, lanes as :func:`_lane_targets` defines them). Reverse edges
-    are stored per cell, not per bit pair, so a wide arithmetic cell costs
-    O(width), not O(width^2).
+    Unbounded on purpose (rtl-buddy-cdc#347): the forward walk's pruning
+    reads only distances within its hop budget, and a distance beyond it
+    is what tells the walk that the budget cut a path to a foreign domain
+    (:class:`DepthCut`).
     """
     # rev[out_bit] -> lists of predecessor bits. A non-lane-aligned cell
     # shares one list across all its outputs; ``expanded`` below makes the
@@ -1718,8 +1765,7 @@ def _make_fanout_filter(
                 rev[yb].append(lane)
 
     # seeds_by_clock[clock][depth] = bits that capture into ``clock`` at
-    # ``depth`` cells: a D pin at 0, a capture-control pin at the depth of
-    # the mux it was folded from (:func:`capture_control_pins`).
+    # ``depth`` cells.
     seeds_by_clock: dict[str, dict[int, list[Bit]]] = defaultdict(
         lambda: defaultdict(list)
     )
@@ -1731,26 +1777,22 @@ def _make_fanout_filter(
     for b, sites in (flop_by_ctrl_bit or {}).items():
         for f, depth in sites:
             clock = domains[f.cell.name].clock
-            if clock is not None and depth <= max_hops:
+            if clock is not None:
                 seeds_by_clock[clock][depth].append(b)
 
-    # dist_to[bit][clock] = fewest cells from ``bit`` to a capture pin of
-    # a flop in ``clock`` (only recorded up to ``max_hops``).
     dist_to: dict[Bit, dict[str, int]] = {}
     for clock, levels in seeds_by_clock.items():
-        # Level-ordered BFS from seeds at several start depths: every bit
-        # is expanded once, at its final (smallest) depth.
+        # Level-ordered BFS from seeds at several start depths.
         expanded: set[int] = set()
-        for depth in range(max_hops + 1):
+        depth = 0
+        while levels:
             frontier: list[Bit] = []
-            for b in levels.get(depth, ()):
+            for b in levels.pop(depth, ()):
                 dists = dist_to.setdefault(b, {})
                 if dists.get(clock, depth + 1) > depth:
                     dists[clock] = depth
                 if dists[clock] == depth:
                     frontier.append(b)
-            if depth == max_hops:
-                break
             for b in dict.fromkeys(frontier):
                 for preds in rev.get(b, ()):
                     if id(preds) in expanded:
@@ -1760,7 +1802,32 @@ def _make_fanout_filter(
                         dists = dist_to.setdefault(pb, {})
                         if dists.get(clock, depth + 2) > depth + 1:
                             dists[clock] = depth + 1
-                            levels.setdefault(depth + 1, []).append(pb)
+                            levels[depth + 1].append(pb)
+            depth += 1
+    return dist_to
+
+
+def _make_fanout_filter(
+    module: Module,
+    flop_by_d_bit: dict[Bit, list[Flop]],
+    domains: dict[str, FlopDomain],
+    max_hops: int,
+    flop_by_ctrl_bit: dict[Bit, list[tuple[Flop, int]]] | None = None,
+    *,
+    dist_to: dict[Bit, dict[str, int]] | None = None,
+) -> Callable[[Bit, int, str], bool]:
+    """Build the pruning test for the flop-sourced walk in :func:`find_crossings`.
+
+    The returned ``useful(bit, hops, src_clock)`` is False when no flop
+    capture pin in a clock other than ``src_clock`` is reachable from
+    ``bit`` within the ``max_hops - hops`` cells the walk has left.
+    Expanding such a bit can never produce a crossing, so the walk skips
+    it. Most of a design's fanout is same-domain logic, so this removes
+    most of the walk. Distances are :func:`_capture_distances`'s, computed
+    here unless the caller already has them.
+    """
+    if dist_to is None:
+        dist_to = _capture_distances(module, flop_by_d_bit, domains, flop_by_ctrl_bit)
 
     def useful(bit: Bit, hops: int, src_clock: str) -> bool:
         dists = dist_to.get(bit)
@@ -1774,7 +1841,7 @@ def _make_fanout_filter(
 
 def find_crossings(
     module: Module,
-    max_hops: int = 4,
+    max_hops: int | None = None,
     port_clock: dict[str, str] | None = None,
     pin_clocks: dict[str, str] | None = None,
     *,
@@ -1784,11 +1851,13 @@ def find_crossings(
     max_depth: int = 16,
     scan_mode_flops: frozenset[str] = frozenset(),
     case_analysis: Mapping[str, str] | None = None,
+    on_depth_cut: DepthCutSink | None = None,
 ) -> list[Crossing]:
     """Find every fanout path whose endpoints are in different domains.
 
-    The walk starts from each flop's ``Q`` bits and follows readers up to
-    ``max_hops`` combinational cells before giving up. Reaching another
+    The walk starts from each flop's ``Q`` bits and follows its whole
+    combinational fanout (rtl-buddy-cdc#347; it used to stop after 4
+    cells, silently dropping deeper crossings). Reaching another
     flop's ``D`` pin produces a :class:`Crossing` if the two flops are in
     distinct, known domains. So does reaching its clock-enable or
     synchronous-reset pin (:func:`capture_control_pins`,
@@ -1843,7 +1912,19 @@ def find_crossings(
     holding a :class:`~rtl_buddy_cdc.sdc.ClockSpec` passes all four clock
     inputs as ``**spec.clock_root_inputs()``, the same bundle the rule
     context is built from.
+
+    ``max_hops`` caps the walk at that many combinational cells (the CLI's
+    ``--crossing-depth``); ``None``, the default, walks the whole cone.
+    Each walk keeps a per-source visited set and expands only bits from
+    which a capture pin of another domain is reachable at all
+    (:func:`_capture_distances`), so the uncapped walk costs one visit per
+    bit of the cross-domain part of each source's fanout. A cap that stops
+    a path which still reaches a capture pin of another domain is never
+    silent: ``on_depth_cut`` is called once per distinct :class:`DepthCut`
+    (source, source clock, unreached clock), in a deterministic order,
+    after the walks.
     """
+    cap = max_hops if max_hops is not None else _NO_HOP_CAP
     memories = find_memories(module)
     mem_view = crossing_view(module, memories) if memories else None
     if mem_view is not None:
@@ -1895,12 +1976,16 @@ def find_crossings(
     def _dst_boundary_of(dst_flop: Flop) -> tuple[str, str] | None:
         return boundary_sink_lookup.get(dst_flop.cell.name)
 
-    def _landings(bit: Bit, hops: int) -> list[tuple[Flop, int, tuple[Bit, ...]]]:
+    def _landings(
+        bit: Bit, hops: int, src: str, src_clock: str
+    ) -> list[tuple[Flop, int, tuple[Bit, ...]]]:
         """Every flop that captures ``bit``: ``(flop, hops at its D, the D
         bits it reaches)``. On ``D`` that is ``bit`` itself; on a capture
         control pin (rtl-buddy-cdc#375) it is every ``D`` bit, which is
         what the folded mux's select reached before ``opt_dff``, at the
-        folded mux's depth."""
+        folded mux's depth. A control pin whose folded mux lies beyond
+        the cap is a cut (rtl-buddy-cdc#347) when its flop is in another
+        domain than ``src_clock``."""
         d_sites = flop_by_d_bit.get(bit)
         c_sites = flop_by_ctrl_bit.get(bit)
         if not d_sites and not c_sites:
@@ -1909,7 +1994,12 @@ def find_crossings(
             (f, hops, (bit,)) for f in d_sites or ()
         ]
         for f, depth in c_sites or ():
-            if hops + depth > max_hops:
+            if hops + depth > cap:
+                dst_clock = domains[f.cell.name].clock
+                if dst_clock is not None and dst_clock != src_clock:
+                    cuts.add(
+                        DepthCut(src=src, src_clock=src_clock, dst_clock=dst_clock)
+                    )
                 continue
             d_bits: tuple[Bit, ...] = tuple(b for b in f.d if isinstance(b, int))
             out.append((f, hops + depth, d_bits or (bit,)))
@@ -1920,9 +2010,22 @@ def find_crossings(
     # one Crossing record.
     grouped: dict[tuple[str, str], _CrossingGroup] = {}
 
+    dist_to = _capture_distances(module, flop_by_d_bit, domains, flop_by_ctrl_bit)
     useful = _make_fanout_filter(
-        module, flop_by_d_bit, domains, max_hops, flop_by_ctrl_bit
+        module, flop_by_d_bit, domains, cap, flop_by_ctrl_bit, dist_to=dist_to
     )
+    cuts: set[DepthCut] = set()
+
+    def _note_cut(bit: Bit, hops: int, src: str, src_clock: str) -> None:
+        """Record the clocks whose capture pins ``bit`` still reaches, but
+        only beyond the cap (rtl-buddy-cdc#347). Called where a walk stops
+        expanding ``bit``; never fires without a cap."""
+        if max_hops is None:
+            return
+        budget = cap - hops
+        for c, d in dist_to.get(bit, {}).items():
+            if c != src_clock and d > budget:
+                cuts.add(DepthCut(src=src, src_clock=src_clock, dst_clock=c))
 
     for src_fd in domains.values():
         if src_fd.clock is None:
@@ -1942,7 +2045,9 @@ def find_crossings(
             next_frontier: list[tuple[Bit, int]] = []
             for bit, hops in frontier:
                 # Did we land on any flop's D (or capture-control) pin?
-                for dst_flop, at_hops, d_bits in _landings(bit, hops):
+                for dst_flop, at_hops, d_bits in _landings(
+                    bit, hops, src_fd.flop.name, src_fd.clock
+                ):
                     if dst_flop.cell.name == src_fd.flop.cell.name:
                         continue
                     dst_fd = domains[dst_flop.cell.name]
@@ -1963,7 +2068,8 @@ def find_crossings(
                         g["bits"].update(d_bits)
                         if at_hops < g["min_hops"]:
                             g["min_hops"] = at_hops
-                if hops >= max_hops or not useful(bit, hops, src_fd.clock):
+                if hops >= cap or not useful(bit, hops, src_fd.clock):
+                    _note_cut(bit, hops, src_fd.flop.name, src_fd.clock)
                     continue
                 # Push the bit through every consumer cell that isn't a
                 # flop, propagating along the data lanes it actually drives
@@ -2017,7 +2123,9 @@ def find_crossings(
             while frontier:
                 next_frontier = []
                 for bit, hops in frontier:
-                    for dst_flop, at_hops, d_bits in _landings(bit, hops):
+                    for dst_flop, at_hops, d_bits in _landings(
+                        bit, hops, f"port {port_name}", port_clk_name
+                    ):
                         dst_fd = domains[dst_flop.cell.name]
                         if dst_fd.clock is None:
                             continue
@@ -2040,7 +2148,8 @@ def find_crossings(
                             pg["bits"].update(d_bits)
                             if at_hops < pg["min_hops"]:
                                 pg["min_hops"] = at_hops
-                    if hops >= max_hops:
+                    if hops >= cap:
+                        _note_cut(bit, hops, f"port {port_name}", port_clk_name)
                         continue
                     for cell_name, cport, idx in consumers.get(bit, ()):
                         cell = module.cells[cell_name]
@@ -2089,6 +2198,12 @@ def find_crossings(
                 continue
             for port_name, pb in summary.ports.items():
                 src_clk_name = pb.src_clock
+                bnd_src = f"boundary {inst_name}.{port_name}"
+                bnd_clock = (
+                    src_clk_name
+                    if src_clk_name is not None
+                    else _UNKNOWN_BOUNDARY_CLOCK
+                )
                 conn = cell.connections.get(port_name, ())
                 bnd_seen: dict[Bit, int] = {}
                 bnd_frontier: list[tuple[Bit, int]] = [
@@ -2099,7 +2214,9 @@ def find_crossings(
                 while bnd_frontier:
                     bnd_next: list[tuple[Bit, int]] = []
                     for bit, hops in bnd_frontier:
-                        for dst_flop, at_hops, d_bits in _landings(bit, hops):
+                        for dst_flop, at_hops, d_bits in _landings(
+                            bit, hops, bnd_src, bnd_clock
+                        ):
                             dst_fd = domains[dst_flop.cell.name]
                             if dst_fd.clock is None:
                                 continue
@@ -2126,7 +2243,8 @@ def find_crossings(
                                 bg["bits"].update(d_bits)
                                 if at_hops < bg["min_hops"]:
                                     bg["min_hops"] = at_hops
-                        if hops >= max_hops:
+                        if hops >= cap:
+                            _note_cut(bit, hops, bnd_src, bnd_clock)
                             continue
                         for cell_name, _port, _idx in consumers.get(bit, ()):
                             c = module.cells[cell_name]
@@ -2158,6 +2276,9 @@ def find_crossings(
                 )
             )
 
+    if on_depth_cut is not None:
+        for cut in sorted(cuts):
+            on_depth_cut(cut)
     return out_crossings
 
 
