@@ -372,6 +372,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Integration corpus: `ptp_clock_cdc` goes from 0 crossings on the
     slang path to 7 of Yosys' 9; the `slang-incomplete-comb-block` gap
     is closed and the rest is pinned to `slang-system-call`.
+  - A call to a user-defined function is inlined instead of becoming an
+    opaque `$_UNKNOWN_` cell: the formal arguments take the actual
+    arguments' bits and the body is lowered like a combinational block
+    (locals, `if` / `case`, `return` at the end of the body); a call
+    slang folds at elaboration time (`$clog2(N)`, a constant function of
+    parameters) is its constant. A function outside those shapes (an
+    early `return`, an `output` argument, a write to a module variable,
+    a statement the walker does not lower) stays opaque rather than
+    being half-lowered. The gray encoder `bin2gray()` in the corpus'
+    `axis_async_fifo` is now visible, so its false CDC-004 is gone and
+    the design matches Yosys on the slang path (`slang-function-call`
+    closed).
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,

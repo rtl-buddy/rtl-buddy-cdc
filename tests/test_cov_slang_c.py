@@ -34,6 +34,7 @@ a call returned.
 from __future__ import annotations
 
 import importlib.util
+import logging
 from pathlib import Path
 
 import pytest
@@ -451,16 +452,13 @@ def test_unary_plus_is_identity_no_cell(tmp_path: Path) -> None:
 
 
 def test_continuous_assign_unmodelled_rhs_emits_no_cell(tmp_path: Path) -> None:
-    """``assign y = f(a);`` where the RHS isn't modelled —
+    """``assign y = $countones(a);`` where the RHS isn't modelled —
     :meth:`_emit_continuous_assign` bails when ``_bits_of_expression``
     returns ``None`` (the comb-driven-port leg), so no aliasing happens
     and no cell is emitted for the assign."""
     src = """
     module m (input logic [3:0] a, output logic [3:0] y);
-        function automatic logic [3:0] f(input logic [3:0] x);
-            return x + 1;
-        endfunction
-        assign y = f(a);
+        assign y = $countones(a);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -573,17 +571,14 @@ def test_parameter_replication_count_folds(tmp_path: Path) -> None:
 
 
 def test_unmodelled_rhs_becomes_unknown_driver(tmp_path: Path) -> None:
-    """A function-call RHS isn't modelled by ``_bits_of_expression``, so
+    """A system-call RHS isn't modelled by ``_bits_of_expression``, so
     the flop's D must be driven by a fresh ``$_UNKNOWN_`` cell — the
     driver exists (so the rule pack's lookup finds *something*) but its
     type stops the data-cone walk, and the real source ``d`` does not
     reach D."""
     src = """
     module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
-        function automatic logic [3:0] f(input logic [3:0] x);
-            return x + 1;
-        endfunction
-        always_ff @(posedge clk) q <= f(d);
+        always_ff @(posedge clk) q <= $countones(d);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -718,29 +713,26 @@ def test_nonblocking_assign_in_always_comb_is_ignored(tmp_path: Path) -> None:
     )
 
 
-def test_comb_if_with_unlowerable_selector_descends_without_mux(tmp_path: Path) -> None:
-    """When the ``if`` condition can't be lowered to bits (a function
-    call here), :meth:`_walk_conditional_statement` takes the
-    conservative-descend leg: it walks both arms unconditionally and
-    emits **no** ``$mux``. Contrast :func:`test_comb_if_else_both_arms_emit_mux`,
-    where a lowerable selector *does* produce a mux — the only
-    difference is whether the selector lowered."""
+def test_comb_if_with_unlowerable_selector_is_reported(tmp_path: Path, caplog) -> None:
+    """When the ``if`` condition can't be lowered to bits (a system call
+    here), :meth:`_walk_conditional_statement` reports the statement and
+    lowers neither arm (rtl-buddy-cdc#377; it used to walk both arms as
+    if unconditional, so ``y`` silently read ``b``)."""
     src = """
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
         logic [3:0] y;
-        function automatic logic g(input logic [3:0] x); return ^x; endfunction
         always_comb begin
-            if (g(a)) y = a;
+            if ($countones(a)) y = a;
             else      y = b;
         end
         always_ff @(posedge clk) q <= y;
     endmodule
     """
-    mod = _elaborate(tmp_path, src)
-    assert "$mux" not in _cell_types(mod), (
-        "an unlowerable if-selector must skip the mux merge and descend "
-        f"conservatively; got {_cell_types(mod)}"
-    )
+    with caplog.at_level(logging.WARNING):
+        mod = _elaborate(tmp_path, src)
+    assert "$mux" not in _cell_types(mod)
+    assert _one_dff(mod).connections["D"] != mod.ports["b"].bits
+    assert any("`if` statement not lowered" in r.getMessage() for r in caplog.records)
 
 
 def test_latch_body_with_two_if_arms_emits_two_dlatches(tmp_path: Path) -> None:

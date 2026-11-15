@@ -416,3 +416,124 @@ endmodule
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
         _slang(tmp_path, src)
     assert any("`if` statement not lowered" in m for m in _warnings(caplog))
+
+
+# --- 3. user-defined functions are inlined --------------------------------
+
+_GRAY = """module m (input clk_a, input clk_b, output reg [3:0] q);
+    function [3:0] bin2gray(input [3:0] x);
+        bin2gray = x ^ (x >> 1);
+    endfunction
+    reg [3:0] b, g, s1;
+    always @(posedge clk_a) begin
+        b <= b + 1;
+        g <= bin2gray(b);
+    end
+    always @(posedge clk_b) begin s1 <= g; q <= s1; end
+endmodule
+"""
+
+
+def test_gray_encoder_function_is_seen(tmp_path: Path) -> None:
+    """The corpus reproducer: a gray pointer written through
+    ``bin2gray()`` used to be an opaque ``$_UNKNOWN_`` cell, so the
+    gray-coded crossing reported CDC-004 on the slang path only."""
+    module = _slang(tmp_path, _GRAY)
+    assert not _cells(module, "$_UNKNOWN_")
+    (xor,) = _cells(module, "$xor")
+    (g_flop,) = [
+        c for c in _flops(module) if c.connections["Q"] == module.netnames["g"].bits
+    ]
+    assert g_flop.connections["D"] == xor.connections["Y"]
+    _agree_with_yosys(tmp_path, _GRAY, module)
+    assert _same_verdict(tmp_path, _GRAY) == (1, {})
+
+
+def test_function_body_with_locals_and_branches(tmp_path: Path) -> None:
+    """Locals, an ``if`` and two calls of the same function with different
+    arguments: each call gets its own values; the result matches the
+    Yosys path lane for lane."""
+    src = """module m (input clk, input [3:0] a, input [3:0] b, input [3:0] k,
+          output reg [3:0] p, output reg [3:0] r);
+    function [3:0] mix(input [3:0] x, input [3:0] y);
+        reg [3:0] t;
+        begin
+            t = x & y;
+            if (x[0]) t = t | 4'b1000;
+            mix = t ^ y;
+        end
+    endfunction
+    always @(posedge clk) begin p <= mix(a, k); r <= mix(b, mix(a, b)); end
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert not _cells(module, "$_UNKNOWN_")
+    assert len(_cells(module, "$and")) == 3
+    _agree_with_yosys(tmp_path, src, module)
+
+
+def test_sv_function_with_return(tmp_path: Path) -> None:
+    """``return expr;`` ending the body sets the result."""
+    src = """module m (input clk, input [3:0] a, output logic [3:0] q);
+    function automatic logic [3:0] inv(input logic [3:0] x);
+        logic [3:0] t;
+        t = ~x;
+        return t + 4'd1;
+    endfunction
+    always_ff @(posedge clk) q <= inv(a);
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    (neg,) = _cells(module, "$not")
+    (add,) = _cells(module, "$add")
+    assert neg.connections["A"] == module.ports["a"].bits
+    assert add.connections["A"][:4] == neg.connections["Y"]
+    (flop,) = _flops(module)
+    assert flop.connections["D"] == add.connections["Y"][:4]
+
+
+def test_constant_call_folds(tmp_path: Path) -> None:
+    """A call slang evaluates at elaboration time is its constant."""
+    src = """module m #(parameter N = 16) (output [3:0] w, output [3:0] z);
+    function automatic integer half(input integer v); return v / 2; endfunction
+    assign w = $clog2(N);
+    assign z = half(N);
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert module.ports["w"].bits == ("0", "0", "1", "0")
+    assert module.ports["z"].bits == ("0", "0", "0", "1")
+    assert not module.cells
+
+
+@pytest.mark.parametrize(
+    "func",
+    [
+        # A ``return`` before the end of the body.
+        "function automatic [3:0] f(input [3:0] x); if (x[0]) return x;"
+        " return ~x; endfunction",
+        # An output argument.
+        "function automatic [3:0] f(input [3:0] x, output [3:0] o);"
+        " o = x; f = x; endfunction",
+        # A write to a module variable.
+        "function automatic [3:0] f(input [3:0] x); side = x; f = x; endfunction",
+        # A statement the walker does not lower.
+        "function automatic [3:0] f(input [3:0] x); f = x;"
+        " while (f[0]) f = f >> 1; endfunction",
+    ],
+    ids=["early_return", "output_arg", "side_effect", "while_loop"],
+)
+def test_function_not_inlined_stays_opaque(tmp_path: Path, func: str) -> None:
+    """A function body outside the inlined shapes is not half-lowered:
+    the call stays an opaque ``$_UNKNOWN_`` driver."""
+    call = "f(a, o)" if "output" in func else "f(a)"
+    src = f"""module m (input clk, input [3:0] a, output reg [3:0] q);
+    reg [3:0] side, o;
+    {func}
+    always @(posedge clk) q <= {call};
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    (flop,) = _flops(module)
+    (unknown,) = _cells(module, "$_UNKNOWN_")
+    assert flop.connections["D"] == unknown.connections["Y"]

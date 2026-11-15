@@ -62,21 +62,6 @@ In an `always @*` block, `y = b; if ($signed(x) > 4) y = a;` with y
 registered: Yosys emits a `$gt` and a `$mux`; slang warns and y is b.
 Writing the comparison without the cast makes the frontends agree."""
 
-[gaps.slang-function-call]
-kind = "frontend"
-rules = ["CDC-004"]
-summary = """
-The slang frontend does not lower a call to a user-defined function: the
-call becomes a `$_UNKNOWN_` cell, so the logic the function computes is
-invisible to the structural rules. A gray pointer written
-`gray <= bin2gray(b)` with `bin2gray = b ^ (b >> 1)` loses its `$xor`, and
-the gray-coded crossing reports CDC-004 on the slang path only."""
-reproducer = """
-`function [3:0] bin2gray(input [3:0] x); bin2gray = x ^ (x >> 1);
-endfunction` and `always @(posedge clk) g <= bin2gray(b + 1);`: Yosys
-emits `$add` + `$xor`; slang emits `$add` + `$_UNKNOWN_`. Writing the
-XOR inline makes the frontends agree."""
-
 # --- Designs -----------------------------------------------------------------
 
 [[design]]
@@ -122,9 +107,9 @@ sources = ["rtl/axis_async_fifo.v"]
 top = "axis_async_fifo"
 sdc = "sdc/axis_async_fifo.sdc"
 expect = { clocks = ["s_clk", "m_clk"], crossings = 7, rules = {} }
-slang = { reads = true, matches_yosys = false, crossings = 7, rules = { "CDC-004" = 1 }, gap = "slang-function-call" }
+slang = { reads = true, matches_yosys = true }
 notes = """
-Clean on the Yosys path. wr_ptr_gray_reg / rd_ptr_gray_reg are the gray
+Clean on both paths. wr_ptr_gray_reg / rd_ptr_gray_reg are the gray
 code b ^ (b >> 1) of the next binary pointer, captured by a two-stage
 13-bit synchroniser (*_gray_sync1_reg -> *_gray_sync2_reg) whose stages
 are cleared synchronously by the destination's reset port (if (m_rst)
@@ -133,11 +118,10 @@ synchronised local reset folds away at the default parameters). The
 first-stage test looks through that reset mux since rtl-buddy-cdc#366
 (2 false CDC-004 before). The other five crossings
 (two reset synchronisers, three toggle-pulse status synchronisers) are
-correctly silent. On the slang path the write pointer still reports
-CDC-004 (a false positive): it is written wr_ptr_gray_reg <=
-bin2gray(wr_ptr_temp), and the slang frontend leaves the function call
-as an unknown cell, so the gray encoder is invisible; the read pointer
-writes the XOR inline and is clean on both paths."""
+correctly silent. The write pointer is written wr_ptr_gray_reg <=
+bin2gray(wr_ptr_temp); the slang frontend inlines the function since
+rtl-buddy-cdc#377 (before, the call was an unknown cell, the gray
+encoder was invisible and the slang path reported a false CDC-004)."""
 
 [[design]]
 name = "axil_cdc"

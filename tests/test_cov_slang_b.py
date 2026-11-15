@@ -159,13 +159,10 @@ def test_multibit_if_condition_walks_both_arms(tmp_path: Path) -> None:
 # --- non-lowerable RHS: $_UNKNOWN_ driver ---------------------------------
 
 
-def test_function_call_rhs_emits_unknown_driver(tmp_path: Path) -> None:
-    """A nonblocking assign whose RHS is a function call
-    (``q <= inc(d)``) can't be lowered by ``_bits_of_expression``
-    (function calls aren't modelled), so the drain substitutes a
-    ``$_UNKNOWN_`` stub driver for D. The flop must still be emitted —
-    the netlist stays well-formed and the rule pack treats the D input
-    as opaque rather than crashing."""
+def test_function_call_rhs_is_inlined(tmp_path: Path) -> None:
+    """``q <= inc(d)`` with ``inc = x + 4'd1``: the function body is
+    inlined (rtl-buddy-cdc#377), so the flop's D is the ``$add`` of ``d``,
+    as on the Yosys path. It used to be an opaque ``$_UNKNOWN_`` stub."""
     src = """
     module m (input logic clk, rst_n, input logic [3:0] d, output logic [3:0] q);
         function automatic logic [3:0] inc(input logic [3:0] x);
@@ -178,19 +175,12 @@ def test_function_call_rhs_emits_unknown_driver(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     types = _cell_types(mod)
-    assert "$adff" in types, f"expected an $adff for q; got {sorted(types)}"
-    assert "$_UNKNOWN_" in types, (
-        f"function-call RHS should fall back to a $_UNKNOWN_ driver; "
-        f"got cell types {sorted(types)}"
-    )
-    # The flop's D must trace to the $_UNKNOWN_ output (opaque upstream).
+    assert "$_UNKNOWN_" not in types
+    (add,) = [c for c in mod.cells.values() if c.type == "$add"]
+    assert add.connections["A"] == mod.ports["d"].bits
     flop = _flops(mod)[0]
-    d_bit = flop.connections["D"][0]
-    drv = _build_drivers(mod).get(d_bit)
-    assert drv is not None, "flop D has no driver"
-    assert mod.cells[drv[0]].type == "$_UNKNOWN_", (
-        f"flop D should be driven by the $_UNKNOWN_ stub; got {mod.cells[drv[0]].type}"
-    )
+    assert flop.type == "$adff"
+    assert flop.connections["D"] == add.connections["Y"]
 
 
 # --- non-lowerable LHS: assignment site skipped ---------------------------
@@ -250,7 +240,7 @@ def test_case_on_function_call_bails_to_unconditional_walk(tmp_path: Path) -> No
         endfunction
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
-            else case (f(sel))
+            else case ($countones(sel))
                 2'd0:    q <= d;
                 default: q <= 4'd0;
             endcase
@@ -291,7 +281,7 @@ def test_case_match_function_call_walks_item_without_enable(tmp_path: Path) -> N
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
             else case (sel)
-                thresh(): q <= d;
+                $countones(d): q <= d;
                 default:  ;
             endcase
         end

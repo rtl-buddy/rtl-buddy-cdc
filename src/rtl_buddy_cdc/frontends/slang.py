@@ -609,6 +609,13 @@ class _ModuleBuilder:
         # Branch-merge ``$mux`` cells of the combinational body being
         # lowered, by output bits: ``(S, A, B)``. Read by
         # :meth:`_infer_latches` (rtl-buddy-cdc#377).
+        # Function inlining (rtl-buddy-cdc#377): nesting depth, the return
+        # variable of each function being inlined, and a count of the
+        # constructs any walk failed to lower, which an inlined body must
+        # not add to.
+        self._inline_depth = 0
+        self._inline_returns: list[Any] = []
+        self._lowering_failures = 0
         self._branch_muxes: dict[
             tuple[Bit, ...], tuple[Bit, tuple[Bit, ...], tuple[Bit, ...]]
         ] = {}
@@ -1406,6 +1413,8 @@ class _ModuleBuilder:
         otherwise come back clean on a design it never saw. Logged at
         ``WARNING`` (stderr) with the source location, like the frontend's
         other non-fatal diagnostics."""
+        # (``getattr``: also reached on a bare builder in unit tests.)
+        self._lowering_failures = getattr(self, "_lowering_failures", 0) + 1
         where = self._src_attr(block) or "<unknown location>"
         _log.warning(
             "slang frontend: %s: %s not lowered (%s); its "
@@ -2757,6 +2766,7 @@ class _ModuleBuilder:
         reason = self._lvalue_unsupported_reason(lhs)
         key = (self._src_attr(node), reason)
         if key in self._lvalue_warned:
+            self._lowering_failures += 1
             return
         self._lvalue_warned.add(key)
         self._warn_dropped(node, reason, "assignment")
@@ -3156,7 +3166,144 @@ class _ModuleBuilder:
             return self._lower_concatenation(expr)
         if kind == "ReplicationExpression":
             return self._lower_replication(expr)
+        if kind == "CallExpression":
+            return self._lower_call(expr)
         return None
+
+    # -- function calls (rtl-buddy-cdc#377) -------------------------------
+
+    _INLINE_DEPTH_CAP = 16
+
+    def _lower_call(self, expr: Any) -> tuple[Bit, ...] | None:
+        """A function call on the right-hand side: its constant value when
+        slang folds it (``$clog2(N)``, a constant function of parameters),
+        else the body of a user-defined function inlined
+        (:meth:`_inline_function`). ``None`` for anything else."""
+        constant = self._constant_bits(expr)
+        if constant is not None:
+            return constant
+        if getattr(expr, "isSystemCall", False):
+            return None
+        return self._inline_function(expr)
+
+    def _constant_bits(self, expr: Any) -> tuple[Bit, ...] | None:
+        """LSB-first bits of ``expr``'s elaboration-time value, sized to its
+        type, with ``x`` / ``z`` digits kept; ``None`` when slang did not
+        fold it."""
+        value = getattr(expr, "constant", None)
+        inner = getattr(value, "value", value)
+        width = self._expr_width(expr)
+        if inner is None or width < 1 or getattr(inner, "bitWidth", None) is None:
+            return None
+        digits = _encode_param(inner)
+        if digits is None:
+            return None
+        digits = digits.rjust(width, "0")[-width:]
+        return tuple(digits[::-1])
+
+    def _inline_function(self, expr: Any) -> tuple[Bit, ...] | None:
+        """Inline a call to a combinational user-defined function, as
+        Yosys' frontend does: bind each formal argument to its actual
+        argument's bits, walk the body as a combinational block, and read
+        the result off the function's return variable.
+
+        Locals (formals, the return variable, declared variables) start
+        as ``x``, are visible only during the walk, and are removed
+        afterwards, so two calls never share a value. ``None`` (the
+        caller then treats the call as unlowered) for a task or void
+        function, an ``output`` / ``inout`` / ``ref`` argument, a ``return``
+        anywhere but at the end of the body, a write to a variable outside
+        the function, a statement or target the walker cannot lower,
+        recursion deeper than :data:`_INLINE_DEPTH_CAP`.
+        """
+        sub = getattr(expr, "subroutine", None)
+        if sub is None or self._inline_depth >= self._INLINE_DEPTH_CAP:
+            return None
+        if str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] != "Function":
+            return None
+        ret = getattr(sub, "returnValVar", None)
+        locals_: list[Any] = []
+        for member in sub:
+            if self._kind_name(member) not in {
+                "VariableSymbol",
+                "FormalArgumentSymbol",
+            }:
+                continue
+            locals_.append(member)
+            if (
+                ret is None
+                and self._kind_name(member) == "VariableSymbol"
+                and member.name == sub.name
+            ):
+                ret = member
+        formals = list(getattr(sub, "arguments", None) or [])
+        actuals = list(getattr(expr, "arguments", None) or [])
+        if ret is None or len(formals) != len(actuals):
+            return None
+        if any(
+            str(getattr(f, "direction", "")).rsplit(".", 1)[-1] != "In" for f in formals
+        ):
+            return None
+        body = getattr(sub, "body", None)
+        if not self._returns_only_at_end(body, top=True):
+            return None
+        arg_bits: list[tuple[Bit, ...]] = []
+        for formal, actual in zip(formals, actuals):
+            bits = self._sized_rhs_bits(actual, self._width_of(formal))
+            if bits is None:
+                return None
+            arg_bits.append(bits)
+        saved = dict(self._var_bits)
+        failures = self._lowering_failures
+        self._inline_depth += 1
+        try:
+            for local in locals_:
+                self._var_bits[local] = ("x",) * self._width_of(local)
+            for formal, bits in zip(formals, arg_bits):
+                self._var_bits[formal] = bits
+            self._inline_returns.append(ret)
+            try:
+                self._walk_comb_statement(body)
+            finally:
+                self._inline_returns.pop()
+            result = self._var_bits.get(ret)
+            local_set = set(locals_)
+            clean = self._lowering_failures == failures and all(
+                self._var_bits.get(k) == v
+                for k, v in saved.items()
+                if k not in local_set
+            )
+        finally:
+            self._inline_depth -= 1
+            self._var_bits = saved
+        return result if clean else None
+
+    def _returns_only_at_end(self, stmt: Any, *, top: bool) -> bool:
+        """``return`` appears in ``stmt`` only as the last statement of the
+        function body's top-level list (the shape inlining supports)."""
+        if stmt is None:
+            return True
+        kind = self._kind_name(stmt)
+        if kind == "ReturnStatement":
+            return top
+        if kind == "BlockStatement":
+            return self._returns_only_at_end(stmt.body, top=top)
+        if kind in {"StatementList", "ListStatement"}:
+            items = list(getattr(stmt, "list", []) or [])
+            return all(
+                self._returns_only_at_end(s, top=top and i == len(items) - 1)
+                for i, s in enumerate(items)
+            )
+        found = False
+
+        def visit(node: Any) -> bool:
+            nonlocal found
+            if type(node).__name__ == "ReturnStatement":
+                found = True
+            return not found
+
+        stmt.visit(visit)
+        return not found
 
     def _lower_concatenation(self, expr: Any) -> tuple[Bit, ...] | None:
         """``{a, b, c}`` — return a single LSB-first bit tuple.
@@ -3936,7 +4083,24 @@ class _ModuleBuilder:
         if kind == "CaseStatement":
             self._walk_case_statement(stmt)
             return
+        if kind == "ReturnStatement" and self._inline_returns:
+            # ``return expr;`` ending an inlined function body.
+            ret = self._inline_returns[-1]
+            value = getattr(stmt, "expr", None)
+            bits = (
+                self._sized_rhs_bits(value, self._width_of(ret))
+                if value is not None
+                else None
+            )
+            if bits is None:
+                self._lowering_failures += 1
+            else:
+                self._var_bits[ret] = bits
+            return
+        if kind in {"EmptyStatement", "VariableDeclStatement"}:
+            return
         # for/while loops etc. → ignore for now.
+        self._lowering_failures += 1
 
     def _walk_branches(self, arms: list[Any]) -> list[dict[Any, tuple[Bit, ...]]]:
         """Walk each statement of ``arms`` (``None`` for an empty arm) from
