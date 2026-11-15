@@ -842,6 +842,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **`bad_gray_phase_break`'s header misdescribed the design**
+  (rtl-buddy-cdc#378) — *test-only, no output change.* It said
+  re-registering a gray code in the source clock breaks the
+  one-bit-change property; a plain delay register only adds latency. The
+  header, in-body comments and test docstring now say the CDC-004 it
+  pins is a known conservative false positive (the structural gray
+  detector stops at the first flop boundary and does not prove the
+  intermediate register is an unconditional delay), with
+  `(* cdc_gray *)` as the escape. Line numbers are unchanged, so the
+  committed netlist stands.
+
 - **Fixture READMEs regenerated and drift-checked in CI**
   (rtl-buddy-cdc#356). Thirteen generated fixture READMEs were stale or
   missing (header comments, netlists and companion gate netlists had

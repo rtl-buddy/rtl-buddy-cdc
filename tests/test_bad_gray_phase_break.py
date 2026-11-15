@@ -2,22 +2,23 @@
 
 A Gray-coded counter feeds an intermediate registering stage in
 `src_clk` before being sampled by a 2FF multi-bit synchroniser in
-`dst_clk`. The intermediate flop breaks Gray's one-bit-flip
-invariant: at any destination sample point the intermediate flop can
-hold the previous Gray value while the counter has already advanced.
+`dst_clk`. The intermediate flop is a plain one-cycle delay: it changes
+only on `src_clk` edges, and consecutive values of a delayed gray
+sequence still differ in one bit, so the crossing is functionally as
+safe as sampling the counter directly (the fixture header said
+otherwise until rtl-buddy-cdc#378).
 
-CDC-004's structural Gray detector
+CDC-004 fires anyway, as a known, conservative false positive. Its
+structural Gray detector
 (:func:`rtl_buddy_cdc.rules._is_gray_encoded_source`) walks back from
-the *crossing's* source flop and stops at the first Q-pin boundary —
-the upstream Gray-XOR shape is invisible across an intermediate
-register. So the detector correctly refuses to exempt this crossing
-and CDC-004 fires.
+the *crossing's* source flop and stops at the first Q-pin boundary, so
+the upstream Gray-XOR shape is invisible across the intermediate
+register; it does not prove that register is an unconditional delay (a
+load-enabled copy, which can skip codes, looks the same).
 
-This test pins that detector behaviour as a regression sentinel:
-future tightening (or any change that walks across an intermediate
-flop) would either silently exempt this anti-pattern (false
-negative — test fails) or break it the other way (true positive
-disappears — test fails).
+This test pins that verdict as a regression sentinel: a change that
+walks across an intermediate flop must prove it is a pure delay, and
+then moves this fixture to the ``good_`` side deliberately.
 """
 
 from __future__ import annotations
@@ -46,9 +47,9 @@ def context():
 
 
 def test_cdc_004_fires_on_intermediate_reregister(context) -> None:
-    """The intermediate flop breaks Gray's one-bit-flip invariant.
-    CDC-004 must fire — the structural Gray detector terminates at
-    the upstream flop boundary and cannot match the XOR shape."""
+    """CDC-004 fires (conservatively): the structural Gray detector
+    terminates at the upstream flop boundary and cannot match the XOR
+    shape."""
     module, crossings, spec = context
     violations = run_all_rules(module, crossings, spec)
     cdc_004 = [v for v in violations if v.rule_id == "CDC-004"]
