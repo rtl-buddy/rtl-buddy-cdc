@@ -342,6 +342,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: silent drops and Yosys-parity gaps**
+  (rtl-buddy-cdc#377).
+  - A value computed by an `always @*` / `always_comb` block, or by a
+    `wire x = …;` declaration, now reaches logic that reads it earlier
+    in the file. Only continuous `assign`s re-pointed earlier readers;
+    a register stage above the block read an undriven net, so the
+    register feeding the block was pruned and its crossing vanished.
+    The integration corpus' `zipcpu_afifo` now matches Yosys on the
+    slang path (its false CDC-026 is gone); the
+    `slang-comb-forward-read` gap is closed.
+
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,
   a_q};` (a packed-shift synchroniser) lowered to no flops and no

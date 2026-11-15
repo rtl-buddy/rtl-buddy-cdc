@@ -48,24 +48,6 @@ schema = 1
 # analyzer is fixed the affected design's test fails; update its counts,
 # drop the finding / missed entry, and remove the gap here.
 
-[gaps.slang-comb-forward-read]
-kind = "frontend"
-rules = []
-summary = """
-On the slang path a value computed by a procedural combinational block
-(always @* / always_comb) does not reach logic that reads it earlier in
-source order. The frontend lowers such a block by re-pointing the
-written variable at its new driver; continuous assigns also re-point
-every cell built before them (rtl-buddy-cdc#326), procedural blocks do
-not, so an earlier reader keeps the variable's undriven placeholder.
-Combinational blocks are order-independent in the language and on the
-Yosys path."""
-reproducer = """
-a_q is a clk_a register; `always @(posedge clk_b) begin s1 <= x; q <=
-s1; end` followed by `always @* x = a_q;`. Yosys: 3 flops, 1 crossing;
-slang: the s1 stage reads nothing, a_q is pruned, 0 crossings. Moving
-the always @* above the clocked block makes the frontends agree."""
-
 [gaps.slang-incomplete-comb-block]
 kind = "frontend"
 rules = []
@@ -198,15 +180,15 @@ sources = ["rtl/afifo.v"]
 top = "afifo"
 sdc = "sdc/zipcpu_afifo.sdc"
 expect = { clocks = ["i_wclk", "i_rclk"], crossings = 2, rules = {} }
-slang = { reads = true, matches_yosys = false, crossings = 2, rules = { "CDC-026" = 1 }, gap = "slang-comb-forward-read" }
+slang = { reads = true, matches_yosys = true }
 notes = """
-Clean on the Yosys path, as expected for a textbook gray-pointer FIFO.
-On the slang path both pointer crossings are found (the packed
-{rd_wgray, wgray_cross} <= {wgray_cross, wgray} synchronisers lower
-since rtl-buddy-cdc#370), but CDC-026 fires on the RAM (false
-positive): the rd_addr register's enable reads lcl_read / lcl_rd_empty,
-which always @(*) blocks further down the file compute, so the
-synchronised write pointer never reaches the read address cone."""
+Clean on both paths, as expected for a textbook gray-pointer FIFO. The
+slang path lowers the packed {rd_wgray, wgray_cross} <= {wgray_cross,
+wgray} synchronisers since rtl-buddy-cdc#370, and since
+rtl-buddy-cdc#377 the rd_addr register's enable sees lcl_read /
+lcl_rd_empty, which always @(*) blocks further down the file compute
+(before, the synchronised write pointer never reached the read address
+cone and CDC-026 fired on the RAM)."""
 
 [[design]]
 name = "zipcpu_apbxclk"
@@ -282,10 +264,7 @@ register that feeds the outputs; dead-logic pruning then removes the
 source and sample domains. The concatenation targets in those blocks
 ({dest_update_next, dest_phase_next} = ..., ...) lower since
 rtl-buddy-cdc#370. The clocked block at line 429 also reads values the
-line-551 block computes (slang-comb-forward-read). Lowering both blocks
-and forward reads (an experiment, not shipped) reaches 28 of Yosys' 77
-flops and 3 of 9 crossings, so further, untriaged slang gaps remain
-behind these two."""
+line-551 block computes, which reach it since rtl-buddy-cdc#377."""
 
 [[design.finding]]
 rule = "CDC-001"

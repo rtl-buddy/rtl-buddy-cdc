@@ -602,6 +602,10 @@ class _ModuleBuilder:
         # ``(location, reason)`` of every assignment already reported by
         # :meth:`_warn_lvalue_dropped` (rtl-buddy-cdc#370).
         self._lvalue_warned: set[tuple[str | None, str]] = set()
+        # Every bit :meth:`_alloc_bits` handed to a variable: the net a
+        # reader sees until the variable's driver is known. Only these are
+        # re-pointed by a forward rename (rtl-buddy-cdc#377).
+        self._placeholder_bits: set[int] = set()
 
     # -- public ----------------------------------------------------------
 
@@ -724,10 +728,10 @@ class _ModuleBuilder:
         if cached is not None:
             return cached
         width = self._width_of(var_sym)
-        bits: tuple[Bit, ...] = tuple(
-            range(self._next_bit_id, self._next_bit_id + width)
-        )
+        ids = range(self._next_bit_id, self._next_bit_id + width)
         self._next_bit_id += width
+        self._placeholder_bits.update(ids)
+        bits: tuple[Bit, ...] = tuple(ids)
         self._var_bits[var_sym] = bits
         return bits
 
@@ -957,7 +961,11 @@ class _ModuleBuilder:
         # primitive ``_emit_continuous_assign`` uses, so any reader of
         # the net follows through to the driving cell's output.
         net_bits = self._alloc_bits(member)
+        before = dict(self._var_bits)
         self._merge_canonical_var(canonical, net_bits, rhs_bits)
+        # A reader earlier in source order sees the driver too, as for
+        # ``assign`` (rtl-buddy-cdc#377).
+        self._record_forward_renames(before)
 
     def _emit_instance(self, inst: Any, parent_prefix: str, name: str) -> None:
         """Lower one module instance named ``name`` under ``parent_prefix``:
@@ -1429,7 +1437,7 @@ class _ModuleBuilder:
             elif form == "level":
                 written, always_written = self._assigned_symbols(body.stmt)
                 if not (written - always_written):
-                    self._walk_comb_statement(body.stmt)
+                    self._lower_comb_body(body.stmt)
                 elif self._is_latch_shape(body.stmt):
                     self._walk_latch_statement(body.stmt)
                 else:
@@ -3782,7 +3790,38 @@ class _ModuleBuilder:
         wrapper plus optional ``ListStatement`` for multi-assign
         bodies.
         """
-        self._walk_comb_statement(block.body)
+        self._lower_comb_body(block.body)
+
+    def _lower_comb_body(self, stmt: Any) -> None:
+        """Lower a combinational procedural body (``always_comb``, ``always
+        @*``) and make its results visible to every reader.
+
+        The walk re-points each written variable at its new driver, which
+        only readers lowered *after* the block see. A combinational block
+        is order-independent in the language (and on the Yosys path), so
+        a reader earlier in source order (``always @(posedge clk) s1 <= x;``
+        above ``always @* x = a_q;``) must see the driver too: each written
+        placeholder bit is recorded for :meth:`_apply_forward_renames`, as
+        a continuous assign records its own (rtl-buddy-cdc#377).
+        """
+        before = dict(self._var_bits)
+        self._walk_comb_statement(stmt)
+        self._record_forward_renames(before)
+
+    def _record_forward_renames(self, before: dict[Any, tuple[Bit, ...]]) -> None:
+        """Record ``old placeholder bit -> new driver bit`` for every
+        variable whose bits differ from ``before`` (see
+        :meth:`_lower_comb_body`)."""
+        for sym, old in before.items():
+            new = self._var_bits.get(sym)
+            if new is None or new == old or len(new) != len(old):
+                continue
+            for o, n in zip(old, new):
+                # Only a variable's own placeholder bit is renamed: an old
+                # bit that is some cell's output (a variable written by two
+                # blocks) must keep its driver.
+                if o in self._placeholder_bits and o != n:
+                    self._forward_renames[o] = n
 
     def _walk_comb_statement(self, stmt: Any) -> None:
         kind = self._kind_name(stmt)
