@@ -375,9 +375,10 @@ def test_is_known_clock_variants() -> None:
     assert abstract._is_known_clock("clk_a", spec) is True
     # A create_clock port resolves via clock_for_port.
     assert abstract._is_known_clock("ckp", spec) is True
-    # A port typed to a real clock resolves; an unconstrained-typed port
-    # and an unrelated name do not.
-    assert abstract._is_known_clock("d_typed", spec) is True
+    # A data port typed to a real clock (set_input_delay) is launched by
+    # that clock but is not one (rtl-buddy-cdc#378); neither is an
+    # unconstrained-typed port or an unrelated name.
+    assert abstract._is_known_clock("d_typed", spec) is False
     assert abstract._is_known_clock("d_unc", spec) is False
     assert abstract._is_known_clock("nope", spec) is False
 
@@ -411,6 +412,53 @@ def test_clock_named_data_pin_not_classified_without_known_clock() -> None:
     ic = abstract._instance_clocks(parent, inst, sub, spec=spec)
     assert ic.roots == frozenset()
     assert ic.clock_pins == frozenset()
+
+
+def _clock_named_pin_fed_by(port: str) -> tuple[Module, Cell, Module]:
+    """Blackbox ``u_sub`` whose clock-NAMED, non-allow-listed input
+    ``aux_clk`` is wired straight to top-level input ``port``."""
+    inst = Cell(name="u_sub", type="sub", connections={"aux_clk": (9,), "d_out": (2,)})
+    parent = Module(
+        name="top",
+        ports={port: Port(name=port, direction="input", bits=(9,))},
+        cells={"u_sub": inst},
+        netnames={},
+    )
+    sub = Module(
+        name="sub",
+        ports={
+            "aux_clk": Port(name="aux_clk", direction="input", bits=()),
+            "d_out": Port(name="d_out", direction="output", bits=()),
+        },
+        cells={},
+        netnames={},
+        is_blackbox=True,
+    )
+    return parent, inst, sub
+
+
+def test_clock_named_pin_fed_by_a_typed_data_port_is_data() -> None:
+    """``set_input_delay -clock clk_a [get_ports d_in]`` makes ``d_in``
+    a clk_a-launched data port, not a clock: a clock-named blackbox pin
+    it feeds is not a clock pin (rtl-buddy-cdc#378)."""
+    parent, inst, sub = _clock_named_pin_fed_by("d_in")
+    spec = sdc_mod.ClockSpec()
+    spec.clocks["clk_a"] = sdc_mod.Clock(name="clk_a", period=10.0, ports=("ckp",))
+    spec.port_clock["d_in"] = "clk_a"
+    ic = abstract._instance_clocks(parent, inst, sub, spec=spec)
+    assert ic.clock_pins == frozenset()
+    assert ic.roots == frozenset()
+
+
+def test_clock_named_pin_fed_by_a_clock_port_is_a_clock() -> None:
+    """Control: the same pin on a ``create_clock`` port whose ``-name``
+    differs from the port is a clock pin, rooted at the clock's name."""
+    parent, inst, sub = _clock_named_pin_fed_by("ckp")
+    spec = sdc_mod.ClockSpec()
+    spec.clocks["clk_a"] = sdc_mod.Clock(name="clk_a", period=10.0, ports=("ckp",))
+    ic = abstract._instance_clocks(parent, inst, sub, spec=spec)
+    assert ic.clock_pins == frozenset({"aux_clk"})
+    assert ic.roots == frozenset({"clk_a"})
 
 
 def test_instance_clock_single_root_backcompat() -> None:

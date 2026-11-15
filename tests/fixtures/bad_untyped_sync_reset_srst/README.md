@@ -23,7 +23,7 @@ Build:
 - **Status:** negative — analyzer must report a violation
 - **Top module:** `bad_untyped_sync_reset_srst`
 - **Clocks:** `clk` (10.0 ns)
-- **Crossings:** 1 structural (1 async-per-SDC, 0 sync)
+- **Crossings:** 2 structural (2 async-per-SDC, 0 sync)
 
 ## Clock-domain map
 
@@ -35,6 +35,7 @@ flowchart LR
     f_39c0ee0a["$auto$ff.cc:337:slice$9<br/><i>sv:40</i>"]:::ckcls_clk
     f_1877364d["$procdff$7<br/><i>sv:47</i>"]:::ckcls_clk
   end
+  p_in_srst -. "⚠ async · 1b" .-> f_39c0ee0a
   p_in_dctl -. "⚠ async · 1b" .-> f_1877364d
   style clk_clk fill:none,stroke:#cbd5e1
   classDef ckcls_clk fill:#e0f2fe,stroke:#0369a1,stroke-width:1.5px,color:#0f172a

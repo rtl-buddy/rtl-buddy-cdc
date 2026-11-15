@@ -194,6 +194,7 @@ def compose_boundaries(
     max_depth: int = 16,
     required_depth: int = 2,
     sync_primitives: frozenset[str] = frozenset(),
+    crossing_depth: int | None = None,
 ) -> tuple[dict[str, BoundarySummary], CompositionStats]:
     """Summarise every distinct ``(module, clock context)`` once and compose.
 
@@ -256,6 +257,10 @@ def compose_boundaries(
     let a deep clock pin be missed here and collapse a multi-clock
     boundary to a false single-clock summary, dropping its internal
     crossing. See issue #263.
+
+    ``crossing_depth`` is the crossing walk's hop cap (``--crossing-depth``,
+    ``None`` = uncapped), threaded to :func:`analyse_module` so a module's
+    internal crossings are found with the same cap as the flat walk's.
     """
     out: dict[str, BoundarySummary] = {}
     if not blackboxes:
@@ -397,6 +402,7 @@ def compose_boundaries(
                 max_depth=max_depth,
                 required_depth=required_depth,
                 sync_primitives=sync_primitives,
+                crossing_depth=crossing_depth,
             )
             summary = summarise_subtree(
                 top,
@@ -435,7 +441,7 @@ def compose_boundaries(
     lifted: list[LiftedAnalysis] = []
     for key in sorted(lifted_instances):
         analysis = analyses.get(key)
-        if analysis is None or not analysis.violations:
+        if analysis is None or not (analysis.violations or analysis.depth_cuts):
             continue
         lifted.append(
             LiftedAnalysis(

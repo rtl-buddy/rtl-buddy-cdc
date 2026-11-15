@@ -121,7 +121,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from rtl_buddy_cdc import sdc as sdc_mod
+from rtl_buddy_cdc import netlist, sdc as sdc_mod
 from rtl_buddy_cdc.cli import app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -132,8 +132,12 @@ LEGS: dict[str, str] = {
     "rtl": "",
     "gates": "techmap; opt_clean",
     "synth": "opt_dff; techmap; abc -g AND,OR,XOR,MUX; opt_clean",
+    # Not a verdict leg: only :func:`test_crossings_invariant_under_opt_dff`
+    # builds it, to compare crossings with the ``rtl`` leg's.
+    "optdff": "opt_dff; opt_clean",
 }
 GATE_LEGS = ("gates", "synth")
+VERDICT_LEGS = ("rtl", *GATE_LEGS)
 
 _DEFAULT_CLEANUP = "opt_clean"
 # Fixtures whose committed netlist was written after a different
@@ -378,7 +382,7 @@ def _check(name: str, leg: str, rtl: dict[str, int], gate: dict[str, int]) -> No
 
 # --- The sweep (needs yosys) ------------------------------------------------
 
-_CASES = [(fx.name, leg) for fx in _FIXTURES for leg in LEGS]
+_CASES = [(fx.name, leg) for fx in _FIXTURES for leg in VERDICT_LEGS]
 
 
 @pytest.mark.gate_level
@@ -422,6 +426,62 @@ def test_verdict_invariant_under_opt_clean(name: str) -> None:
     assert raw == _committed_fired(name), (
         f"{name}: verdict without opt_clean {raw} differs from the committed "
         f"netlist's {_committed_fired(name)}: a dead cell changed the verdict"
+    )
+
+
+def _register_crossings(netlist_path: Path, sdc: Path) -> set[tuple[str, ...]]:
+    """``analyze -f json`` crossings as ``(src, dst, src_clock, dst_clock)``
+    with each flop named by the register its ``Q`` drives, not its cell:
+    ``opt_dff`` renames the flops it rewrites and slices a register whose
+    bits load under different enables into several cells, so cell names
+    (and per-cell counts) are not comparable across the two forms."""
+    result = _RUNNER.invoke(
+        app, ["analyze", "-n", str(netlist_path), "-s", str(sdc), "-f", "json"]
+    )
+    assert result.exit_code in (0, 1), result.output
+    module = netlist.load(netlist_path)
+    reg_of_bit: dict[object, str] = {}
+    for n in sorted(
+        module.netnames.values(), key=lambda n: (n.name[:1] == "$", n.name)
+    ):
+        for b in n.bits:
+            reg_of_bit.setdefault(b, n.name)
+
+    def reg(cell_name: str) -> str:
+        cell = module.cells.get(cell_name)
+        q = cell.connections.get("Q", ()) if cell is not None else ()
+        return next((reg_of_bit[b] for b in q if b in reg_of_bit), cell_name)
+
+    out: set[tuple[str, ...]] = set()
+    for c in json.loads(result.stdout)["crossings"]:
+        if "src_flop" in c:
+            src = reg(c["src_flop"])
+        elif "src_port" in c:
+            src = f"port {c['src_port']}"
+        else:
+            src = (
+                f"boundary {c['src_boundary']['instance']}.{c['src_boundary']['port']}"
+            )
+        out.add((src, reg(c["dst_flop"]), c["src_clock"], c["dst_clock"]))
+    return out
+
+
+@pytest.mark.gate_level
+@pytest.mark.skipif(not yosys_available(), reason="yosys not on PATH")
+@pytest.mark.parametrize("name", [fx.name for fx in _FIXTURES])
+def test_crossings_invariant_under_opt_dff(name: str) -> None:
+    """``opt_dff`` folds enable and sync-reset muxes into the flops; the
+    crossings must not change (rtl-buddy-cdc#375: a crossing entering a
+    flop only through its enable used to vanish). Even the fixtures whose
+    verdict ``opt_dff`` changes (:data:`_R_OPT_CONST_FLOP`) keep their
+    crossings: the flop it removes is not on one."""
+    fx = _BY_NAME[name]
+    before = _register_crossings(build(fx, "rtl"), fx.sdc)
+    after = _register_crossings(build(fx, "optdff"), fx.sdc)
+    assert before == after, (
+        f"{name}: crossings differ after opt_dff\n"
+        f"  only before: {sorted(before - after)}\n"
+        f"  only after:  {sorted(after - before)}"
     )
 
 

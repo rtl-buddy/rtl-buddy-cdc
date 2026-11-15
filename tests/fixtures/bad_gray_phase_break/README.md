@@ -2,13 +2,13 @@
 
 <!-- generator: scripts/gen_fixture_docs.py -->
 
-Anti-pattern fixture (issue #174): a Gray-coded value is re- registered in the source clock domain *before* being crossed.
+Conservative CDC-004 on a gray code re-registered before the crossing (issue #174; header corrected in rtl-buddy-cdc#378).
 
-Gray's load-bearing invariant is that at most one bit flips per source cycle. The intermediate re-register breaks it: at any destination sample point, `gray2_q` can hold the previous Gray value while `gray_q` already holds the next — a downstream sync chain reading `gray2_q` sees a multi-bit transition mid-flight, exactly what the encoding was supposed to prevent.
+`gray2_q` is a plain one-cycle delay of the gray counter `gray_q` in the same clock. A register only changes on its clock edge, and consecutive values of a delayed gray sequence still differ in one bit, so the re-register adds latency and nothing else: the crossing is as safe as sampling `gray_q` directly.
 
-The crossing flop is `gray2_q`, not `gray_q`. The gray-encoding structural detector in rules.py walks back from `gray2_q.D`, hits the producer's Q-pin (a flop boundary), and stops without finding the canonical `b ^ (b >> 1)` XOR shape. Therefore the crossing is not exempted via the structural gray path, and CDC-004 must fire.
+CDC-004 fires anyway. The structural gray detector walks back from the crossing flop's `D`, stops at the first flop boundary (`gray_q`'s Q), and never sees the `b ^ (b >> 1)` XOR shape. That is a known false positive, kept on purpose: the detector does not prove the intermediate register is an unconditional delay, and a load-enabled copy, which can skip codes, stops the walk the same way. `(* cdc_gray *)` on `gray2_q` is the escape hatch.
 
-This fixture pins that detector behaviour as a regression sentinel: future tightening (or any change that walks across an intermediate flop) would surface here.
+This fixture pins that conservative verdict: a change that walks across the intermediate flop has to prove it is a pure delay, and then moves this fixture to the `good_` side.
 
 - **Status:** negative — analyzer must report a violation
 - **Top module:** `bad_gray_phase_break`

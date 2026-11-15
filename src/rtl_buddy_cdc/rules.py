@@ -1605,14 +1605,10 @@ def _carries_synchronised_control(
     for _ in range(max_hops):
         if len(cur.d) != 1 or len(cur.q) != 1:
             return False
-        d_bit = cur.d[0]
-        leg = _constant_leg_reset_mux_data_bits(
-            cur, module, ctx.bit_drivers, ctx.reader_counts
+        leg = _own_srst_data_leg(
+            module, cur, dst_clock, ctx.domains, ctx.bit_drivers, ctx.reader_counts
         )
-        if leg is not None and _srst_select_is_local(
-            module, cur, dst_clock, ctx.domains, ctx.bit_drivers
-        ):
-            d_bit = leg[0]
+        d_bit = leg[0] if leg is not None else cur.d[0]
         drv = ctx.bit_drivers.get(d_bit) if isinstance(d_bit, int) else None
         if drv is None or drv[1] != "Q":
             return False
@@ -2022,6 +2018,7 @@ def _is_gated_bus_crossing(
     crossing: Crossing,
     domains: dict[str, str | None],
     drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int] | None = None,
 ) -> bool:
     """Heuristic: the bus crossing is properly gated by a dst-domain
     handshake (so CDC-004 should not fire).
@@ -2042,15 +2039,29 @@ def _is_gated_bus_crossing(
       (``EN`` / ``E``, per :func:`flops.flop_enable_pin`) fans in only
       from dst-domain flops. That's the "load on synced enable" idiom.
 
+    The destination flop's own synchronous reset (a constant-leg
+    ``$mux`` selected from the destination domain,
+    :func:`_own_srst_data_leg`) is not a gate: it is looked through and
+    the test runs on its data leg (rtl-buddy-cdc#376), as it does on the
+    ``$sdff`` that ``opt_dff`` folds it into.
+
     A more rigorous check would also verify that the mux's
     hold-input is the destination flop's own ``Q`` (proper feedback
     hold), but we leave that as a follow-up for buses — the current
     shape catches the bus crossing patterns we care about without
     false-positives on the golden fixture. The single-bit acceptance
-    (:func:`_is_qualified_single_bit_capture`) runs the same test with
+    (:func:`_single_bit_handshake_capture`) runs the same test with
     that hold requirement (``require_hold``).
+
+    ``reader_counts`` is the rule context's map; rule callers pass it so
+    the reset look-through does not rescan the module per crossing.
     """
-    return _gated_capture_fanin(module, crossing, domains, drivers) is not None
+    return (
+        _gated_capture_fanin(
+            module, crossing, domains, drivers, reader_counts=reader_counts
+        )
+        is not None
+    )
 
 
 def _gated_capture_fanin(
@@ -2109,8 +2120,24 @@ def _gated_capture_fanin(
     # transparent buffers. All D bits must trace back to the same
     # origin cell — a bus split across multiple drivers can't be a
     # single gating mux.
+    #
+    # The flop's own synchronous reset is not a gate (rtl-buddy-cdc#376):
+    # between resets the flop samples on every edge, and ``opt_dff``
+    # folds the same mux into an ``$sdff`` with no gate left. Test
+    # what the reset mux's data leg is driven by instead.
+    d_bits: tuple[Bit, ...] = tuple(dst_flop.d)
+    first = drivers.get(d_bits[0]) if d_bits and isinstance(d_bits[0], int) else None
+    if first is not None and module.cells[first[0]].type in MUX2_TYPES:
+        if reader_counts is None:
+            reader_counts = _bit_reader_count(module)
+        d_bits = (
+            _own_srst_data_leg(
+                module, dst_flop, dst_clock, domains, drivers, reader_counts
+            )
+            or d_bits
+        )
     driver_cells: set[str] = set()
-    for d_bit in dst_flop.d:
+    for d_bit in d_bits:
         if not isinstance(d_bit, int):
             continue
         drv = _trace_through_bus_buffers(module, d_bit, drivers)
@@ -2145,14 +2172,11 @@ def _hold_mux_select_fanin(
     ``require_hold``: the select fanin of a hold mux (one leg is
     ``dst_flop``'s own ``Q``) driving ``D`` directly, or behind the
     flop's own local synchronous-reset mux; ``None`` otherwise."""
-    d_bits: tuple[Bit, ...] = tuple(dst_flop.d)
     if reader_counts is None:
         reader_counts = _bit_reader_count(module)
-    leg = _constant_leg_reset_mux_data_bits(dst_flop, module, drivers, reader_counts)
-    if leg is not None and _srst_select_is_local(
-        module, dst_flop, dst_clock, domains, drivers
-    ):
-        d_bits = leg
+    d_bits: tuple[Bit, ...] = _own_srst_data_leg(
+        module, dst_flop, dst_clock, domains, drivers, reader_counts
+    ) or tuple(dst_flop.d)
     q_bits = tuple(dst_flop.q)
     if not d_bits or len(d_bits) != len(q_bits):
         return None
@@ -2491,6 +2515,41 @@ def _srst_select_is_local(
     return all(domains.get(name) == dst_clock for name in fanin)
 
 
+def _own_srst_data_leg(
+    module: Module,
+    flop: Flop,
+    clock: str | None,
+    domains: dict[str, str | None],
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int],
+) -> tuple[Bit, ...] | None:
+    """The data leg behind ``flop``'s own synchronous reset, or ``None``
+    when ``flop``'s ``D`` is not one (rtl-buddy-cdc#376).
+
+    ``if (rst) q <= '0; else q <= x;`` lowers, after ``proc``, to a
+    constant-leg ``$mux`` in front of ``D``; ``opt_dff`` (and the slang
+    frontend) fold the same source into an ``$sdff`` whose ``D`` is ``x``
+    directly. A reset is part of the flop, so every structural test that
+    asks "what does this flop sample" looks through it and reads ``x``,
+    which keeps the two netlist forms on the same verdict.
+
+    The mux qualifies when it is the shape
+    :func:`_constant_leg_reset_mux_data_bits` accepts (one ``$mux`` whose
+    ``Y`` is exactly ``D`` and read by nothing else, one leg all-constant)
+    *and* its select is local to ``clock``
+    (:func:`_srst_select_is_local`): a select from another domain makes
+    the mux part of a second crossing, not this flop's reset.
+    """
+    if clock is None:
+        return None
+    leg = _constant_leg_reset_mux_data_bits(flop, module, bit_drivers, reader_counts)
+    if leg is None or not _srst_select_is_local(
+        module, flop, clock, domains, bit_drivers
+    ):
+        return None
+    return leg
+
+
 def check_cdc_004(
     module: Module,
     crossings: list[Crossing],
@@ -2557,7 +2616,9 @@ def check_cdc_004(
             # multi-bit synchronizer chain. This is the async-FIFO
             # pointer shape and is correct by construction.
             continue
-        if _is_gated_bus_crossing(module, c, ctx.domains, ctx.bit_drivers):
+        if _is_gated_bus_crossing(
+            module, c, ctx.domains, ctx.bit_drivers, ctx.reader_counts
+        ):
             continue
         violations.append(
             Violation(
@@ -2610,7 +2671,9 @@ def _orphan_bus_violations(
             continue
         group = [by_src[name] for name in sorted(by_src)]
         if all(
-            _is_gated_bus_crossing(module, c, ctx.domains, ctx.bit_drivers)
+            _is_gated_bus_crossing(
+                module, c, ctx.domains, ctx.bit_drivers, ctx.reader_counts
+            )
             for c in group
         ):
             continue
@@ -2905,8 +2968,8 @@ def check_cdc_006(
         # glitch it (#360). Step over the stage's own sync-reset mux
         # first: the reset only forces a constant.
         d_bits = (
-            _constant_leg_reset_mux_data_bits(
-                f, module, ctx.bit_drivers, ctx.reader_counts
+            _own_srst_data_leg(
+                module, f, my_clk, ctx.domains, ctx.bit_drivers, ctx.reader_counts
             )
             or f.d
         )
@@ -2918,9 +2981,9 @@ def check_cdc_006(
         # data paths is a CDC-008 shape, not CDC-006) and ports that
         # the SDC has explicitly typed into the *same* domain as the
         # destination flop via `set_input_delay -clock <my_clk>`.
-        my_clock_name: str | None = None
-        if clock_spec is not None:
-            my_clock_name = clock_spec.clock_for_port(my_clk) or my_clk
+        # ``my_clk`` is a ``ctx.domains`` value: already the canonical
+        # clock name (rtl-buddy-cdc#358), not a port to rename.
+        my_clock_name: str | None = my_clk if clock_spec is not None else None
         flagged_ports: list[tuple[str, str | None]] = []
         for p in sorted(fanin_ports):
             if p in clock_ports:
@@ -3375,9 +3438,11 @@ def check_cdc_010(
     def _async(a: str, b: str) -> bool:
         if clock_spec is None:
             return a != b
-        ca = clock_spec.clock_for_port(a) or a
-        cb = clock_spec.clock_for_port(b) or b
-        return clock_spec.are_async(ca, cb)
+        # Both are ``ctx.domains`` values (or the crossing's clocks),
+        # already canonical clock names since rtl-buddy-cdc#358:
+        # renaming them through ``clock_for_port`` again would map a
+        # clock named after another clock's port to the wrong clock.
+        return clock_spec.are_async(a, b)
 
     clock_net_cells = ctx.clock_network_cells
     seen: set[tuple[str, str, str]] = set()
@@ -3516,9 +3581,11 @@ def check_rdc_001(
         # as asynchronous (conservative — surfaces possible issues).
         if clock_spec is None:
             return a != b
-        ca = clock_spec.clock_for_port(a) or a
-        cb = clock_spec.clock_for_port(b) or b
-        return clock_spec.are_async(ca, cb)
+        # Both are ``ctx.domains`` values (or the crossing's clocks),
+        # already canonical clock names since rtl-buddy-cdc#358:
+        # renaming them through ``clock_for_port`` again would map a
+        # clock named after another clock's port to the wrong clock.
+        return clock_spec.are_async(a, b)
 
     # Collect ARST → (foreign source flop) edges. Group by
     # (src_flop_name, dst_clk) so a single async source feeding many
@@ -3609,9 +3676,11 @@ def check_rdc_003(
     def _async(a: str, b: str) -> bool:
         if clock_spec is None:
             return a != b
-        ca = clock_spec.clock_for_port(a) or a
-        cb = clock_spec.clock_for_port(b) or b
-        return clock_spec.are_async(ca, cb)
+        # Both are ``ctx.domains`` values (or the crossing's clocks),
+        # already canonical clock names since rtl-buddy-cdc#358:
+        # renaming them through ``clock_for_port`` again would map a
+        # clock named after another clock's port to the wrong clock.
+        return clock_spec.are_async(a, b)
 
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for f in ctx.flops:
@@ -4283,6 +4352,21 @@ def check_rdc_007(
     return violations
 
 
+def _port_typed_to_clock(
+    port_name: str, clock: str, clock_spec: ClockSpec | None
+) -> bool:
+    """``port_name`` carries ``set_input_delay -clock C`` with ``C`` on
+    ``clock``'s root (the same comparison CDC-006 makes for a typed
+    port): the port is launched synchronously to ``clock``. An
+    unconstrained-sentinel port is not typed."""
+    if clock_spec is None:
+        return False
+    port_clk = clock_spec.port_clock.get(port_name)
+    if port_clk is None or port_clk == UNCONSTRAINED_SENTINEL:
+        return False
+    return clock_spec.resolve(port_clk) == clock_spec.resolve(clock)
+
+
 def check_rdc_008(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -4335,6 +4419,11 @@ def check_rdc_008(
       to async-reset distribution only.
     * Port has no sync chain anywhere in the design (the
       "every-consumer-uses-the-raw-port" simplification).
+    * The SDC types the port to the consumers' clock
+      (``set_input_delay -clock <clk> [get_ports rst_n]``, compared on
+      the clock root): the integrator guarantees the reset is already
+      synchronous to that clock (rtl-buddy-cdc#378). A port typed to
+      another clock still fires for this one.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -4381,6 +4470,11 @@ def check_rdc_008(
         # the design likely just uses the raw port as-is in every
         # domain (a simplification we don't flag here).
         if not synced_clocks_by_port[port_name]:
+            continue
+        # ``set_input_delay -clock C`` on the reset port says the
+        # integrator times it against ``C``: its deassertion is already
+        # synchronous to consumers clocked by ``C`` (rtl-buddy-cdc#378).
+        if _port_typed_to_clock(port_name, consumer_clk, clock_spec):
             continue
         consumer_names = sorted(set(consumers))
         # Single-flop shortcut: one unsynced consumer in a domain that
@@ -4430,15 +4524,16 @@ def _unconstrained_srst_captures(
 ) -> dict[str, set[tuple[str, str]]]:
     """Untyped input ports that reach a flop's **synchronous reset** pin.
 
-    The crossing model is D-pin-scoped: :func:`find_crossings` seeds
-    and terminates its walk on flop ``D`` pins only, so a port that
-    lands on a dedicated ``SRST`` pin produces no ``Crossing`` at all.
-    Whether a sync reset lowers into a ``$dff`` D-cone (a reset mux,
-    reached by the port walk) or into a ``$sdff`` ``SRST`` pin (not
-    reached) is a synthesis-pass / coding-style detail — see issue
-    rtl-buddy-cdc#272. This helper closes that gap by walking the
-    ``SRST`` pins directly so CDC-011 reports the same finding either
-    way.
+    The crossing model was D-pin-scoped: :func:`find_crossings` seeded
+    and terminated its walk on flop ``D`` pins only, so a port that
+    landed on a dedicated ``SRST`` pin produced no ``Crossing`` at all.
+    Whether a sync reset lowers into a ``$dff`` D-cone (a reset mux) or
+    into a ``$sdff`` ``SRST`` pin is a synthesis-pass / coding-style
+    detail — see issue rtl-buddy-cdc#272. This helper closed that gap by
+    walking the ``SRST`` pins directly so CDC-011 reports the same
+    finding either way. The crossing walk lands on ``SRST`` too since
+    rtl-buddy-cdc#375; the union in :func:`check_cdc_011` makes the two
+    sources one finding.
 
     Returns ``{port_name: {(dst_clock, dst_flop_cell_name), ...}}`` for
     every top-level input port carrying :data:`UNCONSTRAINED_SENTINEL`
@@ -4497,8 +4592,9 @@ def check_cdc_011(
     such port; :func:`find_crossings` then walks them and emits
     port-sourced crossings whose ``src_clock`` carries the sentinel.
     The ``SRST`` case is picked up by
-    :func:`_unconstrained_srst_captures`, because crossings only ever
-    sink on ``D`` pins (issue rtl-buddy-cdc#272); both sets of
+    :func:`_unconstrained_srst_captures` (issue rtl-buddy-cdc#272; the
+    crossing walk itself also lands on ``SRST`` since
+    rtl-buddy-cdc#375); both sets of
     destinations are merged per port before severity is decided, so a
     port captured on a ``D`` pin in one domain and an ``SRST`` pin in
     another still collapses to one finding.
@@ -4524,7 +4620,7 @@ def check_cdc_011(
     """
     # {port: {(dst_clock, dst_flop_cell_name), ...}} — the union of the
     # D-pin destinations the crossing walk found and the SRST-pin
-    # destinations it structurally cannot see (#272).
+    # destinations of the direct SRST walk (#272), deduplicated.
     by_port: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for c in crossings:
         if c.src_port is None:
@@ -4681,7 +4777,9 @@ def _has_xor_tail_pulse_recovery(
     tail's Q is consumed by:
 
     1. A follow-on flop in the same dst_clock domain whose ``D``
-       is exactly tail.Q (the ``sync_q_d`` of the diagram).
+       is exactly tail.Q (the ``sync_q_d`` of the diagram), directly or
+       through that flop's own synchronous-reset ``$mux``
+       (:func:`_own_srst_data_leg`, rtl-buddy-cdc#376).
     2. An XOR cell (``$xor`` / ``$_XOR_``) whose two inputs are
        tail.Q and that follow-on flop's Q.
 
@@ -4747,6 +4845,28 @@ def _has_xor_tail_pulse_recovery(
                     # follow-on flop is multi-driver.
                     follow_flop_q = q_bits[0]
                 break
+
+    if follow_flop_q is None:
+        # The delayed copy may read the tail through its own synchronous-
+        # reset ``$mux`` (rtl-buddy-cdc#376): ``proc`` leaves the reset
+        # in front of ``D``, ``opt_dff`` folds it into an ``$sdff``.
+        behind = ctx.srst_mux_data_bit_to_single_bit_flop.get(tail_q)
+        if (
+            behind is not None
+            and len(behind.q) == 1
+            and isinstance(behind.q[0], int)
+            and ctx.domains.get(behind.cell.name) == head_clock
+            and _own_srst_data_leg(
+                module,
+                behind,
+                head_clock,
+                ctx.domains,
+                ctx.bit_drivers,
+                ctx.reader_counts,
+            )
+            == (tail_q,)
+        ):
+            follow_flop_q = behind.q[0]
 
     if follow_flop_q is None or not xor_cells:
         return False
@@ -4838,8 +4958,23 @@ def check_cdc_013(
             continue
         if c.src_flop.cell.name in ctx.user_handshakes:
             continue  # (* cdc_handshake *) — req toggle is backpressured until ack (#247)
+        # A synchronous reset on the toggle flop is part of the flop:
+        # classify what it samples between resets (rtl-buddy-cdc#376),
+        # as on the ``$sdffe`` that ``opt_dff`` folds it into.
+        src_leg = _own_srst_data_leg(
+            module,
+            c.src_flop,
+            c.src_clock,
+            ctx.domains,
+            ctx.bit_drivers,
+            ctx.reader_counts,
+        )
         shape = classify_toggle_d_pin(
-            d_bits[0], q_bits[0], module, ctx.bit_drivers, flop=c.src_flop.cell
+            src_leg[0] if src_leg is not None else d_bits[0],
+            q_bits[0],
+            module,
+            ctx.bit_drivers,
+            flop=c.src_flop.cell,
         )
         if shape != "toggle":
             continue
@@ -5155,7 +5290,9 @@ def check_cdc_012(
             continue
         if c.src_flop is None or c.width <= 1:
             continue
-        if not _is_gated_bus_crossing(module, c, ctx.domains, ctx.bit_drivers):
+        if not _is_gated_bus_crossing(
+            module, c, ctx.domains, ctx.bit_drivers, ctx.reader_counts
+        ):
             continue
         # Gray-encoded sources are exempt: at most one bit changes
         # per src cycle, so any dst-side sample mid-transition lands
@@ -5333,9 +5470,11 @@ def check_cdc_015(
     def _async(a: str, b: str) -> bool:
         if clock_spec is None:
             return a != b
-        ca = clock_spec.clock_for_port(a) or a
-        cb = clock_spec.clock_for_port(b) or b
-        return clock_spec.are_async(ca, cb)
+        # Both are ``ctx.domains`` values (or the crossing's clocks),
+        # already canonical clock names since rtl-buddy-cdc#358:
+        # renaming them through ``clock_for_port`` again would map a
+        # clock named after another clock's port to the wrong clock.
+        return clock_spec.are_async(a, b)
 
     for c in crossings:
         if c.width != 1:
@@ -7551,7 +7690,9 @@ def crossing_synchronizer(
         and _is_gray_encoded_source(module, src, ctx.bit_drivers)
     ):
         return "gray"
-    if not _is_gated_bus_crossing(module, c, ctx.domains, ctx.bit_drivers):
+    if not _is_gated_bus_crossing(
+        module, c, ctx.domains, ctx.bit_drivers, ctx.reader_counts
+    ):
         return None
     if src is not None and _is_gray_encoded_source(module, src, ctx.bit_drivers):
         return "gray"

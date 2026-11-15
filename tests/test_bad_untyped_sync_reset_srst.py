@@ -1,9 +1,10 @@
 """Untyped sync reset on an ``$sdff`` ``SRST`` pin — CDC-011 must fire.
 
-Issue rtl-buddy-cdc#272. The crossing model is ``D``-pin-scoped:
-:func:`find_crossings` seeds and terminates on flop ``D`` pins, so a
-top-level input that lands on a dedicated ``SRST`` pin produces no
-:class:`~rtl_buddy_cdc.domain.Crossing` record. CDC-011 consumes
+Issue rtl-buddy-cdc#272. The crossing model was ``D``-pin-scoped:
+:func:`find_crossings` seeded and terminated on flop ``D`` pins, so a
+top-level input that landed on a dedicated ``SRST`` pin produced no
+:class:`~rtl_buddy_cdc.domain.Crossing` record (since rtl-buddy-cdc#375
+the walk treats ``SRST`` as a capture input too). CDC-011 consumes
 port-sourced crossings, so an untyped synchronous reset used to vanish
 silently — while the *same* reset, when the lowering folded it into a
 ``$dff`` D-cone mux, was reported.
@@ -56,16 +57,22 @@ def mux_case():
     return _analyze(MUX_FIX)
 
 
-def test_srst_arrival_produces_no_crossing(srst_case) -> None:
-    """The root cause, pinned: ``srst`` reaches an ``SRST`` pin, and the
-    D-pin-scoped crossing walk cannot see it. Only ``dctl`` (a genuine
-    ``D``-pin capture) shows up as a port-sourced crossing."""
+def test_srst_arrival_is_a_crossing(srst_case) -> None:
+    """The crossing walk treats a sync-reset pin as a capture input since
+    rtl-buddy-cdc#375, so ``srst`` on the ``SRST`` pin is a port-sourced
+    crossing exactly as it is on the mux lowering's ``D``."""
     _module, crossings, _spec = srst_case
     ports = sorted({c.src_port for c in crossings if c.src_port is not None})
-    assert ports == ["dctl"], (
-        f"expected the SRST arrival to be invisible to find_crossings "
-        f"(D-pin-scoped); got port-sourced crossings for {ports}"
-    )
+    assert ports == ["dctl", "srst"]
+
+
+def test_srst_walk_reports_a_capture_the_crossings_miss(srst_case) -> None:
+    """The direct ``SRST`` walk stands on its own: with the ``srst``
+    crossing removed, CDC-011 still reports the port."""
+    module, crossings, spec = srst_case
+    data_only = [c for c in crossings if c.src_port != "srst"]
+    violations = check_cdc_011(module, data_only, spec)
+    assert sorted(v.message.split("'")[1] for v in violations) == ["dctl", "srst"]
 
 
 def test_cdc_011_fires_on_the_untyped_sync_reset(srst_case) -> None:
@@ -125,9 +132,9 @@ def test_lowering_parity_srst_vs_mux(srst_case, mux_case) -> None:
 
 
 def test_mux_variant_sees_both_ports_as_crossings(mux_case) -> None:
-    """Counterpart to :func:`test_srst_arrival_produces_no_crossing` —
-    with the mux lowering both untyped ports land on ``D`` pins, so the
-    ordinary port walk emits a crossing for each."""
+    """Counterpart to :func:`test_srst_arrival_is_a_crossing` — with the
+    mux lowering both untyped ports land on ``D`` pins, so the ordinary
+    port walk emits a crossing for each."""
     _module, crossings, _spec = mux_case
     ports = sorted({c.src_port for c in crossings if c.src_port is not None})
     assert ports == ["dctl", "srst"]
@@ -145,8 +152,10 @@ def test_standalone_call_builds_its_own_context(srst_case) -> None:
 def test_no_sdc_skips_the_srst_walk(srst_case) -> None:
     """Without an SDC there is no "untyped" verdict to make, so only the
     crossing-derived destinations remain. The fixture's crossings were
-    built with the sentinel, so ``dctl`` still reports; ``srst`` — which
-    exists only via the SRST walk — does not."""
+    built with the sentinel, so ``dctl`` still reports; with the ``srst``
+    crossing removed, ``srst`` — now reachable only via the SRST walk —
+    does not."""
     module, crossings, _spec = srst_case
-    violations = check_cdc_011(module, crossings, None)
+    data_only = [c for c in crossings if c.src_port != "srst"]
+    violations = check_cdc_011(module, data_only, None)
     assert sorted(v.message.split("'")[1] for v in violations) == ["dctl"]

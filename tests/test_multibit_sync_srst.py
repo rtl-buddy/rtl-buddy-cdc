@@ -162,8 +162,9 @@ def test_fixture_opt_dff_form_is_sdff_and_clean() -> None:
 
 def test_binary_source_into_the_reset_synchroniser_still_fires() -> None:
     """Control: the look-through only proves the destination is a
-    synchroniser. A binary (non-gray) source into the port-reset chain is
-    still CDC-004."""
+    synchroniser. A binary (non-gray) source into either chain is still
+    CDC-004 — the local reset (a dst_clk register on the reset mux's
+    select) is not a load-enable gate either (rtl-buddy-cdc#376)."""
     module = netlist.load(FIX / "good_gray_bus_sync_srst.json")
     cells = dict(module.cells)
     for name, cell in module.cells.items():
@@ -189,4 +190,4 @@ def test_binary_source_into_the_reset_synchroniser_still_fires() -> None:
         if spec.are_async(c.src_clock, c.dst_clock)
     ]
     fired = [v for v in run_all(module, crossings, spec) if v.rule_id == "CDC-004"]
-    assert len(fired) >= 1
+    assert len(fired) == 2
