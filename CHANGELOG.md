@@ -809,6 +809,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `good_pulse_synchronizer_srst`, each in both netlist forms. No other
   committed fixture changes verdict.
 
+- **`[all_inputs]` / `[all_outputs]` in `set_input_delay` /
+  `set_output_delay` typed nothing, silently** (rtl-buddy-cdc#378). The
+  collection is now read as every port of the command's direction, the
+  same set `[get_ports *]` selects (no port carrying a `create_clock`).
+  `[all_outputs]` in `set_input_delay` (or `[all_inputs]` in
+  `set_output_delay`) selects nothing that command can type and is
+  reported as an SDC warning. `remove_from_collection` is still not
+  interpreted. No committed fixture changes verdict.
+
 ### Internal
 
 - **Fixture READMEs regenerated and drift-checked in CI**
