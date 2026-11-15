@@ -64,6 +64,16 @@ def _flops(module) -> list:
 
 
 def _flop_count(module) -> int:
+    """Flop *bits*: Yosys ``proc`` groups the written bits of one register
+    into one flop per contiguous run, and so does the slang frontend since
+    rtl-buddy-cdc#377, so an unrolled ``q[i] <= d[i]`` is one 4-bit flop,
+    not four 1-bit ones."""
+    return sum(
+        len(c.connections["Q"]) for c in module.cells.values() if c.type in FLOP_TYPES
+    )
+
+
+def _flop_cells(module) -> int:
     return sum(1 for c in module.cells.values() if c.type in FLOP_TYPES)
 
 
@@ -248,8 +258,8 @@ def test_case_on_unlowerable_expr_compares_an_opaque_value(tmp_path: Path) -> No
     (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
     (eq,) = [c for c in mod.cells.values() if c.type == "$eq"]
     assert eq.connections["A"] == unknown.connections["Y"]
-    assert _flop_count(mod) == 1, (
-        f"distinct lvalue ``q`` collapses to one flop; got {_flop_count(mod)}"
+    assert _flop_cells(mod) == 1, (
+        f"distinct lvalue ``q`` collapses to one flop; got {_flop_cells(mod)}"
     )
 
 
@@ -282,9 +292,9 @@ def test_case_match_function_call_walks_item_without_enable(tmp_path: Path) -> N
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _flop_count(mod) == 1, (
+    assert _flop_cells(mod) == 1, (
         f"the unmatched-shape item should still emit its q-flop "
-        f"(walk-without-enable path); got {_flop_count(mod)}"
+        f"(walk-without-enable path); got {_flop_cells(mod)}"
     )
     types = _cell_types(mod)
     assert "$eq" not in types, (
@@ -344,7 +354,7 @@ def test_sync_reset_with_forloop_reset_arm(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     flops = _flops(mod)
-    assert len(flops) == 3, f"expected 3 unrolled flops (N=3); got {len(flops)}"
+    assert sum(len(f.connections["Q"]) for f in flops) == 3
     assert all(f.type == "$sdff" for f in flops), (
         f"for-loop reset arm of constants must classify as sync reset ($sdff); "
         f"got {[f.type for f in flops]}"
@@ -711,9 +721,9 @@ def test_task_call_statement_in_always_ff_is_skipped(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _flop_count(mod) == 1, (
+    assert _flop_cells(mod) == 1, (
         f"the task-call statement must be skipped while q<=d still emits "
-        f"its flop; got {_flop_count(mod)} flops"
+        f"its flop; got {_flop_cells(mod)} flops"
     )
     assert "$adff" in _cell_types(mod)
 

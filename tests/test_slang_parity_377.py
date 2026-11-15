@@ -70,8 +70,8 @@ def _cells(module: Module, cell_type: str) -> list:
 
 def _namer(module: Module):
     """Bit -> frontend-neutral name: a top port bit, else the smallest
-    ``netname[i]`` holding it, else ``<cell type>.<pin>[i]`` of its
-    driver; constants stay as they are."""
+    ``netname[i]`` holding it, else ``<cell type>.<pin>`` of its driver;
+    constants stay as they are."""
     names: dict[Bit, str] = {}
     for pname, port in sorted(module.ports.items()):
         for i, b in enumerate(port.bits):
@@ -88,7 +88,9 @@ def _namer(module: Module):
     for c in module.cells.values():
         for pin in ("Y", "Q"):
             for i, b in enumerate(c.connections.get(pin, ())):
-                drivers.setdefault(b, f"{c.type}.{pin}[{i}]")
+                # No bit index: the frontends split a mux into chunks
+                # differently (a whole-register mux vs one per written part).
+                drivers.setdefault(b, f"{c.type}.{pin}")
 
     def name(b: Bit) -> str:
         if isinstance(b, str):
@@ -888,3 +890,76 @@ endmodule
     if _HAVE_YOSYS and latched:
         # (Yosys rejects an ``always_latch`` that infers no latch.)
         assert _latches(module) == _latches(_yosys(tmp_path, src))
+
+
+# --- 7. one register, one flop per contiguous run ---------------------------
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "always @(posedge clk) begin p[0] <= a[0]; p[1] <= b[1]; end",
+        "always @(posedge clk) begin p <= a; if (c) p[1] <= b[1]; end",
+        "always @(posedge clk) begin p[3] <= a[3]; p[1:0] <= b[1:0]; end",
+        "always @(posedge clk) begin if (c) p <= a; else p[2:1] <= b[2:1]; end",
+        "always @(posedge clk or negedge rst_n) if (!rst_n) p <= 4'b1010;"
+        " else begin p[0] <= a[0]; if (c) p[3:1] <= b[3:1]; end",
+        "integer j; always @(posedge clk) begin p[0] <= a[0];"
+        " for (j = 3; j > 0; j = j - 1) p[j] <= p[j - 1]; end",
+        "always_ff @(posedge clk) begin t = a; t[1] = c; p <= t; end",
+        "always @(posedge clk) for (int i = 0; i < 4; i++)"
+        " begin p[i] = t[i]; t[i] = b[i]; end",
+    ],
+    ids=[
+        "disjoint",
+        "whole_then_part",
+        "two_runs",
+        "branches",
+        "reset_value",
+        "pipeline_loop",
+        "blocking_partial",
+        "blocking_loop",
+    ],
+)
+def test_register_parts_merge_like_proc(tmp_path: Path, block: str) -> None:
+    """Each write used to be its own flop: ``p <= a; if (c) p[1] <= b;``
+    gave two flops driving ``p[1]``, and per-bit writes (an unrolled loop
+    among them) one 1-bit flop each. Yosys ``proc`` makes one flop per
+    contiguous run of the bits a block writes."""
+    src = f"""module m (input clk, input rst_n, input c, input [3:0] a, input [3:0] b,
+          output reg [3:0] p);
+    reg [3:0] t;
+    {block}
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    q_bits = [b for c in _flops(module) for b in c.connections["Q"]]
+    assert len(q_bits) == len(set(q_bits)), "a register bit driven by two flops"
+    _agree_with_yosys(tmp_path, src, module)
+
+
+def test_reset_value_assembled_per_bit(tmp_path: Path) -> None:
+    src = """module m (input clk, input rst_n, input [3:0] a, output reg [3:0] p);
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) begin p[3:2] <= 2'b10; p[1:0] <= 2'b01; end
+        else begin p[0] <= a[0]; p[3:1] <= a[3:1]; end
+endmodule
+"""
+    (flop,) = _flops(_slang(tmp_path, src))
+    assert flop.parameters["ARST_VALUE"] == "1001"
+
+
+def test_unpacked_array_elements_stay_separate(tmp_path: Path) -> None:
+    """The stages of an unpacked-array synchroniser are separate registers
+    (Yosys ``mem2reg``), so they are not merged into one flop."""
+    src = """module m (input clk, input d, output q);
+    logic chain [3];
+    always_ff @(posedge clk) begin
+        chain[0] <= d;
+        for (int i = 1; i < 3; i++) chain[i] <= chain[i - 1];
+    end
+    assign q = chain[2];
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert sorted(len(c.connections["Q"]) for c in _flops(module)) == [1, 1, 1]

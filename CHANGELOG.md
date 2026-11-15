@@ -431,6 +431,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     body shape becomes one latch per held variable (an `else` arm, a
     `case`, several writes in an arm were skipped or, for the `else`,
     ignored), and a body that holds nothing infers no latch.
+  - A register written in several parts by one block is one flop per
+    contiguous run of written bits, as Yosys `proc` groups it. Each write
+    used to be its own flop: `q <= 0; if (c) q[1] <= b;` gave two flops
+    driving `q[1]`, and an unrolled `q[i] <= d[i]` four 1-bit flops
+    where Yosys has one 4-bit flop. Reset values are assembled per bit;
+    the elements of an unpacked array stay separate registers.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,

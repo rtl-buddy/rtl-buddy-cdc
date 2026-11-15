@@ -598,18 +598,22 @@ class _ModuleBuilder:
         # recognises the resulting hold-feedback mux as a handshake-
         # gated bus crossing. See issue #64.
         self._enable_stack: list[Bit] = []
-        # Per-procedural-block write accumulator: maps each LHS bit
-        # tuple to a list of ``(enable, rhs)`` pairs in walk order.
-        # ``_emit_assignment_expression`` appends instead of emitting
-        # cells; ``_drain_proc_writes`` (called at end of
-        # ``_emit_procedural_block``) builds one flop per LHS with a
-        # mux tree from the accumulated writes. So
-        # ``if (cond) q <= a; else q <= b;`` collapses to one ``$adff``
-        # whose D is ``mux(cond, b, a)`` — not two flops with the same
-        # Q. Initialised fresh on each procedural-block entry.
+        # Per-procedural-block write accumulator: maps each written
+        # variable to ``(register bits, writes)``, each write a ``(start,
+        # enable, rhs bits)`` in walk order. ``_emit_assignment_expression``
+        # appends instead of emitting cells; ``_drain_proc_writes`` (called
+        # at the end of ``_emit_procedural_block``) builds one flop per
+        # contiguous run of written bits with a mux tree from the
+        # accumulated writes. So ``if (cond) q <= a; else q <= b;``
+        # collapses to one ``$adff`` whose D is ``mux(cond, b, a)`` — not
+        # two flops with the same Q — and so does ``q <= 0; if (c) q[1] <=
+        # b;`` (rtl-buddy-cdc#377). Initialised fresh on each block entry.
         self._proc_writes: dict[
-            tuple[Bit, ...],
-            list[tuple[Bit | None, tuple[Bit, ...]]],
+            Any,
+            tuple[
+                tuple[Bit, ...],
+                list[tuple[int, Bit | None, tuple[Bit, ...]]],
+            ],
         ] = {}
         # Per-procedural-block async-reset value accumulator: maps each
         # LHS bit tuple to the integer constant written in the reset
@@ -2262,8 +2266,9 @@ class _ModuleBuilder:
             targets, self._split_rhs(rhs_bits, targets)
         ):
             net = self._blocking_nets.get(sym) or self._alloc_bits(sym)
-            q_part = net[start : start + len(bits)]
-            self._proc_writes.setdefault(q_part, []).append((enable, bits))
+            self._proc_writes.setdefault(sym, (net, []))[1].append(
+                (start, enable, bits)
+            )
             if blocking:
                 self._forward_blocking_write(sym, net, start, bits, enable)
 
@@ -2369,16 +2374,21 @@ class _ModuleBuilder:
         src_node: Any,
         reset_kind: str | None = None,
     ) -> None:
-        """Emit one flop per accumulated LHS.
+        """Emit one flop per contiguous run of the bits each variable is
+        written in, as Yosys ``proc`` groups them (rtl-buddy-cdc#377: one
+        flop per written part, so ``q <= 0; if (c) q[1] <= b;`` gave two
+        flops driving ``q[1]``, and ``p[0] <= a; p[1] <= b;`` two 1-bit
+        flops where Yosys has one 2-bit flop; ``r[3]`` and ``r[1:0]`` stay
+        two).
 
-        For each LHS, walks its ``(enable, rhs)`` writes in source
-        order to build the flop's D input:
+        For each run, walks the writes that touch it in source order to
+        build the flop's D input:
 
-        - The initial "hold" value is the LHS's own Q bits — when no
+        - The initial "hold" value is the run's own Q bits — when no
           enable in any later write fires, D = Q (the flop holds).
-        - An unconditional write (``enable is None``) replaces the
-          current D entirely; later muxes apply on top.
-        - A conditional write wraps D in a hold-feedback mux
+        - An unconditional write (``enable is None``) replaces its slice
+          of the current D; later muxes apply on top.
+        - A conditional write wraps its slice of D in a hold-feedback mux
           ``mux(S=enable, A=prev_D, B=rhs)`` so the rule pack's
           gated-bus detector can see the select signal.
 
@@ -2391,26 +2401,70 @@ class _ModuleBuilder:
         ``reset_kind`` (``"async"`` / ``"sync"`` / ``None``) controls
         whether ``_emit_flop_cell`` materialises ``$adff``, ``$sdff``,
         or plain ``$dff``. ``None`` is also accepted alongside
-        ``reset_sym=None`` for blocks with no reset.
+        ``reset_sym=None`` for blocks with no reset. Reset values are
+        assembled per bit from the reset arm's writes.
         """
-        for q_bits, writes in self._proc_writes.items():
-            d_bits: tuple[Bit, ...] = q_bits  # initial Q-feedback
-            for enable, rhs in writes:
-                if enable is None:
-                    d_bits = rhs
-                else:
-                    d_bits = self._build_hold_mux(enable, hold=d_bits, fire=rhs)
-            reset_value = self._proc_resets.get(q_bits, 0)
-            self._emit_flop_cell(
-                clk_sym,
-                reset_sym,
-                reset_active_low,
-                q_bits,
-                d_bits,
-                src_node,
-                reset_value=reset_value,
-                reset_kind=reset_kind,
+        reset_bit: dict[Bit, int] = {}
+        for key, value in self._proc_resets.items():
+            for i, bit in enumerate(key):
+                reset_bit[bit] = (value >> i) & 1
+        for sym, (net, writes) in self._proc_writes.items():
+            written = sorted(
+                {
+                    pos
+                    for start, _en, bits in writes
+                    for pos in range(start, start + len(bits))
+                }
             )
+            # The elements of an unpacked array are separate registers
+            # (Yosys ``mem2reg``): a run never spans two of them.
+            element = self._unpacked_element_width(sym)
+            runs: list[tuple[int, int]] = []
+            for pos in written:
+                if runs and runs[-1][1] == pos and (not element or pos % element):
+                    runs[-1] = (runs[-1][0], pos + 1)
+                else:
+                    runs.append((pos, pos + 1))
+            for lo, hi in runs:
+                q_bits = net[lo:hi]
+                d: list[Bit] = list(q_bits)  # initial Q-feedback
+                for start, enable, rhs in writes:
+                    a, b = max(lo, start), min(hi, start + len(rhs))
+                    if a >= b:
+                        continue
+                    piece = rhs[a - start : b - start]
+                    if enable is not None:
+                        piece = self._build_hold_mux(
+                            enable, hold=tuple(d[a - lo : b - lo]), fire=piece
+                        )
+                    d[a - lo : b - lo] = piece
+                reset_value = sum(
+                    reset_bit.get(bit, 0) << i for i, bit in enumerate(q_bits)
+                )
+                self._emit_flop_cell(
+                    clk_sym,
+                    reset_sym,
+                    reset_active_low,
+                    q_bits,
+                    tuple(d),
+                    src_node,
+                    reset_value=reset_value,
+                    reset_kind=reset_kind,
+                )
+
+    @staticmethod
+    def _unpacked_element_width(sym: Any) -> int | None:
+        """Bits per innermost element of an unpacked-array variable, or
+        ``None`` for a packed one."""
+        t = getattr(sym, "type", None)
+        t = getattr(t, "canonicalType", None) or t
+        if not getattr(t, "isUnpackedArray", False):
+            return None
+        while getattr(t, "isUnpackedArray", False):
+            t = getattr(t, "elementType", None)
+            t = getattr(t, "canonicalType", None) or t
+        width = getattr(t, "selectableWidth", None) or getattr(t, "bitWidth", None)
+        return int(width) if width else None
 
     def _build_hold_mux(
         self, enable: Bit, hold: tuple[Bit, ...], fire: tuple[Bit, ...]
