@@ -829,6 +829,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trace root before the typed-port renaming. No committed fixture
   changes verdict.
 
+- **Rules renamed canonical clock names a second time**
+  (rtl-buddy-cdc#378). Since rtl-buddy-cdc#358 the rule context's
+  domains are canonical clock names, but CDC-006, CDC-010, CDC-015,
+  RDC-001 and RDC-003 still passed them through `clock_for_port` before
+  comparing. That is a no-op unless a clock is named after the port of a
+  different clock (`create_clock -name ck_far [get_ports ck_d]` next to a
+  clock named `ck_d`), where the domain was read as the other clock: a
+  typed port in the synchroniser's own clock fired CDC-006, and a reset
+  between two synchronous clocks fired RDC-001. The rules now compare the
+  domain names as they are. No committed fixture changes verdict.
+
 ### Internal
 
 - **Fixture READMEs regenerated and drift-checked in CI**

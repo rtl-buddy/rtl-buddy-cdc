@@ -2981,9 +2981,9 @@ def check_cdc_006(
         # data paths is a CDC-008 shape, not CDC-006) and ports that
         # the SDC has explicitly typed into the *same* domain as the
         # destination flop via `set_input_delay -clock <my_clk>`.
-        my_clock_name: str | None = None
-        if clock_spec is not None:
-            my_clock_name = clock_spec.clock_for_port(my_clk) or my_clk
+        # ``my_clk`` is a ``ctx.domains`` value: already the canonical
+        # clock name (rtl-buddy-cdc#358), not a port to rename.
+        my_clock_name: str | None = my_clk if clock_spec is not None else None
         flagged_ports: list[tuple[str, str | None]] = []
         for p in sorted(fanin_ports):
             if p in clock_ports:
@@ -3438,9 +3438,11 @@ def check_cdc_010(
     def _async(a: str, b: str) -> bool:
         if clock_spec is None:
             return a != b
-        ca = clock_spec.clock_for_port(a) or a
-        cb = clock_spec.clock_for_port(b) or b
-        return clock_spec.are_async(ca, cb)
+        # Both are ``ctx.domains`` values (or the crossing's clocks),
+        # already canonical clock names since rtl-buddy-cdc#358:
+        # renaming them through ``clock_for_port`` again would map a
+        # clock named after another clock's port to the wrong clock.
+        return clock_spec.are_async(a, b)
 
     clock_net_cells = ctx.clock_network_cells
     seen: set[tuple[str, str, str]] = set()
@@ -3579,9 +3581,11 @@ def check_rdc_001(
         # as asynchronous (conservative — surfaces possible issues).
         if clock_spec is None:
             return a != b
-        ca = clock_spec.clock_for_port(a) or a
-        cb = clock_spec.clock_for_port(b) or b
-        return clock_spec.are_async(ca, cb)
+        # Both are ``ctx.domains`` values (or the crossing's clocks),
+        # already canonical clock names since rtl-buddy-cdc#358:
+        # renaming them through ``clock_for_port`` again would map a
+        # clock named after another clock's port to the wrong clock.
+        return clock_spec.are_async(a, b)
 
     # Collect ARST → (foreign source flop) edges. Group by
     # (src_flop_name, dst_clk) so a single async source feeding many
@@ -3672,9 +3676,11 @@ def check_rdc_003(
     def _async(a: str, b: str) -> bool:
         if clock_spec is None:
             return a != b
-        ca = clock_spec.clock_for_port(a) or a
-        cb = clock_spec.clock_for_port(b) or b
-        return clock_spec.are_async(ca, cb)
+        # Both are ``ctx.domains`` values (or the crossing's clocks),
+        # already canonical clock names since rtl-buddy-cdc#358:
+        # renaming them through ``clock_for_port`` again would map a
+        # clock named after another clock's port to the wrong clock.
+        return clock_spec.are_async(a, b)
 
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for f in ctx.flops:
@@ -5462,9 +5468,11 @@ def check_cdc_015(
     def _async(a: str, b: str) -> bool:
         if clock_spec is None:
             return a != b
-        ca = clock_spec.clock_for_port(a) or a
-        cb = clock_spec.clock_for_port(b) or b
-        return clock_spec.are_async(ca, cb)
+        # Both are ``ctx.domains`` values (or the crossing's clocks),
+        # already canonical clock names since rtl-buddy-cdc#358:
+        # renaming them through ``clock_for_port`` again would map a
+        # clock named after another clock's port to the wrong clock.
+        return clock_spec.are_async(a, b)
 
     for c in crossings:
         if c.width != 1:
