@@ -962,13 +962,7 @@ class _ModuleBuilder:
         elif kind == "InstanceArraySymbol":
             self._emit_instance_array(member, hier_prefix, member.name)
         elif kind == "PrimitiveInstanceSymbol":
-            # Gate primitives (``and g (y, a, b);``) are not lowered;
-            # say so rather than drop their logic silently.
-            self._warn_dropped(
-                member,
-                f"gate primitive {member.name or '<unnamed>'}",
-                "primitive instance",
-            )
+            self._emit_primitive(member)
         elif kind == "NetSymbol":
             # ``wire foo = <expr>;`` lowers as a NetSymbol whose
             # ``initializer`` carries the RHS. pyslang doesn't emit a
@@ -1059,6 +1053,10 @@ class _ModuleBuilder:
             kind = self._kind_name(element)
             if kind == "InstanceSymbol":
                 self._emit_instance(element, parent_prefix, elem_name)
+            elif kind == "PrimitiveInstanceSymbol":
+                # slang hands each element its own slice of a vector
+                # terminal (IEEE 1800-2017 28.3.6).
+                self._emit_primitive(element)
             elif kind == "InstanceArraySymbol":
                 self._emit_instance_array(element, parent_prefix, elem_name)
             else:
@@ -1154,6 +1152,62 @@ class _ModuleBuilder:
         )
 
     # -- blackbox boundaries (rtl-buddy-cdc#345) --------------------------
+
+    # Built-in gates (IEEE 1800-2017 28.4/28.5) by the cell their
+    # inputs fold through and whether the result is inverted, as Yosys'
+    # ``read_verilog`` lowers them.
+    _GATE_CELLS: dict[str, tuple[str | None, bool]] = {
+        "and": ("$and", False),
+        "or": ("$or", False),
+        "xor": ("$xor", False),
+        "nand": ("$and", True),
+        "nor": ("$or", True),
+        "xnor": ("$xor", True),
+        "buf": (None, False),
+        "not": (None, True),
+    }
+
+    def _emit_primitive(self, prim: Any) -> None:
+        """Lower a built-in gate instance (``and g (y, a, b, c);``,
+        ``not n (y1, y2, a);``) as Yosys ``read_verilog`` does: the inputs
+        folded left to right through 2-input ``$and`` / ``$or`` / ``$xor``
+        cells, a ``$not`` for the inverting gates, every output driven
+        like a continuous ``assign`` (rtl-buddy-cdc#377; gates were
+        reported since rtl-buddy-cdc#353 but not lowered). The delay and
+        strengths have no logic. Tristate gates, switches, pulls and
+        user-defined primitives are reported, as before."""
+        name = getattr(getattr(prim, "primitiveType", None), "name", "")
+        conns = list(getattr(prim, "portConnections", None) or [])
+        spec = self._GATE_CELLS.get(name)
+        if spec is None or len(conns) < 2:
+            self._warn_dropped(
+                prim,
+                f"`{name or '?'}` primitive {prim.name or '<unnamed>'} is not modelled",
+                "primitive instance",
+            )
+            return
+        cell, invert = spec
+        if cell is None:  # buf / not: n outputs, one input
+            outputs, inputs = conns[:-1], conns[-1:]
+        else:  # and / or / xor / nand / nor / xnor: one output, n inputs
+            outputs, inputs = conns[:1], conns[1:]
+        bits = [self._rhs_bits(e, 1, "gate input")[0] for e in inputs]
+        value: Bit = bits[0]
+        for nxt in bits[1:]:
+            assert cell is not None
+            value = self._emit_comb_cell(
+                cell, {"A": (value,), "B": (nxt,)}, output_width=1, src_node=prim
+            )[0]
+        if invert:
+            value = self._emit_comb_cell(
+                "$not", {"A": (value,)}, output_width=1, src_node=prim
+            )[0]
+        for out in outputs:
+            target = getattr(out, "left", None)
+            if type(out).__name__ != "AssignmentExpression" or target is None:
+                continue
+            if not self._splice_assign(target, _Bits((value,), out), continuous=True):
+                self._warn_lvalue_dropped(prim, target)
 
     def _is_boundary_instance(self, inst: Any) -> bool:
         """True iff ``inst`` stays a boundary cell instead of being inlined.

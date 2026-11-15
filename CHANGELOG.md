@@ -437,6 +437,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     driving `q[1]`, and an unrolled `q[i] <= d[i]` four 1-bit flops
     where Yosys has one 4-bit flop. Reset values are assembled per bit;
     the elements of an unpacked array stay separate registers.
+  - Gate primitives lower as Yosys `read_verilog` lowers them: `and` /
+    `or` / `xor` fold their inputs through 2-input cells, `nand` / `nor` /
+    `xnor` add a `$not`, `not` / `buf` drive each of their outputs, and
+    an array of gates is one gate per element on its slices (Yosys
+    rejects primitive arrays). They were reported but not lowered since
+    rtl-buddy-cdc#353; tristate gates, switches, pulls and user-defined
+    primitives are still reported.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,

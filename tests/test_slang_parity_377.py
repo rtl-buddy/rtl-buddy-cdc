@@ -963,3 +963,70 @@ endmodule
 """
     module = _slang(tmp_path, src)
     assert sorted(len(c.connections["Q"]) for c in _flops(module)) == [1, 1, 1]
+
+
+# --- 8. gate primitives -------------------------------------------------------
+
+_GATES = """module m (input clk_a, input clk_b, input a, input b, input c,
+          output y1, output y2, output y3, output y4, output y5, output y6,
+          output reg q);
+    and g1 (y1, a, b, c);
+    nand g2 (y2, a, b);
+    not n1 (y3, y4, a);
+    buf (y5, b);
+    xnor #1 (y6, a, b);
+    reg a_q, s1;
+    wire x;
+    always @(posedge clk_a) a_q <= a;
+    or g3 (x, a_q, b);
+    always @(posedge clk_b) begin s1 <= x; q <= s1; end
+endmodule
+"""
+
+
+def test_gate_primitives_lower_like_read_verilog(tmp_path: Path, caplog) -> None:
+    """Gates were reported (rtl-buddy-cdc#353) but not lowered, so their
+    logic was missing: here the crossing through the ``or`` gate."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _GATES)
+    assert not _warnings(caplog)
+    types = sorted(
+        c.type for c in module.cells.values() if not c.type.startswith("$dff")
+    )
+    assert types == ["$and", "$and", "$and", "$not", "$not", "$not", "$or", "$xor"]
+    assert module.ports["y5"].bits == module.ports["b"].bits
+    assert ("s1[0]", "$or.Y", "clk_b[0]", 1) in _flop_lanes(module)
+    # (No lane-by-lane comparison: the wire ``x`` has a netname on the
+    # Yosys path only.)
+    assert _same_verdict(tmp_path, _GATES)[0] >= 1
+
+
+def test_gate_primitive_array(tmp_path: Path) -> None:
+    """An array of gates is one gate per element on its slices (Yosys
+    rejects primitive arrays, so there is nothing to compare with)."""
+    src = """module m (input [1:0] v, input [1:0] u, output [1:0] y);
+    or ga[1:0] (y, v, u);
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    ors = sorted(
+        (c.connections["A"], c.connections["B"], c.connections["Y"])
+        for c in _cells(module, "$or")
+    )
+    v, u, y = (module.ports[n].bits for n in ("v", "u", "y"))
+    assert ors == sorted(((v[i],), (u[i],), (y[i],)) for i in range(2))
+
+
+@pytest.mark.parametrize(
+    "inst",
+    ["bufif1 t (y, a, b);", "pullup (y);", "tran s (y, a);"],
+    ids=["tristate", "pull", "switch"],
+)
+def test_unmodelled_primitives_warn(tmp_path: Path, caplog, inst: str) -> None:
+    src = f"""module m (input a, input b, output y);
+    {inst}
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        _slang(tmp_path, src)
+    assert any("primitive instance not lowered" in m for m in _warnings(caplog))

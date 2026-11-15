@@ -582,20 +582,45 @@ def test_cli_boundary_option_applies_to_array_elements(
 # --- what is still not lowered warns -------------------------------------
 
 
-def test_primitive_array_and_primitive_warn(tmp_path: Path, caplog) -> None:
-    """Gate primitives are not lowered by this frontend; an array of them
-    (or a lone one) is reported instead of vanishing."""
+def test_primitive_array_and_primitive_lower(tmp_path: Path, caplog) -> None:
+    """Gate primitives lower since rtl-buddy-cdc#377, an array of them one
+    gate per element on its slices (they were reported, not lowered)."""
     src = """module m (input [1:0] a, input [1:0] b, output [1:0] y, output z);
     and g_and[1:0] (y, a, b);
     or g_or (z, a[0], b[0]);
 endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
-        _slang(tmp_path, src)
-    msgs = [r.getMessage() for r in caplog.records]
-    assert sum("instance array element not lowered" in m for m in msgs) == 2, msgs
-    assert any("g_and[1] is a PrimitiveInstanceSymbol" in m for m in msgs), msgs
-    assert any("primitive instance not lowered" in m and "g_or" in m for m in msgs)
+        module, _ = _slang(tmp_path, src)
+    assert not caplog.records
+    ands = {c.connections["Y"]: c for c in module.cells.values() if c.type == "$and"}
+    for i in range(2):
+        cell = ands[(module.ports["y"].bits[i],)]
+        assert cell.connections["A"] == (module.ports["a"].bits[i],)
+        assert cell.connections["B"] == (module.ports["b"].bits[i],)
+    (or_,) = [c for c in module.cells.values() if c.type == "$or"]
+    assert or_.connections["Y"] == module.ports["z"].bits
+
+
+def test_array_element_of_another_kind_warns(caplog) -> None:
+    class _Element:
+        syntax = None
+        sourceRange = None
+        location = None
+
+    class _Arr:
+        range = types.SimpleNamespace(lower=0)
+        elements = [_Element()]
+        isUninstantiated = False
+
+    builder = slang_fe._ModuleBuilder.__new__(slang_fe._ModuleBuilder)
+    builder.comp = types.SimpleNamespace(sourceManager=None)
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        builder._emit_instance_array(_Arr(), "", "u_x")
+    assert any(
+        "u_x[0] is a _Element, not a module instance" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_array_without_elements_warns(tmp_path: Path, caplog) -> None:
