@@ -42,7 +42,7 @@ from rtl_buddy_cdc.domain import (
 from rtl_buddy_cdc.flops import flop_clk_pin, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, PortBoundary
 from rtl_buddy_cdc.primitives import clock_pin_role, port_domain
-from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL as _UNCONSTRAINED, ClockSpec
+from rtl_buddy_cdc.sdc import ClockSpec
 
 if TYPE_CHECKING:
     from rtl_buddy_cdc.compositional import ModuleAnalysis
@@ -170,17 +170,20 @@ def _is_known_clock(root: str, spec: ClockSpec | None) -> bool:
     (conservative for abstraction: an unrecognised second clock that we
     misread as data would only *over*-decline, never drop a crossing —
     but with no SDC there are no domains to cross anyway).
+
+    The identity question is :meth:`ClockSpec.declared_clock_for_port`,
+    not :meth:`~ClockSpec.clock_for_port`: a data port typed with
+    ``set_input_delay -clock C`` is *launched* by ``C`` but is not a
+    clock, so a clock-named pin it feeds stays data (rtl-buddy-cdc#378),
+    and an ``<unconstrained>``-typed port is never one either. ``root``
+    must therefore be the raw trace root, before the typed-port
+    normalisation :meth:`_BoundaryClockWalk.root` applies.
     """
     if spec is None:
         return False
     if root in spec.clocks:
         return True
-    clk = spec.clock_for_port(root)
-    # An input typed ``<unconstrained>`` (no create_clock, just a sentinel
-    # so CDC-011 can fire) is explicitly NOT a real clock — a data input
-    # straight from such a port must stay data, not be read as a clock
-    # pin. A port whose typed clock is itself a declared clock counts.
-    return clk is not None and clk != _UNCONSTRAINED and clk in spec.clocks
+    return spec.declared_clock_for_port(root) is not None
 
 
 @dataclass(frozen=True)
@@ -234,7 +237,13 @@ class _BoundaryClockWalk:
         *,
         max_depth: int,
         allow_divider: bool = True,
+        normalise: bool = True,
     ) -> str | None:
+        """The clock root ``bit`` traces to, renamed through
+        ``clock_for_port`` as the flat walk names it, or the raw trace
+        root when ``normalise`` is false (the clock-identity check in
+        :func:`_is_known_clock` needs the name before a typed data port
+        is renamed to the clock it is launched by)."""
         spec = self.spec
         root = trace_clock_root(
             parent,
@@ -246,7 +255,7 @@ class _BoundaryClockWalk:
             case_bits=self.case_bits,
             clock_identity=self.clock_identity,
         )
-        if root is not None and spec is not None:
+        if normalise and root is not None and spec is not None:
             root = spec.clock_for_port(root) or root
         return root
 
@@ -338,10 +347,17 @@ def _instance_clocks(
             # name gate (above) means a genuine DATA input mis-wired to a
             # clock net is NOT absorbed here, so CDC-008 (FIX 4) still
             # fires on it.
-            root = walk.root(
-                parent, bits[0], drivers, max_depth=max_depth, allow_divider=False
+            raw = walk.root(
+                parent,
+                bits[0],
+                drivers,
+                max_depth=max_depth,
+                allow_divider=False,
+                normalise=False,
             )
-            if root is not None and _is_known_clock(root, spec):
+            if raw is not None and _is_known_clock(raw, spec):
+                assert spec is not None  # _is_known_clock needs one
+                root = spec.clock_for_port(raw) or raw
                 clock_pins.add(pin)
                 pin_roots[pin] = root
                 roots.add(root)

@@ -818,6 +818,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported as an SDC warning. `remove_from_collection` is still not
   interpreted. No committed fixture changes verdict.
 
+- **A clock-named blackbox pin fed by a typed data port read as a clock**
+  (rtl-buddy-cdc#378). The boundary classifier decides whether a
+  non-allow-listed, clock-named blackbox input (`aux_clk`) is a clock pin
+  by asking whether its trace root is a declared clock. It asked through
+  `clock_for_port`, which also answers for a data port typed with
+  `set_input_delay -clock C`, so such a pin became a clock pin of `C`
+  (the subtree's clock set grew, and CDC-008 lost the pin). It now asks
+  the clock-identity question `declared_clock_for_port` answers, on the
+  trace root before the typed-port renaming. No committed fixture
+  changes verdict.
+
 ### Internal
 
 - **Fixture READMEs regenerated and drift-checked in CI**
