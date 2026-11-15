@@ -117,7 +117,6 @@ def test_none_statement_guards_are_noops() -> None:
     # emits nothing".
     assert b._collect_reset_assignments(None) is None
     assert b._emit_assignments_in(None, None, None, False) is None
-    assert b._walk_latch_statement(None) is None
     assert b._cells == {}
     # _is_constant_only_assignment_tree(None) is vacuously True.
     assert b._is_constant_only_assignment_tree(None) is True
@@ -909,10 +908,10 @@ def _no_loop_unroll_flops(mod) -> bool:
     return not _flops(mod)
 
 
-def test_for_loop_noncompound_step_does_not_unroll(tmp_path: Path) -> None:
-    """``for (i = 0; i < 4; i = i + 1)`` — the step is a plain (non-
-    compound) assignment, which ``_emit_for_loop`` doesn't model, so the
-    loop body isn't unrolled (no flops emitted)."""
+def test_for_loop_noncompound_step_unrolls(tmp_path: Path) -> None:
+    """``for (i = 0; i < 4; i = i + 1)`` — the Verilog-2001 step form
+    unrolls like ``i++`` (rtl-buddy-cdc#377; the loop used to be skipped
+    without a word)."""
     src = """
     module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
         logic [3:0] mem [4];
@@ -923,9 +922,7 @@ def test_for_loop_noncompound_step_does_not_unroll(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _no_loop_unroll_flops(mod), (
-        f"a non-compound step must not unroll; got {_cell_types(mod)}"
-    )
+    assert not _no_loop_unroll_flops(mod)
 
 
 def test_for_loop_self_referential_step_does_not_unroll(tmp_path: Path) -> None:

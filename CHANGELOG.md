@@ -414,6 +414,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     path used to read the register `t` there (with a warning since
     rtl-buddy-cdc#345), which added a flop stage the hardware does not
     have, so `s1 = x; q = s1;` counted as a two-flop synchroniser.
+  - `for` loops in combinational blocks and functions are unrolled (they
+    were skipped), and so is the Verilog-2001 loop everywhere: a loop
+    variable declared outside the loop (`integer i; for (i = 0; …)`)
+    and stepped `i = i + 1` / `i = i - 1`. A loop whose trip count is
+    not known at elaboration time is reported. The loop variable read as
+    a value is its iteration's constant.
+  - Statements the walkers have no lowering for (a `while` / `repeat` /
+    `foreach` loop, a task call, `disable`, …) are reported in clocked
+    and combinational blocks instead of being skipped; system tasks such
+    as `$display` and assertions carry no logic and stay silent. `n++` /
+    `--n` statements and compound assignments (`n += 1`, whose target
+    read as an opaque value) lower like `n = n + 1`; a block-local
+    declaration's initialiser is its first value.
+  - `always_latch` goes through the same lowering as `always @*`: any
+    body shape becomes one latch per held variable (an `else` arm, a
+    `case`, several writes in an arm were skipped or, for the `else`,
+    ignored), and a body that holds nothing infers no latch.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,

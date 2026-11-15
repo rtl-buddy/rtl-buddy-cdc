@@ -630,10 +630,9 @@ def test_nonblocking_latch_body_is_a_latch(tmp_path: Path) -> None:
     assert _cell_types(mod).count("$dlatch") == 1
 
 
-def test_no_conditional_latch_body_drops_latch(tmp_path: Path) -> None:
-    """An ``always_latch`` body with no ``if`` (a bare ``q = d;``) isn't
-    the single-arm-implicit-hold shape, so the walker returns without
-    emitting a ``$dlatch``."""
+def test_no_conditional_latch_body_infers_no_latch(tmp_path: Path) -> None:
+    """An ``always_latch`` body with no ``if`` (a bare ``q = d;``) holds
+    nothing: no ``$dlatch``, ``q`` is ``d`` (as on the Yosys path)."""
     src = """
     module m (input logic d, output logic q);
         always_latch begin
@@ -642,15 +641,14 @@ def test_no_conditional_latch_body_drops_latch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$dlatch" not in _cell_types(mod), (
-        f"latch body with no if-guard isn't a clean $dlatch shape; got {_cell_types(mod)}"
-    )
+    assert "$dlatch" not in _cell_types(mod)
+    assert mod.ports["q"].bits == mod.ports["d"].bits
 
 
-def test_multistatement_latch_arm_drops_latch(tmp_path: Path) -> None:
-    """``if (en) begin q = a; r = b; end`` — the ifTrue arm is a multi-
-    statement block, not a single ``ExpressionStatement``, so
-    :meth:`_walk_latch_statement` bails and emits no ``$dlatch``."""
+def test_multistatement_latch_arm_emits_two_latches(tmp_path: Path) -> None:
+    """``if (en) begin q = a; r = b; end`` — a multi-statement arm: one
+    ``$dlatch`` per variable, both enabled by ``en`` (rtl-buddy-cdc#377;
+    the block used to be skipped silently)."""
     src = """
     module m (input logic en, a, b, output logic q, r);
         always_latch begin
@@ -659,15 +657,18 @@ def test_multistatement_latch_arm_drops_latch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$dlatch" not in _cell_types(mod), (
-        f"multi-statement latch arm isn't the single-arm shape; got {_cell_types(mod)}"
-    )
+    latches = [c for c in mod.cells.values() if c.type == "$dlatch"]
+    assert {c.connections["D"] for c in latches} == {
+        mod.ports["a"].bits,
+        mod.ports["b"].bits,
+    }
+    assert {c.connections["EN"] for c in latches} == {mod.ports["en"].bits}
 
 
-def test_latch_with_else_still_emits_single_dlatch(tmp_path: Path) -> None:
-    """``if (en) q = a; else q = b;`` — the explicit ``else`` is ignored
-    (it would break single-arm implicit-hold semantics), but the ifTrue
-    arm still produces exactly one ``$dlatch`` whose D reads ``a``."""
+def test_latch_with_else_is_combinational(tmp_path: Path) -> None:
+    """``if (en) q = a; else q = b;`` assigns ``q`` on every path: no
+    latch, a ``$mux`` (as on the Yosys path; rtl-buddy-cdc#377 — the
+    ``else`` arm used to be ignored and a latch on ``a`` emitted)."""
     src = """
     module m (input logic en, a, b, output logic q);
         always_latch begin
@@ -677,16 +678,10 @@ def test_latch_with_else_still_emits_single_dlatch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    latches = [c for c in mod.cells.values() if c.type == "$dlatch"]
-    assert len(latches) == 1, (
-        f"latch-with-else should still emit one $dlatch from the ifTrue arm; "
-        f"got {_cell_types(mod)}"
-    )
-    a_bit = mod.ports["a"].bits[0]
-    assert latches[0].connections["D"] == (a_bit,), (
-        f"the $dlatch D should read the ifTrue value a (else ignored); "
-        f"got {latches[0].connections['D']}"
-    )
+    assert "$dlatch" not in _cell_types(mod)
+    (mux,) = [c for c in mod.cells.values() if c.type == "$mux"]
+    assert mux.connections["S"] == mod.ports["en"].bits
+    assert mod.ports["q"].bits == mux.connections["Y"]
 
 
 def test_nonblocking_assign_in_always_comb_is_lowered(tmp_path: Path) -> None:

@@ -735,3 +735,156 @@ endmodule
     lanes = _flop_lanes(module)
     assert ("q[0]", "a[0]", "clk[0]", 1) in lanes
     assert ("r[0]", "b[0]", "clk[0]", 1) in lanes
+
+
+# --- 6. loops and other statements ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        # gray -> binary, Verilog-2001 loop variable and step.
+        "integer i; always @* for (i = 0; i <= 3; i = i + 1) y[i] = ^(g >> i);",
+        "always_comb for (int i = 0; i < 4; i++) y[i] = g[3 - i];",
+        "always_comb begin y = 4'd0; for (int i = 3; i >= 0; i -= 1)"
+        " y = y ^ (g >> i); end",
+    ],
+    ids=["v2001_comb", "sv_comb", "compound_step"],
+)
+def test_loops_unroll(tmp_path: Path, caplog, block: str) -> None:
+    """A ``for`` loop in a combinational block, and a clocked one whose
+    variable is declared outside the loop or stepped as ``i = i - 1``,
+    used to be skipped without a word."""
+    src = f"""module m (input clk, input [3:0] g, output reg [3:0] q);
+    reg [3:0] y;
+    {block}
+    always @(posedge clk) q <= y;
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert not _warnings(caplog)
+    assert not _cells(module, "$_UNKNOWN_")
+    (q_flop,) = _flops(module)
+    driven = {b for c in module.cells.values() for b in c.connections.get("Y", ())}
+    assert set(q_flop.connections["D"]) <= driven | set(module.ports["g"].bits)
+    _agree_with_yosys(tmp_path, src, module)
+
+
+def test_loop_variable_read_as_a_value(tmp_path: Path) -> None:
+    """The loop variable read as a value is its iteration's constant (it
+    read as an undriven variable)."""
+    src = """module m (output logic [3:0] y);
+    always_comb begin y = 4'd0; for (int i = 1; i < 3; i++) y = y + i; end
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    adds = _cells(module, "$add")
+    assert [c.connections["B"][:2] for c in adds] == [("1", "0"), ("0", "1")]
+
+
+def test_function_with_loop_inlines(tmp_path: Path) -> None:
+    """The corpus' ``gray2bin()``: a function whose body is a loop."""
+    src = """module m (input clk, input [3:0] g, output reg [3:0] q);
+    function [3:0] gray2bin(input [3:0] x);
+        integer i;
+        for (i = 0; i <= 3; i = i + 1) gray2bin[i] = ^(x >> i);
+    endfunction
+    always @(posedge clk) q <= gray2bin(g);
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert not _cells(module, "$_UNKNOWN_")
+    assert len(_cells(module, "$reduce_xor")) == 4
+    _agree_with_yosys(tmp_path, src, module)
+
+
+@pytest.mark.parametrize(
+    ("body", "needle"),
+    [
+        ("for (int i = 0; i < n; i++) q[i] = a;", "`for` loop not lowered"),
+        ("while (n[0]) q = a;", "`WhileLoopStatement` is not modelled"),
+        ("repeat (2) q = a;", "`RepeatLoopStatement` is not modelled"),
+        ("t(q);", "`ExpressionStatement` is not modelled"),
+    ],
+    ids=["runtime_bound", "while", "repeat", "task_call"],
+)
+@pytest.mark.parametrize("kw", ["always_comb", "always_ff @(posedge clk)"])
+def test_unmodelled_statements_warn(
+    tmp_path: Path, caplog, body: str, needle: str, kw: str
+) -> None:
+    src = f"""module m (input clk, input [1:0] n, input a, output logic [3:0] q);
+    task automatic t(output logic [3:0] o); o = 4'd1; endtask
+    {kw} begin {body} end
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        _slang(tmp_path, src)
+    assert any(needle in m for m in _warnings(caplog)), _warnings(caplog)
+
+
+def test_system_tasks_and_assertions_are_silent(tmp_path: Path, caplog) -> None:
+    src = """module m (input clk, input a, output logic q);
+    always_ff @(posedge clk) begin
+        $display("a=%b", a);
+        assert (a == a);
+        q <= a;
+    end
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert not _warnings(caplog)
+    assert ("q[0]", "a[0]", "clk[0]", 1) in _flop_lanes(module)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "begin n++; q <= n; end",
+        "begin n += 2'd1; q <= n; end",
+        "begin n <= n - 2'd1; --n; q <= n; end",
+    ],
+    ids=["incr", "compound", "decr"],
+)
+def test_increments_and_compound_assignments(tmp_path: Path, caplog, body: str) -> None:
+    """``n++`` / ``--n`` statements were skipped; ``n += 1`` read an
+    opaque value for its own target."""
+    src = f"""module m (input clk, output reg [1:0] q);
+    reg [1:0] n;
+    always @(posedge clk) {body}
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert not _warnings(caplog)
+    assert not _cells(module, "$_UNKNOWN_")
+    (n_flop,) = [
+        c for c in _flops(module) if c.connections["Q"] == module.netnames["n"].bits
+    ]
+    assert n_flop.connections["D"] != n_flop.connections["Q"]
+    _agree_with_yosys(tmp_path, src, module)
+
+
+@pytest.mark.parametrize(
+    ("body", "latched"),
+    [
+        ("if (en) q = a; else q = b;", set()),
+        ("if (en) begin q = a; r = b; end", {"q[0]", "r[0]"}),
+        ("case (s) 2'd0: q = a; 2'd1: r = b; endcase", {"q[0]", "r[0]"}),
+    ],
+    ids=["else", "two_writes", "case"],
+)
+def test_always_latch_shapes(tmp_path: Path, body: str, latched: set[str]) -> None:
+    """``always_latch`` bodies beyond the single ``if (en) q = d;`` were
+    skipped silently (or, with an ``else``, half-lowered)."""
+    src = f"""module m (input en, input [1:0] s, input a, input b, output logic q,
+          output logic r);
+    always_latch begin {body} end
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert set(_latches(module)) == latched
+    if _HAVE_YOSYS and latched:
+        # (Yosys rejects an ``always_latch`` that infers no latch.)
+        assert _latches(module) == _latches(_yosys(tmp_path, src))

@@ -498,6 +498,33 @@ def _literal_base_binary() -> Any:
     return pyslang.LiteralBase.Binary
 
 
+class _Bits:
+    """An already-lowered right-hand side, standing in for an expression
+    (see :class:`_Assign`); ``syntax`` / ``sourceRange`` are the source
+    construct's, for diagnostics."""
+
+    def __init__(self, bits: tuple[Bit, ...], node: Any) -> None:
+        self.bits = bits
+        self.type = None
+        self.syntax = getattr(node, "syntax", None)
+        self.sourceRange = getattr(node, "sourceRange", None)
+
+
+class _Assign:
+    """A write the procedural walkers lower like a blocking
+    ``AssignmentExpression``: ``n++`` / ``n--`` as ``n = n ± 1``
+    (rtl-buddy-cdc#377)."""
+
+    isNonBlocking = False
+    isCompound = False
+
+    def __init__(self, left: Any, right: _Bits, node: Any) -> None:
+        self.left = left
+        self.right = right
+        self.syntax = getattr(node, "syntax", None)
+        self.sourceRange = getattr(node, "sourceRange", None)
+
+
 class _ModuleBuilder:
     """Translate a pyslang elaborated :class:`InstanceSymbol` into a
     :class:`netlist.Module`.
@@ -616,6 +643,10 @@ class _ModuleBuilder:
         # not add to.
         self._inline_depth = 0
         self._inline_returns: list[Any] = []
+        # Target of each compound assignment (``x += 1``) whose right-hand
+        # side is being lowered: what its ``LValueReferenceExpression``
+        # reads.
+        self._compound_lhs: list[Any] = []
         self._lowering_failures = 0
         self._branch_muxes: dict[
             tuple[Bit, ...], tuple[Bit, tuple[Bit, ...], tuple[Bit, ...]]
@@ -1341,14 +1372,6 @@ class _ModuleBuilder:
                     block_reset_active_low,
                     src_node,
                 )
-            elif self._kind_name(inner) == "ExpressionStatement":
-                self._emit_assignment_expression(
-                    inner.expr,
-                    clk_sym,
-                    reset_sym=None,
-                    reset_active_low=False,
-                    src_node=src_node,
-                )
             else:
                 # Body isn't a single conditional or expression — defer
                 # to the general statement walker. Reached for no-reset
@@ -1486,24 +1509,6 @@ class _ModuleBuilder:
         if edges <= {"None_", "None"}:
             return "level"
         return None
-
-    def _lvalue_symbols(self, expr: Any) -> list[Any]:
-        """Root variable symbols an assignment target writes."""
-        kind = type(expr).__name__
-        if kind == "NamedValueExpression":
-            return [self._canonical_var(expr.symbol)]
-        if kind in {
-            "ElementSelectExpression",
-            "RangeSelectExpression",
-            "MemberAccessExpression",
-        }:
-            return self._lvalue_symbols(getattr(expr, "value", None))
-        if kind == "ConcatenationExpression":
-            out: list[Any] = []
-            for op in getattr(expr, "operands", []) or []:
-                out.extend(self._lvalue_symbols(op))
-            return out
-        return []
 
     def _collect_reset_assignments(self, stmt: Any) -> None:
         """Walk an ``always_ff`` reset arm (``if (!rst_n) <stmt>``) and
@@ -1767,8 +1772,12 @@ class _ModuleBuilder:
             )
             return
         if kind == "ExpressionStatement":
+            write = self._as_assignment(statement.expr)
+            if write is None:
+                self._other_statement(statement, "clocked block")
+                return
             self._emit_assignment_expression(
-                statement.expr,
+                write,
                 clk_sym,
                 reset_sym,
                 reset_active_low,
@@ -1856,15 +1865,12 @@ class _ModuleBuilder:
             )
             return
         if kind == "VariableDeclStatement":
-            # Loop variable declarations are emitted as siblings of the
-            # ForLoopStatement (``for (int i = ...; ...; ...)``). They
-            # contribute no flops; the loopvar's initial value is
-            # already on its VariableSymbol's ``.initializer``.
+            # A block-local declaration (``for (int i = ...)`` emits its
+            # loop variable as one too): its initialiser is its first
+            # value, visible to the rest of the block.
+            self._declare_local(statement, clocked=True)
             return
-        # Other statement kinds (function/task call, immediate assert,
-        # event, timing control inside always_ff — atypical) fall
-        # through silently; the missing flops surface in analyze
-        # output and we file the next gap when it bites a real design.
+        self._other_statement(statement, "clocked block")
 
     def _emit_case_statement(
         self,
@@ -2026,94 +2032,93 @@ class _ModuleBuilder:
         reset_active_low: bool,
         src_node: Any,
     ) -> None:
-        """Virtually unroll a procedural ``for`` loop with compile-time
-        constant bounds and walk the body once per iteration with the
-        loop variable bound to the iteration value.
+        """Virtually unroll a procedural ``for`` loop in a clocked block
+        (see :meth:`_for_loop_iterations`) and walk the body once per
+        iteration with the loop variable bound to the iteration value."""
 
-        Yosys' frontend unrolls these in elaboration; we have to do
-        the same so element selects in the body (``chain[i]`` /
-        ``chain[i-1]``) fold to per-iteration bits. Loops whose bounds
-        can't be folded — runtime stop expression, non-trivial step,
-        multi-variable header — fall through with no emit, matching
-        the existing walker's "skip on unrecognised shape" policy.
+        def walk(body: Any) -> None:
+            self._emit_assignments_in(
+                body, clk_sym, reset_sym, reset_active_low, src_node
+            )
 
-        Hard iteration cap (1024) is defensive against pathological
-        SV that would otherwise spin the unroller.
+        self._unroll_for(stmt, walk)
+
+    def _unroll_for(self, stmt: Any, walk: Any) -> None:
+        """Walk ``stmt``'s body once per iteration (``walk(body)``) with the
+        loop variable bound in :attr:`_loop_bindings`, so element selects
+        like ``chain[i]`` / ``chain[i-1]`` fold to per-iteration bits, as
+        Yosys' frontend unrolls them. A loop whose trip count is not known
+        at elaboration time is reported, never skipped silently
+        (rtl-buddy-cdc#377)."""
+        header = self._for_loop_iterations(stmt)
+        if header is None:
+            self._warn_dropped(
+                stmt,
+                "bounds, step or loop variable are not constant",
+                "`for` loop",
+            )
+            return
+        loopvar, values = header
+        for v in values:
+            prev = self._loop_bindings.pop(loopvar, _SENTINEL)
+            self._loop_bindings[loopvar] = v
+            try:
+                walk(getattr(stmt, "body", None))
+            finally:
+                if prev is _SENTINEL:
+                    self._loop_bindings.pop(loopvar, None)
+                else:
+                    self._loop_bindings[loopvar] = prev
+
+    _ITER_CAP = 1024
+
+    def _for_loop_iterations(self, stmt: Any) -> tuple[Any, list[int]] | None:
+        """``(loop variable, iteration values)`` of a ``for`` loop with one
+        loop variable, a constant start, a ``var <op> const`` stop
+        condition and a constant step (``i++`` / ``i--``, ``i += N`` /
+        ``i -= N``, ``i = i + N`` / ``i = i - N``); ``None`` otherwise.
+
+        The variable may be declared in the header (``for (int i = 0;
+        …)``) or outside it (``integer i; for (i = 0; …)``, the
+        Verilog-2001 form). At most :data:`_ITER_CAP` iterations, a guard
+        against pathological source.
         """
         loop_vars = list(getattr(stmt, "loopVars", []) or [])
-        if len(loop_vars) != 1:
-            return
-        loopvar = loop_vars[0]
-        init_expr = getattr(loopvar, "initializer", None)
-        start = self._const_int(init_expr)
+        if len(loop_vars) == 1:
+            loopvar = loop_vars[0]
+            start = self._const_int(getattr(loopvar, "initializer", None))
+        elif not loop_vars:
+            inits = list(getattr(stmt, "initializers", []) or [])
+            if len(inits) != 1 or type(inits[0]).__name__ != "AssignmentExpression":
+                return None
+            target = inits[0].left
+            if type(target).__name__ != "NamedValueExpression":
+                return None
+            loopvar = target.symbol
+            start = self._const_int(inits[0].right)
+        else:
+            return None
         if start is None:
-            return
+            return None
 
         stop_expr = getattr(stmt, "stopExpr", None)
         if stop_expr is None or type(stop_expr).__name__ != "BinaryExpression":
-            return
+            return None
         stop_op = str(getattr(stop_expr, "op", "")).rsplit(".", 1)[-1]
-        left = getattr(stop_expr, "left", None)
-        if (
-            type(left).__name__ != "NamedValueExpression"
-            or getattr(left, "symbol", None) is not loopvar
-        ):
-            return
+        if self._loop_var_of(getattr(stop_expr, "left", None)) is not loopvar:
+            return None
         stop_val = self._const_int(getattr(stop_expr, "right", None))
         if stop_val is None:
-            return
+            return None
 
         steps = list(getattr(stmt, "steps", []) or [])
         if len(steps) != 1:
-            return
-        step_expr = steps[0]
-        step_kind = type(step_expr).__name__
-        step_amount: int | None = None
-        if step_kind == "UnaryExpression":
-            op_name = str(getattr(step_expr, "op", "")).rsplit(".", 1)[-1]
-            if op_name in ("Postincrement", "Preincrement"):
-                step_amount = 1
-            elif op_name in ("Postdecrement", "Predecrement"):
-                step_amount = -1
-        elif step_kind == "AssignmentExpression":
-            # ``i += N`` / ``i -= N`` is the only compound shape we
-            # support; pyslang desugars these to ``i = i op N`` and
-            # stores the RHS as a BinaryExpression whose ``.left`` is
-            # an ``LValueReferenceExpression`` (the read of ``i`` on
-            # the right of the assignment) and whose ``.right`` is the
-            # step constant. ``_const_int`` returns None on the
-            # LValueReferenceExpression (it's not a NamedValueExpression
-            # so the loop-binding lookup misses), which is what lets us
-            # tell which operand is the constant.
-            if not getattr(step_expr, "isCompound", False):
-                return
-            desugared = getattr(step_expr, "right", None)
-            if desugared is None or type(desugared).__name__ != "BinaryExpression":
-                return
-            left_const = self._const_int(getattr(desugared, "left", None))
-            right_const = self._const_int(getattr(desugared, "right", None))
-            if left_const is None and right_const is not None:
-                step_const = right_const
-                lvalue_on_left = True
-            elif right_const is None and left_const is not None:
-                step_const = left_const
-                lvalue_on_left = False
-            else:
-                return
-            bin_op = str(getattr(desugared, "op", "")).rsplit(".", 1)[-1]
-            if bin_op == "Add":
-                step_amount = step_const
-            elif bin_op == "Subtract" and lvalue_on_left:
-                # ``i = i - N`` → i decreases by N
-                step_amount = -step_const
-            # Other compound shapes (``*=``, ``/=``, …) intentionally
-            # fall through; they don't produce constant trip counts.
+            return None
+        step_amount = self._loop_step(steps[0], loopvar)
         if step_amount is None or step_amount == 0:
-            return
+            return None
 
-        ITER_CAP = 1024
-
-        def _still_iterating(v: int) -> bool:
+        def still_iterating(v: int) -> bool:
             if stop_op == "LessThan":
                 return v < stop_val
             if stop_op == "LessThanEqual":
@@ -2126,26 +2131,77 @@ class _ModuleBuilder:
                 return v != stop_val
             return False
 
+        values: list[int] = []
         v = start
-        count = 0
-        while _still_iterating(v) and count < ITER_CAP:
-            prev = self._loop_bindings.pop(loopvar, _SENTINEL)
-            self._loop_bindings[loopvar] = v
-            try:
-                self._emit_assignments_in(
-                    getattr(stmt, "body", None),
-                    clk_sym,
-                    reset_sym,
-                    reset_active_low,
-                    src_node,
-                )
-            finally:
-                if prev is _SENTINEL:
-                    self._loop_bindings.pop(loopvar, None)
-                else:
-                    self._loop_bindings[loopvar] = prev
+        while still_iterating(v) and len(values) < self._ITER_CAP:
+            values.append(v)
             v += step_amount
-            count += 1
+        return loopvar, values
+
+    @staticmethod
+    def _loop_var_of(expr: Any) -> Any | None:
+        """The variable a (possibly implicitly converted) name refers to."""
+        while type(expr).__name__ == "ConversionExpression":
+            expr = getattr(expr, "operand", None)
+        if type(expr).__name__ in {"NamedValueExpression", "LValueReferenceExpression"}:
+            return getattr(expr, "symbol", None)
+        return None
+
+    def _loop_step(self, step_expr: Any, loopvar: Any) -> int | None:
+        """The constant increment of a ``for`` loop step expression."""
+        step_kind = type(step_expr).__name__
+        if step_kind == "UnaryExpression":
+            op_name = str(getattr(step_expr, "op", "")).rsplit(".", 1)[-1]
+            if op_name in ("Postincrement", "Preincrement"):
+                return 1
+            if op_name in ("Postdecrement", "Predecrement"):
+                return -1
+            return None
+        if step_kind != "AssignmentExpression":
+            return None
+        if self._loop_var_of(getattr(step_expr, "left", None)) is not loopvar:
+            return None
+        # ``i += N`` desugars to ``i = <lvalue ref> + N``; ``i = i + N`` is
+        # written out. Either way the right-hand side is a binary operator
+        # with the loop variable on one side and a constant on the other.
+        desugared: Any = getattr(step_expr, "right", None)
+        while type(desugared).__name__ == "ConversionExpression":
+            desugared = getattr(desugared, "operand", None)
+        if type(desugared).__name__ != "BinaryExpression":
+            return None
+        left, right = desugared.left, desugared.right
+        bin_op = str(getattr(desugared, "op", "")).rsplit(".", 1)[-1]
+        if self._is_loop_var_ref(left, loopvar):
+            step_const = self._const_int_unbound(right, loopvar)
+            if step_const is None:
+                return None
+            if bin_op == "Add":
+                return step_const
+            if bin_op == "Subtract":
+                return -step_const
+            return None
+        if self._is_loop_var_ref(right, loopvar) and bin_op == "Add":
+            return self._const_int_unbound(left, loopvar)
+        return None
+
+    def _is_loop_var_ref(self, expr: Any, loopvar: Any) -> bool:
+        """``expr`` reads the loop variable (or is the compound-assignment
+        reference to the target, which is the loop variable)."""
+        while type(expr).__name__ == "ConversionExpression":
+            expr = getattr(expr, "operand", None)
+        if type(expr).__name__ == "LValueReferenceExpression":
+            return True
+        return self._loop_var_of(expr) is loopvar
+
+    def _const_int_unbound(self, expr: Any, loopvar: Any) -> int | None:
+        """:meth:`_const_int` with ``loopvar`` unbound (its iteration value
+        must not leak into a step constant)."""
+        prev = self._loop_bindings.pop(loopvar, _SENTINEL)
+        try:
+            return self._const_int(expr)
+        finally:
+            if prev is not _SENTINEL:
+                self._loop_bindings[loopvar] = prev
 
     def _emit_assignment_expression(
         self,
@@ -2166,8 +2222,14 @@ class _ModuleBuilder:
         pre-deferred-emission walker but only ``src_node`` is read.
         """
         del reset_sym, reset_active_low  # captured at block level
-        if type(expr).__name__ != "AssignmentExpression":
-            return
+        self._compound_lhs.append(expr.left)
+        try:
+            self._clocked_write(expr, clk_sym, src_node)
+        finally:
+            self._compound_lhs.pop()
+
+    def _clocked_write(self, expr: Any, clk_sym: Any, src_node: Any) -> None:
+        """:meth:`_emit_assignment_expression` for one write."""
         lhs = expr.left
         rhs = expr.right
         # ``mem[addr] <= data`` with a run-time ``addr`` is a memory
@@ -3081,6 +3143,11 @@ class _ModuleBuilder:
         """
         kind = type(expr).__name__
         if kind == "NamedValueExpression":
+            if expr.symbol in self._loop_bindings:
+                # An unrolled loop's variable read as a value.
+                value = self._loop_bindings[expr.symbol]
+                width = self._expr_width(expr) or 32
+                return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
             if self._kind_name(expr.symbol) in self._CONSTANT_SYMBOLS:
                 # A parameter / enum value is its value, not a net
                 # (rtl-buddy-cdc#377: it read as an undriven placeholder).
@@ -3119,6 +3186,13 @@ class _ModuleBuilder:
             return self._lower_replication(expr)
         if kind == "CallExpression":
             return self._lower_call(expr)
+        if kind == "_Bits":
+            return expr.bits
+        if kind == "LValueReferenceExpression":
+            # ``x += 1`` reads its own target (rtl-buddy-cdc#377).
+            if self._compound_lhs:
+                return self._bits_of_expression(self._compound_lhs[-1])
+            return None
         # Anything else slang folded at elaboration time (``$bits(x)``, …).
         return self._constant_bits(expr)
 
@@ -3725,70 +3799,20 @@ class _ModuleBuilder:
     # -- always_latch ---------------------------------------------------
 
     def _emit_always_latch(self, block: Any) -> None:
-        """Walk an ``always_latch`` body and emit a ``$dlatch`` cell
-        for each ``if (en) lhs = rhs;`` single-arm shape.
+        """Lower an ``always_latch`` block like any level-sensitive body
+        (:meth:`_lower_comb_body`): each variable held on some path is a
+        ``$dlatch`` loading its value under the condition it is written.
 
-        Issue #39: pre-fix the slang frontend silently dropped every
-        ``always_latch`` block, so the ICG enable-latch in the
-        ``clock_gating`` fixture (and any other legitimate latch) had
-        no driver in the resulting netlist. The latch is intentionally
-        outside ``flops.FF_CELL_TYPES`` — latches don't bound clock
-        domains and stay transparent to ``find_crossings``; making
-        them visible is purely about netlist completeness so the rule
-        pack and any future latch-aware rule see them.
-
-        Only the single-arm ``if (cond) lhs = rhs;`` shape is
-        modelled (the canonical pattern Yosys's ``proc_dlatch``
-        infers). Multi-arm if/else, case, and explicit-`else` shapes
-        fall through silently — they don't synthesise to a clean
-        ``$dlatch`` either, so leaving them unmodelled mirrors the
-        Yosys frontend's behaviour. ``$adlatch`` (latch with async
-        reset) is explicitly out of scope per #39.
+        Issue #39 first lowered the single-arm ``if (en) q = d;`` shape;
+        every other body (an ``else`` arm, a ``case``, several statements
+        in the arm) was skipped silently, until rtl-buddy-cdc#377 routed
+        the block through the general lowering. The latch stays outside
+        ``flops.FF_CELL_TYPES``: it does not bound a clock domain and is
+        transparent to ``find_crossings``. ``$adlatch`` (async reset) is
+        not modelled. A body that assigns every variable on every path
+        infers no latch, as on the Yosys path.
         """
-        self._walk_latch_statement(block.body)
-
-    def _walk_latch_statement(self, stmt: Any) -> None:
-        if stmt is None:
-            return
-        kind = self._kind_name(stmt)
-        if kind == "BlockStatement":
-            self._walk_latch_statement(stmt.body)
-            return
-        if kind in {"StatementList", "ListStatement"}:
-            for s in getattr(stmt, "list", []) or []:
-                self._walk_latch_statement(s)
-            return
-        if kind != "ConditionalStatement":
-            return
-        en_bit = self._condition_bit(stmt)
-        # Drill through the optional BlockStatement on the ifTrue arm.
-        arm = stmt.ifTrue
-        while arm is not None and self._kind_name(arm) == "BlockStatement":
-            arm = arm.body
-        if arm is None or self._kind_name(arm) != "ExpressionStatement":
-            return
-        expr = arm.expr
-        if type(expr).__name__ != "AssignmentExpression":
-            return
-        if type(expr.left).__name__ == "ConcatenationExpression":
-            writes = self._concat_writes(expr.left, expr.right)
-            if writes is None:
-                self._warn_lvalue_dropped(expr, expr.left)
-                return
-            for q_part, d_part in writes:
-                self._emit_dlatch_cell(en_bit, q_part, d_part, src_node=stmt)
-            return
-        q_bits = self._lvalue_bits(expr.left)
-        if q_bits is None:
-            self._warn_lvalue_dropped(expr, expr.left)
-            return
-        d_bits = self._rhs_bits(expr.right, len(q_bits))
-        self._emit_dlatch_cell(en_bit, q_bits, d_bits, src_node=stmt)
-        # An explicit ``else`` would write a second value and break
-        # the single-arm-implicit-hold semantics — uncommon, and Yosys
-        # ``proc_dlatch`` doesn't infer a clean ``$dlatch`` for it
-        # either. Conservative skip; the analyzer surfaces the
-        # missing driver if it bites.
+        self._lower_comb_body(block.body, block)
 
     def _emit_dlatch_cell(
         self,
@@ -4060,7 +4084,11 @@ class _ModuleBuilder:
                 self._walk_comb_statement(s)
             return
         if kind == "ExpressionStatement":
-            self._alias_assign(stmt.expr)
+            write = self._as_assignment(stmt.expr)
+            if write is None:
+                self._other_statement(stmt, "combinational block")
+                return
+            self._alias_assign(write)
             return
         if kind == "ConditionalStatement":
             self._walk_conditional_statement(stmt)
@@ -4082,10 +4110,83 @@ class _ModuleBuilder:
             else:
                 self._var_bits[ret] = bits
             return
-        if kind in {"EmptyStatement", "VariableDeclStatement"}:
+        if kind == "ForLoopStatement":
+            self._unroll_for(stmt, self._walk_comb_statement)
             return
-        # for/while loops etc. → ignore for now.
-        self._lowering_failures += 1
+        if kind == "VariableDeclStatement":
+            self._declare_local(stmt, clocked=False)
+            return
+        self._other_statement(stmt, "combinational block")
+
+    # Statements with no logic of their own: skipped without a word.
+    _NO_LOGIC_STATEMENTS = frozenset(
+        {
+            "EmptyStatement",
+            "ImmediateAssertionStatement",
+            "ConcurrentAssertionStatement",
+            "ProceduralCheckerStatement",
+        }
+    )
+
+    def _other_statement(self, stmt: Any, where: str) -> None:
+        """A statement the procedural walkers have no dedicated lowering
+        for. Increments / decrements (``n++``) are writes; a system task
+        (``$display``) and an assertion have no logic; anything else (a
+        task call, a ``while`` / ``repeat`` / ``foreach`` loop, an event
+        control inside the body, ``disable``, …) is reported rather than
+        skipped silently (rtl-buddy-cdc#377)."""
+        kind = self._kind_name(stmt)
+        if kind in self._NO_LOGIC_STATEMENTS:
+            return
+        if kind == "ExpressionStatement":
+            expr = stmt.expr
+            if type(expr).__name__ == "CallExpression" and getattr(
+                expr, "isSystemCall", False
+            ):
+                return
+        self._warn_dropped(stmt, f"`{kind}` is not modelled in a {where}", "statement")
+
+    _STEP_OPS = {
+        "Postincrement": "$add",
+        "Preincrement": "$add",
+        "Postdecrement": "$sub",
+        "Predecrement": "$sub",
+    }
+
+    def _as_assignment(self, expr: Any) -> Any | None:
+        """``expr`` as a write the walkers lower: an assignment itself, an
+        ``n++`` / ``n--`` statement as ``n = n ± 1``, else ``None``."""
+        kind = type(expr).__name__
+        if kind == "AssignmentExpression":
+            return expr
+        if kind != "UnaryExpression":
+            return None
+        cell = self._STEP_OPS.get(str(getattr(expr, "op", "")).rsplit(".", 1)[-1])
+        if cell is None:
+            return None
+        operand = expr.operand
+        current = self._bits_of_expression(operand)
+        if not current:
+            return None
+        one: tuple[Bit, ...] = ("1",) + ("0",) * (len(current) - 1)
+        bits = self._emit_comb_cell(
+            cell, {"A": current, "B": one}, output_width=len(current), src_node=expr
+        )
+        return _Assign(operand, _Bits(bits, expr), expr)
+
+    def _declare_local(self, stmt: Any, *, clocked: bool) -> None:
+        """A block-local variable declaration: its initialiser, when it has
+        one, is its value for the rest of the block."""
+        sym = getattr(stmt, "symbol", None)
+        init = getattr(sym, "initializer", None)
+        if sym is None or init is None:
+            return
+        canonical = self._canonical_var(sym)
+        net = self._alloc_bits(sym)
+        value = self._rhs_bits(init, len(net))
+        if clocked:
+            self._blocking_nets.setdefault(canonical, net)
+        self._var_bits[canonical] = value
 
     def _walk_branches(self, arms: list[Any]) -> list[dict[Any, tuple[Bit, ...]]]:
         """Walk each statement of ``arms`` (``None`` for an empty arm) from
@@ -4226,8 +4327,14 @@ class _ModuleBuilder:
         """For a blocking assignment ``lhs = rhs``, rewrite ``lhs``'s
         bits to point at ``rhs``'s lowered bits — same aliasing trick
         the continuous-assign path uses."""
-        if type(expr).__name__ != "AssignmentExpression":
-            return
+        self._compound_lhs.append(expr.left)
+        try:
+            self._comb_write(expr)
+        finally:
+            self._compound_lhs.pop()
+
+    def _comb_write(self, expr: Any) -> None:
+        """:meth:`_alias_assign` for one write."""
         # A nonblocking write in a combinational block is a style
         # violation the language allows; Yosys lowers it like a blocking
         # one, and so does this frontend (rtl-buddy-cdc#377: it was
