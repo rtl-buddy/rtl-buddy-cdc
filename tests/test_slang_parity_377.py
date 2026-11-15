@@ -1099,3 +1099,25 @@ endmodule
             pos = [index]
         want = tuple("1" if k in pos else "0" for k in range(width))
         assert evaluate(index) == want, index
+
+
+# --- the corpus' remaining opaque right-hand sides --------------------------
+
+
+def test_constant_ternary_and_power_fold(tmp_path: Path, caplog) -> None:
+    """``EN ? bus[OFF +: W] : '0`` with the field disabled (the dead arm is
+    not even a valid select) and ``x * 2**N`` were opaque drivers on the
+    slang path (axis_async_fifo, ptp_clock_cdc); Yosys folds both."""
+    src = """module m #(parameter EN = 0, parameter OFF = 4) (input [3:0] a,
+          input signed [3:0] x, output [1:0] y, output signed [7:0] z);
+    assign y = EN ? a[OFF +: 2] : 2'b00;
+    assign z = x * 2**3;
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert not _warnings(caplog)
+    assert module.ports["y"].bits == ("0", "0")
+    (mul,) = _cells(module, "$mul")
+    assert mul.connections["B"][:4] == ("0", "0", "0", "1")
+    assert module.ports["z"].bits == mul.connections["Y"][:8]

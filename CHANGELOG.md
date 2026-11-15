@@ -450,6 +450,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     one (`$sub` cells, as Yosys emits), times the element width of a
     packed array. `logic [4:1] v` set the wrong bit and an ascending
     vector came out reversed.
+  - A conditional expression whose condition is known at elaboration
+    time lowers to its live arm (`EN ? bus[OFF +: W] : '0` with the
+    field disabled was an opaque driver), and `**` lowers (`$pow`; a
+    constant power such as `2**N` folds). With these the corpus designs
+    lower on the slang path with no warning, and `ptp_clock_cdc` has
+    the same 729 flop bits as on the Yosys path.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,

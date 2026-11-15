@@ -3216,6 +3216,8 @@ class _ModuleBuilder:
                 return left // right
             if op == "Mod" and right != 0:
                 return left % right
+            if op == "Power" and right >= 0:
+                return left**right
             return None
         if kind == "UnaryExpression":
             op = str(getattr(expr, "op", "")).rsplit(".", 1)[-1]
@@ -3547,6 +3549,7 @@ class _ModuleBuilder:
         "LogicalShiftRight": "$shr",
         "ArithmeticShiftLeft": "$sshl",
         "ArithmeticShiftRight": "$sshr",
+        "Power": "$pow",
     }
 
     _UNOP_CELL: dict[str, str] = {
@@ -3592,6 +3595,11 @@ class _ModuleBuilder:
                     a_bits, shift, width, left=(cell_type == "$shl")
                 )
         width = self._expr_width(expr)
+        if cell_type == "$pow":
+            # ``2**N`` of constants is a constant (Yosys folds it).
+            value = self._const_int(expr)
+            if value is not None and width:
+                return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
         return self._emit_comb_cell(
             cell_type, {"A": a_bits, "B": b_bits}, output_width=width, src_node=expr
         )
@@ -3656,6 +3664,12 @@ class _ModuleBuilder:
         conds = getattr(expr, "conditions", None)
         if not conds:
             return None
+        # A condition known at elaboration time picks its arm, as Yosys
+        # folds it: the dead arm may not even be a valid select (``EN ?
+        # bus[OFF +: W] : '0`` with the field disabled).
+        const = self._const_int(conds[0].expr) if len(conds) == 1 else None
+        if const is not None:
+            return self._bits_of_expression(expr.left if const else expr.right)
         sel_bits = self._bits_of_expression(conds[0].expr)
         # pyslang names the branches from source order: ``left`` is the
         # TRUE branch of ``s ? left : right``, ``right`` the FALSE one.

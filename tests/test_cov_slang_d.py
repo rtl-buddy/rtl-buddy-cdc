@@ -381,19 +381,30 @@ def test_const_int_unary_arithmetic_folds(op, operand, expected) -> None:
 # --- SV edge-case lowering: conservative ``return None`` legs --------------
 
 
-def test_power_operator_not_in_binop_table_is_unknown(tmp_path: Path) -> None:
-    """``**`` (Power) is outside ``_BINOP_CELL`` — ``_lower_binary``
-    returns ``None`` and the assign degrades to a ``$_UNKNOWN_``
-    driver rather than a wrong cell."""
+def test_operator_not_in_binop_table_is_unknown(tmp_path: Path) -> None:
+    """``==?`` (wildcard equality) is outside ``_BINOP_CELL`` —
+    ``_lower_binary`` returns ``None`` and the write degrades to a
+    ``$_UNKNOWN_`` driver rather than a wrong cell. (``**`` was the example
+    here until rtl-buddy-cdc#377 lowered it to ``$pow``.)"""
+    src = """
+    module m (input logic clk, input logic [3:0] a, b, output logic q);
+        always_ff @(posedge clk) q <= a ==? b;
+    endmodule
+    """
+    mod = _elaborate(tmp_path, src)
+    assert "$_UNKNOWN_" in _cell_types(mod), (
+        f"an unmodelled operator should degrade to an opaque driver; got {_cell_types(mod)}"
+    )
+
+
+def test_power_operator_lowers_to_pow(tmp_path: Path) -> None:
     src = """
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
         always_ff @(posedge clk) q <= a ** b;
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$_UNKNOWN_" in _cell_types(mod), (
-        f"the power operator should degrade to an opaque driver; got {_cell_types(mod)}"
-    )
+    assert "$pow" in _cell_types(mod) and "$_UNKNOWN_" not in _cell_types(mod)
 
 
 def test_binary_with_unmodelled_operand_is_unknown(tmp_path: Path) -> None:
