@@ -1030,3 +1030,72 @@ endmodule
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
         _slang(tmp_path, src)
     assert any("primitive instance not lowered" in m for m in _warnings(caplog))
+
+
+# --- 9. run-time index writes on any declared range ------------------------
+
+
+@pytest.mark.parametrize(
+    "decl",
+    ["logic [4:1] v", "logic [0:3] v", "logic [3:0] v", "logic [1:0][1:0] v"],
+    ids=["offset", "ascending", "zero_based", "packed_2d"],
+)
+def test_runtime_index_decoder_selects_the_declared_bit(
+    tmp_path: Path, decl: str
+) -> None:
+    """``v[i] = 1`` used ``i`` as the bit position whatever ``v``'s range:
+    ``logic [4:1] v`` set the wrong bit and an ascending range came out
+    reversed. Simulated here on the netlist for every index."""
+    elem = "2'b01" if "[1:0][1:0]" in decl else "1'b1"
+    src = f"""module m (input [1:0] i, output {decl});
+    always_comb begin v = '0; v[i] = {elem}; end
+endmodule
+"""
+    module = _slang(tmp_path, src)
+
+    def evaluate(index: int) -> tuple[str, ...]:
+        values: dict[Bit, int] = {
+            b: (index >> k) & 1 for k, b in enumerate(module.ports["i"].bits)
+        }
+        values.update({"0": 0, "1": 1})
+        cells = list(module.cells.values())
+        for _ in range(len(cells)):
+            for c in cells:
+                ins = {
+                    p: [values.get(b) for b in bits]
+                    for p, bits in c.connections.items()
+                    if p != "Y"
+                }
+                if any(x is None for bits in ins.values() for x in bits):
+                    continue
+                num = {
+                    p: sum(x << k for k, x in enumerate(bits))
+                    for p, bits in ins.items()
+                }
+                y = c.connections["Y"]
+                mask = (1 << len(y)) - 1
+                if c.type == "$sub":
+                    r = num["A"] - num["B"]
+                elif c.type == "$mul":
+                    r = num["A"] * num["B"]
+                elif c.type == "$shl":
+                    r = num["A"] << num["B"]
+                else:
+                    raise AssertionError(c.type)
+                for k, b in enumerate(y):
+                    values[b] = ((r & mask) >> k) & 1
+        return tuple(str(values[b]) for b in module.ports["v"].bits)
+
+    width = len(module.ports["v"].bits)
+    for index in range(4):
+        # Expected LSB-first bits of v after v[index] = elem, by the LRM.
+        if "[4:1]" in decl:
+            pos = [index - 1] if 1 <= index <= 4 else []
+        elif "[0:3]" in decl:
+            pos = [3 - index]
+        elif "[1:0][1:0]" in decl:
+            pos = [2 * index] if index < 2 else []
+        else:
+            pos = [index]
+        want = tuple("1" if k in pos else "0" for k in range(width))
+        assert evaluate(index) == want, index

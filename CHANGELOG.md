@@ -444,6 +444,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     rejects primitive arrays). They were reported but not lowered since
     rtl-buddy-cdc#353; tristate gates, switches, pulls and user-defined
     primitives are still reported.
+  - A run-time-indexed bit write in a combinational block (the `v[i] =
+    1` decoder) shifts by the bit position the index selects, not by the
+    raw index: `i - lo` for a `[hi:lo]` range, `hi - i` for an ascending
+    one (`$sub` cells, as Yosys emits), times the element width of a
+    packed array. `logic [4:1] v` set the wrong bit and an ascending
+    vector came out reversed.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,

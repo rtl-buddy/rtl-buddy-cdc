@@ -4510,6 +4510,11 @@ class _ModuleBuilder:
         idx_bits = self._bits_of_expression(selector)
         if idx_bits is None:
             return False
+        shift_bits = self._index_shift_bits(
+            getattr(base, "type", None) or getattr(base_sym, "type", None),
+            idx_bits,
+            lhs,
+        )
 
         rhs_bits = self._bits_of_expression(rhs) or self._opaque(
             rhs, self._expr_width(rhs), "right-hand side"
@@ -4520,7 +4525,7 @@ class _ModuleBuilder:
         a_bits = a_bits[:width]
         shl_y = self._emit_comb_cell(
             cell_type="$shl",
-            inputs={"A": a_bits, "B": idx_bits},
+            inputs={"A": a_bits, "B": shift_bits},
             output_width=width,
             src_node=lhs,
         )
@@ -4539,6 +4544,50 @@ class _ModuleBuilder:
             )
         self._merge_canonical_var(canonical, prev_bits, new_bits)
         return True
+
+    def _index_shift_bits(
+        self, base_type: Any, idx_bits: tuple[Bit, ...], node: Any
+    ) -> tuple[Bit, ...]:
+        """The bit position a run-time index selects in a vector of
+        ``base_type``, LSB-first: ``idx - lo`` for a descending ``[hi:lo]``
+        range, ``hi - idx`` for an ascending ``[lo:hi]`` one (``$sub``
+        cells, as Yosys emits them), times the element width of a packed
+        array (rtl-buddy-cdc#377: the raw index was used, so ``v[i] = 1``
+        of ``logic [4:1] v`` set bit ``i`` instead of ``i - 1``, and an
+        ascending vector's bits came out reversed)."""
+        t = getattr(base_type, "canonicalType", None) or base_type
+        rng = getattr(t, "range", None)
+        left = getattr(rng, "left", None)
+        right = getattr(rng, "right", None)
+        pos = idx_bits
+        if left is not None and right is not None:
+            left, right = int(left), int(right)
+            width = max(len(idx_bits), max(abs(left), abs(right)).bit_length()) + 1
+            idx = self._resize_bits(idx_bits, width)
+
+            def const(v: int) -> tuple[Bit, ...]:
+                return tuple("1" if (v >> i) & 1 else "0" for i in range(width))
+
+            if left >= right and right != 0:
+                pos = self._emit_comb_cell(
+                    "$sub", {"A": idx, "B": const(right)}, width, src_node=node
+                )
+            elif left < right:
+                pos = self._emit_comb_cell(
+                    "$sub", {"A": const(right), "B": idx}, width, src_node=node
+                )
+        stride = self._element_stride(t)
+        if stride > 1:
+            factor: tuple[Bit, ...] = tuple(
+                "1" if (stride >> i) & 1 else "0" for i in range(stride.bit_length())
+            )
+            pos = self._emit_comb_cell(
+                "$mul",
+                {"A": pos, "B": factor},
+                len(pos) + len(factor),
+                src_node=node,
+            )
+        return pos
 
     # -- continuous assigns ---------------------------------------------
 
