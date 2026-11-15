@@ -335,6 +335,14 @@ GOOD_FIXTURES = [
     # resets: CDC-013 steps over the reset muxes on the toggle and on
     # the delayed copy (rtl-buddy-cdc#376). One toggle crossing.
     ("good_pulse_synchronizer_srst", 1),
+    # --- rtl-buddy-cdc#331: cell variety ---
+    # Req/ack handshake whose synchronisers and captures are $aldff,
+    # $dffsr, $dffsre, $aldffe and $sdffce (netlist built with opt_dff):
+    # three gated 8-bit captures, the request and the acknowledge.
+    ("good_flop_variety_handshake", 5),
+    # $mul / $le / $reduce_* / $shiftx between handshake-held operands
+    # and a gated capture: three operand crossings, request, acknowledge.
+    ("good_comb_ops_handshake", 5),
 ]
 
 
