@@ -606,6 +606,12 @@ class _ModuleBuilder:
         # reader sees until the variable's driver is known. Only these are
         # re-pointed by a forward rename (rtl-buddy-cdc#377).
         self._placeholder_bits: set[int] = set()
+        # Branch-merge ``$mux`` cells of the combinational body being
+        # lowered, by output bits: ``(S, A, B)``. Read by
+        # :meth:`_infer_latches` (rtl-buddy-cdc#377).
+        self._branch_muxes: dict[
+            tuple[Bit, ...], tuple[Bit, tuple[Bit, ...], tuple[Bit, ...]]
+        ] = {}
 
     # -- public ----------------------------------------------------------
 
@@ -1415,12 +1421,12 @@ class _ModuleBuilder:
         - every event edge-qualified (``@(posedge clk)``, ``@(posedge clk
           or negedge rst_n)``, ``negedge`` clocks) → the ``always_ff``
           lowering, async reset and enables included;
-        - ``@*`` / ``@(*)`` or a level-sensitive list (``@(a or b)``) whose
-          body assigns every target on every path → ``always_comb``. Like
-          synthesis, the list itself is not checked for completeness;
-        - level-sensitive with a target left unassigned on some path (an
-          inferred latch) → the ``always_latch`` lowering when the body is
-          the ``if (en) q = d;`` shape it models.
+        - ``@*`` / ``@(*)`` or a level-sensitive list (``@(a or b)``) →
+          :meth:`_lower_comb_body`: combinational logic, plus a ``$dlatch``
+          for each target left unassigned on some path (rtl-buddy-cdc#377;
+          the whole block used to be dropped unless it was the single
+          ``if (en) q = d;`` shape). Like synthesis, the list itself is not
+          checked for completeness;
 
         Anything else (mixed edge / level lists, ``edge``, delays, event
         controls inside the body) is reported by :meth:`_warn_dropped`.
@@ -1435,17 +1441,7 @@ class _ModuleBuilder:
                 self._emit_always_ff(block)
                 self._warn_blocking_temporaries(block, body.stmt)
             elif form == "level":
-                written, always_written = self._assigned_symbols(body.stmt)
-                if not (written - always_written):
-                    self._lower_comb_body(body.stmt)
-                elif self._is_latch_shape(body.stmt):
-                    self._walk_latch_statement(body.stmt)
-                else:
-                    self._warn_dropped(
-                        block,
-                        "level-sensitive `always` infers a latch in a shape "
-                        "other than `if (en) q = d;`",
-                    )
+                self._lower_comb_body(body.stmt, block)
             else:
                 self._warn_dropped(
                     block,
@@ -1481,63 +1477,6 @@ class _ModuleBuilder:
             return "level"
         return None
 
-    def _assigned_symbols(self, stmt: Any) -> tuple[set[Any], set[Any]]:
-        """``(written, always_written)``: the variables ``stmt`` assigns
-        on some path, and those it assigns on every path.
-
-        A variable in the first set but not the second holds its value on
-        some path, which is a latch. Tracked per variable, not per bit;
-        a ``case`` without ``default`` counts as incomplete."""
-        none: tuple[set[Any], set[Any]] = (set(), set())
-        if stmt is None:
-            return none
-        kind = self._kind_name(stmt)
-        if kind == "BlockStatement":
-            return self._assigned_symbols(stmt.body)
-        if kind in {"StatementList", "ListStatement"}:
-            written: set[Any] = set()
-            always: set[Any] = set()
-            for s in getattr(stmt, "list", []) or []:
-                w, a = self._assigned_symbols(s)
-                written |= w
-                always |= a
-            return written, always
-        if kind == "ExpressionStatement":
-            expr = stmt.expr
-            if type(expr).__name__ != "AssignmentExpression":
-                return none
-            syms = self._lvalue_symbols(expr.left)
-            return set(syms), set(syms)
-        if kind == "ConditionalStatement":
-            conds = getattr(stmt, "conditions", None)
-            const = self._const_int(conds[0].expr) if conds else None
-            if const is not None:
-                return self._assigned_symbols(
-                    stmt.ifTrue if const != 0 else stmt.ifFalse
-                )
-            tw, ta = self._assigned_symbols(stmt.ifTrue)
-            if stmt.ifFalse is None:
-                return tw, set()
-            fw, fa = self._assigned_symbols(stmt.ifFalse)
-            return tw | fw, ta & fa
-        if kind == "CaseStatement":
-            arms = [
-                self._assigned_symbols(getattr(it, "stmt", None))
-                for it in (getattr(stmt, "items", []) or [])
-            ]
-            default = getattr(stmt, "defaultCase", None)
-            written = set().union(*(w for w, _ in arms)) if arms else set()
-            if default is None:
-                return written, set()
-            dw, da = self._assigned_symbols(default)
-            always = set(da)
-            for _, a in arms:
-                always &= a
-            return written | dw, always
-        if kind == "ForLoopStatement":
-            return self._assigned_symbols(getattr(stmt, "body", None))
-        return none
-
     def _lvalue_symbols(self, expr: Any) -> list[Any]:
         """Root variable symbols an assignment target writes."""
         kind = type(expr).__name__
@@ -1555,26 +1494,6 @@ class _ModuleBuilder:
                 out.extend(self._lvalue_symbols(op))
             return out
         return []
-
-    def _is_latch_shape(self, stmt: Any) -> bool:
-        """Every statement is the single-arm ``if (en) lhs = rhs;`` shape
-        :meth:`_walk_latch_statement` lowers to a ``$dlatch``."""
-        kind = self._kind_name(stmt)
-        if kind == "BlockStatement":
-            return self._is_latch_shape(stmt.body)
-        if kind in {"StatementList", "ListStatement"}:
-            items = getattr(stmt, "list", []) or []
-            return bool(items) and all(self._is_latch_shape(s) for s in items)
-        if kind != "ConditionalStatement" or stmt.ifFalse is not None:
-            return False
-        arm = stmt.ifTrue
-        while arm is not None and self._kind_name(arm) == "BlockStatement":
-            arm = arm.body
-        return (
-            arm is not None
-            and self._kind_name(arm) == "ExpressionStatement"
-            and type(arm.expr).__name__ == "AssignmentExpression"
-        )
 
     def _warn_blocking_temporaries(self, block: Any, stmt: Any) -> None:
         """Warn when an edge-triggered plain ``always`` reads a variable
@@ -2601,14 +2520,17 @@ class _ModuleBuilder:
         bits = self._bits_of_expression(expr)
         if bits is None:
             return None
-        # ``if (expr)`` treats the expression as a boolean. For a
-        # single-bit signal that's already correct; for a multi-bit
-        # signal SV semantics are "non-zero is true", but in practice
-        # always_ff conditions in production RTL are single-bit
-        # qualifiers. Bail when the width doesn't fit.
-        if len(bits) != 1:
+        # ``if (expr)`` treats the expression as a boolean: a multi-bit
+        # value is true when non-zero, the ``$reduce_bool`` Yosys emits
+        # for it (rtl-buddy-cdc#377; such a condition used to lose its
+        # enable or, in a combinational block, its mux).
+        if len(bits) == 1:
+            return bits[0]
+        if not bits:
             return None
-        return bits[0]
+        return self._emit_comb_cell(
+            "$reduce_bool", {"A": bits}, output_width=1, src_node=expr
+        )[0]
 
     def _alloc_anon_bits(self, width: int) -> tuple[Bit, ...]:
         """Allocate ``width`` fresh anonymous bits for a comb cell's
@@ -2807,7 +2729,7 @@ class _ModuleBuilder:
             self._merge_canonical_var(sym, old, new)
             if continuous:
                 for o, n in zip(old, new):
-                    if isinstance(o, int) and o != n:
+                    if o in self._placeholder_bits and o != n:
                         self._forward_renames[o] = n
         return True
 
@@ -3780,32 +3702,55 @@ class _ModuleBuilder:
     # -- always_comb ----------------------------------------------------
 
     def _emit_always_comb(self, block: Any) -> None:
-        """Treat each blocking assignment in an ``always_comb`` block as
-        a continuous assign of its RHS to its LHS.
+        """Lower an ``always_comb`` block: see :meth:`_lower_comb_body`.
 
-        SV semantics already require an ``always_comb`` to be
-        combinational, so the rewrite is semantically faithful (no
-        priority encoding or latching to model). We descend through
-        the typical ``BlockStatement(body=ExpressionStatement(...))``
-        wrapper plus optional ``ListStatement`` for multi-assign
-        bodies.
-        """
-        self._lower_comb_body(block.body)
+        An ``always_comb`` that leaves a variable unassigned on some path
+        describes a latch, which the language forbids there; Yosys stops
+        with an error. This frontend lowers the latch and says so."""
+        self._lower_comb_body(block.body, block, comb_keyword=True)
 
-    def _lower_comb_body(self, stmt: Any) -> None:
-        """Lower a combinational procedural body (``always_comb``, ``always
-        @*``) and make its results visible to every reader.
+    def _lower_comb_body(
+        self, stmt: Any, block: Any = None, *, comb_keyword: bool = False
+    ) -> None:
+        """Lower a level-sensitive procedural body (``always_comb``,
+        ``always @*``, ``always @(a or b)``) the way Yosys ``proc`` does.
 
-        The walk re-points each written variable at its new driver, which
-        only readers lowered *after* the block see. A combinational block
-        is order-independent in the language (and on the Yosys path), so
-        a reader earlier in source order (``always @(posedge clk) s1 <= x;``
-        above ``always @* x = a_q;``) must see the driver too: each written
-        placeholder bit is recorded for :meth:`_apply_forward_renames`, as
-        a continuous assign records its own (rtl-buddy-cdc#377).
+        Each blocking write re-points the written variable's current value
+        at its right-hand side; an ``if`` / ``case`` merges the values its
+        branches leave with a ``$mux`` per variable, a branch that does
+        not write a variable contributing the variable's value before the
+        statement (:meth:`_walk_conditional_statement`). A variable whose
+        final value still holds its own value on some path is a latch:
+        :meth:`_infer_latches` turns that path into the enable of a
+        ``$dlatch`` (rtl-buddy-cdc#377), so one incompletely assigned
+        scratch variable no longer costs the whole block. Every other
+        written variable is combinational.
+
+        The block is order-independent in the language (and on the Yosys
+        path), so a reader earlier in source order (``always @(posedge
+        clk) s1 <= x;`` above ``always @* x = a_q;``) must see the result
+        too: each written placeholder bit is recorded for
+        :meth:`_apply_forward_renames`, as a continuous assign records its
+        own.
         """
         before = dict(self._var_bits)
-        self._walk_comb_statement(stmt)
+        first_cell = len(self._cells)
+        prev_muxes = self._branch_muxes
+        self._branch_muxes = {}
+        try:
+            self._walk_comb_statement(stmt)
+            latched = self._infer_latches(before, block if block is not None else stmt)
+            if latched:
+                self._drop_dead_branch_muxes(before, first_cell)
+        finally:
+            self._branch_muxes = prev_muxes
+        if latched and comb_keyword:
+            _log.warning(
+                "slang frontend: %s: `always_comb` leaves %s unassigned on "
+                "some path; lowered as a latch",
+                self._src_attr(block) or "<unknown location>",
+                ", ".join(f"`{name}`" for name in latched),
+            )
         self._record_forward_renames(before)
 
     def _record_forward_renames(self, before: dict[Any, tuple[Bit, ...]]) -> None:
@@ -3822,6 +3767,156 @@ class _ModuleBuilder:
                 # blocks) must keep its driver.
                 if o in self._placeholder_bits and o != n:
                     self._forward_renames[o] = n
+
+    def _branch_mux(
+        self, sel: Bit, a: tuple[Bit, ...], b: tuple[Bit, ...], src_node: Any
+    ) -> tuple[Bit, ...]:
+        """``$mux(S=sel, A=a, B=b)`` merging two branch values, recorded
+        so :meth:`_infer_latches` can follow it. The whole value goes
+        through one mux even where the legs agree, as Yosys ``proc`` muxes
+        the assigned signal: a one-hot ``case`` decode is then one
+        multi-bit driver per arm, the shape CDC-019 keys on."""
+        width = max(len(a), len(b))
+        a = self._resize_bits(a, width)
+        b = self._resize_bits(b, width)
+        if a == b:
+            return a
+        y = self._emit_comb_cell(
+            cell_type="$mux",
+            inputs={"A": a, "B": b, "S": (sel,)},
+            output_width=width,
+            src_node=src_node,
+        )
+        self._branch_muxes[y] = (sel, a, b)
+        return y
+
+    def _infer_latches(
+        self, before: dict[Any, tuple[Bit, ...]], src_node: Any
+    ) -> list[str]:
+        """Turn every variable a level-sensitive body holds on some path
+        into a ``$dlatch``; return their names.
+
+        A held path shows up in the variable's final value as a branch
+        ``$mux`` leg that is the variable's own value from before the body
+        (its placeholder net). Following the merge muxes from the final
+        value splits it into the data loaded when the latch is open and
+        the condition under which it is (Yosys ``proc_dlatch``):
+
+        - a leg that is the held value contributes no data and enable 0;
+        - ``mux(s, held, v)`` loads ``v`` when ``s`` (enable ``s & en_v``),
+          ``mux(s, v, held)`` when ``!s``;
+        - ``mux(s, a, b)`` with both legs live keeps the mux for the data
+          (the original one when neither leg changed), enable ``s ? en_b :
+          en_a``;
+        - anything else is loaded unconditionally (enable 1).
+
+        A variable with enable 1 is combinational and keeps its value.
+        For a latch, bits no path writes (data is their own net) stay out
+        of it and undriven, as before; the latch's ``Q`` is the variable's
+        net, which becomes its value again.
+        """
+        latched: list[str] = []
+        for sym, held in before.items():
+            final = self._var_bits.get(sym)
+            if final is None or final == held or len(final) != len(held):
+                continue
+            if not all(b in self._placeholder_bits for b in held):
+                continue  # driven elsewhere too: no hold value to find
+            split = self._split_hold(final, held)
+            if split is None:
+                continue  # never written on any path
+            data, enable = split
+            if enable == "1":
+                continue
+            # A bit whose loaded data is its own net is never written.
+            lanes = [i for i in range(len(held)) if data[i] != held[i]]
+            self._emit_dlatch_cell(
+                enable,
+                tuple(held[i] for i in lanes),
+                tuple(data[i] for i in lanes),
+                src_node=src_node,
+            )
+            self._var_bits[sym] = held
+            latched.append(str(getattr(sym, "name", "?")))
+        return latched
+
+    def _drop_dead_branch_muxes(
+        self, before: dict[Any, tuple[Bit, ...]], first_cell: int
+    ) -> None:
+        """Remove the branch muxes a latch made dead: the hold-feedback
+        merges :meth:`_infer_latches` replaced by the latch's data and
+        enable. Left in place, they would read the latch output and its
+        enable condition as data with nothing to observe them (Yosys
+        ``proc_dlatch`` leaves no such cell either). Only cells emitted
+        by this body can read them, and only values it changed."""
+        new_cells = list(self._cells)[first_cell:]
+        live_values: set[Bit] = {
+            b
+            for sym, bits in self._var_bits.items()
+            if before.get(sym) != bits
+            for b in bits
+        }
+        candidates = {
+            name
+            for name in new_cells
+            if self._cells[name].connections.get("Y") in self._branch_muxes
+        }
+        changed = True
+        while changed:
+            changed = False
+            used = set(live_values)
+            for name in new_cells:
+                if name in self._cells:
+                    for pin, bits in self._cells[name].connections.items():
+                        if pin != "Y":
+                            used.update(bits)
+            for name in sorted(candidates):
+                cell = self._cells.get(name)
+                if cell is not None and not used.intersection(cell.connections["Y"]):
+                    del self._cells[name]
+                    candidates.discard(name)
+                    changed = True
+
+    def _split_hold(
+        self, value: tuple[Bit, ...], held: tuple[Bit, ...]
+    ) -> tuple[tuple[Bit, ...], Bit] | None:
+        """``(data, enable)`` of ``value`` relative to the held value
+        ``held``, or ``None`` when ``value`` is ``held`` on every path (see
+        :meth:`_infer_latches`). ``enable`` is ``"1"`` when no path holds."""
+        if value == held:
+            return None
+        mux = self._branch_muxes.get(value)
+        if mux is None:
+            return value, "1"
+        sel, a, b = mux
+        split_a = self._split_hold(a, held)
+        split_b = self._split_hold(b, held)
+        if split_a is None and split_b is None:
+            return None
+        if split_a is None:
+            assert split_b is not None
+            return split_b[0], self._and_bit(sel, split_b[1])
+        if split_b is None:
+            return split_a[0], self._and_bit(self._lower_not(sel), split_a[1])
+        (data_a, en_a), (data_b, en_b) = split_a, split_b
+        if (data_a, data_b) == (a, b):
+            data = value
+        else:
+            data = self._branch_mux(sel, data_a, data_b, None)
+        if en_a == en_b:
+            return data, en_a
+        enable = self._emit_comb_cell(
+            "$mux", {"A": (en_a,), "B": (en_b,), "S": (sel,)}, output_width=1
+        )
+        return data, enable[0]
+
+    def _and_bit(self, a: Bit, b: Bit) -> Bit:
+        """``a & b`` for single bits, folding a constant ``"1"``."""
+        if b == "1":
+            return a
+        if a == "1":
+            return b
+        return self._emit_comb_cell("$and", {"A": (a,), "B": (b,)}, output_width=1)[0]
 
     def _walk_comb_statement(self, stmt: Any) -> None:
         kind = self._kind_name(stmt)
@@ -3843,197 +3938,158 @@ class _ModuleBuilder:
             return
         # for/while loops etc. → ignore for now.
 
+    def _walk_branches(self, arms: list[Any]) -> list[dict[Any, tuple[Bit, ...]]]:
+        """Walk each statement of ``arms`` (``None`` for an empty arm) from
+        the same starting values; return the values each leaves. The
+        current values are restored afterwards, and cells emitted in each
+        arm are kept."""
+        base = dict(self._var_bits)
+        states: list[dict[Any, tuple[Bit, ...]]] = []
+        for arm in arms:
+            if arm is not None:
+                self._walk_comb_statement(arm)
+            states.append(dict(self._var_bits))
+            self._var_bits = dict(base)
+        return states
+
     def _walk_conditional_statement(self, stmt: Any) -> None:
-        """Lower an ``always_comb`` ``if`` / ``else`` into a per-LHS
-        ``$mux``.
+        """Lower a combinational ``if`` / ``else`` into a per-variable
+        ``$mux(S=cond, A=else value, B=then value)``.
 
-        Strategy: snapshot the alias state, walk each branch
-        independently, capture the per-branch result for every LHS
-        that was written, then merge:
-
-        - Written in **both** branches → emit ``$mux(S=cond, A=false,
-          B=true)`` and alias the LHS to the mux output.
-        - Written in **only one** branch → keep the single-branch
-          aliasing. Per SV ``always_comb`` semantics the unwritten side
-          is undefined, but the conservative choice (no mux) keeps the
-          rule pack's data-cone walk honest — we don't pretend the
-          condition gates the value when no real gate exists.
-
-        Cells emitted while walking each branch (e.g. ``$and`` for a
-        ``y = a & b`` body) are preserved across the snapshot/restore
-        — only the alias maps are rolled back, so the bits returned
-        by ``_bits_of_expression`` still resolve to a real Yosys cell.
+        Each arm is walked from the same starting values; a variable
+        written in either arm gets the mux, an arm that does not write it
+        contributing its value before the ``if`` (Yosys ``proc``). When
+        that value is the variable's own net — not assigned yet in this
+        body — the leg is a held value, and :meth:`_infer_latches` turns
+        it into a latch enable. A condition known at elaboration time
+        walks the live arm only.
         """
         conds = getattr(stmt, "conditions", None) or []
-        sel_bits = (
-            self._bits_of_expression(conds[0].expr)
-            if conds and conds[0].expr is not None
-            else None
-        )
-        if sel_bits is None:
-            # Can't lower the selector → conservative descend. Matches
-            # pre-mux behaviour: unconditional writes get aliased, any
-            # branch-mismatched LHS picks "whichever wrote last".
-            self._walk_comb_statement(stmt.ifTrue)
-            if stmt.ifFalse is not None:
-                self._walk_comb_statement(stmt.ifFalse)
+        cond_expr = conds[0].expr if conds else None
+        const = self._const_int(cond_expr) if len(conds) == 1 else None
+        if const is not None:
+            live = stmt.ifTrue if const != 0 else stmt.ifFalse
+            if live is not None:
+                self._walk_comb_statement(live)
             return
-
-        base_var_bits = dict(self._var_bits)
-        base_ports = dict(self._ports)
-        base_netnames = dict(self._netnames)
-
-        self._walk_comb_statement(stmt.ifTrue)
-        true_var_bits = dict(self._var_bits)
-        self._var_bits = dict(base_var_bits)
-        self._ports = dict(base_ports)
-        self._netnames = dict(base_netnames)
-
-        if stmt.ifFalse is not None:
-            self._walk_comb_statement(stmt.ifFalse)
-            false_var_bits = dict(self._var_bits)
-            self._var_bits = dict(base_var_bits)
-            self._ports = dict(base_ports)
-            self._netnames = dict(base_netnames)
-        else:
-            # No else → the false side is the prior value.
-            false_var_bits = dict(base_var_bits)
-
-        all_vars: set[Any] = set()
-        for k, v in true_var_bits.items():
-            if base_var_bits.get(k) != v:
-                all_vars.add(k)
-        for k, v in false_var_bits.items():
-            if base_var_bits.get(k) != v:
-                all_vars.add(k)
-
-        for var in all_vars:
-            base_v = base_var_bits.get(var)
-            t = true_var_bits.get(var)
-            f = false_var_bits.get(var)
-            t_changed = t is not None and t != base_v
-            f_changed = f is not None and f != base_v
-            if t_changed and f_changed:
-                assert t is not None and f is not None
-                if t == f:
-                    # Both branches assigned the same value — no mux
-                    # needed, just alias to the common bits.
-                    self._merge_canonical_var(var, base_v, t)
-                    continue
-                width = max(len(t), len(f))
-                y_bits = self._emit_comb_cell(
-                    cell_type="$mux",
-                    inputs={"A": f, "B": t, "S": sel_bits[:1]},
-                    output_width=width,
-                    src_node=stmt,
-                )
-                self._merge_canonical_var(var, base_v, y_bits)
-            elif t_changed:
-                # Only the true branch wrote → keep single-branch
-                # aliasing (issue #36 spec).
-                assert t is not None
-                self._merge_canonical_var(var, base_v, t)
-            elif f_changed:
-                assert f is not None
-                self._merge_canonical_var(var, base_v, f)
+        sel = self._lower_condition_to_bit(conds)
+        if sel is None:
+            self._warn_dropped(
+                stmt,
+                "condition is not a single-bit expression this frontend lowers",
+                "`if` statement",
+            )
+            return
+        base = dict(self._var_bits)
+        true_state, false_state = self._walk_branches([stmt.ifTrue, stmt.ifFalse])
+        written = {
+            k
+            for state in (true_state, false_state)
+            for k, v in state.items()
+            if base.get(k) != v
+        }
+        for var in written:
+            base_v = base.get(var)
+            t = true_state.get(var, base_v)
+            f = false_state.get(var, base_v)
+            if t is None or f is None or t == f:
+                chosen = t if t is not None else f
+                assert chosen is not None
+                self._var_bits[var] = chosen
+                continue
+            self._var_bits[var] = self._branch_mux(sel, f, t, stmt)
 
     def _walk_case_statement(self, stmt: Any) -> None:
-        """Lower an ``always_comb`` ``case`` into a chained ``$mux``
-        per LHS, with item arms wrapped highest-priority-outermost.
+        """Lower a combinational ``case`` into a chained ``$mux`` per
+        variable, item 0 outermost (first match wins).
 
-        For each LHS, the chain starts at the ``default`` arm's
-        contribution (or the prior value, if no default) and folds in
-        each item arm that writes the LHS, in reverse order — item 0
-        ends up as the outermost mux, matching SV's first-match-wins
-        priority semantics. Selector bits for each arm are ``$eq``
-        comparisons against ``stmt.expr``; multi-label arms OR the
-        per-label matches together.
-
-        LHS written in only one arm keeps single-arm aliasing (no
-        mux), matching the conservative shape used by
-        :meth:`_walk_conditional_statement`.
+        The chain starts at the ``default`` arm's value, or, with no
+        ``default``, at the variable's value before the ``case`` — unless
+        the items' constant labels cover every value of the case
+        expression, when the last item is the fallback (Yosys infers no
+        latch for a full ``case`` either). An item that does not write
+        the variable contributes its value before the ``case``. Each
+        item's select is the OR of ``case_expr == label`` per label.
+        A case expression known at elaboration time walks the matching
+        arm only.
         """
-        sel_bits = self._bits_of_expression(stmt.expr)
         items = list(getattr(stmt, "items", []) or [])
         default_arm = getattr(stmt, "defaultCase", None)
-        if sel_bits is None or not items:
+        case_const = self._const_int(stmt.expr)
+        if case_const is not None:
+            live: Any = default_arm
             for item in items:
-                self._walk_comb_statement(getattr(item, "stmt", None))
+                labels = [self._const_int(e) for e in item.expressions]
+                if case_const in labels:
+                    live = getattr(item, "stmt", None)
+                    break
+            if live is not None:
+                self._walk_comb_statement(live)
+            return
+        sel_bits = self._bits_of_expression(stmt.expr)
+        if sel_bits is None:
+            self._warn_dropped(
+                stmt, "case expression is not lowered", "`case` statement"
+            )
+            return
+        if not items:
             if default_arm is not None:
                 self._walk_comb_statement(default_arm)
             return
-
-        base_var_bits = dict(self._var_bits)
-        base_ports = dict(self._ports)
-        base_netnames = dict(self._netnames)
-
-        def restore() -> None:
-            self._var_bits = dict(base_var_bits)
-            self._ports = dict(base_ports)
-            self._netnames = dict(base_netnames)
-
-        arms: list[tuple[list[Any], dict[Any, tuple[Bit, ...]]]] = []
+        selects: list[Bit] = []
         for item in items:
-            self._walk_comb_statement(getattr(item, "stmt", None))
-            arms.append(
-                (list(getattr(item, "expressions", []) or []), dict(self._var_bits))
+            match = self._lower_case_arm_selector(
+                sel_bits, list(getattr(item, "expressions", []) or []), stmt
             )
-            restore()
-
-        if default_arm is not None:
-            self._walk_comb_statement(default_arm)
-            default_state = dict(self._var_bits)
-            restore()
-        else:
-            default_state = dict(base_var_bits)
-
-        def writes(state: dict[Any, tuple[Bit, ...]]) -> set[Any]:
-            return {k for k, v in state.items() if base_var_bits.get(k) != v}
-
-        arm_writes = [writes(s) for _, s in arms]
-        default_writes = writes(default_state)
-        all_written: set[Any] = set(default_writes)
-        for w in arm_writes:
-            all_written |= w
-
-        for var in all_written:
-            base_v = base_var_bits.get(var)
-            writer_indices = [i for i, w in enumerate(arm_writes) if var in w]
-            default_has = var in default_writes
-            total_writers = len(writer_indices) + (1 if default_has else 0)
-
-            if total_writers == 1:
-                # Only one arm (or only default) writes → single-branch
-                # aliasing.
-                if writer_indices:
-                    self._merge_canonical_var(
-                        var, base_v, arms[writer_indices[0]][1][var]
-                    )
-                else:
-                    self._merge_canonical_var(var, base_v, default_state[var])
-                continue
-
-            # 2+ writers → build a chained $mux, default (or prior
-            # value) as the innermost fallback, item-arm 0 outermost.
-            chain = default_state.get(var) if default_has else base_v
-            if chain is None:
-                continue
-            for i in range(len(arms) - 1, -1, -1):
-                if var not in arm_writes[i]:
-                    continue
-                label_exprs, arm_state = arms[i]
-                arm_bits = arm_state[var]
-                sel_match = self._lower_case_arm_selector(sel_bits, label_exprs, stmt)
-                if sel_match is None:
-                    continue
-                width = max(len(arm_bits), len(chain))
-                chain = self._emit_comb_cell(
-                    cell_type="$mux",
-                    inputs={"A": chain, "B": arm_bits, "S": sel_match[:1]},
-                    output_width=width,
-                    src_node=stmt,
+            if match is None:
+                self._warn_dropped(
+                    stmt,
+                    "a case item label is not lowered",
+                    "`case` statement",
                 )
-            self._merge_canonical_var(var, base_v, chain)
+                return
+            selects.append(match[0])
+        fallback_arm = default_arm
+        if fallback_arm is None and self._case_is_full(stmt, items, len(sel_bits)):
+            fallback_arm = getattr(items[-1], "stmt", None)
+            items, selects = items[:-1], selects[:-1]
+        base = dict(self._var_bits)
+        states = self._walk_branches(
+            [getattr(item, "stmt", None) for item in items] + [fallback_arm]
+        )
+        arm_states, fallback_state = states[:-1], states[-1]
+        written = {k for state in states for k, v in state.items() if base.get(k) != v}
+        for var in written:
+            base_v = base.get(var)
+            chain = fallback_state.get(var, base_v)
+            for sel, state in zip(reversed(selects), reversed(arm_states)):
+                value = state.get(var, base_v)
+                if chain is None or value is None:
+                    chain = value if value is not None else chain
+                    continue
+                if value != chain:
+                    chain = self._branch_mux(sel, chain, value, stmt)
+            assert chain is not None
+            self._var_bits[var] = chain
+
+    def _case_is_full(self, stmt: Any, items: list[Any], width: int) -> bool:
+        """The items' labels are constants covering all ``2**width`` values
+        of a plain ``case`` expression (no wildcards)."""
+        if width > 16:
+            return False
+        if str(getattr(stmt, "condition", "")).rsplit(".", 1)[-1] not in {
+            "Normal",
+            "",
+        }:
+            return False
+        seen: set[int] = set()
+        for item in items:
+            for expr in getattr(item, "expressions", []) or []:
+                value = self._const_int(expr)
+                if value is None:
+                    return False
+                seen.add(value & ((1 << width) - 1))
+        return len(seen) == 1 << width
 
     def _lower_case_arm_selector(
         self,
@@ -4205,7 +4261,7 @@ class _ModuleBuilder:
         # (#326: the async-FIFO flags are the canonical forward use).
         if old_bits is not None:
             for o, n in zip(old_bits, rhs_bits):
-                if isinstance(o, int) and o != n:
+                if o in self._placeholder_bits and o != n:
                     self._forward_renames[o] = n
 
     def _apply_forward_renames(self) -> None:
@@ -4256,22 +4312,8 @@ class _ModuleBuilder:
                 )
 
     def _rewrite_aliased(self, lhs: Any, rhs_bits: tuple[Bit, ...]) -> None:
-        """Make every alias that currently holds ``lhs``'s bits point at
-        ``rhs_bits`` instead.
-
-        Crossing the hierarchy boundary, a single net (the parent's
-        ``a_q`` wire, say) is represented by several aliased entries:
-        the parent's :class:`VariableSymbol`, the child instance's
-        :class:`PortSymbol`-internal variable, and any local wires
-        that capture it. When ``assign a_q = q`` runs inside the child,
-        every one of those aliases needs to follow — not just the
-        child's own a_q entry — or the parent's reader sees stale bits.
-
-        Thin shim over :meth:`_merge_canonical_var`; the
-        canonical-keyed variant is the one used by branch-merge sites
-        like :meth:`_walk_conditional_statement` that don't have a
-        live LHS expression to read ``.symbol`` from.
-        """
+        """Set ``lhs``'s current value to ``rhs_bits`` (see
+        :meth:`_merge_canonical_var`)."""
         canonical = self._canonical_var(lhs.symbol)
         self._merge_canonical_var(canonical, self._var_bits.get(canonical), rhs_bits)
 
@@ -4281,27 +4323,22 @@ class _ModuleBuilder:
         old_bits: tuple[Bit, ...] | None,
         new_bits: tuple[Bit, ...],
     ) -> None:
-        """Alias-propagation primitive: rewrite every map entry whose
-        bits equal ``old_bits`` to point at ``new_bits``.
+        """Set ``canonical``'s current value to ``new_bits``.
 
-        We do the cheap thing: scan ``_var_bits`` / ``_ports`` /
-        ``_netnames`` for entries whose bits equal the old tuple and
-        rewrite them. O(n) per assign, fine for the design sizes the
-        analyzer targets.
+        ``_var_bits`` holds each variable's *value* as the walk has
+        lowered it so far; its *net* (the placeholder bits
+        :meth:`_alloc_bits` allocated, shared with every hierarchy alias
+        and recorded in the variable's netname and port) is re-pointed at
+        the final driver only by :meth:`_apply_forward_renames`, which
+        every writer feeds: continuous assigns, net initialisers and
+        combinational blocks (:meth:`_record_forward_renames`).
+
+        Nothing else is rewritten here. Rewriting every other entry that
+        held ``old_bits`` (as this did before rtl-buddy-cdc#377) cannot
+        tell a hierarchy alias of the same net from a variable that
+        merely holds the same value: after ``y = b; if (sel) y = a;`` it
+        re-pointed the input ``b`` itself at ``a``. ``old_bits`` is kept
+        for the callers' symmetry.
         """
+        del old_bits
         self._var_bits[canonical] = new_bits
-        if old_bits is None or old_bits == new_bits:
-            return
-        for sym, bits in list(self._var_bits.items()):
-            if bits == old_bits:
-                self._var_bits[sym] = new_bits
-        for name, port in list(self._ports.items()):
-            if port.bits == old_bits:
-                self._ports[name] = Port(
-                    name=port.name, direction=port.direction, bits=new_bits
-                )
-        for name, nn in list(self._netnames.items()):
-            if nn.bits == old_bits:
-                self._netnames[name] = Netname(
-                    name=nn.name, bits=new_bits, attributes=nn.attributes
-                )

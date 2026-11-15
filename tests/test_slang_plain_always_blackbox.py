@@ -270,16 +270,8 @@ endmodule
         ("always @(edge clk) q <= a;", "not edge-triggered on every event"),
         ("always #5 q = ~q;", "not edge-triggered on every event"),
         ("always begin @(posedge clk); q <= a; end", "not edge-triggered"),
-        (
-            "always @* begin if (a) q = b; else if (b) q = a; end",
-            "infers a latch in a shape other than",
-        ),
-        (
-            "always @* case (a) 1'b0: q = b; endcase",
-            "infers a latch in a shape other than",
-        ),
     ],
-    ids=["mixed", "edge", "delay", "inner_event", "latch_elsif", "latch_case"],
+    ids=["mixed", "edge", "delay", "inner_event"],
 )
 def test_unlowerable_always_warns(
     tmp_path: Path, caplog, block: str, reason: str

@@ -690,10 +690,10 @@ def test_comb_case_no_default_multi_writer_uses_prior_value(tmp_path: Path) -> N
     )
 
 
-def test_comb_case_var_written_only_in_default_aliases_default(tmp_path: Path) -> None:
-    """A var (``z``) written *only* in the default arm takes the
-    single-writer default-alias leg, while a different var (``y``)
-    written in two arms builds a mux chain."""
+def test_comb_case_var_written_only_in_default_is_a_latch(tmp_path: Path) -> None:
+    """A var (``z``) written *only* in the default arm, and one (``y``)
+    written in the two explicit arms, are each held on the other paths:
+    two latches (rtl-buddy-cdc#377)."""
     src = """
     module m (input logic [1:0] sel, input logic a, b, c, output logic y, z);
         always_comb begin
@@ -706,12 +706,9 @@ def test_comb_case_var_written_only_in_default_aliases_default(tmp_path: Path) -
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    z_bit = mod.ports["z"].bits[0]
-    c_bit = mod.ports["c"].bits[0]
-    # z aliases straight to c (the only arm that writes it).
-    assert mod.netnames["z"].bits == (c_bit,) or z_bit == c_bit or True
-    # The key assertion: y still mux-chains (2 writers).
-    assert _cell_types(mod).count("$mux") == 2
+    latches = {c.connections["Q"]: c for c in mod.cells.values() if c.type == "$dlatch"}
+    assert set(latches) == {mod.ports["y"].bits, mod.ports["z"].bits}
+    assert latches[mod.ports["z"].bits].connections["D"] == mod.ports["c"].bits
 
 
 def test_comb_case_var_absent_from_some_arms_skips_those(tmp_path: Path) -> None:

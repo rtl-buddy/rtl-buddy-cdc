@@ -48,22 +48,19 @@ schema = 1
 # analyzer is fixed the affected design's test fails; update its counts,
 # drop the finding / missed entry, and remove the gap here.
 
-[gaps.slang-incomplete-comb-block]
+[gaps.slang-system-call]
 kind = "frontend"
-rules = []
+rules = ["CDC-012"]
 summary = """
-The slang frontend drops (with a 'procedural block not lowered'
-warning) a level-sensitive always block in which some variable is not
-assigned on every path, unless the block is the single `if (en) q = d;`
-latch shape. Yosys lowers the complete targets as combinational logic
-and infers a latch only for the incomplete one, so one scratch variable
-assigned under a condition costs every other output of the block on
-the slang path."""
+The slang frontend does not lower a system function call such as
+`$signed(x)` / `$unsigned(x)` (a cast with no logic of its own): an
+`if` whose condition contains one is reported ('`if` statement not
+lowered') and its writes are missing, so the registers they feed lose
+their input logic."""
 reproducer = """
-a_q is a clk_a register; `always @* begin x = a_q; if (v) t = a_q;
-end` with x captured by a two-flop clk_b synchroniser (t unused).
-Yosys: 3 flops, 1 crossing; slang: the block is dropped with a
-warning, 2 flops, 0 crossings."""
+In an `always @*` block, `y = b; if ($signed(x) > 4) y = a;` with y
+registered: Yosys emits a `$gt` and a `$mux`; slang warns and y is b.
+Writing the comparison without the cast makes the frontends agree."""
 
 [gaps.slang-function-call]
 kind = "frontend"
@@ -255,16 +252,20 @@ sources = ["rtl/ptp_clock_cdc.v"]
 top = "ptp_clock_cdc"
 sdc = "sdc/ptp_clock_cdc.sdc"
 expect = { clocks = ["input_clk", "output_clk", "sample_clk"], crossings = 9, rules = { "CDC-001" = 1, "CDC-012" = 3 } }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-incomplete-comb-block" }
+slang = { reads = true, matches_yosys = false, crossings = 7, rules = { "CDC-001" = 1, "CDC-012" = 2 }, gap = "slang-system-call" }
 notes = """
 Both next-state always @* blocks (dest_* at line 358, ts_* at line 551)
 assign a scratch overflow variable (dest_ovf / ptp_ovf) only under a
-condition, so each is dropped with a warning, and with them every
-register that feeds the outputs; dead-logic pruning then removes the
-source and sample domains. The concatenation targets in those blocks
+condition. The slang path used to drop each block whole, and with it
+every register feeding the outputs (0 crossings); since
+rtl-buddy-cdc#377 the overflow variables are latches and the rest is
+combinational, as on the Yosys path, and the clocked block at line 429
+sees the values the line-551 block computes although they come later in
+the file. The concatenation targets in those blocks
 ({dest_update_next, dest_phase_next} = ..., ...) lower since
-rtl-buddy-cdc#370. The clocked block at line 429 also reads values the
-line-551 block computes, which reach it since rtl-buddy-cdc#377."""
+rtl-buddy-cdc#370. Two crossings and one CDC-012 are still missing on
+the slang path: the lock-detector `if`s at lines 403 and 653 compare
+`$signed(...)` values, which the slang frontend does not lower."""
 
 [[design.finding]]
 rule = "CDC-001"

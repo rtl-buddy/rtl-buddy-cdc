@@ -224,3 +224,195 @@ endmodule
     assert ("q[0]", "a_q[0]", "clk_b[0]", 2) in _flop_lanes(module)
     assert ("q[1]", "e[0]", "clk_b[0]", 2) in _flop_lanes(module)
     _agree_with_yosys(tmp_path, src, module)
+
+
+# --- 2. level-sensitive blocks: one incomplete variable is one latch ------
+
+
+def _latches(module: Module) -> dict[str, frozenset[str]]:
+    """Every ``$dlatch`` lane's Q bit -> the ports, registers and constants
+    its D and EN cones read: what the latch holds and when, independent
+    of how each frontend shapes the mux tree."""
+    name = _namer(module)
+    driver = {
+        b: c
+        for c in module.cells.values()
+        for pin in ("Y",)
+        for b in c.connections.get(pin, ())
+    }
+
+    def leaves(bits: tuple[Bit, ...]) -> set[str]:
+        out: set[str] = set()
+        seen: set[Bit] = set()
+        stack = list(bits)
+        while stack:
+            b = stack.pop()
+            if b in seen:
+                continue
+            seen.add(b)
+            cell = driver.get(b)
+            if cell is None or isinstance(b, str):
+                out.add(name(b))
+                continue
+            for pin, pbits in cell.connections.items():
+                if pin != "Y":
+                    stack.extend(pbits)
+        return out
+
+    lanes: dict[str, frozenset[str]] = {}
+    for c in _cells(module, "$dlatch"):
+        cone = leaves(c.connections["D"]) | leaves(c.connections["EN"])
+        for qb in c.connections["Q"]:
+            lanes[name(qb)] = frozenset(cone - {"0", "1", "x"})
+    return lanes
+
+
+_INCOMPLETE = """module m (input clk_a, input clk_b, input d, input v, input w,
+          output reg q, output reg [1:0] tq);
+    reg a_q, s1, x;
+    reg [1:0] t;
+    always @(posedge clk_a) a_q <= d;
+    always @* begin
+        x = a_q;
+        {body}
+    end
+    always @(posedge clk_b) begin s1 <= x; q <= s1; end
+    {tail}
+endmodule
+"""
+
+
+@pytest.mark.parametrize(
+    ("body", "tail"),
+    [
+        ("if (v) t = {a_q, d};", ""),
+        ("if (v) t = {a_q, d};", "always @(posedge clk_b) tq <= t;"),
+        ("if (v) t = {a_q, d}; else if (w) t = {d, d};", "always @* tq = t;"),
+        (
+            "case ({v, w}) 2'b01: t = 2'b10; 2'b10: t = {d, a_q}; endcase",
+            "assign tq = t;",
+        ),
+        ("if (v) t[0] = d;", "assign tq = t;"),
+    ],
+    ids=["unused", "registered", "elsif", "case", "part"],
+)
+def test_incomplete_variable_keeps_the_block(
+    tmp_path: Path, caplog, body: str, tail: str
+) -> None:
+    """The issue's reproducer: a scratch variable assigned only under a
+    condition used to drop the whole block with a warning, and with it
+    ``x`` and the crossing it feeds. Now ``x`` is combinational and only
+    ``t`` is a latch, as Yosys infers it."""
+    src = _INCOMPLETE.format(body=body, tail=tail)
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert not _warnings(caplog)
+    assert ("s1[0]", "a_q[0]", "clk_b[0]", 1) in _flop_lanes(module)
+    assert _cells(module, "$dlatch")
+    if _HAVE_YOSYS:
+        y_mod = _yosys(tmp_path, src)
+        assert _flop_lanes(module) == _flop_lanes(y_mod)
+        if tail:
+            assert _latches(module) == _latches(y_mod)
+    assert _same_verdict(tmp_path, src)[0] >= 1
+
+
+def test_latch_enable_is_the_assigning_condition(tmp_path: Path) -> None:
+    """``if (v) t = a; else if (w) t = b;`` loads ``v ? a : b`` while ``v |
+    w``: the held path (neither) is the latch's closed state."""
+    src = """module m (input v, input w, input a, input b, output reg t);
+    always @* begin if (v) t = a; else if (w) t = b; end
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    (latch,) = _cells(module, "$dlatch")
+    assert latch.connections["Q"] == module.ports["t"].bits
+    (mux,) = [
+        c
+        for c in _cells(module, "$mux")
+        if c.connections["Y"] == latch.connections["D"]
+    ]
+    assert mux.connections["S"] == module.ports["v"].bits
+    assert mux.connections["A"] == module.ports["b"].bits
+    assert mux.connections["B"] == module.ports["a"].bits
+    (en,) = latch.connections["EN"]
+    (en_mux,) = [c for c in _cells(module, "$mux") if c.connections["Y"] == (en,)]
+    assert en_mux.connections["S"] == module.ports["v"].bits
+    assert en_mux.connections["A"] == module.ports["w"].bits
+    assert en_mux.connections["B"] == ("1",)
+
+
+def test_latch_leaves_no_dead_hold_mux(tmp_path: Path) -> None:
+    """The hold-feedback merge a latch replaces is removed: left behind it
+    read the latch output, and its select (here a clock) as data."""
+    src = """module m (input en, input d, output reg q);
+    always @* if (en) q = d;
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert [c.type for c in module.cells.values()] == ["$dlatch"]
+
+
+def test_unwritten_arm_keeps_the_prior_value(tmp_path: Path) -> None:
+    """``y = b; if (sel) y = a;`` is ``sel ? a : b``. The single-arm write
+    used to alias ``y`` to ``a``, dropping ``b`` and ``sel``, and (through
+    the alias rewrite) re-pointed the input ``b`` itself at ``a``, so a
+    register of ``b`` read ``a``."""
+    src = """module m (input clk, input sel, input a, input b, output reg q,
+          output reg r);
+    reg y;
+    always @* begin y = b; if (sel) y = a; end
+    always @(posedge clk) q <= y;
+    always @(posedge clk) r <= b;
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert ("r[0]", "b[0]", "clk[0]", 1) in _flop_lanes(module)
+    assert ("q[0]", "y[0]", "clk[0]", 1) in _flop_lanes(module)
+    (mux,) = _cells(module, "$mux")
+    assert mux.connections["A"] == module.ports["b"].bits
+    assert mux.connections["B"] == module.ports["a"].bits
+    assert not _cells(module, "$dlatch")
+    _agree_with_yosys(tmp_path, src, module)
+
+
+def test_full_case_without_default_is_not_a_latch(tmp_path: Path) -> None:
+    """Labels covering every value of the case expression leave no held
+    path: no latch, on either frontend."""
+    src = """module m (input clk, input [1:0] s, input a, input b, output reg q);
+    reg z;
+    always @* begin
+        case (s) 2'd0: z = a; 2'd1: z = b; 2'd2: z = 1'b1; 2'd3: z = 1'b0; endcase
+    end
+    always @(posedge clk) q <= z;
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert not _cells(module, "$dlatch")
+    if _HAVE_YOSYS:
+        assert not _cells(_yosys(tmp_path, src), "$dlatch")
+
+
+def test_always_comb_latch_warns(tmp_path: Path, caplog) -> None:
+    """``always_comb`` forbids a latch (Yosys stops with an error); the
+    slang path lowers it and says so."""
+    src = """module m (input v, input a, output logic t);
+    always_comb if (v) t = a;
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert len(_cells(module, "$dlatch")) == 1
+    assert any("`always_comb` leaves `t` unassigned" in m for m in _warnings(caplog))
+
+
+def test_unlowerable_condition_warns(tmp_path: Path, caplog) -> None:
+    """A combinational ``if`` whose condition does not lower is reported,
+    not walked as if both arms were unconditional."""
+    src = """module m (input [3:0] a, input [3:0] b, output reg [3:0] y);
+    always @* begin y = b; if (a ==? 4'b1z0x) y = a; end
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        _slang(tmp_path, src)
+    assert any("`if` statement not lowered" in m for m in _warnings(caplog))

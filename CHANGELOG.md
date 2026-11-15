@@ -352,6 +352,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     The integration corpus' `zipcpu_afifo` now matches Yosys on the
     slang path (its false CDC-026 is gone); the
     `slang-comb-forward-read` gap is closed.
+  - A level-sensitive `always` that leaves a variable unassigned on some
+    path is no longer dropped whole (with a warning) unless it is the
+    single `if (en) q = d;` shape. Each such variable becomes a
+    `$dlatch` whose enable is the condition under which it is assigned
+    and the rest of the block is combinational, as Yosys `proc` lowers
+    it. An `always_comb` doing the same (an error on the Yosys path) is
+    lowered the same way, with a warning.
+  - In a combinational `if` / `case`, an arm that does not write a
+    variable now contributes the variable's value before the statement:
+    `y = b; if (sel) y = a;` is `sel ? a : b`. It used to alias `y` to
+    `a`, dropping `b` and `sel`, and the alias rewrite also re-pointed
+    every other net holding the same value, so the input `b` itself
+    became `a` for every reader. A `case` whose constant labels cover
+    every value needs no `default` (no latch); a multi-bit condition is
+    true when non-zero (`$reduce_bool`, in clocked blocks too, where it
+    used to lose its enable); an `if` / `case` whose condition or labels
+    do not lower is reported instead of being walked as unconditional.
+  - Integration corpus: `ptp_clock_cdc` goes from 0 crossings on the
+    slang path to 7 of Yosys' 9; the `slang-incomplete-comb-block` gap
+    is closed and the rest is pinned to `slang-system-call`.
 
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,
