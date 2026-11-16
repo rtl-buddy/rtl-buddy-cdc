@@ -1851,11 +1851,12 @@ records with `width = 1`.
   `proc` form's: the same `(src, dst)` pairs, `min_hops` and `width`
   before and after `opt_dff`, which
   `tests/test_gate_level_corpus.py::test_crossings_invariant_under_opt_dff`
-  holds over every fixture. RDC-003 still walks `SRST` directly, so a
-  foreign sync reset on a `$sdff` reports both RDC-003 (the reset view)
-  and CDC-001 on the crossing, where the `proc` form reports CDC-001;
-  CDC-011 unions its `SRST` walk with the crossings (§8.18), so it stays
-  one finding either way.
+  holds over every fixture. A foreign sync reset reports both RDC-003
+  (the reset view) and the CDC rule for the crossing it carries
+  (CDC-001, CDC-003, CDC-012 …) in both forms: RDC-003 reads the `SRST`
+  pin and, in the `proc` form, the reset muxes `opt_dff` would fold into
+  it (§8.23, rtl-buddy-cdc#383). CDC-011 reads only the crossings
+  (§8.18), so an untyped port on `D` and on `SRST` stays one finding.
 - **Same-domain crossings.** Filtered out at record-creation time —
   if `dst_clock == src_clock`, no record is created.
 - **The storage path of a memory.** Memory *ports* are walked (§7.5),
@@ -2076,14 +2077,16 @@ free functions in `rules.py`:
 | `_packed_shift_register_depth(head, reader_counts, module, bit_drivers)` | `_sync_chain_depth` | Recognise a synchroniser packed into one multi-bit flop (`s <= {s[N-2:0], d}`): `D` must be, lane for lane, either one of the flop's own `Q` bits or — for exactly one lane — an external bit; follow the per-lane shift and return the effective depth (#264). With a **synchronous reset** the lane test runs on the data leg of the `$mux` `proc` leaves on `D` (#301) |
 | `_constant_leg_reset_mux_data_bits(head, module, bit_drivers, reader_counts)` | `_packed_shift_register_depth`, CDC-003 | Return the data leg of a single `$mux` whose `Y` is exactly the flop's `D` vector and whose other leg is entirely constant (either polarity, any reset value) — i.e. an un-folded synchronous reset. Rejects enable muxes (other leg = own `Q`), any other live leg, both-constant legs, `$pmux`, chained muxes, and a `Y` with more than one reader (#301) |
 | `_srst_mux_data_bit_to_single_bit_flop(module, d_bit_to_single_bit_flop, bit_drivers, reader_counts)` | `_build_context` (cached as `ctx.srst_mux_data_bit_to_single_bit_flop`), `_sync_chain_depth`, `_sync_chain_flops`, `_chain_has_inter_stage_comb` | Reverse index from a constant-leg sync-reset `$mux`'s *data-leg* bit to the 1-bit flop it feeds. The chain walkers consult it when the `D`-bit lookup misses, so a separate-flop chain steps over each stage's own reset mux (depth 2 for `if (rst) … else begin s1 <= d; s2 <= s1; end`), and the inter-stage-comb detector skips that mux so CDC-014 matches the slang `$sdff` verdict (#304) |
-| `_own_srst_data_leg(module, flop, clock, domains, bit_drivers, reader_counts)` | gated-bus test, single-bit handshake hold test, `_carries_synchronised_control`, CDC-006, CDC-013 | The data leg behind `flop`'s own synchronous reset: the constant-leg `$mux` shape `_constant_leg_reset_mux_data_bits` accepts, with a select local to `clock` (`_srst_select_is_local`). Callers read what the flop samples between resets, which is what the `$sdff` form shows directly (rtl-buddy-cdc#376) |
+| `_own_srst_data_leg(module, flop, clock, domains, bit_drivers, reader_counts)` | gated-bus test, single-bit handshake hold test, `_carries_synchronised_control`, CDC-006, CDC-013 | The data leg behind `flop`'s own synchronous reset: the constant-leg `$mux` shape `_constant_leg_reset_mux_data_bits` accepts, whatever drives its select (as `opt_dff` folds it). Callers read what the flop samples between resets, which is what the `$sdff` form shows directly (rtl-buddy-cdc#376). Until rtl-buddy-cdc#383 it also required a destination-domain select, which made the two forms disagree whenever the reset came from another domain (§8.23) |
+| `_folded_srst_selects(flop, module, bit_drivers, reader_counts)` | RDC-003 | The selects of the reset muxes on `flop`'s `D` that `opt_dff` would fold into `SRST`, read lane by lane the way `opt_dff` reads them: through enable muxes (a leg is the lane's own `Q`) and constant-leg muxes, collecting the latter's selects; empty for a flop with an asynchronous control (rtl-buddy-cdc#383, §8.23) |
+| `reset_domain.async_controls(module, cell, drivers)` / `effective_control_bit(...)` | `assign_reset_domains` (`ResetDomain.controls`), RDC-004, -005, -006 | Every asynchronous control pin of a flop (`ARST`, `ALOAD`, `CLR` and `SET`, gate-level `R` / `L` / `S`) with the signal it acts on once the cells Yosys wraps around a set / clear flop's pins are stepped through: a buffer mux `s ? 1 : 0`, the priority term (`SET = clr ? 0 : set`, `~clr & set` after `abc`) and, on a flop with two such pins, the inverter that stands in for an active-low polarity (rtl-buddy-cdc#383, §8.23) |
 | `_crossing_enters_through_reset_mux_only(module, crossing, ctx)` | CDC-003 | True when the only cell between the source flop and the destination flop's `D` is that flop's constant-leg sync-reset `$mux` — part of the flop, not logic on the crossing path. Keeps the yosys frontend in step with slang, which emits `$sdff` for the same source (#86/#301) |
 | `_sync_chain_flops(module, head, ...)` | CDC-005 | Same walk as `_sync_chain_depth`, but returns the ordered tuple of chain flops so callers can reach the chain's tail without re-walking |
 | `_backward_fanin(module, start_bits, drivers, ...)` | CDC-006 | Reverse-BFS from a flop's `D` through comb cells; returns the set of upstream flop names and input-port names reached |
 | `_comb_driven_bits(module, bits, drivers)` | CDC-006 | The bits a genuine combinational cell drives, looking back through single-input buffers / inverters. CDC-006 walks `_backward_fanin` from these only (after stepping over the stage's own constant-leg sync-reset `$mux`), so a port wired straight to a synchroniser's `D` is an ordinary port-sourced crossing, not a glitchy comb source (rtl-buddy-cdc#360) |
 | `_forward_reachable_flops(module, start_bits, consumers, ...)` | available for rule writers | Forward analog of `_backward_fanin`: returns the set of *flop* cell names whose `D` is on the cone |
 | `_forward_reachable_cells(module, start_bits, consumers, ...)` | CDC-005 | Forward walk that returns *every* cell on the cone — flop or comb. CDC-005 uses this for reconvergence detection so a comb-cell recombination (sync outputs into an OR driving an output port) still counts |
-| `_is_multibit_sync_first_stage(...)` | CDC-004 | Verify the destination is a width-N flop whose Q exactly equals another same-domain flop's D lane-wise — directly, or as the data leg of that flop's constant-leg synchronous-reset `$mux` (the shape `_constant_leg_reset_mux_data_bits` accepts for the single-bit walk) when the mux select fans in only from dst-domain flops, ports or constants (rtl-buddy-cdc#366) |
+| `_is_multibit_sync_first_stage(...)` | CDC-004 | Verify the destination is a width-N flop whose Q exactly equals another same-domain flop's D lane-wise — directly, or as the data leg of that flop's constant-leg synchronous-reset `$mux` (the shape `_constant_leg_reset_mux_data_bits` accepts for the single-bit walk), whatever drives the select (rtl-buddy-cdc#366, #383) |
 | `_is_gray_encoded_source(...)` | CDC-004 | Backward-walk from src D, looking for the canonical `g = b ^ (b >> 1)` XOR pattern; the shifted operand may be on either `$xor` input (`(b >> 1) ^ b`, rtl-buddy-cdc#365) |
 | `_is_gated_bus_crossing(...)` | CDC-004 | Recognise handshake-style gating — D updates only when an enable from the dst domain has been synchronized across. Three shapes are accepted: (1) `$mux` directly driving `D` with a dst-domain `S` (the original handshake), (2) the same mux behind up to `_GATING_BUF_BUDGET`=2 transparent fanout buffers (`$buf`/`$_BUF_`/`$_NOT_`/`$not`/`$pos`), (3) destination cell is a `$dffe`-style flop with a dst-domain `EN` fanin. The destination flop's own sync-reset mux is not a gate: it is stepped over (`_own_srst_data_leg`) and the shapes are tested on its data leg, as on the `$sdff` `opt_dff` folds it into (rtl-buddy-cdc#376) |
 | `_trace_through_bus_buffers(module, bit, drivers, ...)` | CDC-004 | Walk one D bit backward through up to `_GATING_BUF_BUDGET` transparent single-input buffers and return the surviving upstream driver. Used by `_is_gated_bus_crossing`'s shape-2 path so Yosys-inserted fanout buffers don't hide the originating mux |
@@ -2101,7 +2104,7 @@ free functions in `rules.py`:
 | `scan_mode_clock_select_flops(module, ...)` | §8.20 scan filter | Return cell names of flops whose `CLK` network is steered by a scan-mode port. Supplies the `is_scan_control` predicate to `domain.find_scan_mode_flops`, which reads the fact off the ordinary clock-root walk rather than re-deriving the clock network |
 | `user_static_flop_names(module)` | CDC-001..-004 | Return cell names of source-side flops the user has annotated `(* cdc_static *)` — runtime-constant config/mode registers; suppresses CDC-001..-004 on crossings sourced from the tagged flop |
 | `cells.parse_gate_storage_cell(cell_type)` | `flops.py` accessors, CDC-010 | The one decoder of Yosys gate-level flop / latch type names (rtl-buddy-cdc#336): clock edge, async/sync reset on pin `R` with its polarity and value, set pin `S`, async-load pin `L`, enable pin `E`, for `$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`, `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`, `$_DLATCH_`, `$_DLATCHSR_`, `$_SR_`. Letter positions follow the Yosys cell library (`help <type>`); `tests/test_cells.py` cross-checks them against the local Yosys's descriptions. Returns `None` for any malformed suffix rather than guessing |
-| `flop_reset(cell)` / `flop_reset_bits(cell, *roles)` / `flop_enable_pin(cell)` / `flop_clk_polarity(cell)` (in `flops.py`) | `reset_domain`, RDC-001..-006, CDC-004, CDC-011, CDC-015, CDC-016 | Read a flop's reset pin (role `arst` / `srst` / `clr` / `aload`, pin, kind, polarity, reset value), enable pin (`EN` / `E`) and clock edge the same way for coarse cells (parameters) and gate-level cells (type name). A rule scoped to one coarse pin (RDC-001 reads `ARST`) asks for that role, so it stays scoped on a gate-level netlist |
+| `flop_reset(cell)` / `flop_reset_bits(cell, *roles)` / `flop_async_controls(cell)` / `flop_enable_pin(cell)` / `flop_clk_polarity(cell)` (in `flops.py`) | `reset_domain`, RDC-001..-006, CDC-004, CDC-015, CDC-016 | Read a flop's reset pin (role `arst` / `srst` / `clr` / `set` / `aload`, pin, kind, polarity, reset value), enable pin (`EN` / `E`) and clock edge the same way for coarse cells (parameters) and gate-level cells (type name). `flop_reset` names one pin per flop (`CLR` on a set / clear flop); `flop_async_controls` lists every asynchronous one, `SET` included (rtl-buddy-cdc#383). A rule scoped to one coarse pin (RDC-003 reads `SRST`) asks for that role, so it stays scoped on a gate-level netlist |
 | `is_ff_cell(cell_type)` (in `flops.py`) | every rule + `find_flops` | Predicate "is this Yosys cell type a flip-flop?" — true for higher-level `$dff*` families AND for gate-level cells that `cells.parse_gate_storage_cell` decodes as clocked (`$_DFF_`, `$_DFFE_`, `$_SDFF_`, `$_SDFFE_`, `$_SDFFCE_`, `$_DFFSR_`, `$_DFFSRE_`, `$_ALDFF_`, `$_ALDFFE_`). The two families have different pin name conventions (CLK vs C); use `flop_clk_pin(cell)` to extract the clock portably. Replaces direct `cell.type in FF_CELL_TYPES` checks across the codebase to make rules work uniformly on pre-`abc` and post-`abc` netlists |
 | `flop_clk_pin(cell)` (in `flops.py`) | `find_flops` + `domain.trace_clock_root` | Return the clock-pin connection (tuple of `Bit`s) for a flop cell, portably across families. Higher-level cells use the ``CLK`` pin; gate-level cells use ``C`` |
 | `is_latch_cell(cell_type)` (in `flops.py`) | CDC-017 | Predicate "is this a transparent latch?" — true for `$dlatch` (higher-level) and the gate-level `$_DLATCH_*` / `$_DLATCHSR_*` families |
@@ -2238,10 +2241,16 @@ Detection is intentionally narrow in v1:
 1. Skip flops in `find_reset_synchronizers(...)` (the chain
    itself is fine; its own ARST is the muxed source by design)
    and flops marked `(* reset_sync *)`.
-2. Require `ResetDomain.reset.source == "comb"` and that the
-   immediate driver of the reset bit is `$mux` / `$pmux` (or a
+2. For each asynchronous control pin (`ResetDomain.controls`: `ARST`,
+   `ALOAD`, `CLR` **and `SET`**, rtl-buddy-cdc#383 / #378), require the
+   signal the pin acts on to be comb (`AsyncControl.source.source ==
+   "comb"`) and its immediate driver to be `$mux` / `$pmux` (or a
    gate-level `$_MUX_` family cell) with at least one *non-constant*
-   data lane behind that bit. A mux whose data legs are all
+   data lane behind that bit. "The signal the pin acts on" steps
+   through the cells Yosys wraps around a set / clear flop's pins
+   (§8.23), so the mux `proc` builds on `SET` to give the clear
+   priority (`SET = rst_n ? ~set_n : 0`) is not read as a reset mux.
+   One finding per flop. A mux whose data legs are all
    constants (`rst_n ? 1'b0 : 1'b1`) is an inverter or buffer of its
    select, not a choice between reset sources, and is skipped
    (rtl-buddy-cdc#354) — synthesis rewrites it into the `$_NOT_` it
@@ -2837,15 +2846,18 @@ either: it compares the reset's *source domain* against the consumer
 clock, and an untyped port's source domain is the
 `<unconstrained>` sentinel, not a named clock.
 
-The fix keeps the rule's port-level semantics and drops the crossing
-list as the sole source of destinations. `_unconstrained_srst_captures`
-walks every flop's `SRST` connection backward with
-`_backward_port_fanin`, collecting `{port: {(dst_clock, dst_flop)}}`
-for ports carrying the sentinel; `check_cdc_011` unions that with the
-crossing-derived destinations **before** deciding severity. Unioning
-first is what keeps the existing multi-domain escalation honest: a
-port captured on a `D` pin in one domain and an `SRST` pin in another
-is still one `error`, not two findings.
+The first fix (#272) kept the rule's port-level semantics and added a
+second source of destinations: a walk of every flop's `SRST`
+connection, unioned with the crossing-derived destinations **before**
+deciding severity, so a port captured on a `D` pin in one domain and an
+`SRST` pin in another stayed one `error`, not two findings. Since
+rtl-buddy-cdc#375 the crossing walk itself ends on `SRST` (and `EN`), so
+that walk found nothing the crossings did not; rtl-buddy-cdc#383 removed
+it after checking that CDC-011's output is identical without it on every
+fixture netlist and on each fixture's `opt_dff`, `techmap` and `abc`
+rebuilds. `check_cdc_011` now reads the crossing list alone, and the
+union-before-severity rule holds because every capture of a port is a
+crossing of it.
 
 Scope is synchronous resets only. A sync reset is sampled on the
 destination clock edge exactly like a data input, so "declare
@@ -3306,6 +3318,66 @@ uncontracted data outputs warn; every exclusion present and silent) /
 `good_output_contracts_complete`. `tests/test_cdc_025_unconstrained_outputs.py`
 covers each shape, exclusion and the CDC-024 interplay on hand-built
 netlists under both SDC reader backends.
+
+### 8.23 One reading of a flop's control pins in every netlist form (issue #383)
+
+The same RTL reaches the analyzer in several forms: `proc` leaves a
+synchronous reset and an enable as muxes on `D`; `opt_dff` folds them
+into `$sdff*` / `$dffe*` pins; `techmap` / `abc` lower everything to
+`$_*_` gates. The rules read flop control pins so that every form gets
+the same per-rule verdict, and `tests/test_srst_set_pins.py` holds
+fixtures committed in more than one form to it.
+
+**Synchronous reset.** `opt_dff` folds a constant-leg mux on `D` into
+`SRST` on its shape alone — it does not ask where the select comes
+from. The rules follow it:
+
+- Every look-through of a flop's own reset mux (`_own_srst_data_leg`,
+  `_is_multibit_sync_first_stage`, the single-bit chain walks, CDC-003's
+  `_crossing_enters_through_reset_mux_only`) accepts the mux whatever
+  drives its select. The first two used to require a destination-domain
+  select; with a reset from another domain that made a gated bus CDC-004
+  in the `proc` form and a gated capture (CDC-012) in the `$sdffe`
+  form, and a gray bus into a synchroniser whose second stage has a
+  foreign reset CDC-004 in the `proc` form only. Requiring the local
+  select in the chain walks and CDC-003 instead (rtl-buddy-cdc#383 item
+  1) would have made those disagree the other way, since in the `$sdff`
+  form the stage's `D` is the previous stage's `Q` with no mux at all.
+- RDC-003 reads the `SRST` pin and, in the `proc` form, the selects of
+  the reset muxes `opt_dff` would fold into it (`_folded_srst_selects`:
+  per lane, through enable muxes and constant-leg muxes, not on a flop
+  with an asynchronous control, since no Yosys cell has both).
+- A crossing that arrives through the reset is reported by the CDC
+  rules on the crossing (CDC-001, CDC-003, CDC-012 …) *and* by RDC-003
+  on the reset, in both forms. The crossing walk finds it through the
+  select or the `SRST` pin alike (§7.3).
+
+**Asynchronous controls.** A set / clear flop has two asynchronous
+pins, and Yosys has no polarity or priority parameter for them in the
+`proc` form: `proc` writes `if (!rst_n) q <= 0; else if (!set_n) q <= 1;`
+as `CLR = rst_n ? 0 : 1` and `SET = rst_n ? (set_n ? 0 : 1) : 0`;
+`abc` turns the same into `CLR = ~rst_n`, `SET = rst_n & ~set_n`. None
+of it is logic on a reset. `reset_domain.async_controls` gives each
+asynchronous pin (`ARST`, `ALOAD`, `CLR`, `SET`; `R`, `L`, `S`) the
+signal it acts on (`AsyncControl.bits`, `ResetDomain.controls`), with
+these cells stepped through by `effective_control_bit`:
+
+- a buffer mux `s ? 1 : 0` (any flop);
+- the priority term: a mux whose select, or a 2-input AND / OR whose
+  input, is a buffered or inverted copy of the flop's own other
+  control, when that term can only *deassert* the pin (the constant leg
+  or the gate matches the pin's polarity);
+- on a flop with two asynchronous pins, an inverter (`s ? 0 : 1`,
+  `$not`, `$_NOT_`), tracking the polarity. On a single-reset flop
+  Yosys puts the polarity in `ARST_POLARITY` and an inverter is the
+  designer's, so it stays a comb-driven reset.
+
+RDC-004, -005 and -006 test every asynchronous pin on that signal (one
+finding per flop), and RDC-001 walks every asynchronous pin's cone, so a
+`CLR`, `SET` or `ALOAD` driven from another domain's register is a reset
+crossing as an `ARST` is. `ResetDomain.reset` (the one pin RDC-002,
+RDC-007, RDC-008 and the reset-domain map read) is classified on the same
+signal. Any other combinational logic on a pin still fires as before.
 
 ## 9. Waivers
 

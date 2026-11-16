@@ -132,8 +132,8 @@ LEGS: dict[str, str] = {
     "rtl": "",
     "gates": "techmap; opt_clean",
     "synth": "opt_dff; techmap; abc -g AND,OR,XOR,MUX; opt_clean",
-    # Not a verdict leg: only :func:`test_crossings_invariant_under_opt_dff`
-    # builds it, to compare crossings with the ``rtl`` leg's.
+    # Not a gate leg: :func:`test_crossings_invariant_under_opt_dff` and
+    # :func:`test_verdict_invariant_under_opt_dff` compare it with ``rtl``.
     "optdff": "opt_dff; opt_clean",
 }
 GATE_LEGS = ("gates", "synth")
@@ -164,9 +164,10 @@ _FRONT_HALF_CLEANUP: dict[str, str] = {
 
 # rtl-buddy-cdc#336 (reset pin R, gate-flop clock polarity, $_MUX_,
 # gate-level clock gating), rtl-buddy-cdc#338 (the enable-flop toggle
-# opt_dff folds) and rtl-buddy-cdc#354 (the constant-leg reset mux abc
-# rewrites into a $_NOT_) are fixed; their rows are gone. The causes below are
-# what remains.
+# opt_dff folds), rtl-buddy-cdc#354 (the constant-leg reset mux abc
+# rewrites into a $_NOT_) and rtl-buddy-cdc#383 (the buffer mux proc puts
+# on a $dffsr CLR, read as RDC-004 logic) are fixed; their rows are gone.
+# The causes below are what remains.
 
 _R_OPT_CONST_FLOP = (
     "inherent: opt_dff removes the stuck-at-0 `meta` flop that is the "
@@ -180,12 +181,6 @@ _R_DFFSR_LANE_CONTROLS = (
     "(gen_dffsr_complex), so every $_DFFSR(E)_ lane has its own S / R bit and "
     "the register stays W one-bit flops: CDC-020 (sliced bus) fires on its "
     "gated capture and reset findings are counted per lane"
-)
-_R_CONST_LEG_CLR_MUX = (
-    "analyzer gap: RDC-004 reads the constant-leg mux proc puts on a $dffsr "
-    "CLR (`clr ? 1 : 0`, a buffer of one register) as glitch-prone logic; abc "
-    "removes it, so RDC-004 goes silent on the synth leg (RDC-001, the right "
-    "finding, reads ARST only and fires on neither form)"
 )
 
 
@@ -201,10 +196,7 @@ _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     # rtl-buddy-cdc#331 cell-variety fixtures: the 8-bit `$dffsre` capture
     # `cap_a`.
     "good_flop_variety_handshake": _both(_R_DFFSR_LANE_CONTROLS),
-    "bad_flop_variety_handshake": {
-        "gates": _R_DFFSR_LANE_CONTROLS,
-        "synth": f"{_R_DFFSR_LANE_CONTROLS}; {_R_CONST_LEG_CLR_MUX}",
-    },
+    "bad_flop_variety_handshake": _both(_R_DFFSR_LANE_CONTROLS),
 }
 
 
@@ -509,6 +501,37 @@ def test_crossings_invariant_under_opt_dff(name: str) -> None:
         f"{name}: crossings differ after opt_dff\n"
         f"  only before: {sorted(before - after)}\n"
         f"  only after:  {sorted(after - before)}"
+    )
+
+
+# Fixtures whose verdict ``opt_dff`` alone changes: the ``synth`` rows whose
+# cause is the optimisation itself, not the gate lowering.
+_OPT_DFF_VERDICT_CHANGES: dict[str, str] = {
+    name: legs["synth"]
+    for name, legs in _KNOWN_GATE_DIVERGENCES.items()
+    if legs.get("synth") == _R_OPT_CONST_FLOP
+}
+
+
+@pytest.mark.gate_level
+@pytest.mark.skipif(not yosys_available(), reason="yosys not on PATH")
+@pytest.mark.parametrize("name", [fx.name for fx in _FIXTURES])
+def test_verdict_invariant_under_opt_dff(name: str) -> None:
+    """The ``proc`` form (reset and enable muxes on ``D``) and the
+    ``opt_dff`` form (``$sdff*`` / ``$dffe*`` pins) of every fixture get
+    the same per-rule verdict (rtl-buddy-cdc#383): RDC-003 used to read
+    only ``SRST``, and the sync-reset look-throughs required a
+    destination-domain select ``opt_dff`` does not ask for. Strict both
+    ways against :data:`_OPT_DFF_VERDICT_CHANGES`."""
+    fx = _BY_NAME[name]
+    rtl = fired(build(fx, "rtl"), fx.sdc)
+    folded = fired(build(fx, "optdff"), fx.sdc)
+    reason = _OPT_DFF_VERDICT_CHANGES.get(name)
+    if reason is not None:
+        assert rtl != folded, f"{name}: verdicts now agree; drop it from the list"
+        pytest.xfail(f"known opt_dff divergence: {reason}")
+    assert rtl == folded, (
+        f"{name}: opt_dff changes the verdict: proc {rtl} vs opt_dff {folded}"
     )
 
 
