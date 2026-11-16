@@ -93,13 +93,14 @@ def test_braced_bus_bit_kept_on_both_backends() -> None:
 
 
 def test_unbraced_bus_bit(sdc_backend: str) -> None:
-    """Tcl substitutes ``[3]``; the reader warns rather than staying quiet."""
+    """Tcl substitutes ``[3]``: its ``unknown`` hands the call back
+    verbatim, so both backends keep ``mode[3]`` (rtl-buddy-cdc#382), and
+    the Tcl reader warns rather than staying quiet."""
     spec = parse("set_case_analysis 0 [get_ports mode[3]]\n")
+    assert spec.case_analysis == {"mode[3]": "0"}
     if sdc_backend == "tcl":
-        assert spec.case_analysis == {"mode": "0"}
         assert any("unbraced bus index" in w for w in spec.partial_warnings)
     else:
-        assert spec.case_analysis == {"mode[3]": "0"}
         assert spec.partial_warnings == []
 
 

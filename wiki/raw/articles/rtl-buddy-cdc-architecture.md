@@ -339,6 +339,20 @@ shape `proc` would have produced:
   `$dffsr*` / `$aldff*`) named after the netname, lanes in netname
   order, per-bit reset values in `ARST_VALUE` / `SRST_VALUE`. The cell
   carries `REGROUPED_ATTR` listing the replaced cells.
+- **Per-bit set / clear** (rtl-buddy-cdc#386). `proc` builds a W-bit
+  `$dffsr` / `$dffsre`'s `SET` and `CLR` from W-bit muxes, so after
+  `techmap` every `$_DFFSR(E)_` lane has its own S and R bit, each driven
+  by its own copy of the same logic; keyed on shared nets, the register
+  stayed W one-bit flops. Those two families are keyed without the S / R
+  nets, and a split stays one group when its S bits, and its R bits, are
+  *one control*: one shared net, constants, consecutive bits of one
+  multi-bit netname (LSB first: a control bus, or the vector a
+  bit-blasted coarse cell drove), or outputs of distinct one-bit gates of
+  one type whose input columns are, recursively (at most
+  `regroup._CONTROL_DEPTH` gates back), one control. Otherwise the split
+  is divided by the S / R nets, so flops on unrelated set / reset signals
+  stay apart. The coarse cell gets the lanes' bits as its per-bit `SET` /
+  `CLR`, as `proc`'s has, and those cones are rebuilt coarse like `D`'s.
 - **Lane-wise logic.** From each rebuilt register's `D`, a vector whose
   bits are the outputs of distinct one-bit gates of one type
   (`$_MUX_` with one shared `S`, `$_AND_` / `$_OR_` / `$_XOR_` /
@@ -1492,6 +1506,28 @@ one word, `{ck_a ck_b}` is one word, `clk` is one word.
 tolerates the un-collection form (`-group ck_a ck_b` without braces)
 that some SDC files in the wild use.
 
+**Unrecognised commands in operands** (rtl-buddy-cdc#382). The Tcl
+backend's `unknown` handler hands a command the safe interpreter does
+not define back as its own call, re-bracketed with its operands intact
+(`[filter_collection [all_inputs] {name =~ d*}]`) — the word the
+tokenizer backend sees for it. (It used to return the call's *last
+argument*, so `[remove_from_collection [all_inputs] [get_ports clk]]`
+typed `clk`, the port meant to be removed.) After slicing,
+`_drop_unrecognised_operands` drops every operand item whose bracketed
+command heads are not all ones a handler evaluates — `get_clocks` /
+`get_ports` / `get_pins` / `get_cells` / `get_nets`, `all_inputs` /
+`all_outputs` / `all_clocks` / `all_registers`, `expr` (a tokenizer delay
+value), a bus index (`p[3]`, `p[*]`), and, in a `set_*_delay` target
+only, the collection operators — with one `partial_warnings` entry each.
+An operand that was nothing but such a call becomes `""`, which every
+handler reads as naming nothing. One pass, after the reader, so both
+backends and every command behave the same. A side effect: an unbraced
+bus index (`[get_ports p[3]]`) now reads `p[3]` on the Tcl backend too
+(the command `3` comes back as `[3]`), where it used to collapse to the
+whole bus `p`; the "unbraced bus index" warning stays.
+`foreach_in_collection` is in `_UNSUPPORTED_COMMANDS`: its body is never
+evaluated, and that is now reported instead of being dropped at DEBUG.
+
 ### 6.1 What the parser handles today
 
 ```text
@@ -1532,10 +1568,19 @@ typed *input* is a crossing source in `find_crossings`; a typed
 Delay targets are kept as written — a bus index stays on its name
 (`{d[3]}` → `d[3]`) and globs stay unexpanded — in
 `ClockSpec.port_delays` (one `PortDelay` per statement, file order) as
-well as in `port_clock`. The parser has no netlist, so the CLI calls
-`sdc_objects.resolve_port_delays(module, spec)` right after parsing,
-before `synthesize_unconstrained_inputs`, and it rewrites `port_clock`
-in place (rtl-buddy-cdc#357):
+well as in `port_clock`. The parser has no netlist, so
+`sdc_objects.resolve_port_delays(module, spec)` rewrites `port_clock` in
+place once the netlist is known (rtl-buddy-cdc#357). The CLI calls it
+right after parsing, before `synthesize_unconstrained_inputs`, to report
+its warnings with the other SDC diagnostics; `synthesize_unconstrained_inputs`
+and `rules._build_context` call it too, so a direct API user (`parse` →
+`synthesize_unconstrained_inputs` → `find_crossings` → `run_all`) sees
+the same port typing as the CLI — before rtl-buddy-cdc#386 a bus glob
+such as `[get_ports {src_a[*] src_b[*]}]` stayed a literal key there and
+its ports were stamped `<unconstrained>`. It runs once per spec and
+netlist (`ClockSpec._port_delays_resolved` records the netlist's ports and
+the number of delay statements resolved); a repeat call returns no
+warnings and changes nothing:
 
 - An exact port name is unchanged; an SDC naming only whole ports is
   not touched at all.
@@ -1553,6 +1598,25 @@ in place (rtl-buddy-cdc#357):
   `set_output_delay`) that no `create_clock` declares a clock on.
 - A target matching nothing is warned about and kept as written, so it
   types nothing, as before.
+- **Collection operators** (rtl-buddy-cdc#382). In a `set_*_delay`
+  target, `remove_from_collection <c> <removed>` and
+  `add_to_collection [-unique] <c> <added>` are evaluated over port sets,
+  nested to any depth, by `sdc._port_terms`. The result is a union of
+  *terms* — an included pattern and the patterns removed from it —
+  recorded on the `PortDelay` as `targets` plus a parallel `excludes`
+  (`PortDelay.terms()` pairs them): `[remove_from_collection [all_inputs]
+  [get_ports clk]]` is the target `*` excluding `clk`, and
+  `[add_to_collection [remove_from_collection A B] C]` the terms
+  `(A, {B})`, `(C, {})`. The parser applies a removal to `port_clock`
+  only where the text decides it (`{a b c}` minus `b`); the resolver
+  resolves each removed pattern with the same matcher, without the
+  direction / clock filter, subtracts its bits, and drops a port left
+  with none (removing some bits of a bus leaves the port typed — typing
+  is per port). A removed pattern that matches nothing is warned about.
+  Not supported, and reported with the target ignored: `-intersect`, a
+  removal inside the removed operand (`A − (B − C)`), a pin / cell
+  operand. Elsewhere (clock lists, endpoints, case analysis) the
+  operators are unrecognised commands, dropped as above.
 
 At the end of parsing, each delay whose `-clock` names no declared
 clock (`create_clock`, virtual or not, or `create_generated_clock`) gets
@@ -2444,8 +2508,15 @@ sync hazard, but the source is a true multi-bit register rather
 than a shared combinational decoder.
 
 Detection walks `crossings` looking for src flops with `len(q) >=
-2`, groups by `(src_flop, dst_clock)`, and fires when the group
-contains ≥2 distinct `dst_flop`s. Suppression mirrors CDC-004:
+2`, keeps the *slices* — crossings with `width < len(src.q)` — groups
+them by `(src_flop, dst_clock)`, and fires when the group contains ≥2
+distinct `dst_flop`s. A crossing whose `width` reaches the source's is
+the whole bus landing on one register: a bus crossing, which CDC-004
+judges (gated, gray, …), not a lane. Until rtl-buddy-cdc#386 every
+destination counted, so two full-width captures of one held payload
+under one synchronised enable — two gated buses CDC-004 accepts — were
+reported as a sliced bus. A slice still counts beside a full-width
+capture of the same source. Suppression mirrors CDC-004:
 
 * `(* cdc_gray *)` on the source flop,
 * `(* cdc_static *)` on the source flop, or

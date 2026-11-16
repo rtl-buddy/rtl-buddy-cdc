@@ -343,6 +343,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in a separate `integration.yml` workflow (after merges to `main`,
   weekly, and on demand), not on pull requests.
 
+- **Cell-variety fixtures** (rtl-buddy-cdc#331) — *test-only, no output
+  change.* Four fixtures put the Yosys cells the corpus lacked on real
+  crossings, checked by `tests/test_cell_variety_fixtures.py`:
+  `good_flop_variety_handshake` / `bad_flop_variety_handshake` (a req/ack
+  handshake whose synchronisers and captures are `$aldff`, `$dffsr`,
+  `$dffsre`, `$aldffe` and `$sdffce`, built with `opt_dff`), and
+  `bad_comb_ops_before_sync` / `good_comb_ops_handshake` (`$mul`, `$lt` /
+  `$le`, `$reduce_and` / `$reduce_or` / `$reduce_xor` and `$shiftx` in front
+  of 2FF synchronisers, and between handshake-held operands and a gated
+  capture). `$aldffe`, `$dffsre`, `$shiftx` and `$mul` were in no fixture
+  before. The analyzer gaps they expose are pinned, not fixed: strict
+  `xfail`s for RDC-001 missing a foreign-domain `$dffsr` clear (RDC-004
+  fires on proc's constant-leg `CLR` mux instead) and for four slang
+  lowering gaps (non-constant async load, a second async control, sync
+  reset under enable, run-time index reads), and two gate-level allowlist
+  rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
+  CDC-020 fires on its capture).
+
 ### Changed
 
 - **Faster analysis on large flat netlists** (#324) — *patch: no
@@ -1076,6 +1094,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the prior value kept a temporary's register alive (`rd_ptr_temp` /
     `wr_ptr_temp` in the corpus' `axis_async_fifo`); every corpus design
     now has the same flop bits on both paths.
+
+- **CDC-020 on full-width gated captures** (rtl-buddy-cdc#386, item 2).
+  CDC-020 (sliced-bus reconvergence) counted every destination of a
+  multi-bit source, whatever the crossing's width, so two 8-bit captures
+  of one held payload under one synchronised enable — two properly gated
+  buses, which CDC-004 accepts — read as a bus sliced into two lanes. It
+  now counts only slices, crossings narrower than the source, as its
+  docstring and the architecture article always described; a slice still
+  counts beside a full-width capture. New good fixture
+  `good_gated_bus_double_capture`. No committed fixture changes verdict;
+  the two that report CDC-020 (`bad_sliced_bus_reconvergence`,
+  `bad_comb_ops_before_sync`) still do.
+
+- **Gate level: a multi-bit `$dffsr` / `$dffsre` was never regrouped**
+  (rtl-buddy-cdc#386, item 1). `proc` builds a W-bit `$dffsr`'s `SET` /
+  `CLR` from W-bit muxes, so after `techmap` each `$_DFFSR_` /
+  `$_DFFSRE_` lane has its own S / R net, and `regroup` (which keyed lanes
+  on shared nets) left the register as W one-bit flops: CDC-020 fired on
+  its gated capture and per-lane rules counted once per lane. Lanes whose
+  S bits and R bits are each one control — one net, constants,
+  consecutive bits of one vector, or per-lane copies of the same gate
+  logic of the same signals — now regroup into one `$dffsr` / `$dffsre`
+  with per-bit `SET` / `CLR`; lanes on unrelated set / reset signals stay
+  apart. The two `_KNOWN_GATE_DIVERGENCES` rows of the flop-variety
+  fixtures for this cause are gone (`bad_flop_variety_handshake`'s synth
+  leg keeps its row for the constant-leg `CLR` mux). RTL netlists are
+  untouched, so no committed fixture or integration verdict changes.
+
+- **SDC: bus-glob delay targets left unresolved on the API path**
+  (rtl-buddy-cdc#386, item 3). A `set_*_delay` target written as a bus
+  index or glob (`[get_ports {src_a[*] src_b[*]}]`, `{d[3]}`, `d*`) is
+  resolved against the netlist by `sdc_objects.resolve_port_delays`,
+  which only the CLI called; a direct API user (`sdc.parse` →
+  `sdc.synthesize_unconstrained_inputs` → `domain.find_crossings` →
+  `rules.run_all` / `rules._build_context`) kept the literal keys in
+  `spec.port_clock`, so those ports were stamped `<unconstrained>`.
+  `synthesize_unconstrained_inputs` and `_build_context` now resolve the
+  targets first (warnings on `spec.partial_warnings`), once per spec and
+  netlist, so both paths type the same ports. CLI output is unchanged.
+
+- **SDC: a constraint applied to the port it meant to remove**
+  (rtl-buddy-cdc#382). On the Tcl backend the reader's `unknown` handler
+  returned the *last argument* of any command the safe interpreter does
+  not define, so `set_input_delay … [remove_from_collection [all_inputs]
+  [get_ports clk]]` typed `clk` — and only `clk` — while the tokenizer
+  backend typed nothing. `remove_from_collection` and `add_to_collection`
+  (`-unique`, nested in each other) are now evaluated over port
+  collections in `set_input_delay` / `set_output_delay` targets on both
+  backends: the removed patterns are recorded on `PortDelay.excludes` and
+  subtracted when the targets are resolved against the netlist (a removed
+  pattern matching no port is a warning). Any other command used as a
+  collection — `filter_collection`, `sort_collection`, `get_object_name`,
+  an undefined vendor command, a collection operator outside a delay
+  target — now resolves to nothing with a warning, in every command and
+  on both backends, instead of to one of its arguments. Related changes
+  from the same audit: `foreach_in_collection` (whose body is never
+  evaluated) is reported instead of being dropped silently; on the Tcl
+  backend an unbraced bus index `[get_ports p[3]]` now reads `p[3]`, as
+  on the tokenizer backend, instead of the whole bus `p` (the warning
+  stays); `-clock` naming an unrecognised command is a missing anchor;
+  and a Tcl `list` of collections in a delay target is read item by item.
+  `PortDelay.line` no longer takes part in equality, like
+  `DatapathOnlyDelay.line`. No committed fixture or integration verdict
+  changes.
 
 ### Internal
 

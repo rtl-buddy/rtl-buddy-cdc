@@ -332,7 +332,18 @@ def _build_context(
     synchroniser on a clock whose ``-name`` differs from its port
     (rtl-buddy-cdc#358). Callers that build crossings without an SDC
     bundle (unit tests) pass the same spec's bundle to ``find_crossings``.
+
+    ``clock_spec``'s ``set_*_delay`` pattern targets are resolved against
+    ``module`` first, in place and once per spec and netlist
+    (:func:`rtl_buddy_cdc.sdc_objects.resolve_port_delays`), so a rule
+    reading ``clock_spec.port_clock`` sees the ports a bus glob types on
+    the API path as it does on the CLI path (rtl-buddy-cdc#386).
     """
+    if clock_spec is not None:
+        # Imported here: ``sdc_objects`` imports this module.
+        from rtl_buddy_cdc.sdc_objects import resolve_port_delays
+
+        clock_spec.partial_warnings.extend(resolve_port_delays(module, clock_spec))
     flops = tuple(find_flops(module))
     flops_by_d = _index_flops_by_d(flops)
     bit_drivers = _bit_drivers(module)
@@ -6033,7 +6044,11 @@ def check_cdc_020(
 
     Detection groups by ``(src_flop, dst_clock)``: one finding per
     affected source register per destination domain, listing every
-    sliced lane.
+    sliced lane. A *lane* is a crossing narrower than the source
+    (``width < len(src.q)``); a crossing that lands the whole bus on one
+    destination is a bus crossing, CDC-004's to judge, and is not
+    counted (rtl-buddy-cdc#386: two gated full-width captures of one held
+    payload are two properly gated buses, not a sliced one).
 
     Suppressed when:
 
@@ -6056,6 +6071,12 @@ def check_cdc_020(
         src_flop = c.src_flop
         if len(src_flop.q) < 2:
             continue  # truly width-1 source — CDC-001/004's domain
+        if c.width >= len(src_flop.q):
+            # Not a slice: the whole bus lands on this destination, and
+            # CDC-004 judges that bus crossing (gated, gray, …) as a whole.
+            # Two full-width captures of one register are two bus
+            # crossings, not lanes of one (rtl-buddy-cdc#386).
+            continue
         src_name = src_flop.cell.name
         src_flop_lookup[src_name] = src_flop
         key = (src_name, c.dst_clock)

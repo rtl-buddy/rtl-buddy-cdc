@@ -50,6 +50,20 @@ still one register. A split with at least two lanes becomes one group;
 its lanes are ordered by their position in the owner netname (LSB
 first, the order ``proc`` gives ``Q``).
 
+A ``$_DFFSR_`` / ``$_DFFSRE_`` register is the exception to "shared set /
+reset nets" (rtl-buddy-cdc#386): ``proc`` builds a W-bit ``$dffsr``'s
+``SET`` and ``CLR`` from W-bit muxes, so after ``techmap`` every lane has
+its own S and R bit, each driven by its own copy of the same mux logic.
+Their lanes are keyed without the S / R nets, and a split stays one group
+when its S bits are *one control* and so are its R bits: one shared net,
+constants, consecutive bits of one multi-bit netname (LSB first), or the
+outputs of distinct one-bit gates of one type whose input columns are,
+recursively (up to :data:`_CONTROL_DEPTH` gates back), one control.
+Otherwise it is split by the S / R nets, so flops on unrelated set /
+reset signals stay apart. The coarse cell carries the lanes' S / R bits
+as its per-bit ``SET`` / ``CLR``, as ``proc``'s does, and those cones are
+rebuilt coarse like the ``D`` cone.
+
 Combinational lanes
 ~~~~~~~~~~~~~~~~~~~
 
@@ -154,9 +168,20 @@ def _single(cell: Cell, pin: str) -> Bit | None:
     return bits[0] if len(bits) == 1 else None
 
 
+#: Gate families whose set / clear are per-bit vectors on the coarse cell
+#: (``$dffsr`` / ``$dffsre`` ``SET`` / ``CLR``): their lanes need not
+#: share the S / R net, only be bit slices of one control (see
+#: :func:`_is_one_control`).
+_PER_BIT_SET_CLR = frozenset({"$_DFFSR_", "$_DFFSRE_"})
+
+
 def _control_key(cell: Cell, gate: GateStorageCell) -> tuple | None:
     """Everything two lanes of one register must share, or ``None`` when a
-    control pin is not a single bit (malformed cell: never grouped)."""
+    control pin is not a single bit (malformed cell: never grouped).
+
+    For a ``$_DFFSR(E)_`` the S / R *nets* are left out: they are checked
+    per group by :func:`_split_set_clr`."""
+    per_bit = gate.family in _PER_BIT_SET_CLR
     pins: list[Bit | None] = [_single(cell, "C")]
     if gate.reset_kind is not None:
         pins.append(_single(cell, "R"))
@@ -168,6 +193,8 @@ def _control_key(cell: Cell, gate: GateStorageCell) -> tuple | None:
         pins.append(_single(cell, "E"))
     if any(p is None for p in pins):
         return None
+    if per_bit:
+        pins = [pins[0], *pins[3:]]  # drop R and S (both present on DFFSR)
     return (
         cell.attributes.get("src"),
         gate.family,
@@ -260,6 +287,105 @@ def _src_of_cells(cells: list[Cell]) -> str | None:
     return "|".join(seen) if seen else None
 
 
+#: How many gate levels :func:`_is_one_control` follows back from S / R.
+#: ``proc``'s set / clear muxes are two deep (``rst ? (set ? 1 : 0) : 0``);
+#: ``abc`` rewrites them into a couple of AND / NOT levels.
+_CONTROL_DEPTH = 6
+
+
+class _ControlIndex:
+    """What :func:`_is_one_control` looks a set / clear bit up in: the
+    one-bit comb gate driving it, and every multi-bit netname holding it.
+    Built once per module, and only when it has a ``$_DFFSR(E)_`` group."""
+
+    def __init__(self, module: Module) -> None:
+        self.gate_by_y: dict[int, Cell] = {}
+        for cell in module.cells.values():
+            if cell.type in _COMB_COARSE:
+                y = cell.connections.get("Y", ())
+                if len(y) == 1 and isinstance(y[0], int):
+                    self.gate_by_y[y[0]] = cell
+        self.vectors: dict[int, list[tuple[str, int]]] = {}
+        for nn in module.netnames.values():
+            if len(nn.bits) < 2:
+                continue
+            for pos, b in enumerate(nn.bits):
+                if isinstance(b, int):
+                    self.vectors.setdefault(b, []).append((nn.name, pos))
+
+    def is_slice(self, bits: list[Bit]) -> bool:
+        """``bits`` are consecutive bits, LSB first, of one netname."""
+        first = bits[0]
+        if not isinstance(first, int):
+            return False
+        for name, pos in self.vectors.get(first, ()):
+            if all(
+                isinstance(b, int) and (name, pos + k) in self.vectors.get(b, ())
+                for k, b in enumerate(bits)
+            ):
+                return True
+        return False
+
+
+def _is_one_control(bits: list[Bit], index: _ControlIndex, depth: int = 0) -> bool:
+    """Are the per-lane ``bits`` (one S or R bit per lane) one control?
+
+    True when they are one shared net or constants (a constant vector,
+    whatever its value per lane), consecutive bits of one multi-bit
+    netname (a control bus, or the vector a bit-blasted coarse cell
+    drove), or the outputs of distinct one-bit gates of one type whose
+    every input column is, recursively, one control — the shape
+    ``techmap`` leaves of ``proc``'s W-bit ``SET`` / ``CLR`` muxes, each
+    lane its own copy of the same logic of the same signals. Lanes whose
+    controls are unrelated signals (``s0`` and ``s1``) are not one
+    control.
+    """
+    if len(set(bits)) == 1 or all(isinstance(b, str) for b in bits):
+        return True
+    if any(not isinstance(b, int) for b in bits) or len(set(bits)) != len(bits):
+        return False
+    if index.is_slice(bits):
+        return True
+    if depth >= _CONTROL_DEPTH:
+        return False
+    gates = [index.gate_by_y.get(b) for b in bits]  # type: ignore[arg-type]
+    if any(g is None for g in gates):
+        return False
+    cells = [g for g in gates if g is not None]
+    gtype = cells[0].type
+    if any(c.type != gtype for c in cells) or len({c.name for c in cells}) != len(
+        cells
+    ):
+        return False
+    _ctype, ins = _COMB_COARSE[gtype]
+    pins = (*ins, "S") if gtype == "$_MUX_" else ins
+    for pin in pins:
+        column: list[Bit] = []
+        for c in cells:
+            pin_bits = c.connections.get(pin, ())
+            if len(pin_bits) != 1:
+                return False
+            column.append(pin_bits[0])
+        if not _is_one_control(column, index, depth + 1):
+            return False
+    return True
+
+
+def _split_set_clr(lanes: list[_Lane], index: _ControlIndex) -> list[list[_Lane]]:
+    """Lanes of a ``$_DFFSR(E)_`` register that otherwise share their
+    controls: one group when their S bits are one control and their R bits
+    are one control (:func:`_is_one_control`), else split by the S / R
+    nets themselves, as for every other family."""
+    s_bits = [lane.cell.connections["S"][0] for lane in lanes]
+    r_bits = [lane.cell.connections["R"][0] for lane in lanes]
+    if _is_one_control(s_bits, index) and _is_one_control(r_bits, index):
+        return [lanes]
+    by_nets: dict[tuple[Bit, Bit], list[_Lane]] = {}
+    for lane, s, r in zip(lanes, s_bits, r_bits):
+        by_nets.setdefault((s, r), []).append(lane)
+    return list(by_nets.values())
+
+
 def _coarse_cell(name: str, lanes: list[_Lane]) -> Cell:
     """The coarse flop cell ``proc`` would have produced for ``lanes``."""
     first, gate = lanes[0].cell, lanes[0].gate
@@ -283,9 +409,12 @@ def _coarse_cell(name: str, lanes: list[_Lane]) -> Cell:
     }
     # Coarse value parameters are MSB first.
     values = "".join(str(lane.gate.reset_value) for lane in reversed(lanes))
-    if gate.family in ("$_DFFSR_", "$_DFFSRE_"):
-        conns["SET"] = shared("S") * width
-        conns["CLR"] = shared("R") * width
+    if gate.family in _PER_BIT_SET_CLR:
+        # Per-bit, as on ``proc``'s ``$dffsr``: each lane keeps its own
+        # S / R bit (they are one shared net, or bit slices of one
+        # control — :func:`_split_set_clr`).
+        conns["SET"] = bus("S")
+        conns["CLR"] = bus("R")
         params["SET_POLARITY"] = _int32(gate.set_polarity or 0)
         params["CLR_POLARITY"] = _int32(gate.reset_polarity or 0)
     elif gate.reset_kind == "async":
@@ -378,13 +507,22 @@ def regroup_flops(module: Module) -> Module:
     # 3. Split each owner's lanes by control key; build the wide cells.
     new_cells: dict[str, Cell] = {}
     replaced: set[str] = set()
+    controls: _ControlIndex | None = None
     for net, lanes in by_owner.items():
         splits: dict[tuple, list[_Lane]] = {}
         for lane in lanes:
             key = _control_key(lane.cell, lane.gate)
             if key is not None:
                 splits.setdefault(key, []).append(lane)
-        groups = [g for g in splits.values() if len(g) >= 2]
+        candidates: list[list[_Lane]] = []
+        for same_key in splits.values():
+            if len(same_key) >= 2 and same_key[0].gate.family in _PER_BIT_SET_CLR:
+                if controls is None:
+                    controls = _ControlIndex(module)
+                candidates.extend(_split_set_clr(same_key, controls))
+            else:
+                candidates.append(same_key)
+        groups = [g for g in candidates if len(g) >= 2]
         whole = len(groups) == 1 and len(groups[0]) == len(lanes)
         for group in groups:
             name = _group_name(net, [lane.pos for lane in group], whole)
@@ -413,7 +551,15 @@ def regroup_flops(module: Module) -> Module:
     cells.update(orphans)
     cells.update(new_cells)
     if new_cells:
-        _merge_comb_lanes(cells, [c.connections["D"] for c in new_cells.values()])
+        # The D cone, and a regrouped $dffsr's per-bit SET / CLR cones
+        # (``proc``'s W-bit set / clear muxes), are rebuilt coarse.
+        roots = [
+            c.connections[pin]
+            for c in new_cells.values()
+            for pin in ("D", "SET", "CLR")
+            if pin in c.connections
+        ]
+        _merge_comb_lanes(cells, roots)
     return replace(module, cells=cells)
 
 

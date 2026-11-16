@@ -22,7 +22,7 @@ Where the analyzer disagrees the test is written against the reasoned
 verdict and marked ``xfail(strict=True)`` (:data:`_XFAIL`), and
 :data:`_CURRENT` pins what it reports today, so a partial fix or a new
 regression still shows. The gate-level legs are held by
-``tests/test_gate_level_corpus.py`` (two allowlist rows); the slang
+``tests/test_gate_level_corpus.py`` (and its allowlist); the slang
 frontend's verdict is compared with the committed netlist's here.
 """
 
