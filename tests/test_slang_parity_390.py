@@ -619,3 +619,102 @@ def test_bit_select_register_and_port_names_resolve_alike(
     assert len(got) == 1
     if _HAVE_YOSYS:
         assert resolve(_yosys(tmp_path, _BIT_NAMES)) == got
+
+
+# --- 13. enables stay a hold mux on ``D``, as ``proc`` leaves them ----------
+#
+# The ``lint`` recipe runs ``proc; flatten; opt_clean`` and no ``opt_dff``
+# (``frontends/yosys.py``), so on the Yosys path an enable is a hold mux on
+# ``D`` and a sync reset a constant-leg mux: no ``$dffe`` / ``$sdffe`` ever
+# reaches the rules there. Folding enables into ``EN`` here would move the
+# slang netlist away from that, not towards it; the findings already agree
+# for every enable form.
+
+_ENABLE_FORMS = {
+    "plain": "if (en) q <= a_q;",
+    "srst_over_en": "if (srst) q <= 4'h0; else if (en) q <= a_q;",
+    "en_over_srst": "if (en) begin if (srst) q <= 4'h0; else q <= a_q; end",
+    "srst_n_over_en": "if (!srst) q <= 4'h3; else if (en) q <= a_q;",
+}
+
+
+def _enable_design(form: str, enable: str, reset: str, arst: bool) -> str:
+    event = "posedge clk_b or negedge rst_n" if arst else "posedge clk_b"
+    body = _ENABLE_FORMS[form]
+    if arst:
+        body = f"if (!rst_n) q <= 4'h0; else begin {body} end"
+    return f"""module m (input clk_a, input clk_b, input rst_n, input go,
+          input srst_p, input [3:0] d, output reg [3:0] q);
+    reg [3:0] a_q;
+    reg req_a, srst_a;
+    always_ff @(posedge clk_a) begin a_q <= d; req_a <= go; srst_a <= go; end
+    reg r1, r2;
+    always_ff @(posedge clk_b) begin r1 <= req_a; r2 <= r1; end
+    wire en = {enable};
+    wire srst = {reset};
+    always_ff @({event}) {body}
+endmodule
+"""
+
+
+def _enable_cases() -> list[tuple[str, str, str, bool]]:
+    cases = []
+    for form, enable, reset, arst in itertools.product(
+        sorted(_ENABLE_FORMS), ("r2", "req_a"), ("srst_p", "srst_a"), (False, True)
+    ):
+        # Under an async reset a sync reset cannot fold, and the clocked
+        # walker orders an ``if`` / ``else if`` chain's muxes differently
+        # from ``proc`` (the second condition's mux outermost, selected by
+        # ``~c1 & c2``): with a foreign ``srst_a`` over a synchronised
+        # enable that changes the gated-bus verdict. Not an enable-folding
+        # question; reported separately (rtl-buddy-cdc#390 PR).
+        if arst and form != "plain" and reset == "srst_a" and enable == "r2":
+            continue
+        cases.append((form, enable, reset, arst))
+    return cases
+
+
+@pytest.mark.parametrize(("form", "enable", "reset", "arst"), _enable_cases())
+def test_enable_forms_give_the_same_findings(
+    tmp_path: Path, form: str, enable: str, reset: str, arst: bool
+) -> None:
+    """A plain enable, a sync reset over an enable, an enable over a sync
+    reset (slang: ``$sdffce``) and either under an async reset: the same
+    crossings and findings on both frontends, whether the enable is
+    synchronised (``r2``) or not (``req_a``) and the sync reset local or
+    from the other domain (``srst_a``)."""
+    src = _enable_design(form, enable, reset, arst)
+    sdc = _SDC + (
+        "set_input_delay -clock clk_a 1 [get_ports {d go}]\n"
+        "set_input_delay -clock clk_b 1 [get_ports {srst_p rst_n}]\n"
+    )
+    crossings, live, _ = _same_verdict(tmp_path, src, sdc=sdc)
+    assert crossings >= 1
+    assert live  # the bus crossing is reported in every form
+
+
+def test_enable_is_a_hold_mux_not_an_en_pin(tmp_path: Path) -> None:
+    """The slang path keeps an enable as a hold mux on ``D`` (no
+    ``$dffe`` / ``$sdffe``), the shape ``proc`` leaves on the Yosys path;
+    only an enable over a sync reset folds, into the ``$sdffce`` whose
+    reset acts only while loading (rtl-buddy-cdc#384)."""
+    types = {}
+    for form in _ENABLE_FORMS:
+        # One directory per design: pyslang caches a source by its path.
+        (tmp_path / form).mkdir()
+        module = _slang(tmp_path / form, _enable_design(form, "r2", "srst_p", False))
+        q_bits = set(module.netnames["q"].bits)
+        types[form] = {
+            c.type
+            for c in module.cells.values()
+            if set(c.connections.get("Q", ())) & q_bits
+        }
+    assert types == {
+        "plain": {"$dff"},
+        "srst_over_en": {"$sdff"},
+        "en_over_srst": {"$sdffce"},
+        "srst_n_over_en": {"$sdff"},
+    }
+    if _HAVE_YOSYS:
+        y_mod = _yosys(tmp_path, _enable_design("en_over_srst", "r2", "srst_p", False))
+        assert not [c for c in y_mod.cells.values() if "EN" in c.connections]

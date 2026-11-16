@@ -1279,6 +1279,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **slang enables stay hold muxes on `D`** (rtl-buddy-cdc#390, item 13)
+  — *test-only, no output change.* The `lint` recipe runs `proc; flatten;
+  opt_clean` and no `opt_dff`, so on the Yosys path an enable is a hold
+  mux on `D` and no `EN` pin reaches the rules; folding enables into `EN`
+  on the slang path would move it away from that. The lowering is left
+  alone, and `tests/test_slang_parity_390.py` checks that a plain enable,
+  a sync reset over an enable, an enable over a sync reset (`$sdffce`)
+  and either under an async reset give the same crossings and findings on
+  both frontends, with a synchronised or foreign enable and a local or
+  foreign sync reset. One combination still differs and is left out: under
+  an async reset, a foreign sync reset over a synchronised enable is
+  CDC-004 on slang and CDC-012 on Yosys, because the clocked walker builds
+  an `if` / `else if` chain's muxes in a different order from `proc` (the
+  later arm's mux outermost, selected by `~c1 & c2`), not because of the
+  enable lowering.
+
 - **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —
   *no output change.* `_unconstrained_srst_captures` (rtl-buddy-cdc#272)
   found untyped ports on sync-reset pins because the crossing walk ended
