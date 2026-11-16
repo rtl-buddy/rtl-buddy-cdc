@@ -331,7 +331,18 @@ def _build_context(
     synchroniser on a clock whose ``-name`` differs from its port
     (rtl-buddy-cdc#358). Callers that build crossings without an SDC
     bundle (unit tests) pass the same spec's bundle to ``find_crossings``.
+
+    ``clock_spec``'s ``set_*_delay`` pattern targets are resolved against
+    ``module`` first, in place and once per spec and netlist
+    (:func:`rtl_buddy_cdc.sdc_objects.resolve_port_delays`), so a rule
+    reading ``clock_spec.port_clock`` sees the ports a bus glob types on
+    the API path as it does on the CLI path (rtl-buddy-cdc#386).
     """
+    if clock_spec is not None:
+        # Imported here: ``sdc_objects`` imports this module.
+        from rtl_buddy_cdc.sdc_objects import resolve_port_delays
+
+        clock_spec.partial_warnings.extend(resolve_port_delays(module, clock_spec))
     flops = tuple(find_flops(module))
     flops_by_d = _index_flops_by_d(flops)
     bit_drivers = _bit_drivers(module)

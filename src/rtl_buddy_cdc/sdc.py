@@ -451,6 +451,13 @@ class ClockSpec:
     # parser couldn't fully understand. Surfaced once at the end of
     # parsing rather than logged per-line.
     partial_warnings: list[str] = field(default_factory=list)
+    # Which netlist :attr:`port_delays` were last resolved against, so the
+    # resolution runs once per spec and netlist however many entry points
+    # ask for it (``sdc_objects.resolve_port_delays``, rtl-buddy-cdc#386).
+    # Bookkeeping only: not an argument, not compared, not printed.
+    _port_delays_resolved: object = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     # ---- consumer-facing helpers ------------------------------------------
 
@@ -1055,7 +1062,18 @@ def synthesize_unconstrained_inputs(spec: ClockSpec, module: "Module") -> list[s
     clock, so the resulting port-sourced crossings reach the rule
     pack. CDC-011 owns them; CDC-001 / CDC-002 / CDC-006 skip them to
     avoid double-firing with a fix-advice mismatch.
+
+    The ``set_*_delay`` targets are resolved against ``module`` first
+    (:func:`rtl_buddy_cdc.sdc_objects.resolve_port_delays`, once per spec
+    and netlist; its warnings land on :attr:`ClockSpec.partial_warnings`),
+    so a bus-index or glob target (``[get_ports {d[*]}]``) types its
+    port here exactly as on the CLI path rather than leaving it to the
+    sentinel (rtl-buddy-cdc#386).
     """
+    # Imported here: ``sdc_objects`` imports this module.
+    from rtl_buddy_cdc.sdc_objects import resolve_port_delays
+
+    spec.partial_warnings.extend(resolve_port_delays(module, spec))
     sentinel_ports: list[str] = []
     for port in module.ports.values():
         if port.direction != "input":

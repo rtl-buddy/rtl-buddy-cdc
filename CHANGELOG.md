@@ -368,6 +368,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SDC: bus-glob delay targets left unresolved on the API path**
+  (rtl-buddy-cdc#386, item 3). A `set_*_delay` target written as a bus
+  index or glob (`[get_ports {src_a[*] src_b[*]}]`, `{d[3]}`, `d*`) is
+  resolved against the netlist by `sdc_objects.resolve_port_delays`,
+  which only the CLI called; a direct API user (`sdc.parse` →
+  `sdc.synthesize_unconstrained_inputs` → `domain.find_crossings` →
+  `rules.run_all` / `rules._build_context`) kept the literal keys in
+  `spec.port_clock`, so those ports were stamped `<unconstrained>`.
+  `synthesize_unconstrained_inputs` and `_build_context` now resolve the
+  targets first (warnings on `spec.partial_warnings`), once per spec and
+  netlist, so both paths type the same ports. CLI output is unchanged.
+
 - **Crossings behind more than 4 combinational cells were dropped
   silently** (rtl-buddy-cdc#347). `find_crossings` stopped its walk at
   `max_hops=4` and the CLI never changed it, so a deeper path from one

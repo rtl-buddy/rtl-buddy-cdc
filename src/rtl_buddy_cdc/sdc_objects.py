@@ -549,6 +549,30 @@ _DELAY_DIRECTIONS: dict[str, frozenset[str]] = {
 
 
 def resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
+    """Resolve ``spec``'s ``set_*_delay`` port targets against ``module``
+    (:func:`_resolve_port_delays` has the rules); returns the warnings.
+
+    Runs once per spec and netlist (rtl-buddy-cdc#386): every entry point
+    that pairs the two calls it — the CLI explicitly, to report the
+    warnings with the other SDC diagnostics, and
+    :func:`rtl_buddy_cdc.sdc.synthesize_unconstrained_inputs` and
+    :func:`rtl_buddy_cdc.rules._build_context` for direct API users — and
+    a repeat call returns ``[]`` without touching ``port_clock``. A
+    netlist with other ports, or a delay statement added since, is
+    resolved again.
+    """
+    key = (
+        tuple((p.name, p.direction, len(p.bits)) for p in module.ports.values()),
+        len(spec.port_delays),
+    )
+    if spec._port_delays_resolved == key:
+        return []
+    warnings = _resolve_port_delays(module, spec)
+    spec._port_delays_resolved = key
+    return warnings
+
+
+def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
     """Resolve ``set_*_delay`` port targets against ``module``'s top-level
     ports, rewriting :attr:`ClockSpec.port_clock` in place
     (rtl-buddy-cdc#357). Returns the warnings.

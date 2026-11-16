@@ -1532,10 +1532,19 @@ typed *input* is a crossing source in `find_crossings`; a typed
 Delay targets are kept as written — a bus index stays on its name
 (`{d[3]}` → `d[3]`) and globs stay unexpanded — in
 `ClockSpec.port_delays` (one `PortDelay` per statement, file order) as
-well as in `port_clock`. The parser has no netlist, so the CLI calls
-`sdc_objects.resolve_port_delays(module, spec)` right after parsing,
-before `synthesize_unconstrained_inputs`, and it rewrites `port_clock`
-in place (rtl-buddy-cdc#357):
+well as in `port_clock`. The parser has no netlist, so
+`sdc_objects.resolve_port_delays(module, spec)` rewrites `port_clock` in
+place once the netlist is known (rtl-buddy-cdc#357). The CLI calls it
+right after parsing, before `synthesize_unconstrained_inputs`, to report
+its warnings with the other SDC diagnostics; `synthesize_unconstrained_inputs`
+and `rules._build_context` call it too, so a direct API user (`parse` →
+`synthesize_unconstrained_inputs` → `find_crossings` → `run_all`) sees
+the same port typing as the CLI — before rtl-buddy-cdc#386 a bus glob
+such as `[get_ports {src_a[*] src_b[*]}]` stayed a literal key there and
+its ports were stamped `<unconstrained>`. It runs once per spec and
+netlist (`ClockSpec._port_delays_resolved` records the netlist's ports and
+the number of delay statements resolved); a repeat call returns no
+warnings and changes nothing:
 
 - An exact port name is unchanged; an SDC naming only whole ports is
   not touched at all.
