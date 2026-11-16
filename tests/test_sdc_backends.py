@@ -216,12 +216,13 @@ def test_period_from_variable_and_expr(reader) -> None:
     assert spec.clocks["clk"].ports == ("clk",)
 
 
-@tcl_only
-def test_nested_get_pins_get_cells_collapses_to_one_pin(reader) -> None:
+def test_nested_get_pins_get_cells_collapses_to_one_pin(sdc_backend) -> None:
     """``[get_pins [get_cells u_div]/C]`` evaluates inside-out to the
-    single pin path ``u_div/C``. The tokenizer treats the whole bracket
-    span as opaque text and splits it into two bogus names."""
-    spec = parse(NESTED_COLLECTION_SDC, backend=reader)
+    single pin path ``u_div/C``. The tokenizer keeps the bracket span
+    opaque; it used to split it into two bogus names through
+    ``_extract_names``, and since rtl-buddy-cdc#390 the clock-target reader
+    peels the nested wrapper the way the Tcl worker does."""
+    spec = parse(NESTED_COLLECTION_SDC)
     assert spec.pin_clocks == {"u_div/C": "gclk"}
 
 
