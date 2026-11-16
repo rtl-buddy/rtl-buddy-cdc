@@ -499,7 +499,7 @@ endmodule
     assert _cells(module, "$_UNKNOWN_")
 
 
-# --- 4. an async load of a value is an $aldff ----------------------------
+# --- 4 / 5. an async load of a value; several async controls ----------------------------
 
 _ASYNC_FLOPS = frozenset({"$adff", "$aldff", "$dffsr", "$dff"})
 
@@ -582,3 +582,130 @@ def test_async_load_of_a_value_is_an_aldff(tmp_path: Path, caplog) -> None:
     assert view["u[0]"][0] == "$adff"
     if _HAVE_YOSYS:
         assert view == _flop_view(_yosys(tmp_path, _ALOAD))
+
+
+def _controls(module: Module, reg: str, values: dict[str, int]) -> tuple[int, ...]:
+    """``(SET, CLR, D)`` of ``reg``'s flop under ``values`` (``SET`` /
+    ``CLR`` read as 0 on a flop without them)."""
+    flop = _flop_of(module, reg)
+    ev = _evaluator(module, values)
+    conn = flop.connections
+    return tuple(ev(conn[p]) if p in conn else 0 for p in ("SET", "CLR", "D"))
+
+
+_SETCLR = """module m (input clk_a, input rst_n, input set_n, input clr, input d,
+          input [1:0] ad, input [1:0] dd, output reg q, output reg [1:0] w,
+          output reg [1:0] v, output reg [1:0] h, output reg k);
+    // Reset first, then set: req_s1 of good_flop_variety_handshake.
+    always_ff @(posedge clk_a or negedge rst_n or negedge set_n)
+        if (!rst_n)      q <= 1'b0;
+        else if (!set_n) q <= 1'b1;
+        else             q <= d;
+    // Active-high clear listed before the clock, per-bit values.
+    always_ff @(posedge clr or posedge clk_a or negedge set_n)
+        if (clr)         w <= 2'b01;
+        else if (!set_n) w <= 2'b10;
+        else             w <= dd;
+    // A non-constant value in the second control.
+    always_ff @(posedge clk_a or negedge rst_n or negedge set_n)
+        if (!rst_n)      v <= 2'b00;
+        else if (!set_n) v <= ad;
+        else             v <= dd;
+    // A register the first control leaves alone (holds its value).
+    always_ff @(posedge clk_a or negedge rst_n or negedge set_n)
+        if (!rst_n)      k <= 1'b0;
+        else if (!set_n) h <= 2'b11;
+        else begin       h <= dd; k <= d; end
+endmodule
+"""
+
+
+def test_second_async_control_builds_a_dffsr(tmp_path: Path, caplog) -> None:
+    """Two async controls with different values are a ``$dffsr``: ``SET``
+    / ``CLR`` are priority mux chains over the controls (first control
+    outermost), as Yosys ``proc`` builds them. The second control used to
+    be synchronous logic on ``D``."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _SETCLR)
+    assert not _warnings(caplog)
+    for reg in ("q", "w", "v", "h"):
+        assert _flop_of(module, reg).type == "$dffsr", reg
+    y_mod = _yosys(tmp_path, _SETCLR) if _HAVE_YOSYS else None
+    for rst_n in (0, 1):
+        for set_n in (0, 1):
+            for clr in (0, 1):
+                for data in range(16):
+                    values = {
+                        "rst_n": rst_n,
+                        "set_n": set_n,
+                        "clr": clr,
+                        "d": data & 1,
+                        "ad": data & 3,
+                        "dd": data >> 2,
+                        "h": data & 3,
+                        "k": data & 1,
+                    }
+                    got = {
+                        r: _controls(module, r, values) for r in ("q", "w", "v", "h")
+                    }
+                    if not rst_n:
+                        assert got["q"][:2] == (0, 1)
+                        assert got["v"][:2] == (0, 3)
+                    elif not set_n:
+                        assert got["q"][:2] == (1, 0)
+                        assert got["v"][:2] == (data & 3, 3 ^ (data & 3))
+                    else:
+                        assert got["q"][:2] == got["v"][:2] == (0, 0)
+                    if y_mod is not None:
+                        want = {
+                            r: _controls(y_mod, r, values) for r in ("q", "w", "v", "h")
+                        }
+                        assert got == want, values
+
+
+def test_async_controls_with_one_value_share_an_adff(tmp_path: Path) -> None:
+    """Every control loading the same constant: one ``$adff`` whose reset
+    is the OR of the (active-high) controls, as Yosys collapses them."""
+    src = """module m (input clk_a, input rst_n, input clr, input d, input e,
+          output reg q, output reg z);
+    always_ff @(posedge clk_a or negedge rst_n or posedge clr)
+        if (!rst_n)   q <= 1'b0;
+        else if (clr) q <= 1'b0;
+        else begin    q <= d; z <= e; end
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    flop = _flop_of(module, "q")
+    assert flop.type == "$adff"
+    # ``z`` is left alone by both controls: it holds while either is
+    # asserted, a plain flop with a hold mux (Yosys: the reset value is Q).
+    held = _flop_of(module, "z")
+    assert held.type == "$dff"
+    for rst_n, clr, e in ((0, 0, 1), (1, 1, 1), (1, 0, 1), (1, 0, 0)):
+        ev = _evaluator(module, {"rst_n": rst_n, "clr": clr, "e": e, "z": 0})
+        assert ev(held.connections["D"]) == (e if rst_n and not clr else 0)
+    assert flop.parameters["ARST_POLARITY"][-1] == "1"
+    assert _driver(module, flop.connections["ARST"][0]).type == "$reduce_or"
+    for rst_n in (0, 1):
+        for clr in (0, 1):
+            ev = _evaluator(module, {"rst_n": rst_n, "clr": clr})
+            assert ev(flop.connections["ARST"]) == int(not rst_n or clr)
+    if _HAVE_YOSYS:
+        assert _flop_view(module) == _flop_view(_yosys(tmp_path, src))
+
+
+def test_async_control_not_tested_by_the_body_is_reported(
+    tmp_path: Path, caplog
+) -> None:
+    """A third event whose signal the leading ``if`` / ``else if`` chain
+    never tests is not a recognisable flop: the block is reported, not
+    lowered with the event ignored."""
+    src = """module m (input clk_a, input rst_n, input set_n, input d, output reg q);
+    always_ff @(posedge clk_a or negedge rst_n or negedge set_n)
+        if (!rst_n) q <= 1'b0;
+        else        q <= d;
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        _slang(tmp_path, src)
+    assert any("not lowered" in w for w in _warnings(caplog))

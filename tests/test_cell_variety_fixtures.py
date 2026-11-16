@@ -349,29 +349,33 @@ _HAVE_PYSLANG = importlib.util.find_spec("pyslang") is not None
 # lowering gap. Strict: a row whose fixture starts agreeing fails until the
 # row is removed.
 _SLANG_GAPS: dict[str, str] = {
-    "good_flop_variety_handshake": (
-        "slang lowers an async load of a non-constant value (`if (aload) q <= "
-        "ad`) as an $adff resetting to 0, dropping AD, and the second async "
-        "control of a set / clear flop as synchronous logic on D; the set mux "
-        "between req_s1 and req_s2 then fires CDC-014"
-    ),
     "bad_flop_variety_handshake": (
-        "same async-load / async-set lowering (CDC-014 on req_s1 -> req_s2); "
         "cap_c's sync reset under enable becomes a load mux selected by "
         "`req_s2 & ~srst_q`, a select CDC-004 does not accept as a dst-domain "
-        "gate, so RDC-003 + CDC-012 become CDC-004 on pay_c and srst_q; and "
-        "cap_a's clear is a direct $adff ARST, so slang reports RDC-001 where "
-        "the Yosys netlist reports RDC-004"
+        "gate, so RDC-003 + CDC-012 become CDC-004 on pay_c and srst_q"
+    ),
+}
+
+# Same, for the structural comparison
+# (:func:`test_slang_frontend_structure_matches_committed_netlist`).
+_SLANG_STRUCTURE_GAPS: dict[str, str] = {
+    "good_flop_variety_handshake": (
+        "cap_c (sync reset under enable) is a $dff behind a load mux, where "
+        "the committed netlist has an $sdffce"
+    ),
+    "bad_flop_variety_handshake": (
+        "cap_c (sync reset under enable) is a $dff behind a load mux, where "
+        "the committed netlist has an $sdffce"
     ),
 }
 
 
-def _slang_params() -> list:
+def _slang_params(gaps: dict[str, str] = _SLANG_GAPS) -> list:
     return [
         pytest.param(
             name,
-            marks=[pytest.mark.xfail(strict=True, reason=_SLANG_GAPS[name])]
-            if name in _SLANG_GAPS
+            marks=[pytest.mark.xfail(strict=True, reason=gaps[name])]
+            if name in gaps
             else [],
             id=name,
         )
@@ -414,6 +418,7 @@ def test_slang_frontend_agrees_with_committed_netlist(
 
 def test_slang_gap_rows_name_real_fixtures() -> None:
     assert set(_SLANG_GAPS) <= set(EXPECTED)
+    assert set(_SLANG_STRUCTURE_GAPS) <= set(EXPECTED)
 
 
 # The slang frontend folds no enable into a flop (an enable stays a hold
@@ -461,7 +466,7 @@ def _flop_shapes(module, registers: set[str]) -> dict[str, tuple[str, frozenset]
 
 
 @pytest.mark.skipif(not _HAVE_PYSLANG, reason="pyslang not installed")
-@pytest.mark.parametrize("name", _slang_params())
+@pytest.mark.parametrize("name", _slang_params(_SLANG_STRUCTURE_GAPS))
 def test_slang_frontend_structure_matches_committed_netlist(
     name: str, tmp_path: Path
 ) -> None:

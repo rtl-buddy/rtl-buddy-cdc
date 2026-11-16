@@ -79,7 +79,9 @@ What currently works
 
   emit ``$adff`` cells with ``CLK``/``D``/``Q``/``ARST`` connections; an
   async arm loading a non-constant value (``if (aload) q <= ad``) emits
-  the ``$aldff`` Yosys ``proc`` builds (rtl-buddy-cdc#384).
+  the ``$aldff`` Yosys ``proc`` builds, and two or more async controls
+  (``@(posedge clk or negedge rst_n or negedge set_n)``) the ``$dffsr``
+  (rtl-buddy-cdc#384, :meth:`_ModuleBuilder._emit_multi_async_ff`).
   Plain ``always_ff @(posedge clk) q <= d;`` emits ``$dff``.
 - Verilog-2001 ``always`` blocks (rtl-buddy-cdc#345), by what they
   infer: edge-triggered → the ``always_ff`` lowering; ``@*`` or a
@@ -1382,6 +1384,11 @@ class _ModuleBuilder:
         if self._kind_name(body) != "TimedStatement":
             self._warn_dropped(block, "no leading event control")
             return
+        events = self._event_signals(body.timing)
+        if events is not None and len(events) > 2:
+            # A clock and two or more async controls (rtl-buddy-cdc#384).
+            self._emit_multi_async_ff(block, body, events)
+            return
         clk_sym, reset_sym, reset_active_low, clk_negedge = self._analyse_event_list(
             body.timing
         )
@@ -1480,6 +1487,99 @@ class _ModuleBuilder:
             )
         finally:
             # Outside the block a blocking-written variable is its register.
+            self._var_bits.update(self._blocking_nets)
+            self._blocking_nets = prev_blocking
+            self._proc_writes = {}
+            self._proc_resets = {}
+            self._clk_negedge = prev_clk_negedge
+
+    def _event_signals(self, timing: Any) -> list[tuple[Any, bool]] | None:
+        """``(signal symbol, negedge)`` per event of an edge-triggered event
+        control, or ``None`` when an event is not an edge of a plain
+        signal."""
+        kind = self._kind_name(timing)
+        if kind == "SignalEventControl":
+            events = [timing]
+        elif kind == "EventListControl":
+            events = list(getattr(timing, "events", []) or [])
+        else:
+            return None
+        out: list[tuple[Any, bool]] = []
+        for ev in events:
+            sym = getattr(getattr(ev, "expr", None), "symbol", None)
+            edge = str(getattr(ev, "edge", "")).rsplit(".", 1)[-1]
+            if sym is None or edge not in {"PosEdge", "NegEdge"}:
+                return None
+            out.append((sym, edge == "NegEdge"))
+        return out
+
+    def _emit_multi_async_ff(
+        self, block: Any, body: Any, events: list[tuple[Any, bool]]
+    ) -> None:
+        """Lower an edge-triggered block with a clock and two or more async
+        controls (``@(posedge clk or negedge rst_n or negedge set_n)``), as
+        Yosys ``proc`` does (rtl-buddy-cdc#384: the third event was
+        ignored, so its arm became synchronous logic on ``D``).
+
+        The body must open with an ``if`` / ``else if`` chain testing every
+        event signal but one, each once; the untested one is the clock.
+        Each arm's writes are the values its control loads while asserted
+        (polarity from its event edge), the final ``else`` is the clocked
+        data. :meth:`_emit_multi_async_flop` builds each register. Any
+        other shape is reported (:meth:`_warn_dropped`)."""
+        node = body.stmt
+        arms: list[tuple[Any, bool, Any]] = []
+        while len(arms) < len(events) - 1:
+            while self._kind_name(node) == "BlockStatement":
+                node = node.body
+            if self._kind_name(node) != "ConditionalStatement":
+                break
+            conds = list(getattr(node, "conditions", None) or [])
+            sym = (
+                self._extract_condition_symbol(conds[0].expr)
+                if len(conds) == 1
+                else None
+            )
+            match = [
+                (s, neg)
+                for s, neg in events
+                if s is sym and all(a is not s for a, _n, _t in arms)
+            ]
+            if not match:
+                break
+            arms.append((sym, match[0][1], node.ifTrue))
+            node = node.ifFalse
+        clocks = [
+            (s, neg) for s, neg in events if all(a is not s for a, _n, _t in arms)
+        ]
+        if len(arms) != len(events) - 1 or len(clocks) != 1:
+            self._warn_dropped(
+                block,
+                "the leading if / else-if chain does not test each async "
+                "control of the event list once",
+            )
+            return
+        clk_sym, clk_negedge = clocks[0]
+        prev_clk_negedge = getattr(self, "_clk_negedge", False)
+        self._clk_negedge = clk_negedge
+        self._proc_writes = {}
+        self._proc_resets = {}
+        prev_blocking = self._blocking_nets
+        self._blocking_nets = {}
+        try:
+            controls: list[
+                tuple[tuple[Bit, ...], bool, dict[tuple[Bit, ...], tuple[Bit, ...]]]
+            ] = []
+            for sym, active_low, arm in arms:
+                values: dict[tuple[Bit, ...], tuple[Bit, ...]] = {}
+                self._collect_reset_assignments(arm, values)
+                controls.append((self._alloc_bits(sym), active_low, values))
+            if node is not None:
+                self._emit_assignments_in(node, clk_sym, None, False, block)
+            self._drain_proc_writes(
+                clk_sym, None, False, block, async_controls=controls
+            )
+        finally:
             self._var_bits.update(self._blocking_nets)
             self._blocking_nets = prev_blocking
             self._proc_writes = {}
@@ -2558,6 +2658,10 @@ class _ModuleBuilder:
         reset_active_low: bool,
         src_node: Any,
         reset_kind: str | None = None,
+        async_controls: list[
+            tuple[tuple[Bit, ...], bool, dict[tuple[Bit, ...], tuple[Bit, ...]]]
+        ]
+        | None = None,
     ) -> None:
         """Emit one flop per contiguous run of the bits each variable is
         written in, as Yosys ``proc`` groups them (rtl-buddy-cdc#377: one
@@ -2588,6 +2692,11 @@ class _ModuleBuilder:
         or plain ``$dff``. ``None`` is also accepted alongside
         ``reset_sym=None`` for blocks with no reset. Reset values are
         assembled per bit from the reset arm's writes.
+
+        ``async_controls`` (``(control bits, active low, values)`` in
+        priority order) replaces the single reset for a block with several
+        async controls: each run is built by
+        :meth:`_emit_multi_async_flop`.
         """
         reset_bit: dict[Bit, Bit] = {}
         for key, value in self._proc_resets.items():
@@ -2623,6 +2732,11 @@ class _ModuleBuilder:
                             enable, hold=tuple(d[a - lo : b - lo]), fire=piece
                         )
                     d[a - lo : b - lo] = piece
+                if async_controls is not None:
+                    self._emit_multi_async_flop(
+                        clk_sym, q_bits, tuple(d), async_controls, src_node
+                    )
+                    continue
                 # A bit the reset arm does not write resets to 0 (the
                 # long-standing default; Yosys holds it instead).
                 values = tuple(reset_bit.get(bit, "0") for bit in q_bits)
@@ -2712,11 +2826,11 @@ class _ModuleBuilder:
         cell_type = "$dff"
         if reset_sym is not None:
             if reset_kind == "sync":
-                connections["SRST"] = self._alloc_bits(reset_sym)
+                connections["SRST"] = self._signal_bits(reset_sym)
                 cell_type = "$sdff"
             else:
                 # ``"async"`` (or unspecified — pre-#86 default).
-                connections["ARST"] = self._alloc_bits(reset_sym)
+                connections["ARST"] = self._signal_bits(reset_sym)
                 cell_type = "$adff"
         # CLK_POLARITY: read off the procedural-block lowering's
         # active clock edge (rtl-buddy-cdc#221 — closes the CDC-016
@@ -2754,6 +2868,120 @@ class _ModuleBuilder:
             attributes=attrs,
         )
 
+    def _emit_multi_async_flop(
+        self,
+        clk_sym: Any,
+        q_bits: tuple[Bit, ...],
+        d_bits: tuple[Bit, ...],
+        controls: list[
+            tuple[tuple[Bit, ...], bool, dict[tuple[Bit, ...], tuple[Bit, ...]]]
+        ],
+        src_node: Any,
+    ) -> None:
+        """One register of a block with several async controls, as Yosys
+        ``proc_dff`` builds it (rtl-buddy-cdc#384).
+
+        Each control's value for the run is what its arm writes, or ``Q``
+        for a bit the arm leaves alone. When every control loads the same
+        value they collapse into one trigger, the ``$reduce_or`` of the
+        controls made active-high: a plain ``$dff`` holding ``Q`` under it
+        when that value is ``Q`` itself, else an ``$adff`` (constant) or
+        ``$aldff``. Otherwise a ``$dffsr`` whose ``SET`` / ``CLR`` are
+        priority mux chains, the first control outermost: ``SET`` takes
+        the value and ``CLR`` its complement while a control is asserted.
+        """
+        width = len(q_bits)
+        per_control: list[tuple[tuple[Bit, ...], bool, tuple[Bit, ...]]] = []
+        for bits, active_low, values in controls:
+            by_bit: dict[Bit, Bit] = {}
+            for key, val in values.items():
+                by_bit.update(zip(key, val))
+            per_control.append(
+                (bits, active_low, tuple(by_bit.get(b, b) for b in q_bits))
+            )
+        first = per_control[0][2]
+        if all(v == first for _b, _l, v in per_control):
+            triggers: list[Bit] = [
+                self._lower_not(bits[0]) if active_low else bits[0]
+                for bits, active_low, _v in per_control
+            ]
+            trigger = self._emit_comb_cell(
+                "$reduce_or", {"A": tuple(triggers)}, output_width=1
+            )
+            if first == q_bits:
+                held = self._build_hold_mux(trigger[0], hold=d_bits, fire=q_bits)
+                self._emit_flop_cell(clk_sym, None, False, q_bits, held, src_node)
+            elif any(isinstance(v, int) for v in first):
+                self._emit_aldff(
+                    clk_sym, trigger, False, q_bits, d_bits, first, src_node
+                )
+            else:
+                self._emit_flop_cell(
+                    clk_sym, trigger, False, q_bits, d_bits, src_node,
+                    reset_value=sum(1 << i for i, v in enumerate(first) if v == "1"),
+                    reset_kind="async",
+                )  # fmt: skip
+            return
+        set_bits: tuple[Bit, ...] = ("0",) * width
+        clr_bits: tuple[Bit, ...] = ("0",) * width
+        for bits, active_low, value in reversed(per_control):
+            if all(isinstance(v, str) for v in value):
+                inverse: tuple[Bit, ...] = tuple(
+                    {"0": "1", "1": "0"}.get(str(v), v) for v in value
+                )
+            else:
+                inverse = self._emit_comb_cell("$not", {"A": value}, output_width=width)
+            set_bits = self._async_priority_mux(bits[0], active_low, set_bits, value)
+            clr_bits = self._async_priority_mux(bits[0], active_low, clr_bits, inverse)
+        attrs: dict[str, str] = {}
+        src = self._src_attr(src_node) if src_node is not None else None
+        if src is not None:
+            attrs["src"] = src
+        name = self._fresh_cell_name("$dffsr")
+        self._cells[name] = Cell(
+            name=name,
+            type="$dffsr",
+            connections={
+                "CLK": self._alloc_bits(clk_sym),
+                "SET": set_bits,
+                "CLR": clr_bits,
+                "D": d_bits,
+                "Q": q_bits,
+            },
+            parameters={
+                "CLK_POLARITY": _param_int32(
+                    0 if getattr(self, "_clk_negedge", False) else 1
+                ),
+                "SET_POLARITY": _param_int32(1),
+                "CLR_POLARITY": _param_int32(1),
+                "WIDTH": _param_int32(width),
+            },
+            attributes=attrs,
+        )
+
+    def _async_priority_mux(
+        self,
+        control: Bit,
+        active_low: bool,
+        rest: tuple[Bit, ...],
+        asserted: tuple[Bit, ...],
+    ) -> tuple[Bit, ...]:
+        """``asserted`` while ``control`` is asserted, else ``rest``: a
+        ``$mux`` selected by the control itself, its legs ordered by the
+        polarity (Yosys' shape); no cell when both legs are the same."""
+        if rest == asserted:
+            return rest
+        if active_low:
+            return self._build_hold_mux(control, hold=asserted, fire=rest)
+        return self._build_hold_mux(control, hold=rest, fire=asserted)
+
+    def _signal_bits(self, signal: Any) -> tuple[Bit, ...]:
+        """A control signal's bits: a variable symbol's net, or bits
+        already built (the OR of several async controls)."""
+        if isinstance(signal, tuple):
+            return signal
+        return self._alloc_bits(signal)
+
     def _emit_aldff(
         self,
         clk_sym: Any,
@@ -2778,9 +3006,7 @@ class _ModuleBuilder:
             type="$aldff",
             connections={
                 "CLK": self._alloc_bits(clk_sym),
-                "ALOAD": self._alloc_bits(aload_sym)
-                if not isinstance(aload_sym, tuple)
-                else aload_sym,
+                "ALOAD": self._signal_bits(aload_sym),
                 "AD": ad_bits,
                 "D": d_bits,
                 "Q": q_bits,

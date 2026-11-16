@@ -368,6 +368,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: a second async control builds a `$dffsr`**
+  (rtl-buddy-cdc#384). Only the first two events of an edge-triggered
+  block were read, so in `@(posedge clk or negedge rst_n or negedge
+  set_n)` the set arm became synchronous logic on `D`, with no warning;
+  `good_flop_variety_handshake` got a false CDC-014 between its request
+  synchroniser stages. A block with two or more async controls is now
+  lowered as Yosys `proc` does: a `$dffsr` whose `SET` / `CLR` are
+  priority mux chains over the controls, or, when every control loads the
+  same value, one `$adff` / `$aldff` reset by their OR (a plain `$dff`
+  holding its value for a register no control writes). A body whose
+  leading `if` / `else if` chain does not test each control once is
+  reported. `good_flop_variety_handshake`'s slang verdict now matches.
+
 - **slang frontend: an async load of a value is an `$aldff`**
   (rtl-buddy-cdc#384). `if (aload) q <= ad` in an edge-triggered block
   lowered as an `$adff` resetting to 0, with no warning: `ad` and its
