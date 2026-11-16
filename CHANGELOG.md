@@ -452,6 +452,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Tcl backend, instead of two bogus names. Mixed pin and port targets
     of one `create_generated_clock` are each recorded as what they are
     (all of them were pins as soon as one was).
+  - `remove_from_collection` taking only some bits of a bus port out of a
+    `set_*_delay` target still types the whole port (port typing is per
+    port in every consumer, so per-bit typing is a larger model change
+    and is not done here), but now says so: the warning names the port,
+    the removed pattern and the clock the removed bits are typed to. It
+    used to be silent.
 
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a

@@ -254,14 +254,30 @@ def test_removed_glob(tmp_path: Path, sdc_backend: str) -> None:
     assert spec.port_clock == {"e1": "clk_a"}
 
 
-def test_removing_some_bits_keeps_the_port(tmp_path: Path, sdc_backend: str) -> None:
-    """Port typing is per port: the bits left over still type ``d``."""
+@pytest.mark.parametrize(
+    ("base", "removed"),
+    [
+        ("[get_ports d]", "[get_ports {d[0]}]"),
+        ("{d}", "{d[0]}"),
+        ("d", "{d[0]}"),
+        ("[all_inputs]", "{d[0] d[1]}"),
+    ],
+    ids=["bracket", "brace", "bare", "all-inputs"],
+)
+def test_removing_some_bits_keeps_the_port_and_warns(
+    tmp_path: Path, sdc_backend: str, base: str, removed: str
+) -> None:
+    """Port typing is per port: the bits left over still type ``d``, so the
+    removed bits are typed too. That is not silent (rtl-buddy-cdc#390):
+    the warning names the port, the removed pattern and the clock."""
     spec, warnings = _resolve(
         tmp_path,
-        "set_input_delay -clock clk_a 1 [remove_from_collection [get_ports d] {d[0]}]\n",
+        f"set_input_delay -clock clk_a 1 [remove_from_collection {base} {removed}]\n",
     )
-    assert warnings == []
-    assert spec.port_clock == {"d": "clk_a"}
+    assert spec.port_clock["d"] == "clk_a"
+    (warning,) = warnings
+    assert "port 'd'" in warning and "per port" in warning and "clk_a" in warning
+    assert "d[0]" in warning
 
 
 def test_removing_every_bit_drops_the_port(tmp_path: Path, sdc_backend: str) -> None:

@@ -600,8 +600,10 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
       (:attr:`~rtl_buddy_cdc.sdc.PortDelay.excludes`, rtl-buddy-cdc#382)
       are resolved the same way, without the direction / clock filter,
       and their bits are removed from the target's; a port left with no
-      bit is not typed. A removed pattern that matches no port is warned
-      about.
+      bit is not typed. A port left with *some* bits stays typed whole,
+      removed bits included — typing is per port — and that is warned
+      about (rtl-buddy-cdc#390). A removed pattern that matches no port is
+      warned about.
     """
     targets = [(d, t, excl) for d in spec.port_delays for t, excl in d.terms()]
     if all(t in module.ports and not excl for _d, t, excl in targets):
@@ -629,7 +631,20 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
                 if module.ports[name].direction in allowed and name not in clock_ports
             }
         if excl and hits:
+            selected = hits
             hits = _remove_ports(index, hits, excl, where, warnings)
+            for name in sorted(hits):
+                if hits[name] != selected[name]:
+                    # Per-bit typing would change every port_clock
+                    # consumer (crossing sources, CDC-006/-011/-024/-025,
+                    # the domain map); say what the per-port model does.
+                    warnings.append(
+                        f"{where}: remove_from_collection {', '.join(excl)} "
+                        f"takes only some bits of port '{name}' out of "
+                        f"{target!r}; port typing is per port, so the whole "
+                        f"port '{name}' — the removed bits included — is typed "
+                        f"to '{d.clock}'"
+                    )
             if not hits:
                 continue  # every port it selected was removed
         if not hits:
