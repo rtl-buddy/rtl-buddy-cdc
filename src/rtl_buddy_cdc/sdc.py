@@ -103,10 +103,12 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, TypedDict
+
+from rtl_buddy_cdc.netlist import Bit, format_bit_select
 
 # The tokenizer reader lives in its own stdlib-only module so rtl-buddy
 # can vendor it verbatim (rtl-buddy-cdc#298). Re-exported here because
@@ -139,6 +141,7 @@ __all__ = [
     "DatapathOnlyDelay",
     "FalsePathException",
     "PortDelay",
+    "PortTyping",
     "SdcObject",
     "TclReadError",
     "TclResourceLimitError",
@@ -147,6 +150,8 @@ __all__ = [
     "backend_description",
     "parse",
     "parse_file",
+    "port_bit_clocks",
+    "split_bit_key",
     "synthesize_unconstrained_inputs",
     "tcl_available",
     "tcl_patchlevel",
@@ -428,7 +433,13 @@ class ClockSpec:
     # Top-level port → clock name from ``set_input_delay -clock …`` /
     # ``set_output_delay -clock …``. Lets the caller assign a clock
     # domain to data ports that aren't reached by any flop's CLK
-    # tracing.
+    # tracing. Typing is per bit (rtl-buddy-cdc#394): a key is either a
+    # whole port (``d``) or one bit of it in its SDC spelling, the
+    # declared index (``d[3]``). A bit key overrides the whole-port key
+    # for that bit; a port named by bit keys only has its other bits
+    # untyped. After ``sdc_objects.resolve_port_delays`` a port is keyed
+    # whole when every bit carries the same clock, and bit by bit
+    # otherwise. Read it per bit through :meth:`port_typing`.
     port_clock: dict[str, str] = field(default_factory=dict)
     # Every ``set_*_delay -clock`` statement with a port target, in file
     # order (rtl-buddy-cdc#357). ``port_clock`` holds their targets as
@@ -512,10 +523,21 @@ class ClockSpec:
         On a port carrying several clocks (``create_clock -add``) this is
         the first-declared one — the port's primary clock, see
         :attr:`multi_clock_ports` (rtl-buddy-cdc#330).
+
+        This is the *whole-port* answer: a port whose bits the SDC types
+        separately (``d[3]`` keys, rtl-buddy-cdc#394) has no single
+        ``set_*_delay`` clock, so only its declared clock, if any, is
+        returned. Ask :meth:`port_typing` for a bit's clock.
         """
         if port in self.port_clock:
             return self.port_clock[port]
         return self.declared_clock_for_port(port)
+
+    def port_typing(self, module: Module) -> PortTyping:
+        """:attr:`port_clock` read bit by bit against ``module``'s ports
+        (rtl-buddy-cdc#394). Cheap when no key names a bit: one pass over
+        the keys."""
+        return PortTyping(self, module, port_bit_clocks(self.port_clock, module))
 
     def declared_clock_for_port(self, port: str) -> str | None:
         """The ``create_clock`` declared on ``port`` (or on the internal
@@ -768,6 +790,130 @@ class ClockSpec:
         ra = self.resolve(a)
         rb = self.resolve(b)
         return ra != rb and frozenset({ra, rb}) in self.datapath_only_pairs
+
+
+# ---- per-bit port typing (rtl-buddy-cdc#394) ---------------------------------
+
+#: A ``port_clock`` key naming one bus bit: ``d[3]``, ``d[-1]``.
+_BIT_KEY_RE = re.compile(r"^(?P<base>.+)\[(?P<idx>-?\d+)\]$")
+
+
+def split_bit_key(key: str) -> tuple[str, int] | None:
+    """``"d[3]"`` → ``("d", 3)``; ``None`` for any other key."""
+    if not key.endswith("]"):
+        return None
+    m = _BIT_KEY_RE.match(key)
+    if m is None:
+        return None
+    return m.group("base"), int(m.group("idx"))
+
+
+def port_bit_clocks(
+    port_clock: Mapping[str, str], module: Module
+) -> dict[str, tuple[str | None, ...]]:
+    """Per-position clocks of every port a ``port_clock`` key names by bit.
+
+    Only ports with at least one bit key that names a real bit
+    (``d[3]`` with ``d`` a top-level port that has declared index 3)
+    appear; each maps to one entry per position of ``Port.bits``: the bit
+    key's clock, else the whole-port key's, else ``None`` (untyped). An
+    exact port name always wins over the bit reading, so a port literally
+    named ``d[3]`` stays a whole port. A key that is neither — a typo, a
+    glob left unresolved — types nothing, as before.
+
+    One pass over the keys; the common SDC, which types whole ports
+    only, returns ``{}`` after a dict lookup per key.
+    """
+    ports = module.ports
+    out: dict[str, list[str | None]] = {}
+    for key, clock in port_clock.items():
+        if key in ports:
+            continue
+        split = split_bit_key(key)
+        if split is None:
+            continue
+        base, idx = split
+        port = ports.get(base)
+        if port is None:
+            continue
+        pos = module.port_bit_position(base, idx)
+        if pos is None:
+            continue
+        per = out.get(base)
+        if per is None:
+            per = out[base] = [port_clock.get(base)] * len(port.bits)
+        per[pos] = clock
+    return {name: tuple(per) for name, per in out.items()}
+
+
+@dataclass(frozen=True)
+class PortTyping:
+    """:attr:`ClockSpec.port_clock` read bit by bit against one netlist
+    (rtl-buddy-cdc#394). Build it with :meth:`ClockSpec.port_typing`.
+
+    ``bits`` holds the ports typed bit by bit (:func:`port_bit_clocks`);
+    every other port is typed whole, or not at all, exactly as
+    :meth:`ClockSpec.clock_for_port` says. Positions are indices into
+    ``Port.bits``; :meth:`label` renders them in declared indices.
+    """
+
+    spec: ClockSpec
+    module: Module
+    bits: Mapping[str, tuple[str | None, ...]]
+
+    def is_per_bit(self, port: str) -> bool:
+        return port in self.bits
+
+    def clock_of_bit(self, port: str, pos: int) -> str | None:
+        """The ``set_*_delay`` clock of bit ``pos`` of ``port`` (``None``:
+        untyped). The sentinel of an untyped input is returned as is."""
+        per = self.bits.get(port)
+        if per is None:
+            return self.spec.port_clock.get(port)
+        return per[pos] if 0 <= pos < len(per) else None
+
+    def clock_of_net_bit(self, bit: Bit) -> str | None:
+        """:meth:`ClockSpec.clock_for_port` for the top-level port bit
+        ``bit``: the bit's own typing on a per-bit port, else the port's
+        (``None`` when ``bit`` is on no port)."""
+        port = self.module.port_of_bit(bit)
+        if port is None:
+            return None
+        per = self.bits.get(port.name)
+        if per is None:
+            return self.spec.clock_for_port(port.name)
+        typed = per[port.bits.index(bit)]
+        if typed is not None:
+            return typed
+        return self.spec.declared_clock_for_port(port.name)
+
+    def groups(
+        self, port: str, positions: Iterable[int] | None = None
+    ) -> list[tuple[str | None, tuple[int, ...] | None]]:
+        """``(clock, positions)`` for the bits of ``port`` — all of them,
+        or only ``positions`` — grouped by clock in first-position order.
+
+        A port typed whole (or not at all) gives one group whose
+        positions are ``None`` (the whole port, the pre-#394 reading),
+        whatever ``positions`` is. An untyped group has clock ``None``.
+        """
+        per = self.bits.get(port)
+        if per is None:
+            return [(self.spec.port_clock.get(port), None)]
+        sel = range(len(per)) if positions is None else sorted(set(positions))
+        out: dict[str | None, list[int]] = {}
+        for i in sel:
+            if 0 <= i < len(per):
+                out.setdefault(per[i], []).append(i)
+        return [(clock, tuple(pos)) for clock, pos in out.items()]
+
+    def label(self, port: str, positions: Iterable[int] | None) -> str:
+        """``d`` for the whole port, ``d[2:0]`` for some of its bits."""
+        if positions is None:
+            return port
+        return port + format_bit_select(
+            self.module.port_bit_index(port, p) for p in positions
+        )
 
 
 # ---- parser entry points ----------------------------------------------------
@@ -1124,7 +1270,9 @@ def synthesize_unconstrained_inputs(spec: ClockSpec, module: "Module") -> list[s
 
     Mutates ``spec.port_clock`` in place and returns the list of port
     names that received the sentinel (caller may want to surface this
-    in verbose output). A port is considered untyped if
+    in verbose output). On a port typed bit by bit (rtl-buddy-cdc#394)
+    only its untyped bits get it, keyed and returned as ``d[3]``. A port
+    is considered untyped if
     :meth:`ClockSpec.clock_for_port` returns ``None`` — that covers
     both "no ``set_input_delay``" and "``set_input_delay`` without
     ``-clock``" (the parser warning at ``_handle_set_delay`` already
@@ -1149,9 +1297,24 @@ def synthesize_unconstrained_inputs(spec: ClockSpec, module: "Module") -> list[s
     from rtl_buddy_cdc.sdc_objects import resolve_port_delays
 
     spec.partial_warnings.extend(resolve_port_delays(module, spec))
+    per_bit = port_bit_clocks(spec.port_clock, module)
     sentinel_ports: list[str] = []
     for port in module.ports.values():
         if port.direction != "input":
+            continue
+        bit_clocks = per_bit.get(port.name)
+        if bit_clocks is not None:
+            # A bus typed bit by bit (rtl-buddy-cdc#394): each untyped bit
+            # gets the sentinel on its own key, exactly as an untyped
+            # scalar port does, and the typed bits keep their clocks.
+            # A clock port is never stamped.
+            if spec.declared_clock_for_port(port.name) is not None:
+                continue
+            for pos, clk in enumerate(bit_clocks):
+                if clk is None:
+                    key = f"{port.name}[{module.port_bit_index(port.name, pos)}]"
+                    spec.port_clock[key] = UNCONSTRAINED_SENTINEL
+                    sentinel_ports.append(key)
             continue
         if spec.clock_for_port(port.name) is not None:
             continue

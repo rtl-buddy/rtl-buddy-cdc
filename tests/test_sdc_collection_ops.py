@@ -264,20 +264,19 @@ def test_removed_glob(tmp_path: Path, sdc_backend: str) -> None:
     ],
     ids=["bracket", "brace", "bare", "all-inputs"],
 )
-def test_removing_some_bits_keeps_the_port_and_warns(
+def test_removing_some_bits_leaves_them_untyped(
     tmp_path: Path, sdc_backend: str, base: str, removed: str
 ) -> None:
-    """Port typing is per port: the bits left over still type ``d``, so the
-    removed bits are typed too. That is not silent (rtl-buddy-cdc#390):
-    the warning names the port, the removed pattern and the clock."""
+    """Port typing is per bit (rtl-buddy-cdc#394): the bits left over are
+    typed, the removed ones are not — no warning, nothing over-typed."""
     spec, warnings = _resolve(
         tmp_path,
         f"set_input_delay -clock clk_a 1 [remove_from_collection {base} {removed}]\n",
     )
-    assert spec.port_clock["d"] == "clk_a"
-    (warning,) = warnings
-    assert "port 'd'" in warning and "per port" in warning and "clk_a" in warning
-    assert "d[0]" in warning
+    assert warnings == []
+    assert "d" not in spec.port_clock and "d[0]" not in spec.port_clock
+    assert spec.port_clock["d[2]"] == spec.port_clock["d[3]"] == "clk_a"
+    assert ("d[1]" in spec.port_clock) == ("d[1]" not in removed)
 
 
 def test_removing_every_bit_drops_the_port(tmp_path: Path, sdc_backend: str) -> None:

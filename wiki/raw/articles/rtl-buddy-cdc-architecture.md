@@ -514,7 +514,7 @@ class ClockSpec:
     async_groups: list[list[set[str]]]             # set_clock_groups -asynchronous
     exclusive_groups: list[list[set[str]]]         # -logically_exclusive / -physically_exclusive
     false_path_pairs: set[frozenset[str]]          # set_false_path -from -to clock pairs
-    port_clock: dict[str, str]                     # set_input_delay / set_output_delay → port→clock
+    port_clock: dict[str, str]                     # set_input_delay / set_output_delay → port (or bit, `d[3]`, #394) → clock
     port_delays: list[PortDelay]                   # those statements, targets as written (#357)
     pin_clocks: dict[str, str]                     # internal-pin target → generated clock name
     datapath_only_delays: list[DatapathOnlyDelay]  # every set_max_delay -datapath_only (#325)
@@ -1630,6 +1630,32 @@ typed *input* is a crossing source in `find_crossings`; a typed
 *output* is an external-capture contract checked by CDC-024 (§8.21); an
 *untyped* output is CDC-025's (§8.22).
 
+**Per-bit reading** (rtl-buddy-cdc#394). A `port_clock` key is a whole
+port (`d`) or one bit of it (`d[3]`, declared index); a bit key
+overrides the whole-port key for its bit, and a port keyed only by bits
+has its other bits untyped. Every consumer reads it through one view,
+`ClockSpec.port_typing(module)` → `PortTyping` (`sdc.port_bit_clocks`
+builds the per-position table; an SDC typing only whole ports costs one
+dict lookup per key and yields an empty table, so the whole-port path is
+unchanged). `ClockSpec.clock_for_port(name)` stays the whole-port answer,
+so a port typed bit by bit has no single `set_*_delay` clock there. The
+consumers: `find_crossings` seeds one walk per (port, clock) from that
+clock's bits and stamps `Crossing.src_port_bits` (declared indices;
+`None` for a whole port), so a bus with bits in two clocks, or some
+bits untyped, gives one crossing per (port, clock, destination);
+CDC-006 and the memory read-domain fallback judge the port bits their
+backward walk reaches; CDC-010's and the clock-network view's
+input-domain walks take the reached bit's clock
+(`PortTyping.clock_of_net_bit`); RDC-008 checks the reset bits its
+consumers use; CDC-011 names the untyped bits (`'d[3]'`); CDC-024 checks
+one contract per (port, clock) over those bits' cone and CDC-025 the
+port's uncontracted bits, and both count typed input bits as launchers
+per clock; object-scoped `set_false_path` / `set_max_delay
+-datapath_only` coverage and the `-through` walk use the crossing's own
+bits; the JSON report and the domain map add `src_port_bits` to such a
+crossing and a `bits` list to each per-clock `port_domains` entry
+(additive: whole-port entries are unchanged, schema version unchanged).
+
 Delay targets are kept as written — a bus index stays on its name
 (`{d[3]}` → `d[3]`) and globs stay unexpanded — in
 `ClockSpec.port_delays` (one `PortDelay` per statement, file order) as
@@ -1649,13 +1675,21 @@ warnings and changes nothing:
 
 - An exact port name is unchanged; an SDC naming only whole ports is
   not touched at all.
-- A **bus index** types the **whole port**. Port typing is per port
-  in every consumer (crossing sources, CDC-006 / -011 / -024 / -025,
-  the domain map), so per-bit typing would be a change to all of them;
-  instead the selection is over-approximated, and a port whose bits
-  end up on *different* clocks (`{d[0]}` on `clk_a`, `{d[1]}` on
-  `clk_b`, or a bit retyped after a whole-port typing) gets a warning
-  naming them and takes the last clock.
+- Typing is **per bit** (rtl-buddy-cdc#394). A **bus index** types that
+  bit only; each statement assigns the bits it selects, in file order,
+  so `{d[0]}` on `clk_a` then `{d[1]}` on `clk_b` leaves the two bits on
+  two clocks, and a bit retyped after a whole-port typing overrides just
+  that bit. The result keys `port_clock` by the whole port (`d`) when
+  every bit of it carries one clock, and by bit otherwise — `d[3]`, in
+  the SDC's declared index (`Module.port_bit_index`, so `logic [8:1]`
+  and `logic [0:7]` ports name the bits the RTL does). A bit no
+  statement types stays unkeyed: an input bit then gets its own
+  `<unconstrained>` key from `synthesize_unconstrained_inputs`, exactly
+  as an untyped scalar input does, and an output bit carries no
+  contract. Keys that did not come from a statement (a hand-built spec,
+  or the sentinels of an earlier `synthesize_unconstrained_inputs`) are
+  kept; on a port a statement types they fill only the bits no statement
+  typed.
 - A **glob** (`*`, `?`) is matched with the object-pattern matcher
   (`NameIndex.ports`, so `*` never crosses a hierarchy level and `d*[3]`
   works) and selects only ports of the command's direction (inputs /
@@ -1675,12 +1709,11 @@ warnings and changes nothing:
   `(A, {B})`, `(C, {})`. The parser applies a removal to `port_clock`
   only where the text decides it (`{a b c}` minus `b`); the resolver
   resolves each removed pattern with the same matcher, without the
-  direction / clock filter, subtracts its bits, and drops a port left
-  with none. Removing some bits of a bus leaves the whole port typed,
-  removed bits included, because typing is per port; that is warned about
-  with the port, the removed pattern and the clock (rtl-buddy-cdc#390 —
-  per-bit typing would change every `port_clock` consumer). A removed
-  pattern that matches nothing is warned about.
+  direction / clock filter, and subtracts its bits: the statement does
+  not type them, so removing some bits of a bus leaves those bits with
+  their earlier typing or none (rtl-buddy-cdc#394; until then the whole
+  port was typed, with a warning). A removed pattern that matches
+  nothing is warned about.
   Not supported, and reported with the target ignored: `-intersect`, a
   removal inside the removed operand (`A − (B − C)`), a pin / cell
   operand. The evaluator itself (`_collection_terms` / `_operator_terms`)
@@ -2277,9 +2310,9 @@ free functions in `rules.py`:
 | Helper | Used by | Purpose |
 |---|---|---|
 | `_sync_chain_depth(module, dst_flop, dst_clock, ...)` | CDC-001, -002, -003 | Walk forward from a flop's Q lane-wise; count the chain length of single-reader same-domain flops |
-| `_bit_reader_count(module)` | `_build_context` (cached as `ctx.reader_counts`), every single-reader test above and in `compositional` | The one definition of "who reads this bit": cell **input** pins except `CLK` (a pin `port_directions` marks `output`, or `Y` / `Q` when the cell has no directions, is a driver, not a reader — so a blackbox's `clk_out` / `dout` never counts), plus every module **output / inout port** bit. A synchroniser stage exported straight to a port therefore has a second reader and ends the chain, exactly as it would through a buffer (rtl-buddy-cdc#344) |
+| `_bit_reader_count(module)` (`reset_domain.bit_reader_count`, rtl-buddy-cdc#394) | `_build_context` (cached as `ctx.reader_counts`), every single-reader test above and in `compositional` | The one definition of "who reads this bit": cell **input** pins except `CLK` (a pin `port_directions` marks `output`, or `Y` / `Q` when the cell has no directions, is a driver, not a reader — so a blackbox's `clk_out` / `dout` never counts), plus every module **output / inout port** bit. A synchroniser stage exported straight to a port therefore has a second reader and ends the chain, exactly as it would through a buffer (rtl-buddy-cdc#344) |
 | `_packed_shift_register_depth(head, reader_counts, module, bit_drivers)` | `_sync_chain_depth` | Recognise a synchroniser packed into one multi-bit flop (`s <= {s[N-2:0], d}`): `D` must be, lane for lane, either one of the flop's own `Q` bits or — for exactly one lane — an external bit; follow the per-lane shift and return the effective depth (#264). With a **synchronous reset** the lane test runs on the data leg of the `$mux` `proc` leaves on `D` (#301) |
-| `_constant_leg_reset_mux_data_bits(head, module, bit_drivers, reader_counts, *, whole=False)` / `_sync_reset_lanes(...)` | `_packed_shift_register_depth`, CDC-003, the single-bit chain walk; with `whole`: `_own_srst_data_leg`, `_is_multibit_sync_first_stage` | The data leg behind a flop's un-folded synchronous reset, lane for lane, read where Yosys `opt_dff` folds it (rtl-buddy-cdc#390, §8.23): per `D` lane, through every 2:1 mux whose output only that step reads, with one leg the constant `0` / `1` (every constant on the lane equal to its first) and the other leg not the lane's own `Q`. Stops at an enable mux, an `x` leg, two constant legs, `$pmux`, a mux output with another reader. A lane with no reset keeps its `D` bit; `None` when no lane has one. `whole` requires every lane reset by the same selects, the case `opt_dff` keeps as one cell (#301) |
+| `_constant_leg_reset_mux_data_bits(head, module, bit_drivers, reader_counts, *, whole=False)` / `_sync_reset_lanes(...)` (`reset_domain.sync_reset_lanes`) | `_packed_shift_register_depth`, CDC-003, the single-bit chain walk; with `whole`: `_own_srst_data_leg`, `_is_multibit_sync_first_stage`; with `through_enable` (steps one enable mux when no reset is in front of it): `assign_reset_domains` (rtl-buddy-cdc#394) | The data leg behind a flop's un-folded synchronous reset, lane for lane, read where Yosys `opt_dff` folds it (rtl-buddy-cdc#390, §8.23): per `D` lane, through every 2:1 mux whose output only that step reads, with one leg the constant `0` / `1` (every constant on the lane equal to its first) and the other leg not the lane's own `Q`. Stops at an enable mux, an `x` leg, two constant legs, `$pmux`, a mux output with another reader. A lane with no reset keeps its `D` bit; `None` when no lane has one. `whole` requires every lane reset by the same selects, the case `opt_dff` keeps as one cell (#301) |
 | `_srst_mux_data_bit_to_single_bit_flop(module, d_bit_to_single_bit_flop, bit_drivers, reader_counts)` | `_build_context` (cached as `ctx.srst_mux_data_bit_to_single_bit_flop`), `_sync_chain_depth`, `_sync_chain_flops`, `_chain_has_inter_stage_comb` | Reverse index from a constant-leg sync-reset `$mux`'s *data-leg* bit to the 1-bit flop it feeds. The chain walkers consult it when the `D`-bit lookup misses, so a separate-flop chain steps over each stage's own reset mux (depth 2 for `if (rst) … else begin s1 <= d; s2 <= s1; end`), and the inter-stage-comb detector skips that mux so CDC-014 matches the slang `$sdff` verdict (#304) |
 | `_own_srst_data_leg(module, flop, clock, domains, bit_drivers, reader_counts)` | gated-bus test, single-bit handshake hold test, `_carries_synchronised_control`, CDC-006, CDC-013 | The data leg behind `flop`'s own synchronous reset: the reset muxes `_constant_leg_reset_mux_data_bits` looks through, with `whole` (rtl-buddy-cdc#390), whatever drives their selects (as `opt_dff` folds them). Callers read what the flop samples between resets, which is what the `$sdff` form shows directly (rtl-buddy-cdc#376). Until rtl-buddy-cdc#383 it also required a destination-domain select, which made the two forms disagree whenever the reset came from another domain (§8.23) |
 | `_folded_srst_selects(flop, module, bit_drivers, reader_counts)` | RDC-003 | The selects of the reset muxes on `flop`'s `D` that `opt_dff` would fold into `SRST`, read lane by lane the way `opt_dff` reads them: through enable muxes (a leg is the lane's own `Q`) and constant-leg muxes, collecting the latter's selects; empty for a flop with an asynchronous control (rtl-buddy-cdc#383, §8.23) |
@@ -2977,7 +3010,14 @@ accepts a single-bit crossing whose chain depth is 1 when
    `D` directly or behind the flop's own local sync-reset mux). The
    `EN` form (`$dffe` / `$sdffe` / `$_DFFE_*` …) is a hold by
    construction. The enable's fanin flops must be non-empty and all in
-   the destination domain, as for a bus.
+   the destination domain, as for a bus. The enable gates nothing that
+   arrives through a synchronous reset outside it (rtl-buddy-cdc#394,
+   `_gated_capture`): the `SRST` of a reset-over-enable flop (`$sdffe` /
+   `$_SDFFE_*`; an `$sdffce` / `$_SDFFCE_*` resets only while enabled,
+   so its `SRST` is gated), any `SRST` pin when the gate is a mux on
+   `D`, and the reset muxes looked through in front of the hold mux in
+   the `proc` form. A crossing whose source reaches one of those
+   (`_source_reaches`) is not a gated capture.
 2. *Synchronised from the source domain* — every one of those flops
    is a stage past the first of a depth ≥ 2 single-bit synchroniser
    whose first stage samples a flop of the crossing's own source clock

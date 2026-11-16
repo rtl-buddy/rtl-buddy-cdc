@@ -81,13 +81,19 @@ def _build() -> dict:
 def test_golden_matches() -> None:
     """Byte-exact golden diff for the ``bad_marked_reset_polarity`` fixture.
 
-    Regenerate with::
+    Regenerate from the repo root with::
 
         uv run rtl-buddy-cdc analyze \\
             --netlist tests/fixtures/bad_marked_reset_polarity/bad_marked_reset_polarity.json \\
             --sdc tests/fixtures/bad_marked_reset_polarity/bad_marked_reset_polarity.sdc \\
+            --project-root . \\
             --emit-reset-domain-map tests/fixtures/bad_marked_reset_polarity/bad_marked_reset_polarity.reset-domain-map.json \\
             --no-findings
+
+    ``--project-root .`` is needed: a relative ``--emit-*`` path is
+    otherwise anchored at the SDC's directory (rtl-buddy-cdc#245), and
+    the file would land in ``tests/fixtures/<fix>/tests/fixtures/...``
+    (rtl-buddy-cdc#394).
     """
     if not JSON.exists():
         pytest.skip(f"fixture not built: {JSON}")

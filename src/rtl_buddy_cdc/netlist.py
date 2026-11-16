@@ -208,9 +208,57 @@ class Module:
                     index.setdefault(b, p)
         return index
 
+    def _port_range(self, port: str) -> tuple[int, bool, int]:
+        """``(offset, upto, width)`` of top-level ``port``, from its netname."""
+        nn = self.netnames.get(port)
+        width = len(self.ports[port].bits)
+        if nn is None:
+            return 0, False, width
+        return nn.offset, nn.upto, width
+
+    def port_bit_index(self, port: str, pos: int) -> int:
+        """Declared (source / SDC) index of ``ports[port].bits[pos]``.
+
+        ``logic [8:1] p`` has ``p[1]`` at position 0; ``logic [0:7] p``
+        has ``p[7]`` there. The SDC names a bus bit by this index
+        (``[get_ports {p[3]}]``).
+        """
+        offset, upto, width = self._port_range(port)
+        return offset + (width - 1 - pos if upto else pos)
+
+    def port_bit_position(self, port: str, index: int) -> int | None:
+        """Position in ``ports[port].bits`` of declared index ``index``,
+        or ``None`` when the port has no such bit (the inverse of
+        :meth:`port_bit_index`)."""
+        offset, upto, width = self._port_range(port)
+        rel = index - offset
+        pos = width - 1 - rel if upto else rel
+        return pos if 0 <= pos < width else None
+
     def cells_of_type(self, types: Iterable[str]) -> list[Cell]:
         wanted = set(types)
         return [c for c in self.cells.values() if c.type in wanted]
+
+
+def format_bit_select(indices: Iterable[int]) -> str:
+    """``[7:4,1]`` — a bus bit selection in SDC-style declared indices.
+
+    Runs of consecutive indices collapse to ``hi:lo``, highest first;
+    empty input renders as ``""``.
+    """
+    ordered = sorted(set(indices), reverse=True)
+    if not ordered:
+        return ""
+    runs: list[str] = []
+    hi = lo = ordered[0]
+    for i in ordered[1:]:
+        if i == lo - 1:
+            lo = i
+            continue
+        runs.append(f"{hi}:{lo}" if hi != lo else f"{hi}")
+        hi = lo = i
+    runs.append(f"{hi}:{lo}" if hi != lo else f"{hi}")
+    return f"[{','.join(runs)}]"
 
 
 def _bits(raw: list[Bit]) -> tuple[Bit, ...]:

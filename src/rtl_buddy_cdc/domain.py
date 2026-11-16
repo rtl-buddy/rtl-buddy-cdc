@@ -31,7 +31,8 @@ from rtl_buddy_cdc.flops import (
     is_latch_cell,
 )
 from rtl_buddy_cdc.memory import crossing_view, find_memories
-from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module
+from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, format_bit_select
+from rtl_buddy_cdc.sdc import port_bit_clocks
 
 if TYPE_CHECKING:
     from rtl_buddy_cdc.sdc import ClockSpec
@@ -68,9 +69,11 @@ class _CrossingGroup(TypedDict):
 
 
 class _PortCrossingGroup(TypedDict):
-    """Per (src_port, dst_flop) accumulator for port-sourced crossings."""
+    """Per (src_port, src_clock, dst_flop) accumulator for port-sourced
+    crossings."""
 
     port: str
+    port_bits: tuple[int, ...] | None  # declared indices; None = whole port
     src_clock: str
     dst_flop: "Flop"
     dst_clock: str
@@ -220,6 +223,14 @@ class Crossing:
     actually asynchronous. ``None`` whenever the primary names already
     are that pair — every crossing on a design without a multi-clock
     port. Additive and optional, like ``src_boundary``.
+
+    ``src_port_bits`` (rtl-buddy-cdc#394) is set on a port-sourced
+    crossing whose port the SDC types bit by bit: the declared indices
+    (``d[3]`` → ``3``) of the source port's bits that carry
+    ``src_clock`` — the bits this crossing was walked from. A port with
+    bits in several clocks (or some bits untyped) gives one crossing per
+    clock into the same destination. ``None`` — every other crossing —
+    means the whole port. Additive and optional.
     """
 
     src_clock: str
@@ -233,6 +244,16 @@ class Crossing:
     dst_boundary: tuple[str, str] | None = None
     scan_mode: bool = False
     async_via: tuple[str, str] | None = None
+    src_port_bits: tuple[int, ...] | None = None
+
+    @property
+    def src_port_label(self) -> str | None:
+        """``d`` for a whole-port source, ``d[2:0]`` for some of its bits."""
+        if self.src_port is None:
+            return None
+        if self.src_port_bits is None:
+            return self.src_port
+        return self.src_port + format_bit_select(self.src_port_bits)
 
     @property
     def src_name(self) -> str:
@@ -240,7 +261,7 @@ class Crossing:
         if self.src_flop is not None:
             return self.src_flop.name
         if self.src_port is not None:
-            return f"port {self.src_port}"
+            return f"port {self.src_port_label}"
         if self.src_boundary is not None:
             inst, port = self.src_boundary
             return f"boundary {inst}.{port}"
@@ -1862,6 +1883,47 @@ def _make_fanout_filter(
     return useful
 
 
+def _typed_port_sources(
+    module: Module, port_clock: Mapping[str, str]
+) -> list[tuple[str, str, tuple[Bit, ...], tuple[int, ...] | None]]:
+    """The input-port sources the crossing walk seeds from ``port_clock``.
+
+    ``(port, clock, seed bits, declared indices)``: one entry per input
+    port typed whole (indices ``None``, the pre-#394 walk), in
+    ``port_clock`` order; then, for each port typed bit by bit
+    (:func:`~rtl_buddy_cdc.sdc.port_bit_clocks`, rtl-buddy-cdc#394), one
+    entry per clock its bits carry, seeded from those bits only. Untyped
+    bits seed nothing.
+    """
+    per_bit = port_bit_clocks(port_clock, module)
+    out: list[tuple[str, str, tuple[Bit, ...], tuple[int, ...] | None]] = []
+    for name, clock in port_clock.items():
+        if name in per_bit:
+            continue
+        port = module.ports.get(name)
+        if port is None or port.direction != "input":
+            continue
+        out.append((name, clock, port.bits, None))
+    for name, clocks in per_bit.items():
+        port = module.ports[name]
+        if port.direction != "input":
+            continue
+        groups: dict[str, list[int]] = {}
+        for pos, clk in enumerate(clocks):
+            if clk is not None:
+                groups.setdefault(clk, []).append(pos)
+        for clk, positions in groups.items():
+            out.append(
+                (
+                    name,
+                    clk,
+                    tuple(port.bits[p] for p in positions),
+                    tuple(sorted(module.port_bit_index(name, p) for p in positions)),
+                )
+            )
+    return out
+
+
 def find_crossings(
     module: Module,
     max_hops: int | None = None,
@@ -1896,7 +1958,11 @@ def find_crossings(
     a port-sourced :class:`Crossing` is emitted (``src_port`` set,
     ``src_flop`` left None). The destination's clock is the flop's
     physical CLK domain; the port's clock is treated as the source
-    domain for the async-pair check.
+    domain for the async-pair check. ``port_clock`` is read bit by bit
+    (rtl-buddy-cdc#394, :func:`_typed_port_sources`): a key ``d[3]`` types
+    one bit, so a bus whose bits carry several clocks, or only some of
+    which are typed, gives one crossing per (port, clock, destination),
+    with :attr:`Crossing.src_port_bits` naming the bits.
 
     The ``clock_for_port`` keyword mirrors :func:`assign_domains` —
     when supplied (typically ``ClockSpec.clock_for_port``), the
@@ -2200,12 +2266,14 @@ def find_crossings(
 
     # Port-sourced crossings: walk forward from each typed input port
     # and record any flop's D pin reached in a different clock domain.
+    # A port typed bit by bit (rtl-buddy-cdc#394) is walked once per
+    # clock its bits carry, from those bits only; its untyped bits are
+    # not walked, exactly like an untyped scalar port.
     if port_clock:
-        port_grouped: dict[tuple[str, str], _PortCrossingGroup] = {}
-        for port_name, port_clk_name in port_clock.items():
-            port = module.ports.get(port_name)
-            if port is None or port.direction != "input":
-                continue
+        port_grouped: dict[tuple[str, str, str], _PortCrossingGroup] = {}
+        for port_name, port_clk_name, seeds, sel in _typed_port_sources(
+            module, port_clock
+        ):
 
             def _land_port(
                 dst_flop: Flop,
@@ -2214,17 +2282,19 @@ def find_crossings(
                 lab: int,
                 port_name: str = port_name,
                 port_clk_name: str = port_clk_name,
+                sel: tuple[int, ...] | None = sel,
             ) -> bool:
                 dst_fd = domains[dst_flop.cell.name]
                 # Skip when the port's typed clock matches the
                 # destination's clock domain (no crossing).
                 if dst_fd.clock is None or dst_fd.clock == port_clk_name:
                     return False
-                key = (port_name, dst_flop.cell.name)
+                key = (port_name, port_clk_name, dst_flop.cell.name)
                 pg = port_grouped.get(key)
                 if pg is None:
                     port_grouped[key] = {
                         "port": port_name,
+                        "port_bits": sel,
                         "src_clock": port_clk_name,
                         "dst_flop": dst_fd.flop,
                         "dst_clock": dst_fd.clock,
@@ -2239,9 +2309,8 @@ def find_crossings(
                         pg["min_hops"] = at_hops
                 return True
 
-            _walk(
-                port.bits, f"port {port_name}", port_clk_name, _land_port, prune=False
-            )
+            label = port_name if sel is None else port_name + format_bit_select(sel)
+            _walk(seeds, f"port {label}", port_clk_name, _land_port, prune=False)
 
         for pg in port_grouped.values():
             out_crossings.append(
@@ -2254,6 +2323,7 @@ def find_crossings(
                     src_port=pg["port"],
                     dst_boundary=_dst_boundary_of(pg["dst_flop"]),
                     scan_mode=pg["dst_flop"].cell.name in scan_mode_flops,
+                    src_port_bits=pg["port_bits"],
                 )
             )
 
