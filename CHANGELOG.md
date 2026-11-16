@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cell-variety fixtures** (rtl-buddy-cdc#331) — *test-only, no output
+  change.* Four fixtures put the Yosys cells the corpus lacked on real
+  crossings, checked by `tests/test_cell_variety_fixtures.py`:
+  `good_flop_variety_handshake` / `bad_flop_variety_handshake` (a req/ack
+  handshake whose synchronisers and captures are `$aldff`, `$dffsr`,
+  `$dffsre`, `$aldffe` and `$sdffce`, built with `opt_dff`), and
+  `bad_comb_ops_before_sync` / `good_comb_ops_handshake` (`$mul`, `$lt` /
+  `$le`, `$reduce_and` / `$reduce_or` / `$reduce_xor` and `$shiftx` in front
+  of 2FF synchronisers, and between handshake-held operands and a gated
+  capture). `$aldffe`, `$dffsre`, `$shiftx` and `$mul` were in no fixture
+  before. The analyzer gaps they expose are pinned, not fixed: strict
+  `xfail`s for RDC-001 missing a foreign-domain `$dffsr` clear (RDC-004
+  fires on proc's constant-leg `CLR` mux instead) and for four slang
+  lowering gaps (non-constant async load, a second async control, sync
+  reset under enable, run-time index reads), and two gate-level allowlist
+  rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
+  CDC-020 fires on its capture).
+
 - **SDC-variety and multi-clock fixtures** (rtl-buddy-cdc#331) —
   *test-only, no output change.* 27 new fixtures, checked end to end
   through `analyze` on both SDC backends by
