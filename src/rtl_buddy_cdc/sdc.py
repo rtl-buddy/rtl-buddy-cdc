@@ -484,6 +484,15 @@ class ClockSpec:
     _port_delays_resolved: object = field(
         default=None, init=False, repr=False, compare=False
     )
+    # Every clock name the parsed file declares, in declaration order —
+    # what ``[all_clocks]`` and a ``[get_clocks <glob>]`` resolve against
+    # (rtl-buddy-cdc#390). Set by :func:`parse` before the handlers run,
+    # so a clock declared below the statement that names it counts, as it
+    # does for every other clock reference. ``None`` on a spec built
+    # without :func:`parse`: the clocks declared on it so far are used.
+    _clock_universe: tuple[str, ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     # ---- consumer-facing helpers ------------------------------------------
 
@@ -822,6 +831,8 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             "" if tcl_available() else f" {_TKINTER_FIX_HINT}",
         )
 
+    spec._clock_universe = _declared_clock_names(commands)
+
     for command in commands:
         words = command.words
         if not words:
@@ -869,6 +880,37 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
     spec.multi_clock_ports = _index_multi_clock_ports(spec.clocks)
     spec.partial_warnings.extend(_undeclared_delay_clocks(spec))
     return spec
+
+
+#: Commands that declare clocks — the first pass of :func:`parse` runs
+#: only these, to learn the file's clock names (rtl-buddy-cdc#390).
+_CLOCK_DECLARATIONS: tuple[str, ...] = ("create_clock", "create_generated_clock")
+
+
+def _declared_clock_names(commands: list[_Command]) -> tuple[str, ...]:
+    """Every clock name ``commands`` leave declared, in declaration order.
+
+    A first pass over the clock declarations alone, on a scratch spec
+    whose diagnostics are discarded (the real pass reports them). A
+    clock collection in a clock position — ``[all_clocks]``,
+    ``[get_clocks clk_*]`` — resolves against this set rather than the
+    clocks declared *above* it: every other clock reference (a ``-group``
+    or ``-clock`` name) already counts a clock declared further down, and
+    an ``all_clocks`` that silently left such a clock out would make the
+    two spellings of one group disagree. The handler warns when the
+    expansion picks up a clock declared below the statement, because a
+    timer evaluates the file in order and would not
+    (:func:`_resolve_clock_terms`).
+    """
+    scratch = ClockSpec()
+    for command in commands:
+        words = command.words
+        if not words or words[0] not in _CLOCK_DECLARATIONS:
+            continue
+        cmd = words[0]
+        parsed = _drop_unrecognised_operands(cmd, _slice(words[1:], ARG_SPECS[cmd]), [])
+        _DISPATCH[cmd](scratch, parsed)
+    return tuple(scratch.clocks)
 
 
 def _undeclared_delay_clocks(spec: ClockSpec) -> list[str]:
@@ -1914,7 +1956,12 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
     """
     name = p.first("-name")
     master_word = p.first("-master_clock")
-    master = _strip_get_clocks(master_word) if master_word is not None else None
+    where = f"create_generated_clock{f' {name}' if name else ''}{_at_line(p.line)}"
+    master = (
+        _single_clock(master_word, f"{where} -master_clock", spec)
+        if master_word
+        else None
+    )
 
     divide_by = _safe_int(p.first("-divide_by"), default=1)
     multiply_by = _safe_int(p.first("-multiply_by"), default=1)
@@ -2013,6 +2060,7 @@ def _handle_set_clock_groups(spec: ClockSpec, p: Parsed) -> None:
         )
         return
 
+    where = f"set_clock_groups{_at_line(p.line)}"
     groups: list[set[str]] = []
     for slurped in p.all("-group"):
         # ``slurped`` is a list[str] of words after ``-group``, up to
@@ -2020,10 +2068,22 @@ def _handle_set_clock_groups(spec: ClockSpec, p: Parsed) -> None:
         # case is a single word like ``{ck_a ck_b}`` or
         # ``[get_clocks ck_a]``; the GREEDY arity also tolerates the
         # un-collection form ``-group ck_a ck_b`` real SDC sometimes
-        # uses.
-        members = _extract_clock_list(" ".join(slurped))
+        # uses. ``[all_clocks]`` and ``[get_clocks <glob>]`` expand
+        # against the declared clocks (rtl-buddy-cdc#390).
+        flags = _TermFlags()
+        members = _read_clocks(slurped, where, spec, flags, ports_are_clocks=True)
+        if flags.saw_filter:
+            flags.warnings.append(
+                f"{where}: ignored unsupported -filter clause in a -group"
+            )
+        spec.partial_warnings.extend(flags.warnings)
         if members:
             groups.append(set(members))
+        elif any(w.strip() for w in slurped) and not flags.warnings:
+            spec.partial_warnings.append(
+                f"{where}: -group {' '.join(slurped)} selects no clock; the "
+                f"group is ignored"
+            )
 
     if len(groups) < 2:
         spec.partial_warnings.append(
@@ -2062,26 +2122,32 @@ def _handle_set_false_path(spec: ClockSpec, p: Parsed) -> None:
     from_objects: list[SdcObject] = []
     to_objects: list[SdcObject] = []
     qualifiers: list[str] = []
-    saw_filter = False
-    saw_object = False
+    where = f"set_false_path{_at_line(p.line)}"
+    flags = _TermFlags()
+    # A side whose flag carried operands, even ones that were dropped as
+    # unreadable: it must select something, or the statement is ignored
+    # rather than read as "any object" on that side.
+    given: set[str] = set()
 
-    for flag, clocks, objects in (
-        ("-from", from_clocks, from_objects),
-        ("-rise_from", from_clocks, from_objects),
-        ("-fall_from", from_clocks, from_objects),
-        ("-to", to_clocks, to_objects),
-        ("-rise_to", to_clocks, to_objects),
-        ("-fall_to", to_clocks, to_objects),
+    for flag, side, clocks, objects in (
+        ("-from", "-from", from_clocks, from_objects),
+        ("-rise_from", "-from", from_clocks, from_objects),
+        ("-fall_from", "-from", from_clocks, from_objects),
+        ("-to", "-to", to_clocks, to_objects),
+        ("-rise_to", "-to", to_clocks, to_objects),
+        ("-fall_to", "-to", to_clocks, to_objects),
     ):
         for slurped in p.all(flag):
             if flag not in ("-from", "-to") and flag not in qualifiers:
                 qualifiers.append(flag)
-            for word in slurped:
-                cs, objs, sf, so = _classify_endpoint(word)
-                clocks.extend(cs)
-                objects.extend(objs)
-                saw_filter = saw_filter or sf
-                saw_object = saw_object or so
+            if slurped:
+                given.add(side)
+            cs, objs = _read_endpoints(slurped, where, spec, flags)
+            clocks.extend(cs)
+            objects.extend(objs)
+    saw_object = flags.saw_object
+    saw_filter = flags.saw_filter
+    spec.partial_warnings.extend(flags.warnings)
 
     through: list[tuple[SdcObject, ...]] = []
     for flag in ("-through", "-rise_through", "-fall_through"):
@@ -2141,6 +2207,17 @@ def _handle_set_false_path(spec: ClockSpec, p: Parsed) -> None:
             f"an object-scoped false path — statement ignored"
         )
         return
+    for side, found in (
+        ("-from", from_clocks or from_objects),
+        ("-to", to_clocks or to_objects),
+    ):
+        if side in given and not found:
+            # Every operand on this side was unreadable (reported above);
+            # an empty side would widen the exception to any object.
+            spec.partial_warnings.append(
+                f"{where}: {side} selects nothing — statement ignored"
+            )
+            return
     for flag in ("-setup", "-hold"):
         if p.present(flag):
             qualifiers.append(flag)
@@ -2176,7 +2253,11 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
     clock_word = p.first("-clock")
     # An operand dropped as unrecognised reads as "" (see
     # ``_drop_unrecognised_operands``): no anchor at all.
-    clock = _strip_get_clocks(clock_word) if clock_word else None
+    clock = (
+        _single_clock(clock_word, f"{command}{_at_line(p.line)} -clock", spec)
+        if clock_word
+        else None
+    )
 
     terms: list[tuple[str, tuple[str, ...]]] = []
     flags = _TermFlags()
@@ -2241,9 +2322,15 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
 
 @dataclass
 class _TermFlags:
-    """Diagnostics :func:`_port_terms` accumulates for one statement."""
+    """Diagnostics a collection evaluation accumulates for one statement.
+
+    ``saw_object`` records a design-object collection in a ``-from`` /
+    ``-to`` operand (:func:`_read_endpoints`), even one whose names were
+    all dropped.
+    """
 
     saw_filter: bool = False
+    saw_object: bool = False
     warnings: list[str] = field(default_factory=list)
 
 
@@ -2432,7 +2519,6 @@ def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:
     to_clocks: list[str] = []
     from_objects: list[tuple[str, str]] = []
     to_objects: list[tuple[str, str]] = []
-    saw_filter = False
 
     def take_value(word: str) -> bool:
         nonlocal value
@@ -2445,6 +2531,8 @@ def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:
     for word in p.tail:
         take_value(word)
 
+    where = f"set_max_delay -datapath_only{_at_line(p.line)}"
+    flags = _TermFlags()
     for flag, clocks, objects in (
         ("-from", from_clocks, from_objects),
         ("-rise_from", from_clocks, from_objects),
@@ -2454,15 +2542,12 @@ def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:
         ("-fall_to", to_clocks, to_objects),
     ):
         for slurped in p.all(flag):
-            for word in slurped:
-                if take_value(word):
-                    continue
-                kind, names, sf = _split_collection(word)
-                saw_filter = saw_filter or sf
-                if kind is None or kind == "clock":
-                    clocks.extend(names)
-                else:
-                    objects.extend((kind, n) for n in names)
+            words = [w for w in slurped if not take_value(w)]
+            cs, objs = _read_endpoints(words, where, spec, flags)
+            clocks.extend(cs)
+            objects.extend((o.kind, o.name) for o in objs)
+    saw_filter = flags.saw_filter
+    spec.partial_warnings.extend(flags.warnings)
 
     if saw_filter:
         spec.partial_warnings.append(
@@ -2557,16 +2642,173 @@ _DISPATCH: dict[str, Callable[[ClockSpec, Parsed], None]] = {
 # ---- collection-peeling helpers --------------------------------------------
 
 
-def _strip_get_clocks(token: str) -> str:
-    """Reduce ``"[get_clocks foo]"`` / ``"{foo}"`` / ``"foo"`` to ``"foo"``."""
-    names, _ = _extract_names(token)
-    return names[0] if names else token
+# ---- clock collections (rtl-buddy-cdc#390) ---------------------------------
+#
+# A clock position (``-group``, a clock endpoint, ``-clock``,
+# ``-master_clock``) reads clock *collections*, not just names: before
+# #390 it peeled its operand with ``_extract_names``, which reads an
+# unknown bracketed head as a name, so ``[all_clocks]`` was a clock
+# called ``all_clocks``. A clock collection evaluates to set terms
+# (:data:`_Term`: an included pattern and the patterns removed from it),
+# exactly as a port target does; :func:`_resolve_clock_terms` turns them
+# into clock names against the file's declared clocks.
 
 
-def _extract_clock_list(token: str) -> list[str]:
-    """Turn ``"{src_clk dst_clk}"`` / ``"src_clk"`` into a name list."""
-    names, _ = _extract_names(token)
-    return names
+def _clock_leaf(
+    text: str, where: str, flags: _TermFlags, *, ports_are_clocks: bool
+) -> list[_Term] | None:
+    """One clock-position item → set terms, or ``None`` with a warning.
+
+    ``[get_clocks …]`` and bare / braced names are clock patterns;
+    ``[all_clocks]`` is the glob ``*`` (every declared clock). With
+    ``ports_are_clocks`` a ``[get_ports p]`` / ``[get_pins p]`` names the
+    clock ``p`` — the pre-#390 reading a ``-group`` / ``-clock`` keeps,
+    since a ``create_clock`` without ``-name`` is named after its port.
+    Any other collection (``all_registers``, ``all_inputs``,
+    ``all_outputs``, ``get_cells``, ``get_nets``) names no clock.
+    """
+    kind, names, saw_filter = _split_collection(text)
+    flags.saw_filter = flags.saw_filter or saw_filter
+    if kind is None or kind == "clock":
+        return [(n, ()) for n in names]
+    if kind == "all_clocks":
+        return [("*", ())]
+    if ports_are_clocks and kind in ("port", "pin"):
+        return [(n, ()) for n in names]
+    flags.warnings.append(
+        f"{where}: {text} is not a clock collection, so it selects no clock; "
+        f"the operand is ignored"
+    )
+    return None
+
+
+def _clock_universe(spec: ClockSpec) -> tuple[str, ...]:
+    """The clock names a clock pattern resolves against (see
+    :attr:`ClockSpec._clock_universe`)."""
+    if spec._clock_universe is not None:
+        return spec._clock_universe
+    return tuple(spec.clocks)
+
+
+def _resolve_clock_terms(
+    terms: list[_Term], where: str, spec: ClockSpec, warnings: list[str]
+) -> list[str]:
+    """Set terms → clock names, in order, without duplicates.
+
+    An exact name is kept as written whether or not it is declared, as
+    every clock reference always was (an undeclared one is diagnosed
+    elsewhere). A glob — ``*`` for ``[all_clocks]`` — expands against the
+    file's declared clocks (:func:`_declared_clock_names`); one matching
+    nothing is warned about. A removed pattern takes every name it
+    matches out of its term; one matching no clock is warned about. A
+    glob that picks up a clock declared *below* the statement is warned
+    about too: SDC runs in file order, so a timer would leave it out.
+    """
+    universe = _clock_universe(spec)
+    out: list[str] = []
+    late: list[str] = []
+    for pattern, excl in terms:
+        is_glob = any(ch in "*?" for ch in pattern)
+        if is_glob:
+            hits = [c for c in universe if _name_matches(pattern, c)]
+            if not hits:
+                warnings.append(
+                    f"{where}: clock pattern {pattern!r} matches no declared "
+                    f"clock, so it selects nothing"
+                )
+                continue
+        else:
+            hits = [pattern]
+        for removed in excl:
+            if not any(_name_matches(removed, c) for c in (*universe, *hits)):
+                warnings.append(
+                    f"{where}: remove_from_collection pattern {removed!r} matches "
+                    f"no declared clock, so it removes nothing — constraint typo?"
+                )
+        kept = [c for c in hits if not any(_name_matches(r, c) for r in excl)]
+        if is_glob:
+            late.extend(c for c in kept if c not in spec.clocks)
+        out.extend(kept)
+    late = list(dict.fromkeys(late))
+    if late:
+        warnings.append(
+            f"{where}: the clock collection also selects {', '.join(late)}, "
+            f"declared later in the file; clock references are resolved against "
+            f"the whole file, but a timer evaluates it in order and would leave "
+            f"{'it' if len(late) == 1 else 'them'} out — declare clocks first"
+        )
+    return list(dict.fromkeys(out))
+
+
+def _read_clocks(
+    words: list[str],
+    where: str,
+    spec: ClockSpec,
+    flags: _TermFlags,
+    *,
+    ports_are_clocks: bool,
+) -> list[str]:
+    """The clock names a clock-only operand (``-group``, ``-clock``) selects."""
+    terms: list[_Term] = []
+    for word in words:
+        for item in _endpoint_items(word):
+            got = _clock_leaf(
+                _unbrace(item), where, flags, ports_are_clocks=ports_are_clocks
+            )
+            if got:
+                terms.extend(got)
+    return _resolve_clock_terms(terms, where, spec, flags.warnings)
+
+
+def _read_endpoints(
+    words: list[str], where: str, spec: ClockSpec, flags: _TermFlags
+) -> tuple[list[str], list[SdcObject]]:
+    """A ``-from`` / ``-to`` operand → ``(clocks, objects)``.
+
+    ``get_cells`` / ``get_pins`` / ``get_ports`` / ``get_nets`` items are
+    design-object patterns (sets ``flags.saw_object``); every other item
+    is read as a clock collection (:func:`_clock_leaf`), so
+    ``[all_clocks]`` expands and ``[all_registers]`` selects nothing with
+    a warning (rtl-buddy-cdc#390).
+    """
+    clocks: list[_Term] = []
+    objects: list[SdcObject] = []
+    for word in words:
+        for item in _endpoint_items(word):
+            text = _unbrace(item)
+            kind, names, saw_filter, hier = _split_endpoint_item(text)
+            if kind in _OBJECT_KINDS:
+                assert kind is not None
+                flags.saw_object = True
+                flags.saw_filter = flags.saw_filter or saw_filter
+                objects.extend(SdcObject(kind, n, hier) for n in names)
+                continue
+            got = _clock_leaf(text, where, flags, ports_are_clocks=False)
+            if got:
+                clocks.extend(got)
+    return _resolve_clock_terms(clocks, where, spec, flags.warnings), objects
+
+
+def _single_clock(word: str, where: str, spec: ClockSpec) -> str | None:
+    """The one clock a single-clock option (``-clock``, ``-master_clock``)
+    names, or ``None`` with a warning.
+
+    A collection is accepted when it resolves to exactly one clock —
+    ``[all_clocks]`` in a one-clock file is that clock. Several clocks
+    (``{a b}``, ``[all_clocks]`` with more declared) are not silently cut
+    to the first: the option is ignored and said so (rtl-buddy-cdc#390).
+    """
+    flags = _TermFlags()
+    names = _read_clocks([word], where, spec, flags, ports_are_clocks=True)
+    if flags.saw_filter:
+        flags.warnings.append(f"{where}: ignored unsupported -filter clause")
+    if len(names) > 1:
+        flags.warnings.append(
+            f"{where} {word} selects several clocks ({', '.join(names)}) where "
+            f"one is expected; the option is ignored"
+        )
+    spec.partial_warnings.extend(flags.warnings)
+    return names[0] if len(names) == 1 else None
 
 
 #: ``get_*`` collection command → the object kind recorded for it.
@@ -2681,39 +2923,6 @@ def _split_endpoint_item(item: str) -> tuple[str | None, list[str], bool, bool]:
         words = item.replace("[", " ").replace("]", " ").split()
         hierarchical = any(w in ("-hierarchical", "-hier") for w in words)
     return kind, names, saw_filter, hierarchical
-
-
-def _classify_endpoint(
-    word: str,
-) -> tuple[list[str], list[SdcObject], bool, bool]:
-    """Split a ``-from`` / ``-to`` word into its clocks and objects.
-
-    Returns ``(clocks, objects, saw_filter, saw_object)``; ``saw_object``
-    is True when the word held a design-object collection at all, even
-    one whose names were all dropped (``[get_cells -filter …]``).
-
-    A word with no design-object collection in it is read exactly as the
-    pre-#328 parser read it — every name a clock, via
-    :func:`_extract_names` — so clock-only false paths keep their
-    meaning byte for byte. Otherwise each item is classified on its own:
-    ``get_cells`` / ``get_pins`` / ``get_ports`` / ``get_nets`` become
-    :class:`SdcObject` patterns, everything else is read as clocks.
-    """
-    items = [(item, _split_endpoint_item(item)) for item in _endpoint_items(word)]
-    if not any(parts[0] in _OBJECT_KINDS for _, parts in items):
-        names, saw_filter = _extract_names(word)
-        return names, [], saw_filter, False
-    clocks: list[str] = []
-    objects: list[SdcObject] = []
-    saw_filter = False
-    for item, (kind, names, sf, hier) in items:
-        saw_filter = saw_filter or sf
-        if kind in _OBJECT_KINDS:
-            assert kind is not None
-            objects.extend(SdcObject(kind, n, hier) for n in names)
-        else:
-            clocks.extend(_extract_names(item)[0])
-    return clocks, objects, saw_filter, True
 
 
 def _looks_numeric(word: str) -> bool:

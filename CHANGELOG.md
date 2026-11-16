@@ -406,6 +406,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SDC clock collections are evaluated, not read as names**
+  (rtl-buddy-cdc#390). No committed fixture or integration golden changes
+  verdict.
+  - `[all_clocks]` in a clock position (`set_clock_groups -group`, the
+    clock endpoints of `set_false_path` / `set_max_delay -datapath_only`,
+    `-clock`, `-master_clock`) was a clock called `all_clocks`; it is now
+    every declared clock (generated and virtual ones too), and
+    `[get_clocks <glob>]` expands against the same set instead of staying
+    a literal name that matched nothing. Clock references are resolved
+    against the whole file, as clock names already were, so a clock
+    declared below the statement is included — with a warning, since a
+    timer evaluates in file order. `[all_registers]`, `[all_inputs]`,
+    `[all_outputs]`, `[get_cells …]` and `[get_nets …]` there (and in a
+    `-group`: a `[get_cells u]` was read as the clocks `get_cells` and
+    `u`) now select nothing, with a warning. A `set_false_path` side whose
+    operands all select nothing ignores the statement instead of leaving
+    that side open to every object. `-clock` / `-master_clock` given
+    several clocks (`{a b}`) took the first silently; that is now ignored
+    and reported, as is a `-filter` in a `-group` or single-clock option
+    (a filtered `-master_clock` used to become the raw word itself).
+
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
   design (reset and enable muxes on `D`, a set / clear flop's `CLR` and
