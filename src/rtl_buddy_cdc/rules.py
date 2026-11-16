@@ -47,6 +47,11 @@ from rtl_buddy_cdc.primitives import (
 )
 from rtl_buddy_cdc.regroup import ORPHAN_ATTR, REGROUPED_ATTR
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
+from rtl_buddy_cdc.reset_domain import (
+    MAX_RESET_MUXES,
+    bit_reader_count,
+    sync_reset_lanes,
+)
 from rtl_buddy_cdc.reset_hints import ResetHints
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec, PortTyping
 
@@ -256,7 +261,11 @@ class _RuleContext:
         from rtl_buddy_cdc.reset_domain import assign_reset_domains
 
         return assign_reset_domains(
-            self.module, flops=self.flops, drivers=self.reset_bit_drivers
+            self.module,
+            flops=self.flops,
+            drivers=self.reset_bit_drivers,
+            lane_drivers=self.bit_drivers,
+            reader_counts=self.reader_counts,
         )
 
     @cached_property
@@ -1111,109 +1120,14 @@ def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str, int]]:
     return drivers
 
 
-def _bit_reader_count(module: Module) -> dict[Bit, int]:
-    """Count every site that reads each net bit.
-
-    This is the one definition of "who reads this bit" behind every
-    single-reader test in the rule pack (the synchroniser-chain walks,
-    the reset-mux look-through, the compositional port proofs). A
-    reader is:
-
-    - a cell **input** pin bit — flop ``D``, combinational inputs, and
-      the input pins of a blackbox / hierarchical instance. Flop ``CLK``
-      is excluded because clock connections aren't part of the data
-      fanout. A cell's *output* pins (``Y`` / ``Q``, or any pin
-      ``port_directions`` marks ``output``, such as a blackbox's
-      ``clk_out``) drive the bit and are not readers.
-    - a module **output** (or ``inout``) port bit. The value leaves the
-      module there and is used outside it, so it is a load like any
-      other: a synchroniser stage exported straight to a port has a
-      second reader exactly as it would through a buffer (rtl-buddy-cdc#344).
-
-    Two reads of the same bit by the same cell on different ports count
-    independently — both are real loads.
-    """
-    counts: dict[Bit, int] = {}
-    for cell in module.cells.values():
-        for port_name, bits in cell.connections.items():
-            if port_name == "CLK" or cell.is_output_pin(port_name):
-                continue
-            for b in bits:
-                if isinstance(b, int):
-                    counts[b] = counts.get(b, 0) + 1
-    for port in module.ports.values():
-        if port.direction not in ("output", "inout"):
-            continue
-        for b in port.bits:
-            if isinstance(b, int):
-                counts[b] = counts.get(b, 0) + 1
-    return counts
-
-
-# How many reset muxes :func:`_sync_reset_lanes` steps through on one lane.
-# ``opt_dff`` has no limit; real designs chain two or three.
-_MAX_RESET_MUXES = 16
-_RESET_CONSTANTS = ("0", "1")
-
-
-def _sync_reset_lanes(
-    head: Flop,
-    module: Module,
-    bit_drivers: dict[Bit, tuple[str, str, int]],
-    reader_counts: dict[Bit, int],
-) -> list[tuple[Bit, frozenset[tuple[Bit, bool]]]]:
-    """``head``'s sync reset read lane by lane the way Yosys ``opt_dff``
-    folds it into ``SRST`` (rtl-buddy-cdc#390): per ``D`` lane, the bit
-    left once the reset muxes are stepped through and the set of
-    ``(select, active-high)`` resets collected on the way (empty: no
-    reset on that lane).
-
-    Per lane, from ``D``, a step is a 2:1 mux (``$mux`` / ``$_MUX_``) with
-    a 1-bit select whose output lane has no reader but the step before,
-    one leg the constant ``0`` or ``1`` and the other leg anything but
-    the lane's own ``Q``. Every constant collected on a lane must equal
-    the lane's first: ``if (r1) q <= 0; else if (r2) q <= 0;`` folds into
-    ``SRST = r1 | r2``, ``... else if (r2) q <= 1;`` leaves the second mux
-    on ``D``. The walk stops at anything else — two constant legs, an
-    ``x`` / ``z`` leg, a leg that is the lane's own ``Q`` (an enable, which
-    ``opt_dff`` folds into ``EN`` instead), a ``$pmux``, a mux output read
-    twice. Observed on Yosys 0.64 by building the same RTL with and
-    without ``opt_dff``; ``tests/test_srst_set_pins.py`` pins each case.
-    """
-    out: list[tuple[Bit, frozenset[tuple[Bit, bool]]]] = []
-    for i, d_bit in enumerate(head.d):
-        q_bit = head.q[i] if i < len(head.q) else None
-        bit = d_bit
-        value: str | None = None
-        resets: set[tuple[Bit, bool]] = set()
-        for _ in range(_MAX_RESET_MUXES):
-            drv = bit_drivers.get(bit) if isinstance(bit, int) else None
-            if drv is None or drv[1] != "Y" or reader_counts.get(bit, 0) != 1:
-                break
-            cell = module.cells.get(drv[0])
-            # ``$pmux`` (and every other cell type) is not walked;
-            # gate-level ``$_MUX_`` is the 1-bit ``$mux`` (rtl-buddy-cdc#336).
-            if cell is None or cell.type not in MUX2_TYPES:
-                break
-            sel = cell.connections.get("S", ())
-            a_bits = cell.connections.get("A", ())
-            b_bits = cell.connections.get("B", ())
-            idx = drv[2]
-            if len(sel) != 1 or idx >= len(a_bits) or idx >= len(b_bits):
-                break
-            a, b = a_bits[idx], b_bits[idx]
-            if a in _RESET_CONSTANTS and b in _RESET_CONSTANTS:
-                break
-            if b in _RESET_CONSTANTS and value in (None, b) and a != q_bit:
-                value, bit = b, a
-                resets.add((sel[0], True))
-            elif a in _RESET_CONSTANTS and value in (None, a) and b != q_bit:
-                value, bit = a, b
-                resets.add((sel[0], False))
-            else:
-                break
-        out.append((bit, frozenset(resets)))
-    return out
+# ``_bit_reader_count`` (the one definition of "who reads this bit") and
+# ``_sync_reset_lanes`` (a register's sync reset read the way ``opt_dff``
+# folds it) live in :mod:`rtl_buddy_cdc.reset_domain`, which classifies a
+# flop's reset with them too (rtl-buddy-cdc#394); the names here are the
+# rule pack's.
+_bit_reader_count = bit_reader_count
+_sync_reset_lanes = sync_reset_lanes
+_MAX_RESET_MUXES = MAX_RESET_MUXES
 
 
 def _constant_leg_reset_mux_data_bits(
@@ -1722,6 +1636,47 @@ def _carries_synchronised_control(
     return len(chain) >= 2
 
 
+def _source_reaches(
+    module: Module,
+    c: Crossing,
+    bits: tuple[Bit, ...],
+    drivers: dict[Bit, tuple[str, str, int]],
+) -> bool:
+    """Whether ``c``'s source (its flop's ``Q``, its port, its boundary
+    port) reaches any of ``bits`` through combinational cells: a backward
+    walk from ``bits`` that stops at flop / latch outputs and at undriven
+    bits. Unbounded; each cell is expanded once."""
+    if c.src_flop is not None:
+        sources = set(c.src_flop.q)
+    elif c.src_port is not None and c.src_port in module.ports:
+        sources = set(module.ports[c.src_port].bits)
+    elif c.src_boundary is not None and c.src_boundary[0] in module.cells:
+        inst, port = c.src_boundary
+        sources = set(module.cells[inst].connections.get(port, ()))
+    else:
+        return False
+    seen: set[Bit] = set()
+    expanded: set[str] = set()
+    stack = [b for b in bits if isinstance(b, int)]
+    while stack:
+        bit = stack.pop()
+        if bit in seen:
+            continue
+        seen.add(bit)
+        if bit in sources:
+            return True
+        drv = drivers.get(bit)
+        if drv is None or drv[1] == "Q" or drv[0] in expanded:
+            continue
+        expanded.add(drv[0])
+        cell = module.cells[drv[0]]
+        for pin, pin_bits in cell.connections.items():
+            if pin in _OUTPUT_PINS or cell.is_output_pin(pin):
+                continue
+            stack.extend(b for b in pin_bits if isinstance(b, int))
+    return False
+
+
 def _single_bit_handshake_capture(
     module: Module,
     c: Crossing,
@@ -1740,7 +1695,12 @@ def _single_bit_handshake_capture(
        required: an ``EN`` pin (``$dffe`` / ``$_DFFE_*`` …) or a mux on
        ``D`` whose other leg is the flop's own ``Q``. A constant or
        port-only enable, a foreign-domain flop in the enable, a reset
-       mux or a data-select mux is not a gate.
+       mux or a data-select mux is not a gate. Nor is the enable a gate
+       for a crossing that also reaches the flop through a synchronous
+       reset outside it (rtl-buddy-cdc#394, :func:`_gated_capture`): the
+       ``SRST`` of an ``$sdffe`` (reset over enable), or the reset mux in
+       front of the hold mux in the ``proc`` form. An ``$sdffce`` resets
+       only while enabled, so a crossing through its ``SRST`` is gated.
     2. That enable is derived only from a properly synchronised control
        from the crossing's *own* source domain: *every* flop in its
        fanin is a stage past the first of a depth >= 2 single-bit
@@ -1770,7 +1730,7 @@ def _single_bit_handshake_capture(
     """
     if c.width != 1:
         return None
-    fanin = _gated_capture_fanin(
+    gate = _gated_capture(
         module,
         c,
         ctx.domains,
@@ -1778,7 +1738,13 @@ def _single_bit_handshake_capture(
         require_hold=True,
         reader_counts=ctx.reader_counts,
     )
-    if fanin is None:
+    if gate is None:
+        return None
+    fanin, ungated_resets = gate
+    if ungated_resets and _source_reaches(module, c, ungated_resets, ctx.bit_drivers):
+        # The crossing arrives through a synchronous reset the enable
+        # does not gate (rtl-buddy-cdc#394): the destination samples it
+        # on any edge, so it is no gated capture.
         return None
     if flops_by_name is None:
         flops_by_name = {f.cell.name: f for f in ctx.flops}
@@ -2177,9 +2143,46 @@ def _gated_capture_fanin(
     (:func:`_own_srst_data_leg`). The ``EN`` form is a hold by
     construction and is unchanged.
     """
+    gate = _gated_capture(
+        module,
+        crossing,
+        domains,
+        drivers,
+        require_hold=require_hold,
+        reader_counts=reader_counts,
+    )
+    return gate[0] if gate is not None else None
+
+
+def _gated_capture(
+    module: Module,
+    crossing: Crossing,
+    domains: dict[str, str | None],
+    drivers: dict[Bit, tuple[str, str, int]],
+    *,
+    require_hold: bool = False,
+    reader_counts: dict[Bit, int] | None = None,
+) -> tuple[set[str], tuple[Bit, ...]] | None:
+    """:func:`_gated_capture_fanin` plus the selects of the destination's
+    synchronous resets that act *outside* the gate it found
+    (rtl-buddy-cdc#394): a signal reaching the flop through one of them
+    is sampled on every edge the reset is asserted on, whatever the
+    gate says.
+
+    - With the ``EN`` pin as the gate: the ``SRST`` of a reset-over-
+      enable flop (``$sdffe`` / ``$_SDFFE_*``). An ``$sdffce`` /
+      ``$_SDFFCE_*`` resets only while enabled, so its ``SRST`` is gated.
+    - With a mux on ``D`` as the gate: the ``SRST`` pin (if any; a mux on
+      ``D`` gates nothing on a pin) and the selects of the reset muxes in
+      front of the gating mux that :func:`_own_srst_data_leg` looks
+      through (``if (rst) q <= 0; else if (en) q <= d;`` after ``proc``,
+      the ``$sdffe`` once folded).
+    """
     dst_clock = crossing.dst_clock
     dst_flop = crossing.dst_flop
     dst_cell = dst_flop.cell
+    rst = flop_reset(dst_cell)
+    srst_bits = rst.bits if rst is not None and rst.role == "srst" else ()
 
     def _local(fanin: set[str]) -> bool:
         return bool(fanin) and all(domains.get(n) == dst_clock for n in fanin)
@@ -2194,11 +2197,22 @@ def _gated_capture_fanin(
         if en_int_bits:
             en_fanin_flops = _backward_flop_fanin(module, en_int_bits, drivers)
             if _local(en_fanin_flops):
-                return en_fanin_flops
+                gate = parse_gate_storage_cell(dst_cell.type)
+                reset_gated = dst_cell.type == "$sdffce" or (
+                    gate is not None and gate.reset_gated_by_enable
+                )
+                return en_fanin_flops, () if reset_gated else srst_bits
 
     if require_hold:
-        return _hold_mux_select_fanin(
+        if reader_counts is None:
+            reader_counts = _bit_reader_count(module)
+        fanin = _hold_mux_select_fanin(
             module, dst_flop, dst_clock, domains, drivers, reader_counts, _local
+        )
+        if fanin is None:
+            return None
+        return fanin, srst_bits + _own_srst_selects(
+            module, dst_flop, dst_clock, drivers, reader_counts
         )
 
     # Shape 2: mux-on-D, optionally through a short chain of
@@ -2211,16 +2225,19 @@ def _gated_capture_fanin(
     # folds the same mux into an ``$sdff`` with no gate left. Test
     # what the reset mux's data leg is driven by instead.
     d_bits: tuple[Bit, ...] = tuple(dst_flop.d)
+    ungated: tuple[Bit, ...] = srst_bits
     first = drivers.get(d_bits[0]) if d_bits and isinstance(d_bits[0], int) else None
     if first is not None and module.cells[first[0]].type in MUX2_TYPES:
         if reader_counts is None:
             reader_counts = _bit_reader_count(module)
-        d_bits = (
-            _own_srst_data_leg(
-                module, dst_flop, dst_clock, domains, drivers, reader_counts
-            )
-            or d_bits
+        leg = _own_srst_data_leg(
+            module, dst_flop, dst_clock, domains, drivers, reader_counts
         )
+        if leg is not None:
+            d_bits = leg
+            ungated += _own_srst_selects(
+                module, dst_flop, dst_clock, drivers, reader_counts
+            )
     driver_cells: set[str] = set()
     for d_bit in d_bits:
         if not isinstance(d_bit, int):
@@ -2241,7 +2258,25 @@ def _gated_capture_fanin(
     # domain. A single src-domain flop in there means the "gate" is
     # itself a cross-domain signal — not a valid handshake.
     s_fanin_flops = _backward_flop_fanin(module, s_bits, drivers)
-    return s_fanin_flops if _local(s_fanin_flops) else None
+    return (s_fanin_flops, ungated) if _local(s_fanin_flops) else None
+
+
+def _own_srst_selects(
+    module: Module,
+    flop: Flop,
+    clock: str | None,
+    drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int],
+) -> tuple[Bit, ...]:
+    """The selects of the reset muxes :func:`_own_srst_data_leg` looks
+    through on ``flop``'s ``D`` (``()`` when it looks through none)."""
+    if clock is None:
+        return ()
+    lanes = _sync_reset_lanes(flop, module, drivers, reader_counts)
+    resets = {r for _, r in lanes}
+    if len(resets) != 1 or frozenset() in resets:
+        return ()
+    return tuple(sorted({sel for sel, _ in next(iter(resets))}, key=str))
 
 
 def _hold_mux_select_fanin(

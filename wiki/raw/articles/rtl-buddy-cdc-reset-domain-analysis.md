@@ -41,7 +41,7 @@ Three frozen dataclasses, all in `rtl_buddy_cdc.reset_domain`:
 | Type | Field summary | Producer |
 |---|---|---|
 | `ResetSource` | `name`, `polarity` (`"high"`/`"low"`), `type` (`"sync"`/`"async"`), `source` (`"port"`/`"inferred"`/`"constant"`/`"comb"`), `clock` (`str | None`, see §7) | `assign_reset_domains` |
-| `ResetDomain` | `flop` (cell name), `reset` (`ResetSource | None` — `None` for plain `$dff`/`$dffe`) | `assign_reset_domains` |
+| `ResetDomain` | `flop` (cell name), `reset` (`ResetSource | None` — `None` for a flop with no reset pin and no `proc`-form sync reset on `D`), `controls` (every async control pin) | `assign_reset_domains` |
 | `ResetCrossing` | `flop`, `reset`, `flop_clock` (`str | None`), `kind` (`"async-deassert"` / `"polarity-mismatch"` / `"sync-crossing"` / `"comb-driven"`), `pin` (`"ARST"` / `"ALOAD"` / `"CLR"` / `"SET"` / `"SRST"`, rtl-buddy-cdc#390) | `find_reset_crossings` |
 
 `ResetSource.name` carries a different identifier per `source`:
@@ -55,10 +55,23 @@ Three frozen dataclasses, all in `rtl_buddy_cdc.reset_domain`:
   this as "the reset is comb-driven; don't reason about its
   upstream".
 
-Polarity on a `ResetSource` is the **flop pin**'s inferred polarity
-(from the `$adff*` / `$sdff*` `*_POLARITY` parameter). It does *not*
-reflect any user-level `(* reset_polarity *)` override; that
-reconciliation is the consumer rule's job — see §6.
+Polarity on a `ResetSource` is the polarity the reset **signal** acts
+with: the flop pin's inferred polarity (from the `$adff*` / `$sdff*`
+`*_POLARITY` parameter, or the gate-level type name), flipped where
+Yosys's encoding of the pin inverts it — the inverter `proc` puts in
+front of the active-high `CLR` / `SET` of a set / clear flop whose
+control is active low (rtl-buddy-cdc#394), and a `proc`-form reset mux
+whose constant is on the `A` leg. It does *not* reflect any user-level
+`(* reset_polarity *)` override; that reconciliation is the consumer
+rule's job — see §6.
+
+A flop with no reset pin gets, as `reset`, the synchronous reset its
+`D` carries in the `proc` form where `opt_dff` would fold it into
+`SRST` (`reset_domain.sync_reset_lanes` with `through_enable`, every
+lane reset by the same selects; several selects are `"comb"`, like the
+`$reduce_or` `opt_dff` adds), so the `proc` and `opt_dff` forms of one
+design classify alike (rtl-buddy-cdc#394). A register whose lanes are
+reset differently (sliced by `opt_dff`) keeps `None`.
 
 ## 3. Cell-type → reset-pin map
 

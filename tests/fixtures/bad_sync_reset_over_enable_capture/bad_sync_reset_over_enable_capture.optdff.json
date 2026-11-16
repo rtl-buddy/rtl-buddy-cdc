@@ -1,0 +1,543 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_sync_reset_over_enable_capture": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:22.1-62.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "load": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "flag_in": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "kill_in": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "f_rov": {
+          "direction": "output",
+          "bits": [ 7 ]
+        },
+        "f_eor": {
+          "direction": "output",
+          "bits": [ 8 ]
+        }
+      },
+      "cells": {
+        "$auto$ff.cc:337:slice$36": {
+          "hide_name": 1,
+          "type": "$sdffe",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:50.5-60.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "EN": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 9 ],
+            "EN": [ 10 ],
+            "Q": [ 7 ],
+            "SRST": [ 11 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$38": {
+          "hide_name": 1,
+          "type": "$sdffce",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:50.5-60.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "EN": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 9 ],
+            "EN": [ 12 ],
+            "Q": [ 8 ],
+            "SRST": [ 11 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$39": {
+          "hide_name": 1,
+          "type": "$dffe",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:38.5-46.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "EN": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 13 ],
+            "EN": [ 14 ],
+            "Q": [ 15 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$40": {
+          "hide_name": 1,
+          "type": "$dffe",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:38.5-46.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "EN": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 5 ],
+            "EN": [ 14 ],
+            "Q": [ 9 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$41": {
+          "hide_name": 1,
+          "type": "$dffe",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:38.5-46.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "EN": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 6 ],
+            "EN": [ 14 ],
+            "Q": [ 11 ]
+          }
+        },
+        "$eq$tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:36$1": {
+          "hide_name": 1,
+          "type": "$eq",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:36.19-36.30"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 16 ],
+            "B": [ 15 ],
+            "Y": [ 17 ]
+          }
+        },
+        "$logic_and$tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:41$3": {
+          "hide_name": 1,
+          "type": "$logic_and",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:41.13-41.25"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 4 ],
+            "B": [ 17 ],
+            "Y": [ 14 ]
+          }
+        },
+        "$not$tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:44$4": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:44.23-44.29"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 15 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$procdff$27": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:50.5-60.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 15 ],
+            "Q": [ 18 ]
+          }
+        },
+        "$procdff$28": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:50.5-60.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 18 ],
+            "Q": [ 19 ]
+          }
+        },
+        "$procdff$29": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:50.5-60.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 19 ],
+            "Q": [ 20 ]
+          }
+        },
+        "$procdff$31": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:38.5-46.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 20 ],
+            "Q": [ 21 ]
+          }
+        },
+        "$procdff$32": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:38.5-46.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 21 ],
+            "Q": [ 16 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:55$6": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:55.18-55.25"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 19 ],
+            "B": [ 20 ],
+            "Y": [ 10 ]
+          }
+        },
+        "$xor$tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:56$7": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:56.13-56.20"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 19 ],
+            "B": [ 20 ],
+            "Y": [ 12 ]
+          }
+        }
+      },
+      "netnames": {
+        "$logic_and$tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:41$3_Y": {
+          "hide_name": 1,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:41.13-41.25"
+          }
+        },
+        "$not$tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:44$4_Y": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:44.23-44.29"
+          }
+        },
+        "$procmux$13_CMP": {
+          "hide_name": 1,
+          "bits": [ 12 ],
+          "attributes": {
+          }
+        },
+        "$procmux$15_CMP": {
+          "hide_name": 1,
+          "bits": [ 10 ],
+          "attributes": {
+          }
+        },
+        "a1": {
+          "hide_name": 0,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:34.11-34.13"
+          }
+        },
+        "a2": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:34.15-34.17"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:24.18-24.25"
+          }
+        },
+        "f_eor": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:29.18-29.23"
+          }
+        },
+        "f_rov": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:28.18-28.23"
+          }
+        },
+        "flag_a": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:35.11-35.17"
+          }
+        },
+        "flag_in": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:26.18-26.25"
+          }
+        },
+        "idle": {
+          "hide_name": 0,
+          "bits": [ 17 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:36.11-36.15"
+          }
+        },
+        "kill_a": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:35.19-35.25"
+          }
+        },
+        "kill_in": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:27.18-27.25"
+          }
+        },
+        "load": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:25.18-25.22"
+          }
+        },
+        "s1": {
+          "hide_name": 0,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:49.11-49.13"
+          }
+        },
+        "s2": {
+          "hide_name": 0,
+          "bits": [ 19 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:49.15-49.17"
+          }
+        },
+        "s3": {
+          "hide_name": 0,
+          "bits": [ 20 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:49.19-49.21"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:23.18-23.25"
+          }
+        },
+        "tog_a": {
+          "hide_name": 0,
+          "bits": [ 15 ],
+          "attributes": {
+            "init": "0",
+            "src": "tests/fixtures/bad_sync_reset_over_enable_capture/bad_sync_reset_over_enable_capture.sv:33.11-33.16"
+          }
+        }
+      }
+    }
+  }
+}

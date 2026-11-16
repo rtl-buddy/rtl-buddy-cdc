@@ -406,33 +406,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Port typing is per bit** (rtl-buddy-cdc#394, item 4). A
-  `set_input_delay` / `set_output_delay` whose target selects only some
-  bits of a bus port — `[get_ports {d[0] d[1]}]`, an unbraced
-  `[get_ports d[3]]` (bit 3 on the Tcl backend too), or
-  `[remove_from_collection [get_ports {d[*]}] [get_ports {d[3]}]]` —
-  typed the whole port with its clock (since rtl-buddy-cdc#390 with a
-  warning), and the bits of one bus given different clocks by separate
-  statements all took the last one. Each statement now types exactly the
-  bits it selects, in file order. A bit no statement types behaves like
-  an untyped scalar port: an input bit is `<unconstrained>` (CDC-011,
-  naming `'d[3]'`), an output bit has no contract (CDC-025). Both
-  warnings are gone. `ClockSpec.port_clock` keys such a port by bit, in
-  the SDC's declared index (`d[3]`), and whole ports exactly as before;
-  `ClockSpec.port_typing(module)` reads it per bit for every consumer:
-  the crossing walk (one crossing per port, clock and destination, with
-  the new `Crossing.src_port_bits`), CDC-006, CDC-010 and the
-  clock-network view, RDC-008, CDC-011, CDC-024, CDC-025, the memory
-  read-domain fallback, object-scoped `set_false_path` /
-  `set_max_delay -datapath_only` coverage and its `-through` walk, the
-  domain map and its mermaid rendering. `find_crossings(port_clock=…)`
-  reads bit keys itself, so the API path needs no new argument. JSON
-  (additive, no schema change): a crossing from such a port carries
-  `src_port_bits` (declared indices), and the domain map's
-  `port_domains` lists one entry per clock with a `bits` list; whole-port
-  crossings and entries are unchanged. New fixture
-  `bad_partial_bus_port_typing`. No committed fixture or integration
-  golden changes verdict.
+- **Reset analysis: set / clear polarity, resets outside an enable,
+  `proc`-form sync resets** (rtl-buddy-cdc#394, items 1, 2, 3, 5). No
+  committed fixture or integration golden changes verdict (per-rule
+  counts), and the committed reset-domain-map golden is unchanged. One
+  message changes: `bad_bus_foreign_sync_reset`'s CDC-001 (a crossing
+  through a foreign sync reset over an enable) no longer says the flop
+  "captures only under an enable"; it is the no-second-stage message.
+  - **RDC-002 / RDC-007 on set / clear flops.** A reset's polarity is now
+    the polarity its *signal* acts with. `proc` writes an active-low clear
+    of a `$dffsr` as an inverter in front of an active-high `CLR`;
+    `AsyncControl.source.polarity` (and so `ResetDomain.reset.polarity`)
+    was the pin's, so both RDC-002 variants (port-declared `(*
+    reset_polarity = "low" *)` and flop-to-flop) reported the correctly
+    wired flops and missed the wrong ones in the `proc` and `opt_dff`
+    forms, and RDC-007 reported a correct reset synchroniser built from
+    set / clear flops (head loading 1 under an active-low clear) in every
+    form, gate level included. The polarity is flipped once per inverter
+    `effective_control` (new; returns the bit and the polarity,
+    `effective_control_bit` keeps returning the bit) steps through.
+    Consumers: RDC-002, RDC-007 and RDC-001's reset-synchroniser
+    exemption (`_deasserting_reset_sync_members`), `find_reset_crossings`
+    and the reset-domain map's `polarity` fields.
+  - **CDC-001 no longer accepts a crossing through an ungated sync reset
+    as a gated capture.** On a reset-over-enable flop (`$sdffe` /
+    `$_SDFFE_*`, or a reset mux in front of the hold mux in the `proc`
+    form) a crossing that reaches the flop through the reset is sampled on
+    any edge; the single-bit gated-capture test read the enable as gating
+    it, said "captures only under an enable", and with an acknowledge
+    present accepted it silently. It is now CDC-001 with the
+    no-second-stage message. Under an `$sdffce` / `$_SDFFCE_*` (reset only
+    while enabled, or the reset mux behind the hold mux) it is gated, as
+    before. Same verdict in the `proc`, `opt_dff` and gate-level forms.
+  - **Reset-domain classification reads `proc`-form sync resets.** A flop
+    with no reset pin whose `D` carries the constant-leg reset muxes
+    `opt_dff` folds into `SRST` (over or under an enable, every lane reset
+    by the same selects) now has that reset as `ResetDomain.reset` (`type:
+    "sync"`; several selects classify as `"comb"`, like the `$reduce_or`
+    `opt_dff` adds). The `proc` and `opt_dff` reset-domain maps of one
+    design agree, and on the `lint` path the Yosys frontend's map lists the
+    sync resets the slang frontend's `$sdff*` carry. A register whose lanes
+    are reset differently (sliced by `opt_dff`) keeps no reset. The lane
+    walk is the rule pack's `_sync_reset_lanes` (now
+    `reset_domain.sync_reset_lanes`, with `through_enable`), and
+    `_bit_reader_count` moved beside it (`reset_domain.bit_reader_count`);
+    the `rules` names remain.
+  - The golden-regeneration command in `tests/test_reset_domain_map.py`
+    and the reset-domain-map schema doc now passes `--project-root .`:
+    a relative `--emit-*` path is anchored at the SDC's directory, so the
+    documented command wrote the golden under
+    `tests/fixtures/<fix>/tests/fixtures/...`. A test runs both documented
+    commands.
+  - New fixtures `bad_set_clear_reset_polarity`,
+    `bad_sync_reset_over_enable_capture` and `good_sync_reset_forms`,
+    checked by `tests/test_reset_analyzer_394.py`.
 
 - **SDC clock collections are evaluated, not read as names**
   (rtl-buddy-cdc#390). No committed fixture or integration golden changes
@@ -1432,6 +1459,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the signal it acts on (`ResetDomain.controls`), and names them in the
   message. New fixture `bad_sync_chain_foreign_set` (`proc` and
   gate-level forms). No committed fixture changes verdict.
+
+- **Port typing is per bit** (rtl-buddy-cdc#394, item 4). A
+  `set_input_delay` / `set_output_delay` whose target selects only some
+  bits of a bus port — `[get_ports {d[0] d[1]}]`, an unbraced
+  `[get_ports d[3]]` (bit 3 on the Tcl backend too), or
+  `[remove_from_collection [get_ports {d[*]}] [get_ports {d[3]}]]` —
+  typed the whole port with its clock (since rtl-buddy-cdc#390 with a
+  warning), and the bits of one bus given different clocks by separate
+  statements all took the last one. Each statement now types exactly the
+  bits it selects, in file order. A bit no statement types behaves like
+  an untyped scalar port: an input bit is `<unconstrained>` (CDC-011,
+  naming `'d[3]'`), an output bit has no contract (CDC-025). Both
+  warnings are gone. `ClockSpec.port_clock` keys such a port by bit, in
+  the SDC's declared index (`d[3]`), and whole ports exactly as before;
+  `ClockSpec.port_typing(module)` reads it per bit for every consumer:
+  the crossing walk (one crossing per port, clock and destination, with
+  the new `Crossing.src_port_bits`), CDC-006, CDC-010 and the
+  clock-network view, RDC-008, CDC-011, CDC-024, CDC-025, the memory
+  read-domain fallback, object-scoped `set_false_path` /
+  `set_max_delay -datapath_only` coverage and its `-through` walk, the
+  domain map and its mermaid rendering. `find_crossings(port_clock=…)`
+  reads bit keys itself, so the API path needs no new argument. JSON
+  (additive, no schema change): a crossing from such a port carries
+  `src_port_bits` (declared indices), and the domain map's
+  `port_domains` lists one entry per clock with a `bits` list; whole-port
+  crossings and entries are unchanged. New fixture
+  `bad_partial_bus_port_typing`. No committed fixture or integration
+  golden changes verdict.
 
 ### Internal
 
