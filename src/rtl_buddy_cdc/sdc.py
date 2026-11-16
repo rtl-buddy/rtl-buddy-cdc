@@ -1985,6 +1985,14 @@ def _handle_set_false_path(spec: ClockSpec, p: Parsed) -> None:
     )
 
 
+#: Port-collection commands that select every top-level port of one
+#: direction, keyed to the ``set_*_delay`` command that direction suits.
+_ALL_PORTS_DIRECTION: dict[str, str] = {
+    "all_inputs": "set_input_delay",
+    "all_outputs": "set_output_delay",
+}
+
+
 def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
     """Parse ``set_input_delay`` / ``set_output_delay``.
 
@@ -2015,6 +2023,21 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
             # into ``d`` and ``3``); ``sdc_objects.resolve_port_delays``
             # resolves indices and globs against the netlist (#357).
             kind, names, sf = _split_collection(word)
+            if kind in _ALL_PORTS_DIRECTION:
+                # ``[all_inputs]`` / ``[all_outputs]`` (rtl-buddy-cdc#378)
+                # select every port of one direction: recorded as the
+                # glob ``*``, which ``resolve_port_delays`` narrows to the
+                # command's direction and to non-clock ports, as it does
+                # for ``[get_ports *]``. The other direction's collection
+                # selects nothing this command can type.
+                if _ALL_PORTS_DIRECTION[kind] == command:
+                    ports.append("*")
+                else:
+                    spec.partial_warnings.append(
+                        f"{command} [{kind}]: {kind} selects no port "
+                        f"{command} can constrain; the target is ignored"
+                    )
+                continue
             if kind not in (None, "port"):
                 # ``[expr {$p * 0.4}]`` left unevaluated by the tokenizer
                 # is the delay value, not a target (its ``*`` would glob

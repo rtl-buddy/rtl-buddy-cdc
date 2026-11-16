@@ -262,6 +262,53 @@ def test_output_glob_naming_only_inputs_warns(tmp_path: Path) -> None:
     assert "matches no output port" in warning
 
 
+def test_all_inputs_and_all_outputs_type_every_port_of_their_direction(
+    tmp_path: Path,
+) -> None:
+    """``[all_inputs]`` / ``[all_outputs]`` typed nothing, silently
+    (rtl-buddy-cdc#378). They now select every non-clock port of the
+    command's direction, the same set ``[get_ports *]`` does."""
+    spec, warnings = _resolve(
+        tmp_path,
+        "set_input_delay -clock clk_a 1 [all_inputs]\n"
+        "set_output_delay -clock clk_b 1 [all_outputs]\n",
+    )
+    assert warnings == []
+    assert spec.partial_warnings == []
+    assert spec.port_clock == {
+        "d": "clk_a",
+        "dx": "clk_a",
+        "e1": "clk_a",
+        "q": "clk_b",
+        "qq": "clk_b",
+    }
+
+
+def test_all_inputs_is_overridden_by_a_later_port_typing(tmp_path: Path) -> None:
+    spec, warnings = _resolve(
+        tmp_path,
+        "set_input_delay -clock clk_a 1 [all_inputs]\n"
+        "set_input_delay -clock clk_b 1 [get_ports e1]\n",
+    )
+    assert warnings == []
+    assert spec.port_clock == {"d": "clk_a", "dx": "clk_a", "e1": "clk_b"}
+
+
+@pytest.mark.parametrize(
+    ("command", "collection"),
+    [("set_input_delay", "all_outputs"), ("set_output_delay", "all_inputs")],
+)
+def test_all_ports_of_the_other_direction_warn(
+    tmp_path: Path, command: str, collection: str
+) -> None:
+    spec, warnings = _resolve(tmp_path, f"{command} -clock clk_a 1 [{collection}]\n")
+    assert warnings == []
+    (warning,) = spec.partial_warnings
+    assert warning.startswith(f"{command} [{collection}]")
+    assert spec.port_clock == {}
+    assert spec.port_delays == []
+
+
 def test_bits_typed_to_different_clocks_warn(tmp_path: Path) -> None:
     spec, warnings = _resolve(
         tmp_path,
@@ -338,8 +385,15 @@ def _fired(result) -> Counter[str]:
 
 @pytest.mark.parametrize(
     "target",
-    ["[get_ports i*]", "{i*}", "i?", "[get_ports {in[3]}]", "{in[3]}"],
-    ids=["glob-bracket", "glob-brace", "glob-bare", "bit-bracket", "bit-brace"],
+    ["[get_ports i*]", "{i*}", "i?", "[get_ports {in[3]}]", "{in[3]}", "[all_inputs]"],
+    ids=[
+        "glob-bracket",
+        "glob-brace",
+        "glob-bare",
+        "bit-bracket",
+        "bit-brace",
+        "all-inputs",
+    ],
 )
 def test_pattern_typing_reaches_the_rules(tmp_path: Path, target: str) -> None:
     """The fixture's bus ``in`` is untyped, so CDC-011 fires. Typed to

@@ -331,6 +331,10 @@ GOOD_FIXTURES = [
     # flags like CDC-004 accepts the bus (rtl-buddy-cdc#368). Five
     # crossings: toggle, ack, data, flag_out, flag_r.
     ("good_handshake_single_bit", 5),
+    # Toggle + 2FF + XOR-tail pulse synchroniser with synchronous
+    # resets: CDC-013 steps over the reset muxes on the toggle and on
+    # the delayed copy (rtl-buddy-cdc#376). One toggle crossing.
+    ("good_pulse_synchronizer_srst", 1),
 ]
 
 

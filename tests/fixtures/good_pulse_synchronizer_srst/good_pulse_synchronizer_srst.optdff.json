@@ -1,0 +1,302 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "good_pulse_synchronizer_srst": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "good_pulse_synchronizer_srst.sv:15.1-47.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "src_rst": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "dst_rst": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "event_in": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "event_seen": {
+          "direction": "output",
+          "bits": [ 7 ]
+        }
+      },
+      "cells": {
+        "$auto$ff.cc:337:slice$27": {
+          "hide_name": 1,
+          "type": "$sdff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_pulse_synchronizer_srst.sv:33.5-45.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 8 ],
+            "Q": [ 7 ],
+            "SRST": [ 5 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$28": {
+          "hide_name": 1,
+          "type": "$sdff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_pulse_synchronizer_srst.sv:33.5-45.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 9 ],
+            "Q": [ 10 ],
+            "SRST": [ 5 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$29": {
+          "hide_name": 1,
+          "type": "$sdff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_pulse_synchronizer_srst.sv:33.5-45.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 10 ],
+            "Q": [ 11 ],
+            "SRST": [ 5 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$30": {
+          "hide_name": 1,
+          "type": "$sdff",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_pulse_synchronizer_srst.sv:33.5-45.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "D": [ 11 ],
+            "Q": [ 12 ],
+            "SRST": [ 5 ]
+          }
+        },
+        "$auto$ff.cc:337:slice$32": {
+          "hide_name": 1,
+          "type": "$sdffe",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "EN_POLARITY": "00000000000000000000000000000001",
+            "SRST_POLARITY": "00000000000000000000000000000001",
+            "SRST_VALUE": "0",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "good_pulse_synchronizer_srst.sv:25.5-28.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "EN": "input",
+            "Q": "output",
+            "SRST": "input"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 13 ],
+            "EN": [ 6 ],
+            "Q": [ 9 ],
+            "SRST": [ 4 ]
+          }
+        },
+        "$not$good_pulse_synchronizer_srst.sv:27$2": {
+          "hide_name": 1,
+          "type": "$not",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:27.42-27.53"
+          },
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 9 ],
+            "Y": [ 13 ]
+          }
+        },
+        "$xor$good_pulse_synchronizer_srst.sv:43$4": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": {
+            "A_SIGNED": "00000000000000000000000000000000",
+            "A_WIDTH": "00000000000000000000000000000001",
+            "B_SIGNED": "00000000000000000000000000000000",
+            "B_WIDTH": "00000000000000000000000000000001",
+            "Y_WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:43.30-43.57"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 11 ],
+            "B": [ 12 ],
+            "Y": [ 8 ]
+          }
+        }
+      },
+      "netnames": {
+        "$not$good_pulse_synchronizer_srst.sv:27$2_Y": {
+          "hide_name": 1,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:27.42-27.53"
+          }
+        },
+        "$xor$good_pulse_synchronizer_srst.sv:43$4_Y": {
+          "hide_name": 1,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:43.30-43.57"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:17.18-17.25"
+          }
+        },
+        "dst_rst": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:19.18-19.25"
+          }
+        },
+        "event_in": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:20.18-20.26"
+          }
+        },
+        "event_seen": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:21.18-21.28"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:16.18-16.25"
+          }
+        },
+        "src_rst": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:18.18-18.25"
+          }
+        },
+        "src_toggle": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:24.11-24.21"
+          }
+        },
+        "toggle_meta": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:30.11-30.22"
+          }
+        },
+        "toggle_sync": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:31.11-31.22"
+          }
+        },
+        "toggle_sync_d": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "good_pulse_synchronizer_srst.sv:32.11-32.24"
+          }
+        }
+      }
+    }
+  }
+}

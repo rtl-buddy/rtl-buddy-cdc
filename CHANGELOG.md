@@ -340,6 +340,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The JSON and SARIF reports are serialised with `json.dumps`, which
     can use the C encoder, instead of `json.dump`.
 
+- **RDC-008 honours a reset port the SDC types to the consumers' clock**
+  (rtl-buddy-cdc#378). `set_input_delay -clock C [get_ports rst_n]`
+  states that the integrator times the reset against `C`, so its
+  deassertion is already synchronous to consumers clocked by `C`; RDC-008
+  reported them anyway, leaving a waiver as the only route. The group for
+  a clock on the typed clock's root is now silent; consumers in any other
+  clock still fire. No committed fixture changes verdict.
+
 ### Fixed
 
 - **Crossings behind more than 4 combinational cells were dropped
@@ -831,7 +839,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order-free. New fixture `good_gray_xor_swapped`. No other committed
   fixture changes verdict.
 
+- **A synchronous-reset mux was misread in `proc`-form netlists**
+  (rtl-buddy-cdc#376). `if (rst) q <= '0; else q <= x;` leaves, after
+  `proc`, a constant-leg `$mux` in front of `D`; `opt_dff` folds it
+  into an `$sdff`, and the two forms disagreed in two rules:
+  - CDC-004's gated-bus test took a reset mux selected by a
+    destination-domain register for a load-enable gate, so a binary bus
+    into a synchroniser with a local synchronous reset passed as gated
+    (CDC-012 at most) instead of reporting CDC-004.
+  - CDC-013 did not classify a toggle flop with a synchronous reset as
+    a toggle, and did not find the XOR tail's delayed copy behind its
+    own reset mux, so a toggle synchroniser with synchronous resets was
+    missed (no XOR tail) or misreported (XOR tail present).
+
+  One helper, `_own_srst_data_leg`, now answers "this mux is the flop's
+  own synchronous reset (the constant-leg shape the chain walk steps
+  over, select local to the flop's clock); read its data leg". The
+  gated-bus test, the CDC-013 toggle and tail tests, the single-bit
+  handshake hold test, `_carries_synchronised_control` and CDC-006 use
+  it. A reset mux in front of a real enable mux still leaves the enable
+  as the gate. New fixtures `bad_bus_sync_local_srst` and
+  `good_pulse_synchronizer_srst`, each in both netlist forms. No other
+  committed fixture changes verdict.
+
+- **`[all_inputs]` / `[all_outputs]` in `set_input_delay` /
+  `set_output_delay` typed nothing, silently** (rtl-buddy-cdc#378). The
+  collection is now read as every port of the command's direction, the
+  same set `[get_ports *]` selects (no port carrying a `create_clock`).
+  `[all_outputs]` in `set_input_delay` (or `[all_inputs]` in
+  `set_output_delay`) selects nothing that command can type and is
+  reported as an SDC warning. `remove_from_collection` is still not
+  interpreted. No committed fixture changes verdict.
+
+- **A clock-named blackbox pin fed by a typed data port read as a clock**
+  (rtl-buddy-cdc#378). The boundary classifier decides whether a
+  non-allow-listed, clock-named blackbox input (`aux_clk`) is a clock pin
+  by asking whether its trace root is a declared clock. It asked through
+  `clock_for_port`, which also answers for a data port typed with
+  `set_input_delay -clock C`, so such a pin became a clock pin of `C`
+  (the subtree's clock set grew, and CDC-008 lost the pin). It now asks
+  the clock-identity question `declared_clock_for_port` answers, on the
+  trace root before the typed-port renaming. No committed fixture
+  changes verdict.
+
+- **Rules renamed canonical clock names a second time**
+  (rtl-buddy-cdc#378). Since rtl-buddy-cdc#358 the rule context's
+  domains are canonical clock names, but CDC-006, CDC-010, CDC-015,
+  RDC-001 and RDC-003 still passed them through `clock_for_port` before
+  comparing. That is a no-op unless a clock is named after the port of a
+  different clock (`create_clock -name ck_far [get_ports ck_d]` next to a
+  clock named `ck_d`), where the domain was read as the other clock: a
+  typed port in the synchroniser's own clock fired CDC-006, and a reset
+  between two synchronous clocks fired RDC-001. The rules now compare the
+  domain names as they are. No committed fixture changes verdict.
+
 ### Internal
+
+- **`bad_gray_phase_break`'s header misdescribed the design**
+  (rtl-buddy-cdc#378) — *test-only, no output change.* It said
+  re-registering a gray code in the source clock breaks the
+  one-bit-change property; a plain delay register only adds latency. The
+  header, in-body comments and test docstring now say the CDC-004 it
+  pins is a known conservative false positive (the structural gray
+  detector stops at the first flop boundary and does not prove the
+  intermediate register is an unconditional delay), with
+  `(* cdc_gray *)` as the escape. Line numbers are unchanged, so the
+  committed netlist stands.
 
 - **Fixture READMEs regenerated and drift-checked in CI**
   (rtl-buddy-cdc#356). Thirteen generated fixture READMEs were stale or
