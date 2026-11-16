@@ -82,6 +82,9 @@ What currently works
   the ``$aldff`` Yosys ``proc`` builds, and two or more async controls
   (``@(posedge clk or negedge rst_n or negedge set_n)``) the ``$dffsr``
   (rtl-buddy-cdc#384, :meth:`_ModuleBuilder._emit_multi_async_ff`).
+  ``if (en) if (srst) <constants> else <data>`` as a whole body is the
+  ``$sdffce`` Yosys ``opt_dff`` folds it into; a sync reset at the top of
+  the body is an ``$sdff`` (an enable under it stays a hold mux on ``D``).
   Plain ``always_ff @(posedge clk) q <= d;`` emits ``$dff``.
 - Verilog-2001 ``always`` blocks (rtl-buddy-cdc#345), by what they
   infer: edge-triggered → the ``always_ff`` lowering; ``@*`` or a
@@ -1466,6 +1469,26 @@ class _ModuleBuilder:
                     block_reset_active_low,
                     src_node,
                 )
+            elif (
+                reset_sym is None
+                and (srst_ce := self._sync_reset_under_enable(inner)) is not None
+            ):
+                # ``if (en) if (srst) <constants> else <data>``: the reset
+                # acts only while loading, an ``$sdffce`` (rtl-buddy-cdc#384).
+                enable_bit, srst_stmt, (srst_sym, _kind, srst_low) = srst_ce
+                self._collect_reset_assignments(srst_stmt.ifTrue)
+                self._emit_assignments_in(
+                    srst_stmt.ifFalse, clk_sym, srst_sym, srst_low, src_node
+                )
+                self._drain_proc_writes(
+                    clk_sym,
+                    srst_sym,
+                    srst_low,
+                    src_node,
+                    reset_kind="sync",
+                    clock_enable=enable_bit,
+                )
+                return
             else:
                 # Body isn't a single conditional or expression — defer
                 # to the general statement walker. Reached for no-reset
@@ -1585,6 +1608,32 @@ class _ModuleBuilder:
             self._proc_writes = {}
             self._proc_resets = {}
             self._clk_negedge = prev_clk_negedge
+
+    def _sync_reset_under_enable(
+        self, inner: Any
+    ) -> tuple[Bit, Any, tuple[Any, str, bool]] | None:
+        """``(enable bit, inner if, sync-reset classification)`` when a
+        no-async-reset block's whole body is ``if (en) begin if (srst)
+        <constants> else <data> end`` with no outer ``else``: the shape
+        Yosys ``opt_dff`` folds into an ``$sdffce`` (the reset takes effect
+        only while the enable loads). ``None`` otherwise. The enable is
+        lowered only on a match."""
+        if self._kind_name(inner) != "ConditionalStatement":
+            return None
+        if inner.ifFalse is not None:
+            return None
+        conds = list(getattr(inner, "conditions", None) or [])
+        if len(conds) != 1 or self._const_int(conds[0].expr) is not None:
+            return None
+        nested = inner.ifTrue
+        while self._kind_name(nested) == "BlockStatement":
+            nested = nested.body
+        if self._kind_name(nested) != "ConditionalStatement" or nested.ifFalse is None:
+            return None
+        check = self._classify_reset_check(nested, None, False)
+        if check is None:
+            return None
+        return self._condition_bit(inner), nested, check
 
     def _order_clock_and_reset(
         self,
@@ -2662,6 +2711,7 @@ class _ModuleBuilder:
             tuple[tuple[Bit, ...], bool, dict[tuple[Bit, ...], tuple[Bit, ...]]]
         ]
         | None = None,
+        clock_enable: Bit | None = None,
     ) -> None:
         """Emit one flop per contiguous run of the bits each variable is
         written in, as Yosys ``proc`` groups them (rtl-buddy-cdc#377: one
@@ -2697,6 +2747,10 @@ class _ModuleBuilder:
         priority order) replaces the single reset for a block with several
         async controls: each run is built by
         :meth:`_emit_multi_async_flop`.
+
+        ``clock_enable`` (with a ``"sync"`` reset) makes each flop an
+        ``$sdffce`` loading only while that bit is high
+        (rtl-buddy-cdc#384).
         """
         reset_bit: dict[Bit, Bit] = {}
         for key, value in self._proc_resets.items():
@@ -2758,6 +2812,7 @@ class _ModuleBuilder:
                     src_node,
                     reset_value=reset_value,
                     reset_kind=reset_kind,
+                    clock_enable=clock_enable,
                 )
 
     @staticmethod
@@ -2806,9 +2861,11 @@ class _ModuleBuilder:
         src_node: Any,
         reset_value: int = 0,
         reset_kind: str | None = None,
+        clock_enable: Bit | None = None,
     ) -> None:
         """Allocate a ``$dff`` / ``$adff`` / ``$sdff`` cell with the
-        given D and Q.
+        given D and Q (an ``$sdffce`` for a sync reset with a
+        ``clock_enable``: the reset acts only while it is high).
 
         ``reset_kind`` picks the reset shape when ``reset_sym`` is
         non-None: ``"async"`` → ``$adff`` (ARST/ARST_POLARITY/
@@ -2846,10 +2903,14 @@ class _ModuleBuilder:
             "CLK_POLARITY": clk_polarity,
             "WIDTH": _param_int32(width),
         }
+        if cell_type == "$sdff" and clock_enable is not None:
+            cell_type = "$sdffce"
+            connections["EN"] = (clock_enable,)
+            parameters["EN_POLARITY"] = _param_int32(1)
         if reset_sym is not None:
             polarity = _param_int32(0 if reset_active_low else 1)
             value_param = _param_bits(reset_value, width)
-            if cell_type == "$sdff":
+            if cell_type in ("$sdff", "$sdffce"):
                 parameters["SRST_POLARITY"] = polarity
                 parameters["SRST_VALUE"] = value_param
             else:

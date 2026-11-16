@@ -304,7 +304,7 @@ def test_get_nets_on_a_wire_matches_on_both_frontends(tmp_path: Path) -> None:
 
 def test_attribute_on_a_wire_reaches_the_rules(tmp_path: Path) -> None:
     """A declaration attribute on a ``wire`` lands on its netname, where
-    the attribute-reading rules look (``cdc_sync`` on the flop's Q)."""
+    the attribute-reading rules (``cdc_sync``, ``scan_mode``, ...) look."""
     src = """module m (input wire clk_a, input wire clk_b, input wire d,
           output wire q);
     reg a_q, s1, s2;
@@ -499,7 +499,7 @@ endmodule
     assert _cells(module, "$_UNKNOWN_")
 
 
-# --- 4 / 5. an async load of a value; several async controls ----------------------------
+# --- 4 / 5. an async load of a value; several async controls ------------
 
 _ASYNC_FLOPS = frozenset({"$adff", "$aldff", "$dffsr", "$dff"})
 
@@ -709,3 +709,69 @@ endmodule
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
         _slang(tmp_path, src)
     assert any("not lowered" in w for w in _warnings(caplog))
+
+
+# --- 6. a sync reset under an enable is an $sdffce ---------------------------
+
+_SRST_CE = """module m (input clk_a, input en, input go, input srst, input srst_n,
+          input [7:0] d, output reg [7:0] q, output reg [7:0] r);
+    always_ff @(posedge clk_a)
+        if (en) begin
+            if (srst) q <= 8'h00;
+            else      q <= d;
+        end
+    always_ff @(posedge clk_a)
+        if (en && go) begin
+            if (!srst_n) r <= 8'h5a;
+            else         r <= d;
+        end
+endmodule
+"""
+
+
+def _sdff_view(module: Module) -> dict[str, tuple[str, dict[str, tuple[str, ...]]]]:
+    name = _namer(module)
+    out = {}
+    for c in module.cells.values():
+        if not c.type.startswith("$sdff"):
+            continue
+        pins = {
+            p: tuple(name(b) for b in bits)
+            for p, bits in c.connections.items()
+            if p != "EN"
+        }
+        for param in ("SRST_POLARITY", "EN_POLARITY"):
+            pins[param] = (c.parameters[param][-1],)
+        pins["SRST_VALUE"] = (c.parameters["SRST_VALUE"],)
+        out[name(c.connections["Q"][0])] = (c.type, pins)
+    return out
+
+
+def test_sync_reset_under_enable_is_an_sdffce(tmp_path: Path, caplog) -> None:
+    """``if (en) if (srst) q <= 0; else q <= d;``: the reset acts only
+    while loading, an ``$sdffce`` (``EN`` = the enable, ``SRST`` the reset,
+    ``D`` the data) as Yosys ``opt_dff`` folds ``proc``'s muxes. It used to
+    be a ``$dff`` behind a load mux selected by ``en & ~srst``, so the
+    reset was no reset pin (no RDC-003) and the select no enable."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _SRST_CE)
+    assert not _warnings(caplog)
+    q = _flop_of(module, "q")
+    assert q.type == "$sdffce"
+    assert q.connections["EN"] == module.ports["en"].bits
+    assert q.connections["SRST"] == module.ports["srst"].bits
+    assert q.connections["D"] == module.ports["d"].bits
+    r = _flop_of(module, "r")
+    assert r.type == "$sdffce"
+    assert r.parameters["SRST_POLARITY"][-1] == "0"
+    assert r.parameters["SRST_VALUE"] == "01011010"
+    for en in (0, 1):
+        for go in (0, 1):
+            ev = _evaluator(module, {"en": en, "go": go})
+            assert ev(r.connections["EN"]) == en & go
+    if _HAVE_YOSYS:
+        # Only ``q``: for ``if (!srst_n)`` this frontend keeps its ``$sdff``
+        # convention (``SRST`` = ``srst_n``, active low) where opt_dff,
+        # without opt_expr, leaves ``SRST`` on proc's ``$logic_not``.
+        y_mod = _yosys(tmp_path, _SRST_CE, extra="opt_dff")
+        assert _sdff_view(module)["q[0]"] == _sdff_view(y_mod)["q[0]"]

@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `xfail`s for RDC-001 missing a foreign-domain `$dffsr` clear (RDC-004
   fires on proc's constant-leg `CLR` mux instead) and for four slang
   lowering gaps (non-constant async load, a second async control, sync
-  reset under enable, run-time index reads), and two gate-level allowlist
+  reset under enable, run-time index reads; all four closed by
+  rtl-buddy-cdc#384, see Fixed), and two gate-level allowlist
   rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
   CDC-020 fires on its capture).
 
@@ -367,6 +368,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clock still fire. No committed fixture changes verdict.
 
 ### Fixed
+
+- **slang frontend: a sync reset under an enable is an `$sdffce`**
+  (rtl-buddy-cdc#384). `if (en) if (srst) q <= 0; else q <= d;` became a
+  `$dff` behind a load mux selected by `en & ~srst`: the reset was no
+  reset pin (no RDC-003) and CDC-004 did not accept the select as a
+  destination-domain gate, so `bad_flop_variety_handshake` reported two
+  extra CDC-004s instead of RDC-003 + CDC-012. A block whose whole body is
+  that shape now gives the `$sdffce` Yosys `opt_dff` folds it into (`EN`
+  the enable, `SRST` the reset, `D` the data). With this, all four
+  cell-variety fixtures give the committed netlist's crossings and
+  findings on the slang path; their slang `xfail`s are gone and a
+  structural test (crossing pairs, flop families and pins, findings per
+  register) holds them there.
 
 - **slang frontend: a second async control builds a `$dffsr`**
   (rtl-buddy-cdc#384). Only the first two events of an edge-triggered

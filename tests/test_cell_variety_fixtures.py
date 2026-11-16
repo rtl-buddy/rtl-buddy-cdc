@@ -345,29 +345,16 @@ def test_flop_types_sit_on_the_crossings(name: str) -> None:
 
 _HAVE_PYSLANG = importlib.util.find_spec("pyslang") is not None
 
-# Every fixture here diverges under the slang frontend; each row is a slang
-# lowering gap. Strict: a row whose fixture starts agreeing fails until the
-# row is removed.
-_SLANG_GAPS: dict[str, str] = {
-    "bad_flop_variety_handshake": (
-        "cap_c's sync reset under enable becomes a load mux selected by "
-        "`req_s2 & ~srst_q`, a select CDC-004 does not accept as a dst-domain "
-        "gate, so RDC-003 + CDC-012 become CDC-004 on pay_c and srst_q"
-    ),
-}
+# Fixtures whose slang verdict diverges from the committed netlist's; each
+# row is a slang lowering gap. Strict: a row whose fixture starts agreeing
+# fails until the row is removed. Empty since rtl-buddy-cdc#384 closed the
+# four gaps these fixtures exposed (async load, second async control, sync
+# reset under enable, run-time index read).
+_SLANG_GAPS: dict[str, str] = {}
 
 # Same, for the structural comparison
 # (:func:`test_slang_frontend_structure_matches_committed_netlist`).
-_SLANG_STRUCTURE_GAPS: dict[str, str] = {
-    "good_flop_variety_handshake": (
-        "cap_c (sync reset under enable) is a $dff behind a load mux, where "
-        "the committed netlist has an $sdffce"
-    ),
-    "bad_flop_variety_handshake": (
-        "cap_c (sync reset under enable) is a $dff behind a load mux, where "
-        "the committed netlist has an $sdffce"
-    ),
-}
+_SLANG_STRUCTURE_GAPS: dict[str, str] = {}
 
 
 def _slang_params(gaps: dict[str, str] = _SLANG_GAPS) -> list:
@@ -500,11 +487,25 @@ def test_slang_frontend_structure_matches_committed_netlist(
     )
     assert res.exit_code in (0, 1), res.output
     names = _module_q_names(module)
+    slang_report = json.loads(out.read_text())
+    committed_report = _analyze(name)[1]
     slang_crossings = frozenset(
-        (names[c["src_flop"]], names[c["dst_flop"]])
-        for c in json.loads(out.read_text())["crossings"]
+        (names[c["src_flop"]], names[c["dst_flop"]]) for c in slang_report["crossings"]
     )
-    assert slang_crossings == _crossings(name, _analyze(name)[1])
+    assert slang_crossings == _crossings(name, committed_report)
+
+    def slang_finding(v: dict) -> Finding:
+        c = v.get("crossing")
+        if c is None:
+            return (v["rule_id"], None, names.get(v["cell_name"], v["cell_name"]))
+        src = names.get(c["src_flop"]) if c.get("src_flop") else f"port {c['src_port']}"
+        return (v["rule_id"], src, names.get(c["dst_flop"]))
+
+    # The same findings on the same registers, whatever the analyzer reports
+    # today (both sides go through the same rules).
+    assert Counter(slang_finding(v) for v in slang_report["violations"]) == Counter(
+        _finding(name, v) for v in committed_report["violations"]
+    )
     registers = set(FLOP_ROLES.get(name, {}))
     assert _flop_shapes(module, registers) == _flop_shapes(committed, registers)
     comb = {t: n for t, n in CELLS[name].items() if t not in FLOP_ROLES_TYPES}

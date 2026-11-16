@@ -8,9 +8,9 @@
 // crossings, eight findings. a_q and b_q each reach several independent
 // synchronisers, so CDC-020 fires once for each.
 //
-// Known gap, pinned as a strict xfail: the slang frontend does not lower
-// the run-time index read a_q[idx_q]. It warns and models it as an
-// opaque driver, so slang finds six crossings instead of eight.
+// The slang frontend lowers the run-time index read a_q[idx_q] to the
+// same `$shiftx` (rtl-buddy-cdc#384), so it finds the same eight
+// crossings and findings.
 
 module bad_comb_ops_before_sync (
     input  logic       src_clk,
