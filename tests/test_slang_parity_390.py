@@ -1,0 +1,817 @@
+"""slang frontend: the reset-arm, netname-range, enable and sync-reset
+polarity corner cases of rtl-buddy-cdc#390 (items 10-14).
+
+One section per item: a minimal design, the netlist shape the slang path
+lowers it to, and, where yosys is on PATH, the same design through the
+``lint`` recipe (``proc; flatten; opt_clean``) with the flops, next-state
+functions and findings compared. CI's pytest job has no yosys, so there
+the slang-side assertions stand alone (they pin the shape the Yosys
+comparison was made against locally).
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import itertools
+import json
+import logging
+import shutil
+import subprocess
+from collections import Counter
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from rtl_buddy_cdc import netlist
+from rtl_buddy_cdc import sdc as sdc_mod
+from rtl_buddy_cdc.cli import app
+from rtl_buddy_cdc.netlist import Bit, Cell, Module
+
+if importlib.util.find_spec("pyslang") is None:
+    pytest.skip("pyslang not installed", allow_module_level=True)
+
+from rtl_buddy_cdc.frontends import slang as slang_fe  # noqa: E402
+
+_HAVE_YOSYS = shutil.which("yosys") is not None
+_SLANG_LOG = "rtl_buddy_cdc.frontends.slang"
+
+
+@pytest.fixture(autouse=True)
+def _tokenizer_sdc_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plain SDCs; the tokenizer avoids a Tcl worker per ``lint``."""
+    monkeypatch.setenv(sdc_mod.BACKEND_ENV_VAR, "tokenizer")
+
+
+def _write(tmp_path: Path, src: str, name: str) -> Path:
+    sv = tmp_path / name
+    sv.write_text(src)
+    return sv
+
+
+def _slang(tmp_path: Path, src: str, top: str = "m") -> Module:
+    module, _ = slang_fe.elaborate_with_blackboxes([_write(tmp_path, src, "s.sv")], top)
+    return module
+
+
+def _yosys(tmp_path: Path, src: str, top: str = "m", extra: str = "") -> Module:
+    """The ``lint`` recipe (plus ``extra`` passes after ``proc``), from a
+    script file: CI's yosys 0.52 splits a ``-p`` script at commas."""
+    sv = _write(tmp_path, src, "y.sv")
+    out = tmp_path / "y.json"
+    script = tmp_path / "y.ys"
+    script.write_text(
+        f"read_verilog -sv {sv}\nhierarchy -top {top}\nproc\n{extra}\nflatten\n"
+        f"opt_clean\nwrite_json {out}\n"
+    )
+    subprocess.run(["yosys", "-q", "-s", str(script)], check=True)
+    return netlist.load(out)
+
+
+def _warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+_SDC = """create_clock -name clk_a -period 10 [get_ports clk_a]
+create_clock -name clk_b -period 7 [get_ports clk_b]
+set_clock_groups -asynchronous -group {clk_a} -group {clk_b}
+"""
+
+
+def _lint(
+    tmp_path: Path,
+    src: str,
+    frontend: str,
+    *,
+    sdc: str = _SDC,
+    extra: list[str] | None = None,
+) -> dict:
+    sv = _write(tmp_path, src, f"{frontend}.sv")
+    sdc_path = tmp_path / "m.sdc"
+    sdc_path.write_text(sdc)
+    out = tmp_path / f"{frontend}.json"
+    args = ["lint", "--top", "m", "--sdc", str(sdc_path), "--frontend", frontend]
+    args += [*(extra or []), "--format", "json", "--output", str(out), str(sv)]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code in (0, 1), result.output
+    return json.loads(out.read_text())
+
+
+def _verdict(report: dict) -> tuple[int, dict[str, int], dict[str, int]]:
+    """``(crossings, live findings per rule, suppressed findings per rule)``."""
+    live = Counter(v["rule_id"] for v in report["violations"])
+    gone = Counter(s["rule_id"] for s in report["suppressed"])
+    return report["summary"]["crossings"], dict(live), dict(gone)
+
+
+def _same_verdict(tmp_path: Path, src: str, **kw) -> tuple:
+    """The slang ``lint`` verdict, checked against Yosys' when available."""
+    slang = _verdict(_lint(tmp_path, src, "slang", **kw))
+    if _HAVE_YOSYS:
+        assert _verdict(_lint(tmp_path, src, "yosys", **kw)) == slang
+    return slang
+
+
+def _int(vals: list[int]) -> int:
+    return sum(v << i for i, v in enumerate(vals))
+
+
+def _comb_value(cell: Cell, get) -> list[int]:
+    """Output bits of one combinational cell (``x`` read as 0)."""
+    conn = cell.connections
+    width = len(conn["Y"])
+    a = [get(b) for b in conn.get("A", ())]
+    b = [get(x) for x in conn.get("B", ())]
+    t = cell.type
+    if t == "$mux":
+        return b if get(conn["S"][0]) else a
+    av, bv = _int(a), _int(b)
+    r = {
+        "$not": lambda: ~av,
+        "$logic_not": lambda: int(av == 0),
+        "$and": lambda: av & bv,
+        "$or": lambda: av | bv,
+        "$xor": lambda: av ^ bv,
+        "$logic_and": lambda: int(av != 0 and bv != 0),
+        "$logic_or": lambda: int(av != 0 or bv != 0),
+        "$reduce_or": lambda: int(av != 0),
+        "$reduce_bool": lambda: int(av != 0),
+        "$eq": lambda: int(av == bv),
+    }[t]()
+    r &= (1 << width) - 1
+    return [(r >> i) & 1 for i in range(width)]
+
+
+def _evaluator(module: Module, values: dict[str, int]):
+    """``bits -> int`` over ``module``'s combinational logic, the named
+    ports / registers in ``values`` (by port or netname) as its inputs."""
+    env: dict[Bit, int] = {}
+    for name, value in values.items():
+        bits = (
+            module.ports[name].bits
+            if name in module.ports
+            else module.netnames[name].bits
+        )
+        for i, bit in enumerate(bits):
+            env[bit] = (value >> i) & 1
+    comb: dict[Bit, tuple[Cell, int]] = {}
+    for c in module.cells.values():
+        if "Y" in c.connections and "Q" not in c.connections:
+            for i, bit in enumerate(c.connections["Y"]):
+                comb[bit] = (c, i)
+    memo: dict[str, list[int]] = {}
+
+    def get(bit: Bit) -> int:
+        if isinstance(bit, str):
+            return 1 if bit == "1" else 0
+        if bit in env:
+            return env[bit]
+        if bit not in comb:
+            return 0
+        cell, i = comb[bit]
+        if cell.name not in memo:
+            memo[cell.name] = _comb_value(cell, get)
+        return memo[cell.name][i]
+
+    return lambda bits: _int([get(b) for b in bits])
+
+
+def _flops_of(module: Module, q_name: str) -> list[tuple[Cell, list[int]]]:
+    """Every flop driving a bit of netname ``q_name``, with the bit
+    positions of ``q_name`` it drives."""
+    bits = module.netnames[q_name].bits
+    out = []
+    for c in module.cells.values():
+        q = c.connections.get("Q")
+        if q is None:
+            continue
+        hit = [i for i, b in enumerate(bits) if b in q]
+        if hit:
+            out.append((c, hit))
+    return out
+
+
+def _flop_types(module: Module, regs: tuple[str, ...]) -> dict[str, list[str]]:
+    """Register -> per-bit flop cell type (``"-"`` for an undriven bit)."""
+    out: dict[str, list[str]] = {}
+    for reg in regs:
+        types = ["-"] * len(module.netnames[reg].bits)
+        for cell, hit in _flops_of(module, reg):
+            for i in hit:
+                types[i] = cell.type
+        out[reg] = types
+    return out
+
+
+def _pin_values(module: Module, reg: str, values: dict[str, int]) -> dict[str, int]:
+    """The value of every data / control pin (``D``, ``AD``, ``ARST``, ...)
+    of each flop driving ``reg``, per bit of ``reg`` (``pin[i]``), under
+    ``values``. A pin a flop does not have is absent."""
+    ev = _evaluator(module, values)
+    reg_bits = module.netnames[reg].bits
+    out: dict[str, int] = {}
+    for cell, hit in _flops_of(module, reg):
+        q = cell.connections["Q"]
+        for i in hit:
+            lane = q.index(reg_bits[i])
+            for pin, bits in cell.connections.items():
+                if pin in ("Q", "CLK"):
+                    continue
+                pick = bits[lane] if len(bits) == len(q) else bits[0]
+                out[f"{pin}[{i}]"] = ev((pick,))
+    return out
+
+
+def _compare_next_state(
+    module: Module, regs: tuple[str, ...], inputs: tuple[str, ...], y_mod: Module
+) -> None:
+    """Every pin of every register's flops agrees with ``y_mod`` under all
+    values of ``inputs`` and of the register itself."""
+
+    def width(name: str) -> int:
+        return len(
+            module.ports[name].bits if name in module.ports
+            else module.netnames[name].bits
+        )  # fmt: skip
+
+    for reg in regs:
+        names = (*inputs, reg)
+        for combo in itertools.product(*(range(1 << width(n)) for n in names)):
+            values = dict(zip(names, combo))
+            assert _pin_values(module, reg, values) == _pin_values(
+                y_mod, reg, values
+            ), (reg, values)
+
+
+# --- 10. a register the reset arm leaves alone holds under reset ----------
+
+_HELD = """module m (input clk_a, input rst_n, input rst, input srst, input srst_n,
+          input en, input d, input e, output reg q, output reg h,
+          output reg q2, output reg h2, output reg [1:0] p,
+          output reg [1:0] ap, output reg [1:0] pn, output reg [1:0] c);
+    // Async active-low: h is not in the reset arm.
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) q <= 1'b0;
+        else begin q <= d; h <= e; end
+    // Async active-high.
+    always_ff @(posedge clk_a or posedge rst)
+        if (rst) q2 <= 1'b0;
+        else begin q2 <= d; h2 <= e; end
+    // Sync: only p[0] is reset.
+    always_ff @(posedge clk_a)
+        if (srst) p[0] <= 1'b0;
+        else      p <= {e, d};
+    // Async, part of one register: ap[1] keeps its value.
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) ap[0] <= 1'b1;
+        else        ap <= {e, d};
+    // Sync active-low, the other bit.
+    always_ff @(posedge clk_a)
+        if (!srst_n) pn[1] <= 1'b1;
+        else         pn <= {e, d};
+    // Sync under an enable, part of the register.
+    always_ff @(posedge clk_a)
+        if (en) begin
+            if (srst) c[0] <= 1'b0;
+            else      c <= {e, d};
+        end
+endmodule
+"""
+
+_HELD_REGS = ("q", "h", "q2", "h2", "p", "ap", "pn", "c")
+_HELD_INPUTS = ("rst_n", "rst", "srst", "srst_n", "en", "d", "e")
+
+
+def test_register_left_out_of_the_reset_arm_holds(tmp_path: Path, caplog) -> None:
+    """A register (or bit) the data branch writes but the reset arm does
+    not keeps its value while the reset is asserted, as Yosys ``proc_dff``
+    builds it: a plain ``$dff`` behind a hold mux selected by the reset when
+    the whole register is left alone, an ``$aldff`` loading its own ``Q``
+    for the left-alone bits of an async-reset register, and the ``proc``
+    reset mux (constant leg for the reset bits, ``Q`` for the others) on a
+    plain ``$dff`` for a sync reset. It used to reset to 0."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _HELD)
+    assert not _warnings(caplog)
+    types = _flop_types(module, _HELD_REGS)
+    assert types == {
+        "q": ["$adff"],
+        "h": ["$dff"],
+        "q2": ["$adff"],
+        "h2": ["$dff"],
+        "p": ["$dff", "$dff"],
+        "ap": ["$aldff", "$aldff"],
+        "pn": ["$dff", "$dff"],
+        "c": ["$dff", "$dff"],
+    }
+    for rst_n, rst, e, h in itertools.product((0, 1), repeat=4):
+        pins = _pin_values(
+            module, "h", {"rst_n": rst_n, "e": e, "h": h, "h2": h, "rst": rst}
+        )
+        assert pins == {"D[0]": e if rst_n else h}
+        pins = _pin_values(module, "h2", {"rst": rst, "e": e, "h2": h})
+        assert pins == {"D[0]": h if rst else e}
+    ap = _pin_values(module, "ap", {"ap": 0b10, "rst_n": 0})
+    assert ap["AD[0]"] == 1 and ap["AD[1]"] == 1  # ap[1] loads its own Q
+    if _HAVE_YOSYS:
+        y_mod = _yosys(tmp_path, _HELD)
+        assert _flop_types(y_mod, _HELD_REGS) == types
+        _compare_next_state(module, _HELD_REGS, _HELD_INPUTS, y_mod)
+
+
+_RESET_CHOICE = """module m (input clk_a, input rst_n, input mode, input d, input e,
+          output reg [1:0] q, output reg r, output reg [2:0] f);
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) begin
+            if (mode) begin q <= 2'b01; r <= d; end
+            else      q <= 2'b11;
+        end else begin
+            q <= {e, d}; r <= e;
+        end
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) for (int i = 0; i < 3; i++) f[i] <= 1'b1;
+        else        f <= {d, e, d};
+endmodule
+"""
+
+
+def test_run_time_choice_in_a_reset_arm_is_reported(tmp_path: Path, caplog) -> None:
+    """A run-time ``if`` / ``case`` inside a reset arm is not modelled: it
+    is reported, and each bit it writes resets to the one constant every
+    write in it loads (``q[0]``), else 0 (``q[1]``, and ``r``, loaded with
+    a signal); the registers keep their flops. A ``for`` loop in the arm
+    is unrolled like the data branch's."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _RESET_CHOICE)
+    assert any("not modelled in a reset" in w for w in _warnings(caplog))
+    ((q, _),) = _flops_of(module, "q")
+    assert q.type == "$adff" and q.parameters["ARST_VALUE"] == "01"
+    ((r, _),) = _flops_of(module, "r")
+    assert r.type == "$adff" and r.parameters["ARST_VALUE"] == "0"
+    ((f, _),) = _flops_of(module, "f")
+    assert f.type == "$adff" and f.parameters["ARST_VALUE"] == "111"
+
+
+_HELD_CROSSING = """module m (input clk_a, input clk_b, input rst_b_n, input d,
+          input e, output reg q, output reg h);
+    reg rst_q;
+    always_ff @(posedge clk_b) rst_q <= rst_b_n;
+    always_ff @(posedge clk_a or negedge rst_q)
+        if (!rst_q) q <= 1'b0;
+        else begin q <= d; h <= e; end
+endmodule
+"""
+
+
+def test_held_register_verdict_matches_yosys(tmp_path: Path) -> None:
+    """``h`` is not reset by the foreign-domain ``rst_q``: it is no
+    destination of the reset crossing (RDC-001 names ``q`` only), and the
+    reset reaches ``h`` as its hold mux's select, a data crossing."""
+    sdc = _SDC + (
+        "set_input_delay -clock clk_a 1 [get_ports {d e}]\n"
+        "set_input_delay -clock clk_b 1 [get_ports rst_b_n]\n"
+    )
+    crossings, live, _ = _same_verdict(tmp_path, _HELD_CROSSING, sdc=sdc)
+    assert crossings == 1
+    assert live == {"CDC-001": 1, "RDC-001": 1}
+
+
+# --- 11. a register only a reset arm writes still gets its flop -----------
+
+_RESET_ONLY = """module m (input clk_a, input rst_n, input rst, input srst, input srst_n,
+          input set_n, input d, output reg q, output reg z, output reg zn,
+          output reg [1:0] zp, output reg q3, output reg zs, output reg zs2,
+          output reg [1:0] zq, output reg k, output reg k2, output reg k3);
+    // Async: z is written by the reset arm only.
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) begin q <= 1'b0; z <= 1'b1; end
+        else q <= d;
+    // Async, no data branch at all.
+    always_ff @(posedge clk_a or posedge rst)
+        if (rst) zn <= 1'b1;
+    // Async: the reset writes zp[0], the data branch zp[1].
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) zp[0] <= 1'b1;
+        else        zp[1] <= d;
+    // Sync active-low: zs is written by the reset arm only.
+    always_ff @(posedge clk_a)
+        if (!srst_n) zs <= 1'b1;
+        else         q3 <= d;
+    // Sync, no data branch at all.
+    always_ff @(posedge clk_a)
+        if (srst) zs2 <= 1'b0;
+    // Sync: the reset writes both bits, the data branch zq[0] only.
+    always_ff @(posedge clk_a)
+        if (srst) zq <= 2'b10;
+        else      zq[0] <= d;
+    // Several async controls: k / k2 written by one control arm only.
+    always_ff @(posedge clk_a or negedge rst_n or negedge set_n)
+        if (!rst_n)      k <= 1'b0;
+        else if (!set_n) k2 <= 1'b1;
+        else             k3 <= d;
+endmodule
+"""
+
+_RESET_ONLY_REGS = ("q", "z", "zn", "zp", "q3", "zs", "zs2", "zq", "k", "k2", "k3")
+_RESET_ONLY_INPUTS = ("rst_n", "rst", "srst", "srst_n", "set_n", "d")
+
+
+def test_register_written_only_in_a_reset_arm_gets_a_flop(
+    tmp_path: Path, caplog
+) -> None:
+    """A register (or bit) only a reset arm writes is still a register, as
+    Yosys ``proc_dff`` builds it: an ``$adff`` holding its value (``D`` =
+    ``Q``) for an async reset, the reset-arm bits of a register the data
+    branch also writes in the same flop (an ``$aldff`` loading its own
+    ``Q`` for the other bits), a plain ``$dff`` behind the ``proc`` reset
+    mux for a sync reset, and a ``$dffsr`` for one of several async
+    controls. It used to get no flop at all, and a block with no ``else``
+    was skipped whole."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _RESET_ONLY)
+    assert not _warnings(caplog)
+    types = _flop_types(module, _RESET_ONLY_REGS)
+    assert types == {
+        "q": ["$adff"],
+        "z": ["$adff"],
+        "zn": ["$adff"],
+        "zp": ["$aldff", "$aldff"],
+        "q3": ["$dff"],
+        "zs": ["$dff"],
+        "zs2": ["$dff"],
+        "zq": ["$dff", "$dff"],
+        "k": ["$dffsr"],
+        "k2": ["$dffsr"],
+        "k3": ["$dff"],
+    }
+    z = _pin_values(module, "z", {"z": 0, "rst_n": 1})
+    assert z == {"ARST[0]": 1, "D[0]": 0}
+    for srst_n, zs in itertools.product((0, 1), repeat=2):
+        got = _pin_values(module, "zs", {"srst_n": srst_n, "zs": zs})
+        assert got == {"D[0]": zs if srst_n else 1}
+    if _HAVE_YOSYS:
+        y_mod = _yosys(tmp_path, _RESET_ONLY)
+        assert _flop_types(y_mod, _RESET_ONLY_REGS) == types
+        _compare_next_state(module, _RESET_ONLY_REGS, _RESET_ONLY_INPUTS, y_mod)
+
+
+_RESET_ONLY_CROSSING = """module m (input clk_a, input clk_b, input rst_n, input d,
+          output reg q, output reg flag);
+    reg rst_q;
+    always_ff @(posedge clk_b) rst_q <= d;
+    // flag is set by the foreign-domain reset only and read out.
+    always_ff @(posedge clk_a or negedge rst_q)
+        if (!rst_q) flag <= 1'b1;
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) q <= 1'b0;
+        else        q <= flag;
+endmodule
+"""
+
+
+def test_reset_only_register_verdict_matches_yosys(tmp_path: Path) -> None:
+    """``flag`` exists only through its reset arm; its foreign-domain
+    reset is an unsynchronised reset crossing on both frontends (slang had
+    no flop, so no finding)."""
+    sdc = _SDC + "set_input_delay -clock clk_b 1 [get_ports d]\n"
+    _crossings, live, _ = _same_verdict(tmp_path, _RESET_ONLY_CROSSING, sdc=sdc)
+    assert live.get("RDC-001") == 1
+
+
+# --- 12. netnames carry the declared range (offset / upto) ------------------
+
+_RANGES = """module m (input clk_a, input [7:4] a, input [0:7] b, input [3:-4] c,
+          input [4:7] e, input signed [11:8] f, output [7:4] y,
+          output [0:3] z, output [1:0][3:2] pk);
+    logic [7:4] ra;
+    logic [0:7] rb;
+    wire [5:2] wa;
+    wire [2:5] wb;
+    logic [3:0][1:0] p2;
+    integer it;
+    always_ff @(posedge clk_a) begin
+        ra <= a; rb <= b ^ {c[3:0], e}; p2 <= {f, f}; it <= it + 1;
+    end
+    assign wa = ra;
+    assign wb = rb[0:3];
+    assign y = wa;
+    assign z = wb;
+    assign pk = p2[1:0] ^ {4{it[0]}};
+endmodule
+"""
+
+
+def _ranges(module: Module) -> dict[str, tuple[int, int, bool]]:
+    return {
+        n: (len(nn.bits), nn.offset, nn.upto)
+        for n, nn in module.netnames.items()
+        if "$" not in n
+    }
+
+
+def test_netnames_carry_declared_offset_and_direction(tmp_path: Path) -> None:
+    """A vector declared ``[7:4]`` (``offset`` 4), ``[0:7]`` (``upto``) or
+    ``[3:-4]`` (``offset`` -4) carries its declared range on its netname,
+    variable, net or port alike, as Yosys ``write_json`` emits it; a
+    multi-dimensional packed array or an ``integer`` is ``[N-1:0]``.
+    Every name both frontends define agrees."""
+    module = _slang(tmp_path, _RANGES)
+    got = _ranges(module)
+    assert got["a"] == (4, 4, False)
+    assert got["b"] == (8, 0, True)
+    assert got["c"] == (8, -4, False)
+    assert got["e"] == (4, 4, True)
+    assert got["f"] == (4, 8, False)
+    assert got["ra"] == (4, 4, False)
+    assert got["wb"] == (4, 2, True)
+    assert got["p2"] == (8, 0, False)
+    assert got["pk"] == (4, 0, False)
+    assert got["it"] == (32, 0, False)
+    assert got["clk_a"] == (1, 0, False)
+    if _HAVE_YOSYS:
+        want = _ranges(_yosys(tmp_path, _RANGES))
+        common = set(got) & set(want)
+        assert {"a", "b", "c", "e", "f", "ra", "rb", "wa", "wb", "y", "z"} <= common
+        assert {n: got[n] for n in common} == {n: want[n] for n in common}
+
+
+_BIT_NAMES = """module m (input clk_a, input clk_b, input d0, input d1, input d2,
+          output reg [5:4] s, output reg [0:1] t, output reg [9:8] u);
+    reg a0, a1, a2;
+    always_ff @(posedge clk_a) begin a0 <= d0; a1 <= d1; a2 <= d2; end
+    wire [7:4] w;
+    wire [0:3] v;
+    assign w = {2'b00, a1, a0};
+    assign v = {a2, 1'b0, a1, 1'b0};
+    reg [3:2] r;
+    always_ff @(posedge clk_a) r <= {a1, a0};
+    always_ff @(posedge clk_b) begin
+        s <= w[5:4];   // s[5] <- a1 via w[5], s[4] <- a0 via w[4]
+        t <= {v[0], v[2]};
+        u <= r;
+    end
+endmodule
+"""
+
+
+@pytest.mark.parametrize(
+    ("constraint", "cut"),
+    [
+        ("set_false_path -through [get_nets w[5]]", 2),  # a1: s[5], t[1]
+        ("set_false_path -through [get_nets w[4]]", 1),  # a0: s[4]
+        ("set_false_path -through [get_nets v[0]]", 1),  # a2: t[0]
+        ("set_false_path -through [get_nets {v[2]}]", 2),  # a1
+    ],
+)
+def test_bit_select_net_names_cut_alike(
+    tmp_path: Path, constraint: str, cut: int
+) -> None:
+    """``get_nets w[5]`` on a ``[7:4]`` wire and ``v[0]`` on a ``[0:3]``
+    one select the same bit on both frontends, so the same crossings are
+    cut (on slang ``w[5]`` named a bit past the end and ``v[0]`` the
+    wrong end)."""
+    sdc = _SDC + "set_input_delay -clock clk_a 1 [get_ports {d0 d1 d2}]\n"
+    base = _same_verdict(tmp_path, _BIT_NAMES, sdc=sdc)
+    assert base == (5, {"CDC-001": 4, "CDC-004": 1}, {})
+    got = _same_verdict(tmp_path, _BIT_NAMES, sdc=sdc + constraint + "\n")
+    assert got == (5, {"CDC-001": 4 - cut, "CDC-004": 1}, {"CDC-001": cut})
+
+
+@pytest.mark.parametrize(
+    ("kind", "pattern"),
+    [
+        ("registers", "r_reg[3]"),
+        ("registers", "r[2]"),
+        ("registers", "s_reg[5]"),
+        ("registers", "t_reg[0]"),
+        ("registers", "u[9]"),
+        ("ports", "s[4]"),
+        ("ports", "t[1]"),
+        ("ports", "u[8]"),
+    ],
+)
+def test_bit_select_register_and_port_names_resolve_alike(
+    tmp_path: Path, kind: str, pattern: str
+) -> None:
+    """``x_reg[k]`` / ``x[k]`` register names and ``x[k]`` port names on a
+    ``[3:2]``, ``[5:4]``, ``[0:1]`` or ``[9:8]`` vector pick the same
+    register bit (by its ``Q`` netname bit) on both frontends."""
+    from rtl_buddy_cdc.sdc_objects import NameIndex
+
+    def resolve(module: Module) -> set[str]:
+        sel = getattr(NameIndex(module), kind)(pattern)
+        assert sel, pattern
+        if kind == "ports":
+            return {f"{p}:{i}" for p, pos in sel.items() for i in pos}
+        names = {
+            b: f"{n}:{i}"
+            for n, nn in module.netnames.items()
+            for i, b in enumerate(nn.bits)
+            if "$" not in n and n in ("r", "s", "t", "u")
+        }
+        return {
+            names[module.cells[f].connections["Q"][q]]
+            for f, pos in sel.items()
+            for q in pos
+        }
+
+    got = resolve(_slang(tmp_path, _BIT_NAMES))
+    assert len(got) == 1
+    if _HAVE_YOSYS:
+        assert resolve(_yosys(tmp_path, _BIT_NAMES)) == got
+
+
+# --- 13. enables stay a hold mux on ``D``, as ``proc`` leaves them ----------
+#
+# The ``lint`` recipe runs ``proc; flatten; opt_clean`` and no ``opt_dff``
+# (``frontends/yosys.py``), so on the Yosys path an enable is a hold mux on
+# ``D`` and a sync reset a constant-leg mux: no ``$dffe`` / ``$sdffe`` ever
+# reaches the rules there. Folding enables into ``EN`` here would move the
+# slang netlist away from that, not towards it; the findings already agree
+# for every enable form.
+
+_ENABLE_FORMS = {
+    "plain": "if (en) q <= a_q;",
+    "srst_over_en": "if (srst) q <= 4'h0; else if (en) q <= a_q;",
+    "en_over_srst": "if (en) begin if (srst) q <= 4'h0; else q <= a_q; end",
+    "srst_n_over_en": "if (!srst) q <= 4'h3; else if (en) q <= a_q;",
+}
+
+
+def _enable_design(form: str, enable: str, reset: str, arst: bool) -> str:
+    event = "posedge clk_b or negedge rst_n" if arst else "posedge clk_b"
+    body = _ENABLE_FORMS[form]
+    if arst:
+        body = f"if (!rst_n) q <= 4'h0; else begin {body} end"
+    return f"""module m (input clk_a, input clk_b, input rst_n, input go,
+          input srst_p, input [3:0] d, output reg [3:0] q);
+    reg [3:0] a_q;
+    reg req_a, srst_a;
+    always_ff @(posedge clk_a) begin a_q <= d; req_a <= go; srst_a <= go; end
+    reg r1, r2;
+    always_ff @(posedge clk_b) begin r1 <= req_a; r2 <= r1; end
+    wire en = {enable};
+    wire srst = {reset};
+    always_ff @({event}) {body}
+endmodule
+"""
+
+
+def _enable_cases() -> list[tuple[str, str, str, bool]]:
+    cases = []
+    for form, enable, reset, arst in itertools.product(
+        sorted(_ENABLE_FORMS), ("r2", "req_a"), ("srst_p", "srst_a"), (False, True)
+    ):
+        # Under an async reset a sync reset cannot fold, and the clocked
+        # walker orders an ``if`` / ``else if`` chain's muxes differently
+        # from ``proc`` (the second condition's mux outermost, selected by
+        # ``~c1 & c2``): with a foreign ``srst_a`` over a synchronised
+        # enable that changes the gated-bus verdict. Not an enable-folding
+        # question; reported separately (rtl-buddy-cdc#390 PR).
+        if arst and form != "plain" and reset == "srst_a" and enable == "r2":
+            continue
+        cases.append((form, enable, reset, arst))
+    return cases
+
+
+@pytest.mark.parametrize(("form", "enable", "reset", "arst"), _enable_cases())
+def test_enable_forms_give_the_same_findings(
+    tmp_path: Path, form: str, enable: str, reset: str, arst: bool
+) -> None:
+    """A plain enable, a sync reset over an enable, an enable over a sync
+    reset (slang: ``$sdffce``) and either under an async reset: the same
+    crossings and findings on both frontends, whether the enable is
+    synchronised (``r2``) or not (``req_a``) and the sync reset local or
+    from the other domain (``srst_a``)."""
+    src = _enable_design(form, enable, reset, arst)
+    sdc = _SDC + (
+        "set_input_delay -clock clk_a 1 [get_ports {d go}]\n"
+        "set_input_delay -clock clk_b 1 [get_ports {srst_p rst_n}]\n"
+    )
+    crossings, live, _ = _same_verdict(tmp_path, src, sdc=sdc)
+    assert crossings >= 1
+    assert live  # the bus crossing is reported in every form
+
+
+def test_enable_is_a_hold_mux_not_an_en_pin(tmp_path: Path) -> None:
+    """The slang path keeps an enable as a hold mux on ``D`` (no
+    ``$dffe`` / ``$sdffe``), the shape ``proc`` leaves on the Yosys path;
+    only an enable over a sync reset folds, into the ``$sdffce`` whose
+    reset acts only while loading (rtl-buddy-cdc#384)."""
+    types = {}
+    for form in _ENABLE_FORMS:
+        # One directory per design: pyslang caches a source by its path.
+        (tmp_path / form).mkdir()
+        module = _slang(tmp_path / form, _enable_design(form, "r2", "srst_p", False))
+        q_bits = set(module.netnames["q"].bits)
+        types[form] = {
+            c.type
+            for c in module.cells.values()
+            if set(c.connections.get("Q", ())) & q_bits
+        }
+    assert types == {
+        "plain": {"$dff"},
+        "srst_over_en": {"$sdff"},
+        "en_over_srst": {"$sdffce"},
+        "srst_n_over_en": {"$sdff"},
+    }
+    if _HAVE_YOSYS:
+        y_mod = _yosys(tmp_path, _enable_design("en_over_srst", "r2", "srst_p", False))
+        assert not [c for c in y_mod.cells.values() if "EN" in c.connections]
+
+
+# --- 14. an active-low sync reset keeps its own net and polarity ----------
+#
+# The ``lint`` recipe leaves a sync reset as ``proc``'s constant-leg mux;
+# for ``if (!srst_n)`` Yosys 0.64 selects it with ``srst_n`` itself (the
+# ``$logic_not`` is folded into the mux legs by ``proc``'s ``opt_expr``),
+# and ``opt_dff`` on that makes ``SRST = srst_n``, active low: the slang
+# ``$sdff``. The rules read the mux and the pin alike (RDC-003 walks the
+# reset's fan-in either way; RDC-002 / RDC-004 are async-only), so the
+# polarity convention changes no finding.
+
+_SRST_FORMS = {
+    "not": "if (!rst_x) q <= 2'b01; else q <= d;",
+    "tilde": "if (~rst_x) q <= 2'b01; else q <= d;",
+    "high": "if (rst_x) q <= 2'b01; else q <= d;",
+    "en": "if (!rst_x) q <= 2'b01; else if (go) q <= d;",
+}
+
+
+def _srst_design(form: str, source: str, declared: str) -> str:
+    return f"""module m (input clk_a, input clk_b, input go,
+          (* reset_polarity = "{declared}" *) input srst_n,
+          input [1:0] d, output reg [1:0] q);
+    reg f_n;
+    always_ff @(posedge clk_a) f_n <= go;
+    wire rst_x = {source};
+    always_ff @(posedge clk_b) {_SRST_FORMS[form]}
+endmodule
+"""
+
+
+@pytest.mark.parametrize("form", sorted(_SRST_FORMS))
+@pytest.mark.parametrize("source", ["srst_n", "f_n", "f_n & srst_n"])
+@pytest.mark.parametrize("declared", ["low", "high"])
+def test_sync_reset_polarity_gives_the_same_findings(
+    tmp_path: Path, form: str, source: str, declared: str
+) -> None:
+    """An active-low (``!`` / ``~``) or active-high sync reset, with or
+    without an enable, driven by a port (with a matching or contradicting
+    ``reset_polarity`` declaration), by a register of the other domain
+    (RDC-003) or by logic of both: the same findings on both frontends."""
+    sdc = _SDC + (
+        "set_input_delay -clock clk_a 1 [get_ports go]\n"
+        "set_input_delay -clock clk_b 1 [get_ports {srst_n d}]\n"
+    )
+    _crossings, live, _ = _same_verdict(
+        tmp_path, _srst_design(form, source, declared), sdc=sdc
+    )
+    assert ("RDC-003" in live) == (source != "srst_n")
+    assert "RDC-002" not in live
+
+
+_INVERTERS = frozenset({"$not", "$logic_not", "$_NOT_"})
+
+
+def _effective_reset(module: Module, q_name: str) -> tuple[str, str, str]:
+    """``(reset net, polarity, kind)`` of ``q_name``'s flop, seen through
+    inverters on its reset pin, as ``reset_domain`` reports it."""
+    from rtl_buddy_cdc.reset_domain import assign_reset_domains
+
+    flops = [c for c, _hit in _flops_of(module, q_name)]
+    assert len(flops) == 1
+    rd = assign_reset_domains(module)[flops[0].name]
+    assert rd.reset is not None
+    name, polarity = rd.reset.name, rd.reset.polarity
+    drivers = {
+        b: c
+        for c in module.cells.values()
+        if c.type in _INVERTERS
+        for b in c.connections["Y"]
+    }
+    pin = next(p for p in ("SRST", "ARST") if p in flops[0].connections)
+    bit = flops[0].connections[pin][0]
+    while bit in drivers:
+        bit = drivers[bit].connections["A"][0]
+        polarity = "low" if polarity == "high" else "high"
+    names = {b: p for p, port in module.ports.items() for b in port.bits}
+    return names.get(bit, name), polarity, rd.reset.type
+
+
+def test_active_low_sync_reset_reads_as_opt_dff_folds_it(tmp_path: Path) -> None:
+    """``if (!srst_n)`` gives ``SRST = srst_n`` active low on slang; the
+    reset domain model reads it as the same net and polarity as the
+    ``$sdff`` / ``$sdffe`` Yosys ``opt_dff`` folds ``proc``'s mux into (an
+    inverter in front of the pin, if any, flips the polarity back)."""
+    for form in ("not", "tilde", "en", "high"):
+        (tmp_path / form).mkdir()
+        src = _srst_design(form, "srst_n", "low")
+        module = _slang(tmp_path / form, src)
+        flop = _flops_of(module, "q")[0][0]
+        assert flop.connections["SRST"] == module.ports["srst_n"].bits
+        want_pol = "high" if form == "high" else "low"
+        assert _effective_reset(module, "q") == ("srst_n", want_pol, "sync")
+        if _HAVE_YOSYS:
+            y_mod = _yosys(tmp_path / form, src, extra="opt_dff")
+            assert _effective_reset(y_mod, "q") == ("srst_n", want_pol, "sync")
