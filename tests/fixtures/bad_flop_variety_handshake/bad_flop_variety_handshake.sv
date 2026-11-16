@@ -17,9 +17,9 @@
 // cap_a's CLR is the mux `clr_q ? 1 : 0` that proc builds on a set /
 // clear flop: a buffer of the register, not combinational logic, so
 // RDC-001 reports the foreign clear and RDC-004 stays silent
-// (rtl-buddy-cdc#383). The gate-level and slang verdicts differ for
-// other reasons (see the gate-level allowlist and
-// tests/test_cell_variety_fixtures.py).
+// (rtl-buddy-cdc#383). The gate-level legs (rtl-buddy-cdc#386) and
+// the slang frontend (rtl-buddy-cdc#384) agree with this netlist's
+// verdict.
 
 module bad_flop_variety_handshake (
     input  logic       src_clk,

@@ -471,16 +471,19 @@ def test_out_of_range_constant_index_select_is_unknown(tmp_path: Path) -> None:
     )
 
 
-def test_runtime_index_select_is_unknown(tmp_path: Path) -> None:
+def test_runtime_index_select_is_shiftx(tmp_path: Path) -> None:
     """``d[j]`` with a runtime ``j`` (not a loop-bound constant) can't
-    fold to a static bit — ``_resolve_select_chain`` returns no index."""
+    fold to a static bit — ``_resolve_select_chain`` returns no index —
+    so it is the ``$shiftx`` Yosys emits (rtl-buddy-cdc#384; it was an
+    opaque driver)."""
     src = """
     module m (input logic clk, input logic [3:0] d, input logic [1:0] j, output logic q);
         always_ff @(posedge clk) q <= d[j];
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$_UNKNOWN_" in _cell_types(mod)
+    assert "$shiftx" in _cell_types(mod)
+    assert "$_UNKNOWN_" not in _cell_types(mod)
 
 
 # --- _const_int coercion: remaining except / skip legs --------------------
@@ -887,16 +890,18 @@ def test_rangeselect_on_non_named_base_is_unknown(tmp_path: Path) -> None:
     assert "$_UNKNOWN_" in _cell_types(mod)
 
 
-def test_indexed_part_select_runtime_offset_is_unknown(tmp_path: Path) -> None:
+def test_indexed_part_select_runtime_offset_is_shiftx(tmp_path: Path) -> None:
     """``d[j +: 2]`` — an indexed part-select with a runtime offset has a
-    non-constant ``left``, so ``_range_select_bits`` declines."""
+    non-constant ``left``, so ``_range_select_bits`` declines and it is a
+    ``$shiftx`` (rtl-buddy-cdc#384; it was an opaque driver)."""
     src = """
     module m (input logic clk, input logic [7:0] d, input logic [2:0] j, output logic [1:0] q);
         always_ff @(posedge clk) q <= d[j +: 2];
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$_UNKNOWN_" in _cell_types(mod)
+    assert "$shiftx" in _cell_types(mod)
+    assert "$_UNKNOWN_" not in _cell_types(mod)
 
 
 def test_out_of_range_range_select_is_unknown(tmp_path: Path) -> None:

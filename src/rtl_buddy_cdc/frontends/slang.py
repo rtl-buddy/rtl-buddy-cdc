@@ -67,7 +67,8 @@ What currently works
 ~~~~~~~~~~~~~~~~~~~~
 - Parse + elaborate one or more SV sources, resolve the top module.
 - Ports (input / output / inout) with their bit-id allocation.
-- Local ``logic`` / ``reg`` variables become :class:`Netname`s, with
+- Local ``logic`` / ``reg`` variables and ``wire`` nets become
+  :class:`Netname`s (``inst.name`` inside an instance), with
   any ``(* attr *)`` declaration attributes propagated (looked up via
   ``Compilation.getAttributes(symbol)`` — pyslang stores attributes
   on the compilation, not on the symbol).
@@ -76,7 +77,14 @@ What currently works
       always_ff @(posedge clk or negedge rst_n)
           if (!rst_n) q <= 0; else q <= d;
 
-  emit ``$adff`` cells with ``CLK``/``D``/``Q``/``ARST`` connections.
+  emit ``$adff`` cells with ``CLK``/``D``/``Q``/``ARST`` connections; an
+  async arm loading a non-constant value (``if (aload) q <= ad``) emits
+  the ``$aldff`` Yosys ``proc`` builds, and two or more async controls
+  (``@(posedge clk or negedge rst_n or negedge set_n)``) the ``$dffsr``
+  (rtl-buddy-cdc#384, :meth:`_ModuleBuilder._emit_multi_async_ff`).
+  ``if (en) if (srst) <constants> else <data>`` as a whole body is the
+  ``$sdffce`` Yosys ``opt_dff`` folds it into; a sync reset at the top of
+  the body is an ``$sdff`` (an enable under it stays a hold mux on ``D``).
   Plain ``always_ff @(posedge clk) q <= d;`` emits ``$dff``.
 - Verilog-2001 ``always`` blocks (rtl-buddy-cdc#345), by what they
   infer: edge-triggered → the ``always_ff`` lowering; ``@*`` or a
@@ -161,6 +169,10 @@ What currently works
 - A right-hand side, condition or statement the frontend cannot lower
   is reported with a ``WARNING`` and modelled as an opaque ``$_UNKNOWN_``
   driver or skipped, never dropped silently (rtl-buddy-cdc#377).
+- A run-time index read of a packed value (``a[i]``, ``a[i +: W]``,
+  ``a[i -: W]``) is the ``$shiftx`` Yosys emits, its position translated
+  through the declared range (rtl-buddy-cdc#384); see
+  :meth:`_ModuleBuilder._lower_dynamic_select`.
 - Concatenation (``{a, b, c}``) and replication (``{N{x}}``) on the
   RHS — see :meth:`_lower_concatenation` and
   :meth:`_lower_replication`. Pure bit-tuple aliasing, no Yosys
@@ -638,7 +650,7 @@ class _ModuleBuilder:
         # Missing entries default to 0 — that's the conservative match
         # for the typical ``q <= '0`` reset and keeps the netlist
         # valid when the reset RHS isn't a recognised literal.
-        self._proc_resets: dict[tuple[Bit, ...], int] = {}
+        self._proc_resets: dict[tuple[Bit, ...], tuple[Bit, ...]] = {}
         # Placeholder bit -> RHS bit for every continuously-assigned net,
         # applied to all cells at the end of the walk so procedural reads
         # that precede the ``assign`` in source order see its driver.
@@ -707,7 +719,7 @@ class _ModuleBuilder:
         try:
             for member, prefix in self._iter_scope(inst.body, hier_prefix):
                 if (
-                    self._kind_name(member) == "VariableSymbol"
+                    self._kind_name(member) in self._NAMED_STORAGE
                     and member not in bound_internals
                 ):
                     self._collect_variable(member, prefix)
@@ -907,8 +919,15 @@ class _ModuleBuilder:
 
     # -- pass 1: variables ----------------------------------------------
 
+    # Declarations that get a netname: variables (``logic`` / ``reg``) and
+    # nets (``wire`` and the other net types, a port declared as one, an
+    # implicit net). Yosys names both (rtl-buddy-cdc#384: nets had no
+    # netname here, so a waiver or an SDC ``get_nets`` naming a wire, and
+    # an attribute on one, matched only on the Yosys path).
+    _NAMED_STORAGE = frozenset({"VariableSymbol", "NetSymbol"})
+
     def _collect_variable(self, member: Any, hier_prefix: str = "") -> None:
-        if self._kind_name(member) != "VariableSymbol":
+        if self._kind_name(member) not in self._NAMED_STORAGE:
             return
         bits = self._alloc_bits(member)
         # Forward declaration-site attributes. pyslang stores them on
@@ -1368,6 +1387,11 @@ class _ModuleBuilder:
         if self._kind_name(body) != "TimedStatement":
             self._warn_dropped(block, "no leading event control")
             return
+        events = self._event_signals(body.timing)
+        if events is not None and len(events) > 2:
+            # A clock and two or more async controls (rtl-buddy-cdc#384).
+            self._emit_multi_async_ff(block, body, events)
+            return
         clk_sym, reset_sym, reset_active_low, clk_negedge = self._analyse_event_list(
             body.timing
         )
@@ -1445,6 +1469,26 @@ class _ModuleBuilder:
                     block_reset_active_low,
                     src_node,
                 )
+            elif (
+                reset_sym is None
+                and (srst_ce := self._sync_reset_under_enable(inner)) is not None
+            ):
+                # ``if (en) if (srst) <constants> else <data>``: the reset
+                # acts only while loading, an ``$sdffce`` (rtl-buddy-cdc#384).
+                enable_bit, srst_stmt, (srst_sym, _kind, srst_low) = srst_ce
+                self._collect_reset_assignments(srst_stmt.ifTrue)
+                self._emit_assignments_in(
+                    srst_stmt.ifFalse, clk_sym, srst_sym, srst_low, src_node
+                )
+                self._drain_proc_writes(
+                    clk_sym,
+                    srst_sym,
+                    srst_low,
+                    src_node,
+                    reset_kind="sync",
+                    clock_enable=enable_bit,
+                )
+                return
             else:
                 # Body isn't a single conditional or expression — defer
                 # to the general statement walker. Reached for no-reset
@@ -1471,6 +1515,125 @@ class _ModuleBuilder:
             self._proc_writes = {}
             self._proc_resets = {}
             self._clk_negedge = prev_clk_negedge
+
+    def _event_signals(self, timing: Any) -> list[tuple[Any, bool]] | None:
+        """``(signal symbol, negedge)`` per event of an edge-triggered event
+        control, or ``None`` when an event is not an edge of a plain
+        signal."""
+        kind = self._kind_name(timing)
+        if kind == "SignalEventControl":
+            events = [timing]
+        elif kind == "EventListControl":
+            events = list(getattr(timing, "events", []) or [])
+        else:
+            return None
+        out: list[tuple[Any, bool]] = []
+        for ev in events:
+            sym = getattr(getattr(ev, "expr", None), "symbol", None)
+            edge = str(getattr(ev, "edge", "")).rsplit(".", 1)[-1]
+            if sym is None or edge not in {"PosEdge", "NegEdge"}:
+                return None
+            out.append((sym, edge == "NegEdge"))
+        return out
+
+    def _emit_multi_async_ff(
+        self, block: Any, body: Any, events: list[tuple[Any, bool]]
+    ) -> None:
+        """Lower an edge-triggered block with a clock and two or more async
+        controls (``@(posedge clk or negedge rst_n or negedge set_n)``), as
+        Yosys ``proc`` does (rtl-buddy-cdc#384: the third event was
+        ignored, so its arm became synchronous logic on ``D``).
+
+        The body must open with an ``if`` / ``else if`` chain testing every
+        event signal but one, each once; the untested one is the clock.
+        Each arm's writes are the values its control loads while asserted
+        (polarity from its event edge), the final ``else`` is the clocked
+        data. :meth:`_emit_multi_async_flop` builds each register. Any
+        other shape is reported (:meth:`_warn_dropped`)."""
+        node = body.stmt
+        arms: list[tuple[Any, bool, Any]] = []
+        while len(arms) < len(events) - 1:
+            while self._kind_name(node) == "BlockStatement":
+                node = node.body
+            if self._kind_name(node) != "ConditionalStatement":
+                break
+            conds = list(getattr(node, "conditions", None) or [])
+            sym = (
+                self._extract_condition_symbol(conds[0].expr)
+                if len(conds) == 1
+                else None
+            )
+            match = [
+                (s, neg)
+                for s, neg in events
+                if s is sym and all(a is not s for a, _n, _t in arms)
+            ]
+            if not match:
+                break
+            arms.append((sym, match[0][1], node.ifTrue))
+            node = node.ifFalse
+        clocks = [
+            (s, neg) for s, neg in events if all(a is not s for a, _n, _t in arms)
+        ]
+        if len(arms) != len(events) - 1 or len(clocks) != 1:
+            self._warn_dropped(
+                block,
+                "the leading if / else-if chain does not test each async "
+                "control of the event list once",
+            )
+            return
+        clk_sym, clk_negedge = clocks[0]
+        prev_clk_negedge = getattr(self, "_clk_negedge", False)
+        self._clk_negedge = clk_negedge
+        self._proc_writes = {}
+        self._proc_resets = {}
+        prev_blocking = self._blocking_nets
+        self._blocking_nets = {}
+        try:
+            controls: list[
+                tuple[tuple[Bit, ...], bool, dict[tuple[Bit, ...], tuple[Bit, ...]]]
+            ] = []
+            for sym, active_low, arm in arms:
+                values: dict[tuple[Bit, ...], tuple[Bit, ...]] = {}
+                self._collect_reset_assignments(arm, values)
+                controls.append((self._alloc_bits(sym), active_low, values))
+            if node is not None:
+                self._emit_assignments_in(node, clk_sym, None, False, block)
+            self._drain_proc_writes(
+                clk_sym, None, False, block, async_controls=controls
+            )
+        finally:
+            self._var_bits.update(self._blocking_nets)
+            self._blocking_nets = prev_blocking
+            self._proc_writes = {}
+            self._proc_resets = {}
+            self._clk_negedge = prev_clk_negedge
+
+    def _sync_reset_under_enable(
+        self, inner: Any
+    ) -> tuple[Bit, Any, tuple[Any, str, bool]] | None:
+        """``(enable bit, inner if, sync-reset classification)`` when a
+        no-async-reset block's whole body is ``if (en) begin if (srst)
+        <constants> else <data> end`` with no outer ``else``: the shape
+        Yosys ``opt_dff`` folds into an ``$sdffce`` (the reset takes effect
+        only while the enable loads). ``None`` otherwise. The enable is
+        lowered only on a match."""
+        if self._kind_name(inner) != "ConditionalStatement":
+            return None
+        if inner.ifFalse is not None:
+            return None
+        conds = list(getattr(inner, "conditions", None) or [])
+        if len(conds) != 1 or self._const_int(conds[0].expr) is not None:
+            return None
+        nested = inner.ifTrue
+        while self._kind_name(nested) == "BlockStatement":
+            nested = nested.body
+        if self._kind_name(nested) != "ConditionalStatement" or nested.ifFalse is None:
+            return None
+        check = self._classify_reset_check(nested, None, False)
+        if check is None:
+            return None
+        return self._condition_bit(inner), nested, check
 
     def _order_clock_and_reset(
         self,
@@ -1583,58 +1746,77 @@ class _ModuleBuilder:
             return "level"
         return None
 
-    def _collect_reset_assignments(self, stmt: Any) -> None:
-        """Walk an ``always_ff`` reset arm (``if (!rst_n) <stmt>``) and
-        record per-LHS reset values into ``self._proc_resets``.
+    def _collect_reset_assignments(
+        self,
+        stmt: Any,
+        into: dict[tuple[Bit, ...], tuple[Bit, ...]] | None = None,
+    ) -> None:
+        """Walk an ``always_ff`` reset / async-load arm (``if (!rst_n)
+        <stmt>``) and record the value each write loads, as LSB-first bits
+        keyed by the written register bits, into ``into`` (default
+        ``self._proc_resets``).
 
-        Captures nonblocking assignments whose RHS is a compile-time
-        constant. Anything else — non-literal RHS, struct/hierref LHS,
-        nested conditionals — is silently skipped, and the drain-time
-        lookup falls back to 0. The reset values feed ``$adff``'s
-        ``ARST_VALUE`` parameter (issue #40); the rule pack doesn't
-        read it today, so a default of 0 keeps the netlist valid even
-        when this walker doesn't recognise the shape.
+        A compile-time constant is its ``0`` / ``1`` bits (``$adff``'s
+        ``ARST_VALUE``, ``$sdff``'s ``SRST_VALUE``, issues #40 / #86). Any
+        other right-hand side is lowered, and a run whose value is not
+        constant becomes an ``$aldff`` loading it (rtl-buddy-cdc#384: it
+        was skipped, so ``if (aload) q <= ad`` reset ``q`` to 0). A
+        statement other than an assignment (a nested ``if``, a ``case``)
+        is reported; the registers it writes keep the default value 0.
         """
         if stmt is None:
             return
+        if into is None:
+            into = self._proc_resets
         kind = self._kind_name(stmt)
         if kind == "BlockStatement":
-            self._collect_reset_assignments(stmt.body)
+            self._collect_reset_assignments(stmt.body, into)
             return
         if kind in {"StatementList", "ListStatement"}:
             for s in getattr(stmt, "list", []) or []:
-                self._collect_reset_assignments(s)
+                self._collect_reset_assignments(s, into)
+            return
+        if kind == "VariableDeclStatement":
             return
         if kind != "ExpressionStatement":
+            self._other_statement(stmt, "reset / async-load arm")
             return
         expr = stmt.expr
         if type(expr).__name__ != "AssignmentExpression":
+            self._other_statement(stmt, "reset / async-load arm")
             return
+        val = self._const_int(expr.right)
         if type(expr.left).__name__ == "ConcatenationExpression":
             # ``{q, meta} <= 2'b01``: each register takes its slice of
-            # the constant (rtl-buddy-cdc#370), keyed as the data arm's
+            # the value (rtl-buddy-cdc#370), keyed as the data arm's
             # :meth:`_concat_writes` keys its writes.
             targets = self._lvalue_targets(expr.left)
-            val = self._const_int(expr.right)
-            if targets is None or val is None:
+            if targets is None:
+                self._warn_lvalue_dropped(expr, expr.left)
+                return
+            if val is None:
+                for q_part, bits in self._concat_writes(expr.left, expr.right) or []:
+                    into[q_part] = bits
                 return
             total = sum(width for _sym, _start, width in targets)
-            val_bits: tuple[Bit, ...] = tuple(
-                "1" if (val >> i) & 1 else "0" for i in range(total)
-            )
             for sym, start, bits in self._group_parts(
-                targets, self._split_rhs(val_bits, targets)
+                targets, self._split_rhs(self._int_bits(val, total), targets)
             ):
-                q_part = self._alloc_bits(sym)[start : start + len(bits)]
-                self._proc_resets[q_part] = int("".join(map(str, bits[::-1])), 2)
+                into[self._alloc_bits(sym)[start : start + len(bits)]] = bits
             return
         q_bits = self._lvalue_bits(expr.left)
         if q_bits is None:
+            self._warn_lvalue_dropped(expr, expr.left)
             return
-        val = self._const_int(expr.right)
         if val is None:
-            return
-        self._proc_resets[q_bits] = val
+            into[q_bits] = self._rhs_bits(expr.right, len(q_bits))
+        else:
+            into[q_bits] = self._int_bits(val, len(q_bits))
+
+    @staticmethod
+    def _int_bits(value: int, width: int) -> tuple[Bit, ...]:
+        """``value`` as ``width`` LSB-first ``0`` / ``1`` bits."""
+        return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
 
     def _analyse_event_list(
         self, timing: Any
@@ -1957,8 +2139,11 @@ class _ModuleBuilder:
         - **Dynamic case-expr we can lower (#85).** Emit a ``$eq``
           per match expression with the case-expr bits on ``A`` and
           the match constant on ``B``. Items with multiple matches
-          OR the per-match equalities together. The default arm's
-          enable is ``$not($or(all explicit-match equalities))``.
+          OR the per-match equalities together; when two items can match
+          the same value, an item's enable also ANDs in "no earlier item
+          matched", so the first match wins (rtl-buddy-cdc#384). The
+          default arm's enable is ``$not($or(all explicit-match
+          equalities))``.
           Each arm walks with its enable pushed onto
           ``_enable_stack``; the drain builds the corresponding
           ``$mux`` tree.
@@ -2009,16 +2194,30 @@ class _ModuleBuilder:
         base = self._blocking_values()
         explicit_match_bits: list[Bit] = []
         arm_states: list[tuple[Bit, dict[Any, tuple[Bit, ...]]]] = []
+        # The first matching item wins (IEEE 1800-2017 12.5). The drain lets
+        # a later write override an earlier one, so when two items can match
+        # the same value, each item's enable also carries "no earlier item
+        # matched" (rtl-buddy-cdc#384: overlapping labels resolved
+        # last-match-wins). Distinct constant labels cannot overlap and keep
+        # the plain per-item match.
+        overlap = self._case_labels_may_overlap(statement, items)
+        earlier: Bit | None = None
         for item in items:
             item_match_bits = [
                 self._case_label_match(case_expr_bits, match_expr, statement)
                 for match_expr in getattr(item, "expressions", []) or []
             ]
             explicit_match_bits.extend(item_match_bits)
-            item_enable = self._or_bits(item_match_bits)
+            own_match = self._or_bits(item_match_bits)
             item_stmt = getattr(item, "stmt", None)
-            if item_enable is None:
+            if own_match is None:
                 continue  # an item with no labels never matches
+            item_enable = own_match
+            if overlap and earlier is not None:
+                item_enable = self._and_bit(own_match, self._lower_not(earlier))
+            earlier = (
+                own_match if earlier is None else self._or_bits([earlier, own_match])
+            )
             arm_states.append(
                 (item_enable, self._clocked_arm(item_enable, item_stmt, walk, base))
             )
@@ -2034,6 +2233,37 @@ class _ModuleBuilder:
                     self._lower_not(no_match), default_arm, walk, base
                 )
         self._merge_blocking(base, arm_states, default_state)
+
+    def _case_labels_may_overlap(self, stmt: Any, items: list[Any]) -> bool:
+        """Whether two items of ``case`` statement ``stmt`` can match the
+        same value: ``False`` only for a plain ``case`` whose labels are
+        all distinct, fully known (no ``x`` / ``z``) constants."""
+        condition = str(getattr(stmt, "condition", "")).rsplit(".", 1)[-1]
+        if condition not in {"Normal", ""}:
+            return True
+        seen: set[tuple[Bit, ...]] = set()
+        for item in items:
+            for label in getattr(item, "expressions", []) or []:
+                if label is None or self._kind_name(label) == "RangeExpression":
+                    return True
+                bits = self._constant_label_bits(label)
+                if bits is None or bits in seen:
+                    return True
+                seen.add(bits)
+        return False
+
+    def _constant_label_bits(self, label: Any) -> tuple[Bit, ...] | None:
+        """A ``case`` label's value as ``0`` / ``1`` bits with the leading
+        zeros stripped, or ``None`` when it is not a fully known constant."""
+        value = self._const_int(label)
+        if value is None or value < 0:
+            return None
+        bits = self._constant_bits(label)
+        if bits is not None and any(b not in ("0", "1") for b in bits):
+            return None
+        return tuple(
+            "1" if (value >> i) & 1 else "0" for i in range(value.bit_length())
+        )
 
     def _case_expr_bits(self, stmt: Any) -> tuple[Bit, ...]:
         """The bits of a ``case`` statement's expression, or a reported
@@ -2477,6 +2707,11 @@ class _ModuleBuilder:
         reset_active_low: bool,
         src_node: Any,
         reset_kind: str | None = None,
+        async_controls: list[
+            tuple[tuple[Bit, ...], bool, dict[tuple[Bit, ...], tuple[Bit, ...]]]
+        ]
+        | None = None,
+        clock_enable: Bit | None = None,
     ) -> None:
         """Emit one flop per contiguous run of the bits each variable is
         written in, as Yosys ``proc`` groups them (rtl-buddy-cdc#377: one
@@ -2507,11 +2742,20 @@ class _ModuleBuilder:
         or plain ``$dff``. ``None`` is also accepted alongside
         ``reset_sym=None`` for blocks with no reset. Reset values are
         assembled per bit from the reset arm's writes.
+
+        ``async_controls`` (``(control bits, active low, values)`` in
+        priority order) replaces the single reset for a block with several
+        async controls: each run is built by
+        :meth:`_emit_multi_async_flop`.
+
+        ``clock_enable`` (with a ``"sync"`` reset) makes each flop an
+        ``$sdffce`` loading only while that bit is high
+        (rtl-buddy-cdc#384).
         """
-        reset_bit: dict[Bit, int] = {}
+        reset_bit: dict[Bit, Bit] = {}
         for key, value in self._proc_resets.items():
-            for i, bit in enumerate(key):
-                reset_bit[bit] = (value >> i) & 1
+            for bit, v in zip(key, value):
+                reset_bit[bit] = v
         for sym, (net, writes) in self._proc_writes.items():
             written = sorted(
                 {
@@ -2542,9 +2786,23 @@ class _ModuleBuilder:
                             enable, hold=tuple(d[a - lo : b - lo]), fire=piece
                         )
                     d[a - lo : b - lo] = piece
-                reset_value = sum(
-                    reset_bit.get(bit, 0) << i for i, bit in enumerate(q_bits)
-                )
+                if async_controls is not None:
+                    self._emit_multi_async_flop(
+                        clk_sym, q_bits, tuple(d), async_controls, src_node
+                    )
+                    continue
+                # A bit the reset arm does not write resets to 0 (the
+                # long-standing default; Yosys holds it instead).
+                values = tuple(reset_bit.get(bit, "0") for bit in q_bits)
+                if reset_sym is not None and reset_kind != "sync":
+                    if any(isinstance(v, int) for v in values):
+                        # A non-constant async value: an async load.
+                        self._emit_aldff(
+                            clk_sym, reset_sym, reset_active_low, q_bits,
+                            tuple(d), values, src_node,
+                        )  # fmt: skip
+                        continue
+                reset_value = sum((1 << i) for i, v in enumerate(values) if v == "1")
                 self._emit_flop_cell(
                     clk_sym,
                     reset_sym,
@@ -2554,6 +2812,7 @@ class _ModuleBuilder:
                     src_node,
                     reset_value=reset_value,
                     reset_kind=reset_kind,
+                    clock_enable=clock_enable,
                 )
 
     @staticmethod
@@ -2602,9 +2861,11 @@ class _ModuleBuilder:
         src_node: Any,
         reset_value: int = 0,
         reset_kind: str | None = None,
+        clock_enable: Bit | None = None,
     ) -> None:
         """Allocate a ``$dff`` / ``$adff`` / ``$sdff`` cell with the
-        given D and Q.
+        given D and Q (an ``$sdffce`` for a sync reset with a
+        ``clock_enable``: the reset acts only while it is high).
 
         ``reset_kind`` picks the reset shape when ``reset_sym`` is
         non-None: ``"async"`` → ``$adff`` (ARST/ARST_POLARITY/
@@ -2622,11 +2883,11 @@ class _ModuleBuilder:
         cell_type = "$dff"
         if reset_sym is not None:
             if reset_kind == "sync":
-                connections["SRST"] = self._alloc_bits(reset_sym)
+                connections["SRST"] = self._signal_bits(reset_sym)
                 cell_type = "$sdff"
             else:
                 # ``"async"`` (or unspecified — pre-#86 default).
-                connections["ARST"] = self._alloc_bits(reset_sym)
+                connections["ARST"] = self._signal_bits(reset_sym)
                 cell_type = "$adff"
         # CLK_POLARITY: read off the procedural-block lowering's
         # active clock edge (rtl-buddy-cdc#221 — closes the CDC-016
@@ -2642,10 +2903,14 @@ class _ModuleBuilder:
             "CLK_POLARITY": clk_polarity,
             "WIDTH": _param_int32(width),
         }
+        if cell_type == "$sdff" and clock_enable is not None:
+            cell_type = "$sdffce"
+            connections["EN"] = (clock_enable,)
+            parameters["EN_POLARITY"] = _param_int32(1)
         if reset_sym is not None:
             polarity = _param_int32(0 if reset_active_low else 1)
             value_param = _param_bits(reset_value, width)
-            if cell_type == "$sdff":
+            if cell_type in ("$sdff", "$sdffce"):
                 parameters["SRST_POLARITY"] = polarity
                 parameters["SRST_VALUE"] = value_param
             else:
@@ -2661,6 +2926,157 @@ class _ModuleBuilder:
             type=cell_type,
             connections=connections,
             parameters=parameters,
+            attributes=attrs,
+        )
+
+    def _emit_multi_async_flop(
+        self,
+        clk_sym: Any,
+        q_bits: tuple[Bit, ...],
+        d_bits: tuple[Bit, ...],
+        controls: list[
+            tuple[tuple[Bit, ...], bool, dict[tuple[Bit, ...], tuple[Bit, ...]]]
+        ],
+        src_node: Any,
+    ) -> None:
+        """One register of a block with several async controls, as Yosys
+        ``proc_dff`` builds it (rtl-buddy-cdc#384).
+
+        Each control's value for the run is what its arm writes, or ``Q``
+        for a bit the arm leaves alone. When every control loads the same
+        value they collapse into one trigger, the ``$reduce_or`` of the
+        controls made active-high: a plain ``$dff`` holding ``Q`` under it
+        when that value is ``Q`` itself, else an ``$adff`` (constant) or
+        ``$aldff``. Otherwise a ``$dffsr`` whose ``SET`` / ``CLR`` are
+        priority mux chains, the first control outermost: ``SET`` takes
+        the value and ``CLR`` its complement while a control is asserted.
+        """
+        width = len(q_bits)
+        per_control: list[tuple[tuple[Bit, ...], bool, tuple[Bit, ...]]] = []
+        for bits, active_low, values in controls:
+            by_bit: dict[Bit, Bit] = {}
+            for key, val in values.items():
+                by_bit.update(zip(key, val))
+            per_control.append(
+                (bits, active_low, tuple(by_bit.get(b, b) for b in q_bits))
+            )
+        first = per_control[0][2]
+        if all(v == first for _b, _l, v in per_control):
+            triggers: list[Bit] = [
+                self._lower_not(bits[0]) if active_low else bits[0]
+                for bits, active_low, _v in per_control
+            ]
+            trigger = self._emit_comb_cell(
+                "$reduce_or", {"A": tuple(triggers)}, output_width=1
+            )
+            if first == q_bits:
+                held = self._build_hold_mux(trigger[0], hold=d_bits, fire=q_bits)
+                self._emit_flop_cell(clk_sym, None, False, q_bits, held, src_node)
+            elif any(isinstance(v, int) for v in first):
+                self._emit_aldff(
+                    clk_sym, trigger, False, q_bits, d_bits, first, src_node
+                )
+            else:
+                self._emit_flop_cell(
+                    clk_sym, trigger, False, q_bits, d_bits, src_node,
+                    reset_value=sum(1 << i for i, v in enumerate(first) if v == "1"),
+                    reset_kind="async",
+                )  # fmt: skip
+            return
+        set_bits: tuple[Bit, ...] = ("0",) * width
+        clr_bits: tuple[Bit, ...] = ("0",) * width
+        for bits, active_low, value in reversed(per_control):
+            if all(isinstance(v, str) for v in value):
+                inverse: tuple[Bit, ...] = tuple(
+                    {"0": "1", "1": "0"}.get(str(v), v) for v in value
+                )
+            else:
+                inverse = self._emit_comb_cell("$not", {"A": value}, output_width=width)
+            set_bits = self._async_priority_mux(bits[0], active_low, set_bits, value)
+            clr_bits = self._async_priority_mux(bits[0], active_low, clr_bits, inverse)
+        attrs: dict[str, str] = {}
+        src = self._src_attr(src_node) if src_node is not None else None
+        if src is not None:
+            attrs["src"] = src
+        name = self._fresh_cell_name("$dffsr")
+        self._cells[name] = Cell(
+            name=name,
+            type="$dffsr",
+            connections={
+                "CLK": self._alloc_bits(clk_sym),
+                "SET": set_bits,
+                "CLR": clr_bits,
+                "D": d_bits,
+                "Q": q_bits,
+            },
+            parameters={
+                "CLK_POLARITY": _param_int32(
+                    0 if getattr(self, "_clk_negedge", False) else 1
+                ),
+                "SET_POLARITY": _param_int32(1),
+                "CLR_POLARITY": _param_int32(1),
+                "WIDTH": _param_int32(width),
+            },
+            attributes=attrs,
+        )
+
+    def _async_priority_mux(
+        self,
+        control: Bit,
+        active_low: bool,
+        rest: tuple[Bit, ...],
+        asserted: tuple[Bit, ...],
+    ) -> tuple[Bit, ...]:
+        """``asserted`` while ``control`` is asserted, else ``rest``: a
+        ``$mux`` selected by the control itself, its legs ordered by the
+        polarity (Yosys' shape); no cell when both legs are the same."""
+        if rest == asserted:
+            return rest
+        if active_low:
+            return self._build_hold_mux(control, hold=asserted, fire=rest)
+        return self._build_hold_mux(control, hold=rest, fire=asserted)
+
+    def _signal_bits(self, signal: Any) -> tuple[Bit, ...]:
+        """A control signal's bits: a variable symbol's net, or bits
+        already built (the OR of several async controls)."""
+        if isinstance(signal, tuple):
+            return signal
+        return self._alloc_bits(signal)
+
+    def _emit_aldff(
+        self,
+        clk_sym: Any,
+        aload_sym: Any,
+        aload_active_low: bool,
+        q_bits: tuple[Bit, ...],
+        d_bits: tuple[Bit, ...],
+        ad_bits: tuple[Bit, ...],
+        src_node: Any,
+    ) -> None:
+        """An ``$aldff``: ``Q`` follows ``AD`` while ``ALOAD`` is asserted,
+        else loads ``D`` on the clock edge — what Yosys ``proc`` builds for
+        an async control whose value is not constant (rtl-buddy-cdc#384).
+        Same parameters as ``proc_dff``'s ``gen_aldff``."""
+        attrs: dict[str, str] = {}
+        src = self._src_attr(src_node) if src_node is not None else None
+        if src is not None:
+            attrs["src"] = src
+        name = self._fresh_cell_name("$aldff")
+        self._cells[name] = Cell(
+            name=name,
+            type="$aldff",
+            connections={
+                "CLK": self._alloc_bits(clk_sym),
+                "ALOAD": self._signal_bits(aload_sym),
+                "AD": ad_bits,
+                "D": d_bits,
+                "Q": q_bits,
+            },
+            parameters={
+                "ALOAD_POLARITY": "0" if aload_active_low else "1",
+                "CLK_POLARITY": "0" if getattr(self, "_clk_negedge", False) else "1",
+                "WIDTH": _param_int32(len(q_bits)),
+            },
             attributes=attrs,
         )
 
@@ -3335,11 +3751,15 @@ class _ModuleBuilder:
                 mem_select = self._memory_select(expr)
                 if mem_select is not None:
                     return self._emit_memory_read(*mem_select, expr)
+                return self._lower_dynamic_select(expr)
             return bits
         if kind == "MemberAccessExpression":
             return self._element_select_bits(expr)
         if kind == "RangeSelectExpression":
-            return self._range_select_bits(expr)
+            bits = self._range_select_bits(expr)
+            if bits is None:
+                return self._lower_dynamic_select(expr)
+            return bits
         if kind == "ConcatenationExpression":
             return self._lower_concatenation(expr)
         if kind == "ReplicationExpression":
@@ -3355,6 +3775,79 @@ class _ModuleBuilder:
             return None
         # Anything else slang folded at elaboration time (``$bits(x)``, …).
         return self._constant_bits(expr)
+
+    def _lower_dynamic_select(self, expr: Any) -> tuple[Bit, ...] | None:
+        """A read of a packed vector at a run-time position — ``a[i]``,
+        ``a[i +: W]``, ``a[i -: W]`` (``a`` a packed vector or packed
+        array, or any packed value such as a memory word) — as the
+        ``$shiftx`` Yosys emits: ``A`` the whole vector, ``B`` the LSB-first
+        bit position of the selection's lowest bit, ``Y`` the selection
+        (rtl-buddy-cdc#384: it was an opaque driver, so the vector and the
+        index were invisible to the rules). The position is the index
+        translated through the declared range (``$sub`` / ``$mul`` cells,
+        as Yosys builds them). ``None`` for anything else (an unpacked
+        aggregate that is not a memory, a run-time width)."""
+        value = getattr(expr, "value", None)
+        vtype = getattr(value, "type", None)
+        vtype = getattr(vtype, "canonicalType", None) or vtype
+        if (
+            value is None
+            or vtype is None
+            or getattr(vtype, "isUnpackedArray", False)
+            or not getattr(vtype, "isIntegral", False)
+        ):
+            return None
+        width = self._expr_width(expr)
+        if width < 1:
+            return None
+        # A constant index that did not resolve is out of range: not a
+        # run-time select (it stays an opaque, reported read).
+        if type(expr).__name__ == "ElementSelectExpression":
+            selector = getattr(expr, "selector", None)
+            if self._const_int(selector) is not None:
+                return None
+            idx = self._bits_of_expression(selector)
+            if not idx:
+                return None
+            base = self._bits_of_expression(value)
+            if base is None:
+                return None
+            shift, signed = self._position_bits(vtype, idx, expr)
+        else:
+            sel_kind = str(getattr(expr, "selectionKind", "")).rsplit(".", 1)[-1]
+            count = self._const_int(getattr(expr, "right", None))
+            start = getattr(expr, "left", None)
+            if (
+                sel_kind not in {"IndexedUp", "IndexedDown"}
+                or not count
+                or self._const_int(start) is not None
+            ):
+                return None
+            idx = self._bits_of_expression(start)
+            if not idx:
+                return None
+            base = self._bits_of_expression(value)
+            if base is None:
+                return None
+            shift, signed = self._position_bits(
+                vtype, idx, expr, count=count, down=sel_kind == "IndexedDown"
+            )
+        # With the width / signedness parameters Yosys gives it: a computed
+        # position can be negative (a select reaching below the vector's
+        # LSB), which reads ``x``, not a far-away bit.
+        return self._emit_comb_cell(
+            "$shiftx",
+            {"A": base, "B": shift},
+            output_width=width,
+            src_node=expr,
+            parameters={
+                "A_SIGNED": _param_int32(0),
+                "A_WIDTH": _param_int32(len(base)),
+                "B_SIGNED": _param_int32(1 if signed else 0),
+                "B_WIDTH": _param_int32(len(shift)),
+                "Y_WIDTH": _param_int32(width),
+            },
+        )
 
     # Symbols a NamedValueExpression reads as a constant.
     _CONSTANT_SYMBOLS = frozenset(
@@ -3741,9 +4234,11 @@ class _ModuleBuilder:
         inputs: dict[str, tuple[Bit, ...]],
         output_width: int,
         src_node: Any = None,
+        parameters: dict[str, str] | None = None,
     ) -> tuple[Bit, ...]:
         """Allocate a fresh Y net and emit a ``cell_type`` cell with the
-        given inputs. Returns the Y bits so callers can wire them up.
+        given inputs (and ``parameters``, none by default). Returns the Y
+        bits so callers can wire them up.
 
         Width defensively clamped to at least 1 so we never emit a
         zero-width cell (which would confuse the rule pack's bit walks).
@@ -3765,7 +4260,7 @@ class _ModuleBuilder:
             name=name,
             type=cell_type,
             connections={**inputs, "Y": y_bits},
-            parameters={},
+            parameters=dict(parameters or {}),
             attributes=attrs,
         )
         return y_bits
@@ -4618,40 +5113,72 @@ class _ModuleBuilder:
         cells, as Yosys emits them), times the element width of a packed
         array (rtl-buddy-cdc#377: the raw index was used, so ``v[i] = 1``
         of ``logic [4:1] v`` set bit ``i`` instead of ``i - 1``, and an
-        ascending vector's bits came out reversed)."""
+        ascending vector's bits came out reversed). See
+        :meth:`_position_bits`."""
+        return self._position_bits(base_type, idx_bits, node)[0]
+
+    def _position_bits(
+        self,
+        base_type: Any,
+        idx_bits: tuple[Bit, ...],
+        node: Any,
+        count: int = 1,
+        down: bool = False,
+    ) -> tuple[tuple[Bit, ...], bool]:
+        """``(bits, signed)``: the LSB-first position of the lowest bit of
+        ``v[idx]`` (``count`` 1) or of ``v[idx +: count]`` / ``v[idx -:
+        count]`` (``down``) in a vector of ``base_type``. A descending
+        ``[hi:lo]`` range gives ``idx - lo`` (``-:`` also ``- (count -
+        1)``), an ascending ``[lo:hi]`` one ``hi - idx`` (``+:`` also ``-
+        (count - 1)``); a packed array multiplies by its element width.
+        ``signed`` when the position is computed and so can be negative
+        (Yosys marks such a ``$shiftx`` ``B`` signed)."""
         t = getattr(base_type, "canonicalType", None) or base_type
         rng = getattr(t, "range", None)
         left = getattr(rng, "left", None)
         right = getattr(rng, "right", None)
         pos = idx_bits
+        signed = False
         if left is not None and right is not None:
             left, right = int(left), int(right)
-            width = max(len(idx_bits), max(abs(left), abs(right)).bit_length()) + 1
+            span = max(abs(left), abs(right))
+            if count > 1:
+                span = abs(left) + abs(right) + count
+            width = max(len(idx_bits), span.bit_length()) + 1
             idx = self._resize_bits(idx_bits, width)
 
             def const(v: int) -> tuple[Bit, ...]:
                 return tuple("1" if (v >> i) & 1 else "0" for i in range(width))
 
-            if left >= right and right != 0:
+            if left >= right:
+                offset = right + (count - 1 if down else 0)
+                if offset > 0:
+                    pos = self._emit_comb_cell(
+                        "$sub", {"A": idx, "B": const(offset)}, width, src_node=node
+                    )
+                elif offset < 0:
+                    pos = self._emit_comb_cell(
+                        "$add", {"A": idx, "B": const(-offset)}, width, src_node=node
+                    )
+                signed = offset != 0
+            else:
+                top = right - (0 if down else count - 1)
                 pos = self._emit_comb_cell(
-                    "$sub", {"A": idx, "B": const(right)}, width, src_node=node
+                    "$sub", {"A": const(top), "B": idx}, width, src_node=node
                 )
-            elif left < right:
-                pos = self._emit_comb_cell(
-                    "$sub", {"A": const(right), "B": idx}, width, src_node=node
-                )
+                signed = True
         stride = self._element_stride(t)
         if stride > 1:
             factor: tuple[Bit, ...] = tuple(
                 "1" if (stride >> i) & 1 else "0" for i in range(stride.bit_length())
             )
+            out_width = len(pos) + len(factor)
+            if signed:
+                pos = self._resize_bits(pos, out_width, signed=True)
             pos = self._emit_comb_cell(
-                "$mul",
-                {"A": pos, "B": factor},
-                len(pos) + len(factor),
-                src_node=node,
+                "$mul", {"A": pos, "B": factor}, out_width, src_node=node
             )
-        return pos
+        return pos, signed
 
     # -- continuous assigns ---------------------------------------------
 

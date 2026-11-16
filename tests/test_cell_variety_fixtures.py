@@ -335,41 +335,24 @@ def test_flop_types_sit_on_the_crossings(name: str) -> None:
 
 _HAVE_PYSLANG = importlib.util.find_spec("pyslang") is not None
 
-# Every fixture here diverges under the slang frontend; each row is a slang
-# lowering gap. Strict: a row whose fixture starts agreeing fails until the
-# row is removed.
-_SLANG_GAPS: dict[str, str] = {
-    "good_flop_variety_handshake": (
-        "slang lowers an async load of a non-constant value (`if (aload) q <= "
-        "ad`) as an $adff resetting to 0, dropping AD, and the second async "
-        "control of a set / clear flop as synchronous logic on D; the set mux "
-        "between req_s1 and req_s2 then fires CDC-014"
-    ),
-    "bad_flop_variety_handshake": (
-        "same async-load / async-set lowering (CDC-014 on req_s1 -> req_s2); "
-        "cap_c's sync reset under enable becomes a load mux selected by "
-        "`req_s2 & ~srst_q`, a select CDC-004 does not accept as a dst-domain "
-        "gate, so RDC-003 + CDC-012 become CDC-004 on pay_c and srst_q"
-    ),
-    "bad_comb_ops_before_sync": (
-        "slang does not lower the run-time index read a_q[idx_q] ($shiftx); "
-        "it warns and models it as an opaque driver, losing two crossings "
-        "and their CDC-003s"
-    ),
-    "good_comb_ops_handshake": (
-        "slang does not lower a_q[idx_q] inside the captured concatenation; "
-        "the whole right-hand side is an opaque driver, so slang sees two "
-        "crossings instead of five (no finding either way)"
-    ),
-}
+# Fixtures whose slang verdict diverges from the committed netlist's; each
+# row is a slang lowering gap. Strict: a row whose fixture starts agreeing
+# fails until the row is removed. Empty since rtl-buddy-cdc#384 closed the
+# four gaps these fixtures exposed (async load, second async control, sync
+# reset under enable, run-time index read).
+_SLANG_GAPS: dict[str, str] = {}
+
+# Same, for the structural comparison
+# (:func:`test_slang_frontend_structure_matches_committed_netlist`).
+_SLANG_STRUCTURE_GAPS: dict[str, str] = {}
 
 
-def _slang_params() -> list:
+def _slang_params(gaps: dict[str, str] = _SLANG_GAPS) -> list:
     return [
         pytest.param(
             name,
-            marks=[pytest.mark.xfail(strict=True, reason=_SLANG_GAPS[name])]
-            if name in _SLANG_GAPS
+            marks=[pytest.mark.xfail(strict=True, reason=gaps[name])]
+            if name in gaps
             else [],
             id=name,
         )
@@ -412,3 +395,112 @@ def test_slang_frontend_agrees_with_committed_netlist(
 
 def test_slang_gap_rows_name_real_fixtures() -> None:
     assert set(_SLANG_GAPS) <= set(EXPECTED)
+    assert set(_SLANG_STRUCTURE_GAPS) <= set(EXPECTED)
+
+
+# The slang frontend folds no enable into a flop (an enable stays a hold
+# mux on D, which the rules read the same way as an EN pin), so a family
+# opt_dff gave an EN pin compares as its enable-less form. A sync reset is
+# different: under an enable it has no hold-mux equivalent, and slang
+# builds the $sdffce opt_dff does (rtl-buddy-cdc#384).
+_ENABLE_FOLDED = {
+    "$dffe": "$dff",
+    "$adffe": "$adff",
+    "$aldffe": "$aldff",
+    "$dffsre": "$dffsr",
+    "$sdffe": "$sdff",
+}
+
+
+def _module_q_names(module) -> dict[str, str]:
+    """:func:`_q_names` over a loaded :class:`netlist.Module`."""
+    by_bits: dict[tuple, list[str]] = {}
+    for net, nn in module.netnames.items():
+        if "$" not in net:
+            by_bits.setdefault(tuple(nn.bits), []).append(net)
+    out: dict[str, str] = {}
+    for cell in module.cells.values():
+        q = cell.connections.get("Q")
+        if q is None:
+            continue
+        nets = sorted(by_bits.get(tuple(q), []), key=lambda n: (n in module.ports, n))
+        if nets:
+            out[cell.name] = nets[0]
+    return out
+
+
+def _flop_shapes(module, registers: set[str]) -> dict[str, tuple[str, frozenset]]:
+    """Register -> (flop type with an EN pin folded back, its connected
+    pins other than EN) for ``registers``."""
+    names = _module_q_names(module)
+    out: dict[str, tuple[str, frozenset]] = {}
+    for cell in module.cells.values():
+        reg = names.get(cell.name)
+        if reg in registers:
+            pins = frozenset(p for p in cell.connections if p != "EN")
+            out[reg] = (_ENABLE_FOLDED.get(cell.type, cell.type), pins)
+    return out
+
+
+@pytest.mark.skipif(not _HAVE_PYSLANG, reason="pyslang not installed")
+@pytest.mark.parametrize("name", _slang_params(_SLANG_STRUCTURE_GAPS))
+def test_slang_frontend_structure_matches_committed_netlist(
+    name: str, tmp_path: Path
+) -> None:
+    """Structural parity with the committed netlist, not only the finding
+    counts: the same register pairs cross, each flop the fixture exists
+    for is the same family with the same pins driven, and each comb cell
+    type it carries is there as often."""
+    from rtl_buddy_cdc import netlist
+    from rtl_buddy_cdc.frontends import slang as slang_fe
+
+    fix = FIX_ROOT / name
+    committed = netlist.load(fix / f"{name}.json")
+    module, _ = slang_fe.elaborate_with_blackboxes([fix / f"{name}.sv"], name)
+    out = tmp_path / "slang.json"
+    res = runner.invoke(
+        app,
+        [
+            "lint",
+            "--top",
+            name,
+            "--sdc",
+            str(fix / f"{name}.sdc"),
+            "--frontend",
+            "slang",
+            "--format",
+            "json",
+            "--output",
+            str(out),
+            str(fix / f"{name}.sv"),
+        ],  # fmt: skip
+    )
+    assert res.exit_code in (0, 1), res.output
+    names = _module_q_names(module)
+    slang_report = json.loads(out.read_text())
+    committed_report = _analyze(name)[1]
+    slang_crossings = frozenset(
+        (names[c["src_flop"]], names[c["dst_flop"]]) for c in slang_report["crossings"]
+    )
+    assert slang_crossings == _crossings(name, committed_report)
+
+    def slang_finding(v: dict) -> Finding:
+        c = v.get("crossing")
+        if c is None:
+            return (v["rule_id"], None, names.get(v["cell_name"], v["cell_name"]))
+        src = names.get(c["src_flop"]) if c.get("src_flop") else f"port {c['src_port']}"
+        return (v["rule_id"], src, names.get(c["dst_flop"]))
+
+    # The same findings on the same registers, whatever the analyzer reports
+    # today (both sides go through the same rules).
+    assert Counter(slang_finding(v) for v in slang_report["violations"]) == Counter(
+        _finding(name, v) for v in committed_report["violations"]
+    )
+    registers = set(FLOP_ROLES.get(name, {}))
+    assert _flop_shapes(module, registers) == _flop_shapes(committed, registers)
+    comb = {t: n for t, n in CELLS[name].items() if t not in FLOP_ROLES_TYPES}
+    got = Counter(c.type for c in module.cells.values())
+    assert {t: got[t] for t in comb} == comb
+
+
+FLOP_ROLES_TYPES = frozenset(t for roles in FLOP_ROLES.values() for t in roles.values())

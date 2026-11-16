@@ -15,7 +15,7 @@ good_flop_variety_handshake with four bugs, each on one of its flop families (ne
 
 cap_b's two CDC-004s are the payload bus and the 1-bit request, which fans out to all eight enable lanes. cap_c's reset register is loaded under the synchronised enable, but nothing holds it stable: CDC-012 reports from the data side what RDC-003 reports from the reset side. req_s1 / req_s2 (`$dffsr`) are still a correct request synchroniser.
 
-cap_a's CLR is the mux `clr_q ? 1 : 0` that proc builds on a set / clear flop: a buffer of the register, not combinational logic, so RDC-001 reports the foreign clear and RDC-004 stays silent (rtl-buddy-cdc#383). The gate-level and slang verdicts differ for other reasons (see the gate-level allowlist and tests/test_cell_variety_fixtures.py).
+cap_a's CLR is the mux `clr_q ? 1 : 0` that proc builds on a set / clear flop: a buffer of the register, not combinational logic, so RDC-001 reports the foreign clear and RDC-004 stays silent (rtl-buddy-cdc#383). The gate-level legs (rtl-buddy-cdc#386) and the slang frontend (rtl-buddy-cdc#384) agree with this netlist's verdict.
 
 - **Status:** negative — analyzer must report a violation
 - **Top module:** `bad_flop_variety_handshake`

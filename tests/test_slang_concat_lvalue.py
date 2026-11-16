@@ -49,7 +49,7 @@ if importlib.util.find_spec("pyslang") is None:
 from rtl_buddy_cdc.frontends import slang as slang_fe  # noqa: E402
 
 _HAVE_YOSYS = shutil.which("yosys") is not None
-_FLOPS = {"$dff", "$adff", "$sdff", "$dffe", "$adffe"}
+_FLOPS = {"$dff", "$adff", "$sdff", "$dffe", "$adffe", "$aldff"}
 _SLANG_LOG = "rtl_buddy_cdc.frontends.slang"
 
 
@@ -593,5 +593,10 @@ endmodule
     flops = {c.connections["Q"]: c for c in _flops(module)}
     assert set(flops[module.ports["a"].bits].connections["D"]) <= unknown
     assert set(flops[module.ports["b"].bits].connections["D"]) <= unknown
-    # The reset arm's RHS is not a constant: reset value left at 0.
-    assert flops[module.ports["a"].bits].parameters["ARST_VALUE"] == "0"
+    # The reset arm's RHS is not a constant: an async load of each
+    # register's slice of ``x``, as Yosys proc builds it (rtl-buddy-cdc#384;
+    # the reset value used to be left at 0).
+    a_flop = flops[module.ports["a"].bits]
+    assert a_flop.type == "$aldff"
+    assert a_flop.connections["AD"] == module.ports["x"].bits[2:3]
+    assert flops[module.ports["b"].bits].connections["AD"] == module.ports["x"].bits[:2]

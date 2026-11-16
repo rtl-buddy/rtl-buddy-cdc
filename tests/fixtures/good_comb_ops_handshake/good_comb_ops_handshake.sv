@@ -9,10 +9,10 @@
 // high: the capture is a gated bus (CDC-004 silent) with an acknowledge
 // path (CDC-012 silent). Nothing fires.
 //
-// Known gap, pinned as a strict xfail: the slang frontend does not lower
-// a_q[idx_q], so the whole concatenation becomes an opaque driver and
-// slang sees two crossings instead of five (the verdict is clean either
-// way).
+// The slang frontend lowers a_q[idx_q] to the same `$shiftx`
+// (rtl-buddy-cdc#384), so it sees the same five crossings and the same
+// clean verdict.
+//
 
 module good_comb_ops_handshake (
     input  logic        src_clk,

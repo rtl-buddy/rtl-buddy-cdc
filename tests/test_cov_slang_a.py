@@ -196,11 +196,11 @@ endmodule
     assert adff.parameters["ARST_VALUE"] == "0", adff.parameters
 
 
-def test_reset_arm_non_constant_rhs_falls_back_to_zero(tmp_path: Path) -> None:
+def test_reset_arm_non_constant_rhs_is_an_async_load(tmp_path: Path) -> None:
     """A reset arm whose RHS isn't a compile-time constant
-    (``q <= e;`` where ``e`` is a runtime input) can't be folded, so
-    ``_const_int`` returns None and ``ARST_VALUE`` defaults to
-    ``"0"``."""
+    (``q <= e;`` where ``e`` is a runtime input) is an async load: an
+    ``$aldff`` with ``AD = e``, as Yosys ``proc`` builds it
+    (rtl-buddy-cdc#384; ``ARST_VALUE`` used to default to ``"0"``)."""
     src = """module m (
     input  logic clk, rst_n, d, e,
     output logic q
@@ -211,8 +211,10 @@ def test_reset_arm_non_constant_rhs_falls_back_to_zero(tmp_path: Path) -> None:
 endmodule
 """
     module = _elaborate_full(tmp_path, src)
-    adff = next(c for c in module.cells.values() if c.type == "$adff")
-    assert adff.parameters["ARST_VALUE"] == "0", adff.parameters
+    aldff = next(c for c in module.cells.values() if c.type == "$aldff")
+    assert aldff.connections["AD"] == module.ports["e"].bits
+    assert aldff.connections["ALOAD"] == module.ports["rst_n"].bits
+    assert aldff.parameters["ALOAD_POLARITY"] == "0"
 
 
 def test_reset_arm_non_assignment_statement_is_skipped(tmp_path: Path) -> None:
