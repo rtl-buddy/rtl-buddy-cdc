@@ -12,12 +12,17 @@ Layout::
 
     tests/fuzz/.cache/
       <first-byte-of-hash>/
-        <full-hash>.slang10p0p0.bb.pkl - pickled (netlist.Module, blackboxes)
+        <full-hash>.slang10p0p0.<fp>.bb.pkl - pickled (netlist.Module, blackboxes)
 
 The cache key includes the pyslang version because rule-pack
 parity is pinned per-major (see ``src/rtl_buddy_cdc/frontends/slang.py``
 docstring). A pyslang upgrade should invalidate the slang cache
 without touching the Yosys cache that sits next to it.
+
+``<fp>`` is :func:`frontend_fingerprint`, a hash of the frontend's own
+source files (rtl-buddy-cdc#384): without it a local ``fuzz_diff`` run
+after a frontend edit compared Yosys against the netlist the *old*
+frontend produced. CI starts from an empty cache, so it never saw this.
 
 Pickling is intentional: the slang frontend returns a fully populated
 :class:`netlist.Module` (frozen dataclass tree of native types) that
@@ -33,6 +38,7 @@ tests/fuzz/.cache`` reset.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.metadata
 import pickle
@@ -44,6 +50,14 @@ from rtl_buddy_cdc.netlist import Module
 
 from .templates.base import RenderedCase
 from .yosys_cache import CACHE_ROOT
+
+# The sources a slang netlist is a function of, besides the SV and the
+# pyslang wheel: the frontend itself and the netlist model it pickles.
+_SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "rtl_buddy_cdc"
+_FRONTEND_SOURCES: tuple[Path, ...] = (
+    _SRC_ROOT / "frontends" / "slang.py",
+    _SRC_ROOT / "netlist.py",
+)
 
 
 @lru_cache(maxsize=1)
@@ -62,6 +76,20 @@ def slang_version() -> str | None:
 
 def slang_available() -> bool:
     return slang_version() is not None
+
+
+@lru_cache(maxsize=1)
+def frontend_fingerprint() -> str:
+    """Short hash of :data:`_FRONTEND_SOURCES`' contents, part of every
+    slang cache key: editing the frontend invalidates its cached netlists
+    (rtl-buddy-cdc#384). Cached once per process."""
+    h = hashlib.sha256()
+    for path in _FRONTEND_SOURCES:
+        h.update(path.name.encode())
+        h.update(b"\0")
+        h.update(path.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()[:12]
 
 
 @dataclass(frozen=True)
@@ -83,7 +111,7 @@ def _cache_path(case: RenderedCase) -> Path:
     # ``.bb``: the pickle holds ``(module, blackboxes)`` since
     # rtl-buddy-cdc#345. A pre-#345 pickle (a bare Module) has no suffix
     # and is simply never read again.
-    suffix = "slang" + version.replace(".", "p") + ".bb"
+    suffix = "slang" + version.replace(".", "p") + f".{frontend_fingerprint()}.bb"
     digest = case.content_hash
     bucket = CACHE_ROOT / digest[:2]
     bucket.mkdir(parents=True, exist_ok=True)

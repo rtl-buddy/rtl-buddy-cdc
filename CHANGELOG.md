@@ -1032,6 +1032,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **The local slang fuzz cache is keyed by the frontend code**
+  (rtl-buddy-cdc#384) — *test-only.* `tests/fuzz/slang_cache.py` keyed
+  its pickles by case content and pyslang version only, so a local
+  `fuzz_diff` run after a frontend edit compared Yosys against the
+  netlist of the old frontend. The key now also carries a hash of
+  `frontends/slang.py` and `netlist.py`. CI starts from an empty cache
+  and was not affected.
+
 - **`bad_gray_phase_break`'s header misdescribed the design**
   (rtl-buddy-cdc#378) — *test-only, no output change.* It said
   re-registering a gray code in the source clock breaks the
