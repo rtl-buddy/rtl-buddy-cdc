@@ -184,22 +184,12 @@ EXPECTED: dict[str, Verdict] = {
 # a finding for an issue; the test flips to XPASS (a failure, strict) the
 # day the analyzer is fixed, and the entry must then be removed together
 # with its :data:`_CURRENT` row.
-_XFAIL: dict[str, str] = {
-    "bad_flop_variety_handshake": (
-        "RDC-001 reads only $adff* ARST, so cap_a's $dffsre CLR driven by the "
-        "src_clk register clr_q is not reported as a reset crossing; RDC-004 "
-        "fires instead on the constant-leg mux proc builds on CLR "
-        "(`clr_q ? 1 : 0`, a buffer)"
-    ),
-}
+# (bad_flop_variety_handshake's RDC-001 on cap_a's foreign CLR was the
+# last row, fixed by rtl-buddy-cdc#383.)
+_XFAIL: dict[str, str] = {}
 
 # What the analyzer reports today on each :data:`_XFAIL` fixture.
-_CURRENT: dict[str, tuple[Finding, ...]] = {
-    "bad_flop_variety_handshake": tuple(
-        f for f in EXPECTED["bad_flop_variety_handshake"].findings if f[0] != "RDC-001"
-    )
-    + (("RDC-004", None, "cap_a"),),
-}
+_CURRENT: dict[str, tuple[Finding, ...]] = {}
 
 
 def _params() -> list:
@@ -359,9 +349,7 @@ _SLANG_GAPS: dict[str, str] = {
         "same async-load / async-set lowering (CDC-014 on req_s1 -> req_s2); "
         "cap_c's sync reset under enable becomes a load mux selected by "
         "`req_s2 & ~srst_q`, a select CDC-004 does not accept as a dst-domain "
-        "gate, so RDC-003 + CDC-012 become CDC-004 on pay_c and srst_q; and "
-        "cap_a's clear is a direct $adff ARST, so slang reports RDC-001 where "
-        "the Yosys netlist reports RDC-004"
+        "gate, so RDC-003 + CDC-012 become CDC-004 on pay_c and srst_q"
     ),
     "bad_comb_ops_before_sync": (
         "slang does not lower the run-time index read a_q[idx_q] ($shiftx); "

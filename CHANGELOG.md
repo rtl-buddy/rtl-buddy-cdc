@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capture). `$aldffe`, `$dffsre`, `$shiftx` and `$mul` were in no fixture
   before. The analyzer gaps they expose are pinned, not fixed: strict
   `xfail`s for RDC-001 missing a foreign-domain `$dffsr` clear (RDC-004
-  fires on proc's constant-leg `CLR` mux instead) and for four slang
+  fires on proc's constant-leg `CLR` mux instead; since fixed by
+  rtl-buddy-cdc#383) and for four slang
   lowering gaps (non-constant async load, a second async control, sync
   reset under enable, run-time index reads), and two gate-level allowlist
   rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
@@ -367,6 +368,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clock still fire. No committed fixture changes verdict.
 
 ### Fixed
+
+- **Sync resets and set / clear pins read the same in every netlist
+  form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
+  design (reset and enable muxes on `D`, a set / clear flop's `CLR` and
+  `SET` built from muxes), its `opt_dff` form (`$sdff*` / `$dffe*`
+  pins) and its gate-level forms now get the same per-rule verdict.
+  - RDC-003 also reads a sync reset written as a constant-leg mux on
+    `D`, wherever `opt_dff` would fold it into `SRST` (through enable
+    muxes, not on a flop with an async control). A foreign sync reset in
+    the `proc` form reported CDC-001 only; it now reports CDC-001 and
+    RDC-003, as the `$sdff` form already did. Both stay: RDC-003 names
+    the reset, the CDC rule the crossing it carries.
+  - A flop's own sync-reset mux is looked through whatever domain drives
+    its select, as `opt_dff` folds it. `_own_srst_data_leg` and the
+    multi-bit synchroniser test required a destination-domain select, so
+    a gated bus behind a foreign sync reset was CDC-004 in the `proc`
+    form and CDC-012 in the `$sdffe` form, and a gray bus into a
+    synchroniser whose second stage has a foreign reset was CDC-004 in
+    the `proc` form only. The chain walks and CDC-003 already looked
+    through without the check, which is what agrees with `$sdff`.
+  - RDC-001 reads every asynchronous control pin — `CLR`, `SET` and
+    `ALOAD` as well as `ARST` (`R` / `S` / `L` at gate level) — so a
+    clear, set or async load driven from another domain's register is a
+    reset crossing. RDC-004, RDC-005 and RDC-006 check every such pin
+    too (`SET` was never examined), one finding per flop.
+  - The cells `proc` builds around a set / clear flop's pins are not
+    reset logic: a buffer mux `clr ? 1 : 0`, the priority term (`SET =
+    rst_n ? ~set_n : 0`, `rst_n & ~set_n` after `abc`) and, on a flop
+    with two async pins, the inverter that stands in for an active-low
+    polarity. `reset_domain` steps through them
+    (`ResetDomain.controls`, `effective_control_bit`); any other logic on
+    a pin still fires. A `$dffsr` whose clear is a foreign register
+    reported RDC-004 on the buffer mux (RDC-001 on the gate-level form
+    reported nothing); a set-over-clear flop on two ports reported
+    RDC-006 (RDC-005 at gate level).
+  - Verdict changes on committed fixtures: `bad_flop_variety_handshake`
+    RDC-004 → RDC-001 on `cap_a` (its strict `xfail` and the gate-level
+    allowlist cause for the synth leg are removed). No other committed
+    fixture or gate-level leg changes. New fixtures, each committed in
+    two forms and checked by `tests/test_srst_set_pins.py`:
+    `bad_sync_reset_foreign_select`, `bad_bus_foreign_sync_reset`
+    (`proc` / `opt_dff`), `bad_set_clear_foreign_controls`,
+    `good_set_clear_priority` (`proc` / gate level). The gate-level
+    corpus gains `test_verdict_invariant_under_opt_dff`: every fixture's
+    `proc` and `opt_dff` builds agree, except the two whose stuck-at
+    flop `opt_dff` removes.
 
 - **Crossings behind more than 4 combinational cells were dropped
   silently** (rtl-buddy-cdc#347). `find_crossings` stopped its walk at
@@ -1031,6 +1078,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     now has the same flop bits on both paths.
 
 ### Internal
+
+- **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —
+  *no output change.* `_unconstrained_srst_captures` (rtl-buddy-cdc#272)
+  found untyped ports on sync-reset pins because the crossing walk ended
+  on `D` only; since rtl-buddy-cdc#375 the walk ends on `SRST` too, and
+  CDC-011's findings are identical without it on every fixture netlist
+  and on each fixture's `opt_dff`, `techmap` and `abc` rebuilds (866
+  netlists; five of them exercise it). CDC-011 reads the crossings
+  alone.
 
 - **`bad_gray_phase_break`'s header misdescribed the design**
   (rtl-buddy-cdc#378) — *test-only, no output change.* It said
