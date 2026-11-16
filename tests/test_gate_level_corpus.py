@@ -164,9 +164,10 @@ _FRONT_HALF_CLEANUP: dict[str, str] = {
 
 # rtl-buddy-cdc#336 (reset pin R, gate-flop clock polarity, $_MUX_,
 # gate-level clock gating), rtl-buddy-cdc#338 (the enable-flop toggle
-# opt_dff folds) and rtl-buddy-cdc#354 (the constant-leg reset mux abc
-# rewrites into a $_NOT_) are fixed; their rows are gone. The causes below are
-# what remains.
+# opt_dff folds), rtl-buddy-cdc#354 (the constant-leg reset mux abc
+# rewrites into a $_NOT_) and rtl-buddy-cdc#386 (a W-bit $dffsr / $dffsre
+# whose lanes each have their own S / R bit) are fixed; their rows are gone.
+# The causes below are what remains.
 
 _R_OPT_CONST_FLOP = (
     "inherent: opt_dff removes the stuck-at-0 `meta` flop that is the "
@@ -174,13 +175,6 @@ _R_OPT_CONST_FLOP = (
 )
 
 
-_R_DFFSR_LANE_CONTROLS = (
-    "analyzer gap: regroup keys a register's lanes on shared S / R nets, but "
-    "proc builds a W-bit $dffsr / $dffsre's SET and CLR from W-bit muxes "
-    "(gen_dffsr_complex), so every $_DFFSR(E)_ lane has its own S / R bit and "
-    "the register stays W one-bit flops: CDC-020 (sliced bus) fires on its "
-    "gated capture and reset findings are counted per lane"
-)
 _R_CONST_LEG_CLR_MUX = (
     "analyzer gap: RDC-004 reads the constant-leg mux proc puts on a $dffsr "
     "CLR (`clr ? 1 : 0`, a buffer of one register) as glitch-prone logic; abc "
@@ -198,13 +192,8 @@ _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     "bad_reset_sync_deassert_polarity": {"synth": _R_OPT_CONST_FLOP},
     # Its backwards-polarity chain (`w0`) is the same stuck-at-0 flop.
     "bad_reset_sync_foreign_reg": {"synth": _R_OPT_CONST_FLOP},
-    # rtl-buddy-cdc#331 cell-variety fixtures: the 8-bit `$dffsre` capture
-    # `cap_a`.
-    "good_flop_variety_handshake": _both(_R_DFFSR_LANE_CONTROLS),
-    "bad_flop_variety_handshake": {
-        "gates": _R_DFFSR_LANE_CONTROLS,
-        "synth": f"{_R_DFFSR_LANE_CONTROLS}; {_R_CONST_LEG_CLR_MUX}",
-    },
+    # rtl-buddy-cdc#331 cell-variety fixture: the `$dffsr` clear of `cap_a`.
+    "bad_flop_variety_handshake": {"synth": _R_CONST_LEG_CLR_MUX},
 }
 
 

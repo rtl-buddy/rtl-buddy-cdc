@@ -368,6 +368,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Gate level: a multi-bit `$dffsr` / `$dffsre` was never regrouped**
+  (rtl-buddy-cdc#386, item 1). `proc` builds a W-bit `$dffsr`'s `SET` /
+  `CLR` from W-bit muxes, so after `techmap` each `$_DFFSR_` /
+  `$_DFFSRE_` lane has its own S / R net, and `regroup` (which keyed lanes
+  on shared nets) left the register as W one-bit flops: CDC-020 fired on
+  its gated capture and per-lane rules counted once per lane. Lanes whose
+  S bits and R bits are each one control — one net, constants,
+  consecutive bits of one vector, or per-lane copies of the same gate
+  logic of the same signals — now regroup into one `$dffsr` / `$dffsre`
+  with per-bit `SET` / `CLR`; lanes on unrelated set / reset signals stay
+  apart. The two `_KNOWN_GATE_DIVERGENCES` rows of the flop-variety
+  fixtures for this cause are gone (`bad_flop_variety_handshake`'s synth
+  leg keeps its row for the constant-leg `CLR` mux). RTL netlists are
+  untouched, so no committed fixture or integration verdict changes.
+
 - **SDC: bus-glob delay targets left unresolved on the API path**
   (rtl-buddy-cdc#386, item 3). A `set_*_delay` target written as a bus
   index or glob (`[get_ports {src_a[*] src_b[*]}]`, `{d[3]}`, `d*`) is

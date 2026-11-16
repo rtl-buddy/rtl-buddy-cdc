@@ -339,6 +339,20 @@ shape `proc` would have produced:
   `$dffsr*` / `$aldff*`) named after the netname, lanes in netname
   order, per-bit reset values in `ARST_VALUE` / `SRST_VALUE`. The cell
   carries `REGROUPED_ATTR` listing the replaced cells.
+- **Per-bit set / clear** (rtl-buddy-cdc#386). `proc` builds a W-bit
+  `$dffsr` / `$dffsre`'s `SET` and `CLR` from W-bit muxes, so after
+  `techmap` every `$_DFFSR(E)_` lane has its own S and R bit, each driven
+  by its own copy of the same logic; keyed on shared nets, the register
+  stayed W one-bit flops. Those two families are keyed without the S / R
+  nets, and a split stays one group when its S bits, and its R bits, are
+  *one control*: one shared net, constants, consecutive bits of one
+  multi-bit netname (LSB first: a control bus, or the vector a
+  bit-blasted coarse cell drove), or outputs of distinct one-bit gates of
+  one type whose input columns are, recursively (at most
+  `regroup._CONTROL_DEPTH` gates back), one control. Otherwise the split
+  is divided by the S / R nets, so flops on unrelated set / reset signals
+  stay apart. The coarse cell gets the lanes' bits as its per-bit `SET` /
+  `CLR`, as `proc`'s has, and those cones are rebuilt coarse like `D`'s.
 - **Lane-wise logic.** From each rebuilt register's `D`, a vector whose
   bits are the outputs of distinct one-bit gates of one type
   (`$_MUX_` with one shared `S`, `$_AND_` / `$_OR_` / `$_XOR_` /

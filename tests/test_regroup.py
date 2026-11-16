@@ -189,6 +189,147 @@ def test_dffsr_and_aldff_families_regroup() -> None:
     assert m.cells["l"].connections["AD"] == (40, 41)
 
 
+# --- $_DFFSR_ lanes with per-lane S / R nets (rtl-buddy-cdc#386, item 1) ----
+
+SET_N, CLR_N = 7, 8
+
+
+def _sr_lanes(s: list[Bit], r: list[Bit], type_: str = "$_DFFSR_PPP_") -> list[Cell]:
+    return [
+        Cell(
+            name=f"s{i}",
+            type=type_,
+            connections={
+                "C": (CLK,),
+                "S": (s[i],),
+                "R": (r[i],),
+                "D": (10 + i,),
+                "Q": (20 + i,),
+                **({"E": (EN,)} if type_.startswith("$_DFFSRE_") else {}),
+            },
+            attributes={"src": "top.sv:3.1-9.4"},
+        )
+        for i in range(len(s))
+    ]
+
+
+def _proc_set_clr(width: int) -> tuple[list[Cell], list[Bit], list[Bit]]:
+    """What ``techmap`` leaves of ``proc``'s W-bit set / clear muxes for
+    ``if (!rst_n) q <= 0; else if (!set_n) q <= '1;``: every lane its own
+    copy of ``S = rst_n ? (set_n ? 0 : 1) : 0`` and ``R = rst_n ? 0 : 1``."""
+    cells: list[Cell] = []
+    s_bits: list[Bit] = []
+    r_bits: list[Bit] = []
+    for i in range(width):
+        inner, s, r = 60 + i, 70 + i, 80 + i
+        cells += [
+            _mux(f"si{i}", "1", "0", SET_N, inner),
+            _mux(f"so{i}", "0", inner, CLR_N, s),
+            _mux(f"r{i}", "1", "0", CLR_N, r),
+        ]
+        s_bits.append(s)
+        r_bits.append(r)
+    return cells, s_bits, r_bits
+
+
+@pytest.mark.parametrize("type_", ["$_DFFSR_PPP_", "$_DFFSRE_PPPP_"])
+def test_dffsr_lanes_with_per_lane_set_clr_regroup(type_: str) -> None:
+    logic, s, r = _proc_set_clr(4)
+    m = regroup_flops(module(_sr_lanes(s, r, type_) + logic, {"q": (20, 21, 22, 23)}))
+    q = m.cells["q"]
+    assert q.type == ("$dffsre" if "SRE" in type_ else "$dffsr")
+    assert q.connections["SET"] == tuple(s)
+    assert q.connections["CLR"] == tuple(r)
+    # The per-lane set / clear muxes are rebuilt as proc's coarse muxes.
+    assert Counter(c.type for c in m.cells.values())["$mux"] == 3
+    assert not any(c.type == "$_MUX_" for c in m.cells.values())
+
+
+def test_dffsr_lanes_on_a_control_bus_regroup() -> None:
+    """Per-bit set / clear from consecutive bits of one bus."""
+    s, r = [30, 31, 32], [40, 41, 42]
+    m = regroup_flops(
+        module(
+            _sr_lanes(s, r),
+            {"q": (20, 21, 22), "set_v": (30, 31, 32), "clr_v": (40, 41, 42)},
+        )
+    )
+    assert m.cells["q"].connections["SET"] == (30, 31, 32)
+
+
+def test_dffsr_lanes_with_constant_controls_regroup() -> None:
+    m = regroup_flops(module(_sr_lanes(["0", "1"], [RST, RST]), {"q": (20, 21)}))
+    assert m.cells["q"].connections["SET"] == ("0", "1")
+
+
+@pytest.mark.parametrize(
+    ("s", "r", "nets"),
+    [
+        ([30, 31], [RST, RST], {}),  # unrelated one-bit set nets
+        ([30, 31], [40, 41], {}),
+        ([31, 30], [RST, RST], {"v": (30, 31, 32)}),  # bus bits out of lane order
+    ],
+    ids=["set", "set-and-clear", "reversed-slice"],
+)
+def test_dffsr_lanes_with_independent_controls_stay_apart(
+    s: list[Bit], r: list[Bit], nets: dict[str, tuple[Bit, ...]]
+) -> None:
+    m = regroup_flops(module(_sr_lanes(s, r), {"q": (20, 21), **nets}))
+    assert not coarse(m)
+
+
+def test_dffsr_lanes_with_unrelated_cones_stay_apart() -> None:
+    """Same gate shape, but each lane's set comes from a different signal."""
+    logic = [
+        Cell("a0", "$_AND_", {"A": (SET_N,), "B": (50,), "Y": (30,)}),
+        Cell("a1", "$_AND_", {"A": (SET_N,), "B": (51,), "Y": (31,)}),
+    ]
+    m = regroup_flops(module(_sr_lanes([30, 31], [RST, RST]) + logic, {"q": (20, 21)}))
+    assert not coarse(m)
+
+
+@pytest.mark.parametrize(
+    "logic",
+    [
+        # Mixed gate types across lanes.
+        [
+            Cell("a0", "$_AND_", {"A": (SET_N,), "B": (CLR_N,), "Y": (30,)}),
+            Cell("o1", "$_OR_", {"A": (SET_N,), "B": (CLR_N,), "Y": (31,)}),
+        ],
+        # A lane whose set is a flop output, not a gate.
+        [Cell("a0", "$_AND_", {"A": (SET_N,), "B": (CLR_N,), "Y": (30,)})],
+        # A malformed gate pin.
+        [
+            Cell("n0", "$_NOT_", {"A": (SET_N, CLR_N), "Y": (30,)}),
+            Cell("n1", "$_NOT_", {"A": (SET_N, CLR_N), "Y": (31,)}),
+        ],
+        # A constant and a net in one column.
+        [
+            Cell("n0", "$_NOT_", {"A": ("0",), "Y": (30,)}),
+            Cell("n1", "$_NOT_", {"A": (SET_N,), "Y": (31,)}),
+        ],
+    ],
+    ids=["mixed-types", "not-a-gate", "malformed", "const-and-net"],
+)
+def test_dffsr_lanes_whose_cones_differ_stay_apart(logic: list[Cell]) -> None:
+    m = regroup_flops(module(_sr_lanes([30, 31], [RST, RST]) + logic, {"q": (20, 21)}))
+    assert not coarse(m)
+
+
+def test_dffsr_control_walk_is_depth_bounded() -> None:
+    """A chain of per-lane buffers deeper than the walk is not followed."""
+    logic: list[Cell] = []
+    for lane in range(2):
+        prev: Bit = SET_N
+        for level in range(8):
+            y = 100 + 10 * lane + level
+            logic.append(Cell(f"b{lane}_{level}", "$_BUF_", {"A": (prev,), "Y": (y,)}))
+            prev = y
+    s = [107, 117]
+    m = regroup_flops(module(_sr_lanes(s, [RST, RST]) + logic, {"q": (20, 21)}))
+    assert not coarse(m)
+
+
 def test_coarse_netlist_is_returned_unchanged() -> None:
     m = netlist.load(FIXTURES / "bad_bus_crossing" / "bad_bus_crossing.json")
     assert regroup_flops(m) is m
