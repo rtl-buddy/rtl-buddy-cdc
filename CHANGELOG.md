@@ -21,10 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capture). `$aldffe`, `$dffsre`, `$shiftx` and `$mul` were in no fixture
   before. The analyzer gaps they expose are pinned, not fixed: strict
   `xfail`s for RDC-001 missing a foreign-domain `$dffsr` clear (RDC-004
-  fires on proc's constant-leg `CLR` mux instead) and for four slang
+  fires on proc's constant-leg `CLR` mux instead; since fixed by
+  rtl-buddy-cdc#383) and for four slang
   lowering gaps (non-constant async load, a second async control, sync
-  reset under enable, run-time index reads; all four closed by
-  rtl-buddy-cdc#384, see Fixed), and two gate-level allowlist
+  reset under enable, run-time index reads), and two gate-level allowlist
   rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
   CDC-020 fires on its capture).
 
@@ -343,6 +343,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in a separate `integration.yml` workflow (after merges to `main`,
   weekly, and on demand), not on pull requests.
 
+- **Cell-variety fixtures** (rtl-buddy-cdc#331) — *test-only, no output
+  change.* Four fixtures put the Yosys cells the corpus lacked on real
+  crossings, checked by `tests/test_cell_variety_fixtures.py`:
+  `good_flop_variety_handshake` / `bad_flop_variety_handshake` (a req/ack
+  handshake whose synchronisers and captures are `$aldff`, `$dffsr`,
+  `$dffsre`, `$aldffe` and `$sdffce`, built with `opt_dff`), and
+  `bad_comb_ops_before_sync` / `good_comb_ops_handshake` (`$mul`, `$lt` /
+  `$le`, `$reduce_and` / `$reduce_or` / `$reduce_xor` and `$shiftx` in front
+  of 2FF synchronisers, and between handshake-held operands and a gated
+  capture). `$aldffe`, `$dffsre`, `$shiftx` and `$mul` were in no fixture
+  before. The analyzer gaps they expose are pinned, not fixed: strict
+  `xfail`s for RDC-001 missing a foreign-domain `$dffsr` clear (RDC-004
+  fires on proc's constant-leg `CLR` mux instead) and for four slang
+  lowering gaps (non-constant async load, a second async control, sync
+  reset under enable, run-time index reads), and two gate-level allowlist
+  rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
+  CDC-020 fires on its capture).
+
+- **Cell-variety fixtures** (rtl-buddy-cdc#331) — *test-only, no output
+  change.* Four fixtures put the Yosys cells the corpus lacked on real
+  crossings, checked by `tests/test_cell_variety_fixtures.py`:
+  `good_flop_variety_handshake` / `bad_flop_variety_handshake` (a req/ack
+  handshake whose synchronisers and captures are `$aldff`, `$dffsr`,
+  `$dffsre`, `$aldffe` and `$sdffce`, built with `opt_dff`), and
+  `bad_comb_ops_before_sync` / `good_comb_ops_handshake` (`$mul`, `$lt` /
+  `$le`, `$reduce_and` / `$reduce_or` / `$reduce_xor` and `$shiftx` in front
+  of 2FF synchronisers, and between handshake-held operands and a gated
+  capture). `$aldffe`, `$dffsre`, `$shiftx` and `$mul` were in no fixture
+  before. The analyzer gaps they expose are pinned, not fixed: strict
+  `xfail`s for RDC-001 missing a foreign-domain `$dffsr` clear (RDC-004
+  fires on proc's constant-leg `CLR` mux instead) and for four slang
+  lowering gaps (non-constant async load, a second async control, sync
+  reset under enable, run-time index reads; all four closed by
+  rtl-buddy-cdc#384, see Fixed), and two gate-level allowlist
+  rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
+  CDC-020 fires on its capture).
+
 ### Changed
 
 - **Faster analysis on large flat netlists** (#324) — *patch: no
@@ -369,67 +406,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **slang frontend: a sync reset under an enable is an `$sdffce`**
-  (rtl-buddy-cdc#384). `if (en) if (srst) q <= 0; else q <= d;` became a
-  `$dff` behind a load mux selected by `en & ~srst`: the reset was no
-  reset pin (no RDC-003) and CDC-004 did not accept the select as a
-  destination-domain gate, so `bad_flop_variety_handshake` reported two
-  extra CDC-004s instead of RDC-003 + CDC-012. A block whose whole body is
-  that shape now gives the `$sdffce` Yosys `opt_dff` folds it into (`EN`
-  the enable, `SRST` the reset, `D` the data). With this, all four
-  cell-variety fixtures give the committed netlist's crossings and
-  findings on the slang path; their slang `xfail`s are gone and a
-  structural test (crossing pairs, flop families and pins, findings per
-  register) holds them there.
-
-- **slang frontend: a second async control builds a `$dffsr`**
-  (rtl-buddy-cdc#384). Only the first two events of an edge-triggered
-  block were read, so in `@(posedge clk or negedge rst_n or negedge
-  set_n)` the set arm became synchronous logic on `D`, with no warning;
-  `good_flop_variety_handshake` got a false CDC-014 between its request
-  synchroniser stages. A block with two or more async controls is now
-  lowered as Yosys `proc` does: a `$dffsr` whose `SET` / `CLR` are
-  priority mux chains over the controls, or, when every control loads the
-  same value, one `$adff` / `$aldff` reset by their OR (a plain `$dff`
-  holding its value for a register no control writes). A body whose
-  leading `if` / `else if` chain does not test each control once is
-  reported. `good_flop_variety_handshake`'s slang verdict now matches.
-
-- **slang frontend: an async load of a value is an `$aldff`**
-  (rtl-buddy-cdc#384). `if (aload) q <= ad` in an edge-triggered block
-  lowered as an `$adff` resetting to 0, with no warning: `ad` and its
-  driver vanished from the netlist. A non-constant value in the async arm
-  (whole or in some bits) now gives the `$aldff` Yosys `proc` builds
-  (`AD` the value, `ALOAD` the control, `ALOAD_POLARITY` its edge). A
-  statement in a reset / async-load arm other than an assignment (a nested
-  `if`, a `case`) is now reported instead of skipped silently.
-
-- **slang frontend: run-time index reads lower to `$shiftx`**
-  (rtl-buddy-cdc#384). `a_q[idx_q]`, `a[i +: W]` and `a[i -: W]` on a
-  packed value were reported and modelled as an opaque driver, so the
-  vector and the index behind them were invisible to the rules
-  (`bad_comb_ops_before_sync` lost two crossings and their CDC-003s,
-  `good_comb_ops_handshake` three crossings). They are now the `$shiftx`
-  Yosys emits, with the index translated through the declared range
-  (`$sub` / `$mul`, signed `B` when the position can be negative). A
-  run-time index into an unpacked array that is not a memory is still
-  reported. The two fixtures' slang `xfail`s are removed.
-
-- **slang frontend: overlapping `case` labels in a clocked block resolve
-  first-match** (rtl-buddy-cdc#384). Each item's enable was its own label
-  match, and a later write overrides an earlier one, so a value matching
-  two items (`casez` wildcards, a repeated label) took the last item
-  instead of the first (IEEE 1800-2017 12.5). An item's enable now also
-  carries "no earlier item matched" whenever two items can match the same
-  value; distinct constant labels are lowered as before.
-
-- **slang frontend: wires get a netname** (rtl-buddy-cdc#384). Only
-  variables were named on the slang path, so a waiver, an SDC `get_nets`
-  or a declaration attribute naming a `wire` (or a port declared as one)
-  matched on the Yosys path only, and messages quoting a net (CDC-023's
-  clock net) gave the driver cell's name instead. Nets are now named like
-  variables, `inst.wire` inside an instance, as Yosys `flatten` names
-  them.
+- **Sync resets and set / clear pins read the same in every netlist
+  form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
+  design (reset and enable muxes on `D`, a set / clear flop's `CLR` and
+  `SET` built from muxes), its `opt_dff` form (`$sdff*` / `$dffe*`
+  pins) and its gate-level forms now get the same per-rule verdict.
+  - RDC-003 also reads a sync reset written as a constant-leg mux on
+    `D`, wherever `opt_dff` would fold it into `SRST` (through enable
+    muxes, not on a flop with an async control). A foreign sync reset in
+    the `proc` form reported CDC-001 only; it now reports CDC-001 and
+    RDC-003, as the `$sdff` form already did. Both stay: RDC-003 names
+    the reset, the CDC rule the crossing it carries.
+  - A flop's own sync-reset mux is looked through whatever domain drives
+    its select, as `opt_dff` folds it. `_own_srst_data_leg` and the
+    multi-bit synchroniser test required a destination-domain select, so
+    a gated bus behind a foreign sync reset was CDC-004 in the `proc`
+    form and CDC-012 in the `$sdffe` form, and a gray bus into a
+    synchroniser whose second stage has a foreign reset was CDC-004 in
+    the `proc` form only. The chain walks and CDC-003 already looked
+    through without the check, which is what agrees with `$sdff`.
+  - RDC-001 reads every asynchronous control pin — `CLR`, `SET` and
+    `ALOAD` as well as `ARST` (`R` / `S` / `L` at gate level) — so a
+    clear, set or async load driven from another domain's register is a
+    reset crossing. RDC-004, RDC-005 and RDC-006 check every such pin
+    too (`SET` was never examined), one finding per flop.
+  - The cells `proc` builds around a set / clear flop's pins are not
+    reset logic: a buffer mux `clr ? 1 : 0`, the priority term (`SET =
+    rst_n ? ~set_n : 0`, `rst_n & ~set_n` after `abc`) and, on a flop
+    with two async pins, the inverter that stands in for an active-low
+    polarity. `reset_domain` steps through them
+    (`ResetDomain.controls`, `effective_control_bit`); any other logic on
+    a pin still fires. A `$dffsr` whose clear is a foreign register
+    reported RDC-004 on the buffer mux (RDC-001 on the gate-level form
+    reported nothing); a set-over-clear flop on two ports reported
+    RDC-006 (RDC-005 at gate level).
+  - Verdict changes on committed fixtures: `bad_flop_variety_handshake`
+    RDC-004 → RDC-001 on `cap_a` (its strict `xfail` and the gate-level
+    allowlist cause for the synth leg are removed). No other committed
+    fixture or gate-level leg changes. New fixtures, each committed in
+    two forms and checked by `tests/test_srst_set_pins.py`:
+    `bad_sync_reset_foreign_select`, `bad_bus_foreign_sync_reset`
+    (`proc` / `opt_dff`), `bad_set_clear_foreign_controls`,
+    `good_set_clear_priority` (`proc` / gate level). The gate-level
+    corpus gains `test_verdict_invariant_under_opt_dff`: every fixture's
+    `proc` and `opt_dff` builds agree, except the two whose stuck-at
+    flop `opt_dff` removes.
 
 - **Crossings behind more than 4 combinational cells were dropped
   silently** (rtl-buddy-cdc#347). `find_crossings` stopped its walk at
@@ -1093,15 +1114,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `wr_ptr_temp` in the corpus' `axis_async_fifo`); every corpus design
     now has the same flop bits on both paths.
 
+- **CDC-020 on full-width gated captures** (rtl-buddy-cdc#386, item 2).
+  CDC-020 (sliced-bus reconvergence) counted every destination of a
+  multi-bit source, whatever the crossing's width, so two 8-bit captures
+  of one held payload under one synchronised enable — two properly gated
+  buses, which CDC-004 accepts — read as a bus sliced into two lanes. It
+  now counts only slices, crossings narrower than the source, as its
+  docstring and the architecture article always described; a slice still
+  counts beside a full-width capture. New good fixture
+  `good_gated_bus_double_capture`. No committed fixture changes verdict;
+  the two that report CDC-020 (`bad_sliced_bus_reconvergence`,
+  `bad_comb_ops_before_sync`) still do.
+
+- **Gate level: a multi-bit `$dffsr` / `$dffsre` was never regrouped**
+  (rtl-buddy-cdc#386, item 1). `proc` builds a W-bit `$dffsr`'s `SET` /
+  `CLR` from W-bit muxes, so after `techmap` each `$_DFFSR_` /
+  `$_DFFSRE_` lane has its own S / R net, and `regroup` (which keyed lanes
+  on shared nets) left the register as W one-bit flops: CDC-020 fired on
+  its gated capture and per-lane rules counted once per lane. Lanes whose
+  S bits and R bits are each one control — one net, constants,
+  consecutive bits of one vector, or per-lane copies of the same gate
+  logic of the same signals — now regroup into one `$dffsr` / `$dffsre`
+  with per-bit `SET` / `CLR`; lanes on unrelated set / reset signals stay
+  apart. The two `_KNOWN_GATE_DIVERGENCES` rows of the flop-variety
+  fixtures for this cause are gone (`bad_flop_variety_handshake`'s synth
+  leg keeps its row for the constant-leg `CLR` mux). RTL netlists are
+  untouched, so no committed fixture or integration verdict changes.
+
+- **SDC: bus-glob delay targets left unresolved on the API path**
+  (rtl-buddy-cdc#386, item 3). A `set_*_delay` target written as a bus
+  index or glob (`[get_ports {src_a[*] src_b[*]}]`, `{d[3]}`, `d*`) is
+  resolved against the netlist by `sdc_objects.resolve_port_delays`,
+  which only the CLI called; a direct API user (`sdc.parse` →
+  `sdc.synthesize_unconstrained_inputs` → `domain.find_crossings` →
+  `rules.run_all` / `rules._build_context`) kept the literal keys in
+  `spec.port_clock`, so those ports were stamped `<unconstrained>`.
+  `synthesize_unconstrained_inputs` and `_build_context` now resolve the
+  targets first (warnings on `spec.partial_warnings`), once per spec and
+  netlist, so both paths type the same ports. CLI output is unchanged.
+
+- **SDC: a constraint applied to the port it meant to remove**
+  (rtl-buddy-cdc#382). On the Tcl backend the reader's `unknown` handler
+  returned the *last argument* of any command the safe interpreter does
+  not define, so `set_input_delay … [remove_from_collection [all_inputs]
+  [get_ports clk]]` typed `clk` — and only `clk` — while the tokenizer
+  backend typed nothing. `remove_from_collection` and `add_to_collection`
+  (`-unique`, nested in each other) are now evaluated over port
+  collections in `set_input_delay` / `set_output_delay` targets on both
+  backends: the removed patterns are recorded on `PortDelay.excludes` and
+  subtracted when the targets are resolved against the netlist (a removed
+  pattern matching no port is a warning). Any other command used as a
+  collection — `filter_collection`, `sort_collection`, `get_object_name`,
+  an undefined vendor command, a collection operator outside a delay
+  target — now resolves to nothing with a warning, in every command and
+  on both backends, instead of to one of its arguments. Related changes
+  from the same audit: `foreach_in_collection` (whose body is never
+  evaluated) is reported instead of being dropped silently; on the Tcl
+  backend an unbraced bus index `[get_ports p[3]]` now reads `p[3]`, as
+  on the tokenizer backend, instead of the whole bus `p` (the warning
+  stays); `-clock` naming an unrecognised command is a missing anchor;
+  and a Tcl `list` of collections in a delay target is read item by item.
+  `PortDelay.line` no longer takes part in equality, like
+  `DatapathOnlyDelay.line`. No committed fixture or integration verdict
+  changes.
+
+- **slang frontend: a sync reset under an enable is an `$sdffce`**
+  (rtl-buddy-cdc#384). `if (en) if (srst) q <= 0; else q <= d;` became a
+  `$dff` behind a load mux selected by `en & ~srst`: the reset was no
+  reset pin (no RDC-003) and CDC-004 did not accept the select as a
+  destination-domain gate, so `bad_flop_variety_handshake` reported two
+  extra CDC-004s instead of RDC-003 + CDC-012. A block whose whole body is
+  that shape now gives the `$sdffce` Yosys `opt_dff` folds it into (`EN`
+  the enable, `SRST` the reset, `D` the data). With this, all four
+  cell-variety fixtures give the committed netlist's crossings and
+  findings on the slang path; their slang `xfail`s are gone and a
+  structural test (crossing pairs, flop families and pins, findings per
+  register) holds them there.
+
+- **slang frontend: a second async control builds a `$dffsr`**
+  (rtl-buddy-cdc#384). Only the first two events of an edge-triggered
+  block were read, so in `@(posedge clk or negedge rst_n or negedge
+  set_n)` the set arm became synchronous logic on `D`, with no warning;
+  `good_flop_variety_handshake` got a false CDC-014 between its request
+  synchroniser stages. A block with two or more async controls is now
+  lowered as Yosys `proc` does: a `$dffsr` whose `SET` / `CLR` are
+  priority mux chains over the controls, or, when every control loads the
+  same value, one `$adff` / `$aldff` reset by their OR (a plain `$dff`
+  holding its value for a register no control writes). A body whose
+  leading `if` / `else if` chain does not test each control once is
+  reported. `good_flop_variety_handshake`'s slang verdict now matches.
+
+- **slang frontend: an async load of a value is an `$aldff`**
+  (rtl-buddy-cdc#384). `if (aload) q <= ad` in an edge-triggered block
+  lowered as an `$adff` resetting to 0, with no warning: `ad` and its
+  driver vanished from the netlist. A non-constant value in the async arm
+  (whole or in some bits) now gives the `$aldff` Yosys `proc` builds
+  (`AD` the value, `ALOAD` the control, `ALOAD_POLARITY` its edge). A
+  statement in a reset / async-load arm other than an assignment (a nested
+  `if`, a `case`) is now reported instead of skipped silently.
+
+- **slang frontend: run-time index reads lower to `$shiftx`**
+  (rtl-buddy-cdc#384). `a_q[idx_q]`, `a[i +: W]` and `a[i -: W]` on a
+  packed value were reported and modelled as an opaque driver, so the
+  vector and the index behind them were invisible to the rules
+  (`bad_comb_ops_before_sync` lost two crossings and their CDC-003s,
+  `good_comb_ops_handshake` three crossings). They are now the `$shiftx`
+  Yosys emits, with the index translated through the declared range
+  (`$sub` / `$mul`, signed `B` when the position can be negative). A
+  run-time index into an unpacked array that is not a memory is still
+  reported. The two fixtures' slang `xfail`s are removed.
+
+- **slang frontend: overlapping `case` labels in a clocked block resolve
+  first-match** (rtl-buddy-cdc#384). Each item's enable was its own label
+  match, and a later write overrides an earlier one, so a value matching
+  two items (`casez` wildcards, a repeated label) took the last item
+  instead of the first (IEEE 1800-2017 12.5). An item's enable now also
+  carries "no earlier item matched" whenever two items can match the same
+  value; distinct constant labels are lowered as before.
+
+- **slang frontend: wires get a netname** (rtl-buddy-cdc#384). Only
+  variables were named on the slang path, so a waiver, an SDC `get_nets`
+  or a declaration attribute naming a `wire` (or a port declared as one)
+  matched on the Yosys path only, and messages quoting a net (CDC-023's
+  clock net) gave the driver cell's name instead. Nets are now named like
+  variables, `inst.wire` inside an instance, as Yosys `flatten` names
+  them.
+
 ### Internal
 
-- **The local slang fuzz cache is keyed by the frontend code**
-  (rtl-buddy-cdc#384) — *test-only.* `tests/fuzz/slang_cache.py` keyed
-  its pickles by case content and pyslang version only, so a local
-  `fuzz_diff` run after a frontend edit compared Yosys against the
-  netlist of the old frontend. The key now also carries a hash of
-  `frontends/slang.py` and `netlist.py`. CI starts from an empty cache
-  and was not affected.
+- **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —
+  *no output change.* `_unconstrained_srst_captures` (rtl-buddy-cdc#272)
+  found untyped ports on sync-reset pins because the crossing walk ended
+  on `D` only; since rtl-buddy-cdc#375 the walk ends on `SRST` too, and
+  CDC-011's findings are identical without it on every fixture netlist
+  and on each fixture's `opt_dff`, `techmap` and `abc` rebuilds (866
+  netlists; five of them exercise it). CDC-011 reads the crossings
+  alone.
 
 - **`bad_gray_phase_break`'s header misdescribed the design**
   (rtl-buddy-cdc#378) — *test-only, no output change.* It said
@@ -1151,6 +1299,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `proc` lowers an 8-way `case` decoder to a ROM.
   - Seven cases pin verdicts believed wrong, each with a `gap_note`. The
     list is in `wiki/concepts/cdc-testing-strategy.md`.
+
+- **The local slang fuzz cache is keyed by the frontend code**
+  (rtl-buddy-cdc#384) — *test-only.* `tests/fuzz/slang_cache.py` keyed
+  its pickles by case content and pyslang version only, so a local
+  `fuzz_diff` run after a frontend edit compared Yosys against the
+  netlist of the old frontend. The key now also carries a hash of
+  `frontends/slang.py` and `netlist.py`. CI starts from an empty cache
+  and was not affected.
 
 ## [0.7.3] — 2026-10-31
 

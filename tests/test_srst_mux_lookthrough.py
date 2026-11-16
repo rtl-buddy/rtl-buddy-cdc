@@ -13,8 +13,9 @@ the ``proc`` form differently from the ``$sdff`` form:
   found the XOR tail's delayed copy behind its reset mux.
 
 Both now look through the mux with the shared helper
-``_own_srst_data_leg``. Each fixture is checked in both forms, which
-must agree.
+``_own_srst_data_leg`` (whatever drives the select since
+rtl-buddy-cdc#383). Each fixture is checked in both forms, which must
+agree.
 """
 
 from __future__ import annotations
@@ -154,12 +155,17 @@ def test_enable_mux_behind_local_reset_is_still_a_gate() -> None:
     assert _is_gated_bus_crossing(module, c, domains, _drivers(module))
 
 
-def test_own_srst_data_leg_rejects_foreign_select() -> None:
+def test_own_srst_data_leg_looks_through_a_foreign_select() -> None:
+    """``opt_dff`` folds the mux into ``SRST`` whatever drives its select,
+    so a reset from another domain is the flop's own reset too
+    (rtl-buddy-cdc#383); only a flop with no traceable clock is not looked
+    through."""
     module, c, domains = _reset_then("src", rst_domain="src")
     drivers = _drivers(module)
     counts = {b: 1 for b in (10, 11, 40, 41, 20)}
-    assert (
-        _own_srst_data_leg(module, c.dst_flop, "dst", domains, drivers, counts) is None
+    assert _own_srst_data_leg(module, c.dst_flop, "dst", domains, drivers, counts) == (
+        10,
+        11,
     )
     assert (
         _own_srst_data_leg(module, c.dst_flop, None, domains, drivers, counts) is None

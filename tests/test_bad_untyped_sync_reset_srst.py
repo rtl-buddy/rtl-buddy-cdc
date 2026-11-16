@@ -9,10 +9,11 @@ port-sourced crossings, so an untyped synchronous reset used to vanish
 silently — while the *same* reset, when the lowering folded it into a
 ``$dff`` D-cone mux, was reported.
 
-``check_cdc_011`` now supplements the crossing-derived destinations
-with a direct ``SRST``-pin walk (``_unconstrained_srst_captures``), so
-the finding no longer depends on which flop cell the synthesis pass
-inferred. The two fixtures here are the same RTL and the same SDC
+``check_cdc_011`` supplemented the crossing-derived destinations with a
+direct ``SRST``-pin walk until the crossing walk itself ended on
+``SRST`` (rtl-buddy-cdc#375); the walk was then retired
+(rtl-buddy-cdc#383), and the finding still does not depend on which
+flop cell the synthesis pass inferred. The two fixtures here are the same RTL and the same SDC
 built two ways — with ``opt_dff`` (``$sdff`` + ``SRST``) and without
 (``$dff`` + ``$mux``-on-``D``) — and the parity test asserts the rule
 id, severity and message text match exactly.
@@ -66,13 +67,15 @@ def test_srst_arrival_is_a_crossing(srst_case) -> None:
     assert ports == ["dctl", "srst"]
 
 
-def test_srst_walk_reports_a_capture_the_crossings_miss(srst_case) -> None:
-    """The direct ``SRST`` walk stands on its own: with the ``srst``
-    crossing removed, CDC-011 still reports the port."""
+def test_cdc_011_reads_the_srst_capture_off_the_crossings(srst_case) -> None:
+    """CDC-011's destinations are the crossings alone since the direct
+    ``SRST`` walk was retired (rtl-buddy-cdc#383): the ``srst`` finding
+    comes from the crossing that ends on the ``SRST`` pin, so dropping that
+    crossing drops the finding."""
     module, crossings, spec = srst_case
     data_only = [c for c in crossings if c.src_port != "srst"]
     violations = check_cdc_011(module, data_only, spec)
-    assert sorted(v.message.split("'")[1] for v in violations) == ["dctl", "srst"]
+    assert sorted(v.message.split("'")[1] for v in violations) == ["dctl"]
 
 
 def test_cdc_011_fires_on_the_untyped_sync_reset(srst_case) -> None:

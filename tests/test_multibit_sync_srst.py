@@ -6,9 +6,12 @@ lowers, after ``proc``, to ``meta.Q → $mux → q.D``. The lane-for-lane
 test in ``_is_multibit_sync_first_stage`` compared ``meta.Q`` with
 ``q.D`` and missed the chain, so a gray pointer into such a
 synchroniser reported CDC-004. The look-through reuses the single-bit
-walk's shape test (``_constant_leg_reset_mux_data_bits``) and adds one
-condition: the mux select must be local to the destination (dst-domain
-flops, a primary port, or a constant).
+walk's shape test (``_constant_leg_reset_mux_data_bits``). It also
+required the mux select to be local to the destination until
+rtl-buddy-cdc#383: ``opt_dff`` folds the mux into ``SRST`` whatever drives
+the select, and the ``$sdff`` stage's ``D`` is then stage 1's ``Q``, so a
+reset from another domain is looked through too (that reset is a crossing
+of its own, reported on its own).
 
 Synthetic cells pin each accept / reject branch; ``good_gray_bus_sync_srst``
 pins the end-to-end verdict on both the ``proc`` and the ``opt_dff``
@@ -72,7 +75,9 @@ def _chain(
     return Module(name="m", ports=ports, cells=cells, netnames={}), s1, domains
 
 
-@pytest.mark.parametrize("sel_driver", [None, "dst"], ids=["port_reset", "dst_reset"])
+@pytest.mark.parametrize(
+    "sel_driver", [None, "dst", "src"], ids=["port_reset", "dst_reset", "src_reset"]
+)
 @pytest.mark.parametrize("const_on", ["B", "A"], ids=["active_high", "active_low"])
 def test_reset_mux_between_stages_is_looked_through(
     sel_driver: str | None, const_on: str
@@ -89,13 +94,6 @@ def test_constant_select_is_accepted() -> None:
     mux = module.cells["rmux"]
     mux.connections["S"] = ("0",)
     assert _is_multibit_sync_first_stage(module, s1, "dst", domains)
-
-
-def test_foreign_domain_select_is_not_a_reset() -> None:
-    """A constant-leg mux selected from the source domain is a second
-    crossing into stage 2, not this synchroniser's reset."""
-    module, s1, domains = _chain(sel_driver="src")
-    assert not _is_multibit_sync_first_stage(module, s1, "dst", domains)
 
 
 def test_data_select_mux_is_not_looked_through() -> None:

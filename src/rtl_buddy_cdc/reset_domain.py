@@ -47,16 +47,23 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Literal
 
-from rtl_buddy_cdc.flops import Flop, find_flops, flop_reset
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.flops import (
+    Flop,
+    ResetPin,
+    find_flops,
+    flop_async_controls,
+    flop_reset,
+)
+from rtl_buddy_cdc.netlist import Bit, Cell, Module
 
 # Which pin carries a flop's reset, its kind and its polarity come from
 # :func:`rtl_buddy_cdc.flops.flop_reset`, which reads the coarse
 # ``$adff*.ARST`` / ``$aldff*.ALOAD`` / ``$dffsr*.CLR`` / ``$sdff*.SRST``
 # parameters and the gate-level ``$_DFF_XXV_`` / ``$_SDFF*`` /
 # ``$_DFFSR*`` / ``$_ALDFF*`` type names alike (rtl-buddy-cdc#336).
-# ``$dffsr`` / ``$_DFFSR_`` surface the clear pin as the reset; the set
-# pin is a separate concern the rule pack can layer on later.
+# ``$dffsr`` / ``$_DFFSR_`` surface the clear pin as the reset; every
+# asynchronous pin, the set pin included, is in ``ResetDomain.controls``
+# (rtl-buddy-cdc#383).
 
 
 ResetType = Literal["sync", "async"]
@@ -87,16 +94,41 @@ class ResetSource:
 
 
 @dataclass(frozen=True)
+class AsyncControl:
+    """One asynchronous control pin of a flop (rtl-buddy-cdc#383).
+
+    ``pin`` is the pin itself (:func:`~rtl_buddy_cdc.flops.flop_async_controls`).
+    ``bits`` is the signal that pin acts on, lane for lane, with the
+    encoding Yosys wraps around it removed (:func:`effective_control_bit`):
+    ``proc`` builds a set / clear flop's pins from muxes — ``CLR =
+    clr ? 1 : 0``, ``SET = clr ? 0 : set`` — that are part of how the flop
+    is represented, not logic in front of it, and that the gate-level
+    flows simplify away. ``source`` classifies ``bits[0]`` the way
+    :class:`ResetSource` classifies a reset.
+    """
+
+    pin: ResetPin
+    bits: tuple[Bit, ...]
+    source: ResetSource
+
+
+@dataclass(frozen=True)
 class ResetDomain:
     """A flop's reset assignment.
 
     ``reset`` is ``None`` for plain ``$dff`` / ``$dffe`` cells (no
     reset pin); consumers should treat that as "power-on initialisation
-    only".
+    only". It describes one pin per flop (``CLR`` on a set / clear flop).
+
+    ``controls`` lists *every* asynchronous control pin — ``ARST``,
+    ``ALOAD``, or ``CLR`` and ``SET`` — in priority order
+    (rtl-buddy-cdc#383); empty for a flop with no asynchronous control.
+    For an asynchronous reset, ``reset`` is ``controls[0].source``.
     """
 
     flop: str
     reset: ResetSource | None
+    controls: tuple[AsyncControl, ...] = ()
 
 
 def assign_reset_domains(
@@ -130,32 +162,211 @@ def assign_reset_domains(
         flops = find_flops(module)
     out: dict[str, ResetDomain] = {}
     for f in flops:
+        controls = async_controls(module, f.cell, drivers)
         rst = flop_reset(f.cell)
-        if rst is None:
-            out[f.cell.name] = ResetDomain(flop=f.cell.name, reset=None)
-            continue
-
-        bits = rst.bits
-        if not bits:
-            # Defensive: a flop typed as reset-bearing but missing the
-            # pin connection is malformed. Treat it as "no reset" rather
+        if rst is None or not rst.bits:
+            # No reset, or (defensively) a flop typed as reset-bearing but
+            # missing the pin connection: treat it as "no reset" rather
             # than raising — better to skip than crash on an exotic netlist.
-            out[f.cell.name] = ResetDomain(flop=f.cell.name, reset=None)
+            out[f.cell.name] = ResetDomain(
+                flop=f.cell.name, reset=None, controls=controls
+            )
             continue
-
-        polarity: ResetPolarity = "high" if rst.polarity == 1 else "low"
-        rst_bit = bits[0]
-        name, kind = _classify_reset_source(module, rst_bit, drivers)
-        out[f.cell.name] = ResetDomain(
-            flop=f.cell.name,
-            reset=ResetSource(
-                name=name,
-                polarity=polarity,
-                type=rst.kind,
-                source=kind,
-            ),
-        )
+        if controls and controls[0].pin.pin == rst.pin:
+            reset = controls[0].source
+        else:
+            reset = _reset_source(module, rst, rst.bits[0], drivers)
+        out[f.cell.name] = ResetDomain(flop=f.cell.name, reset=reset, controls=controls)
     return out
+
+
+def _reset_source(
+    module: Module,
+    pin: ResetPin,
+    bit: Bit,
+    drivers: dict[Bit, tuple[str, str]],
+) -> ResetSource:
+    polarity: ResetPolarity = "high" if pin.polarity == 1 else "low"
+    name, kind = _classify_reset_source(module, bit, drivers)
+    return ResetSource(name=name, polarity=polarity, type=pin.kind, source=kind)
+
+
+def async_controls(
+    module: Module,
+    cell: Cell,
+    drivers: dict[Bit, tuple[str, str]],
+) -> tuple[AsyncControl, ...]:
+    """Every asynchronous control pin of flop ``cell``, each with the
+    signal it acts on and that signal's classification (see
+    :class:`AsyncControl`). Pins with no connection are skipped."""
+    pins = tuple(p for p in flop_async_controls(cell) if p.bits)
+    out: list[AsyncControl] = []
+    for pin in pins:
+        others = [o for o in pins if o is not pin]
+        bits = tuple(
+            effective_control_bit(
+                module,
+                b,
+                pin.polarity,
+                frozenset(
+                    control_root(module, o.bits[i], drivers)
+                    for o in others
+                    if i < len(o.bits)
+                ),
+                drivers,
+                strip_inverters=bool(others),
+            )
+            for i, b in enumerate(pin.bits)
+        )
+        out.append(
+            AsyncControl(
+                pin=pin, bits=bits, source=_reset_source(module, pin, bits[0], drivers)
+            )
+        )
+    return tuple(out)
+
+
+# How many cells :func:`control_root` / :func:`effective_control_bit`
+# step through. Yosys's encoding is at most two deep (``SET = clr ? 0 :
+# (set_n ? 0 : 1)``); the margin covers a buffer or two in between.
+_MAX_STRIP = 6
+_PASS_THROUGH = frozenset({"$pos", "$buf", "$_BUF_", "$not", "$_NOT_"})
+_MUX2 = frozenset({"$mux", "$_MUX_"})
+# Lane-wise 2-input gates that, on an active-high pin, can only turn it
+# *off* (``$_ANDNOT_`` = ``A & ~B``) and, on an active-low pin, only on.
+_DEASSERT_ONLY_HIGH = frozenset({"$and", "$_AND_", "$_ANDNOT_"})
+_DEASSERT_ONLY_LOW = frozenset({"$or", "$_OR_", "$_ORNOT_"})
+
+
+def _lane_inputs(
+    module: Module, bit: int, drivers: dict[Bit, tuple[str, str]]
+) -> tuple[Cell, dict[str, Bit]] | None:
+    """The cell driving ``bit`` and, per input pin, the bit that reaches
+    lane ``bit`` of its ``Y`` (a 2:1 mux's ``S`` is shared by every
+    lane)."""
+    drv = drivers.get(bit)
+    if drv is None or drv[1] != "Y":
+        return None
+    cell = module.cells.get(drv[0])
+    if cell is None:
+        return None
+    y = cell.connections.get("Y", ())
+    if bit not in y:
+        return None
+    i = y.index(bit)
+    lane: dict[str, Bit] = {}
+    for pin in ("A", "B"):
+        bits = cell.connections.get(pin, ())
+        if i < len(bits):
+            lane[pin] = bits[i]
+    s = cell.connections.get("S", ())
+    if len(s) == 1:
+        lane["S"] = s[0]
+    return cell, lane
+
+
+def control_root(module: Module, bit: Bit, drivers: dict[Bit, tuple[str, str]]) -> Bit:
+    """The signal ``bit`` is a buffered or inverted copy of: step back
+    through ``$not`` / ``$_NOT_`` / buffers and through 2:1 muxes whose
+    legs are the two constants ``0`` and ``1`` (``s ? 1 : 0`` is ``s``,
+    ``s ? 0 : 1`` is ``~s``) until something else drives it."""
+    for _ in range(_MAX_STRIP):
+        if not isinstance(bit, int):
+            return bit
+        found = _lane_inputs(module, bit, drivers)
+        if found is None:
+            return bit
+        cell, lane = found
+        if cell.type in _PASS_THROUGH and "A" in lane:
+            bit = lane["A"]
+        elif (
+            cell.type in _MUX2
+            and "S" in lane
+            and {lane.get("A"), lane.get("B")} == {"0", "1"}
+        ):
+            bit = lane["S"]
+        else:
+            return bit
+    return bit
+
+
+def effective_control_bit(
+    module: Module,
+    bit: Bit,
+    polarity: int,
+    other_roots: frozenset[Bit],
+    drivers: dict[Bit, tuple[str, str]],
+    *,
+    strip_inverters: bool = False,
+) -> Bit:
+    """The signal an asynchronous control pin lane ``bit`` acts on, with
+    the encoding Yosys builds around it removed (rtl-buddy-cdc#383).
+
+    Two shapes are stepped through, both of which a gate-level flow
+    simplifies away and neither of which is reset logic in the design:
+
+    - a **buffer mux** ``s ? 1 : 0``, which is ``s`` (``proc`` builds one
+      on every ``CLR`` / ``SET`` lane of a set / clear flop whose control
+      is active high);
+    - the **priority term** of a set / clear flop: ``proc`` writes
+      ``if (clr) q <= 0; else if (set) q <= 1;`` as ``SET = clr ? 0 :
+      set``, and after ``abc`` it is ``SET = ~clr & set``. The term
+      ``clr`` is the flop's own other control (its
+      :func:`control_root` is in ``other_roots``) and it can only
+      *deassert* this pin (``polarity`` picks the deasserting constant
+      and gate), so it changes nothing the flop does: its clear wins
+      anyway.
+
+    ``strip_inverters`` (set for a flop with more than one asynchronous
+    control: a set / clear flop) also steps through an inverter — an
+    inverter mux ``s ? 0 : 1``, ``$not`` / ``$_NOT_`` — flipping the
+    polarity it tracks. Yosys has no polarity parameter it can use on
+    those pins, so ``proc`` writes an active-low ``CLR`` / ``SET`` as an
+    inverter mux in front of an active-high pin (the gate flows keep it
+    as a ``$_NOT_``) where a single-reset flop gets ``ARST_POLARITY = 0``
+    and no cell at all. On a single-reset flop an inverter is written by
+    the designer and stays: it is a comb-driven reset, as before.
+    """
+    pol = polarity
+    for _ in range(_MAX_STRIP):
+        if not isinstance(bit, int):
+            return bit
+        found = _lane_inputs(module, bit, drivers)
+        if found is None:
+            return bit
+        cell, lane = found
+        a, b = lane.get("A"), lane.get("B")
+        off = "0" if pol == 1 else "1"
+        nxt: Bit | None = None
+        if strip_inverters and cell.type in ("$not", "$_NOT_") and a is not None:
+            nxt = a
+            pol = 1 - pol
+        elif cell.type in _MUX2 and "S" in lane:
+            if a == "0" and b == "1":
+                nxt = lane["S"]
+            elif strip_inverters and a == "1" and b == "0":
+                nxt = lane["S"]
+                pol = 1 - pol
+            elif control_root(module, lane["S"], drivers) in other_roots:
+                if a == off and isinstance(b, int):
+                    nxt = b
+                elif b == off and isinstance(a, int):
+                    nxt = a
+        elif a is not None and b is not None and other_roots:
+            deassert_only = _DEASSERT_ONLY_HIGH if pol == 1 else _DEASSERT_ONLY_LOW
+            if cell.type in deassert_only:
+                # ``$_ANDNOT_`` / ``$_ORNOT_`` invert ``B``: only that
+                # input may be the stripped term, so the remaining
+                # signal is the real net ``A``.
+                inverts_b = cell.type in ("$_ANDNOT_", "$_ORNOT_")
+                if control_root(module, b, drivers) in other_roots:
+                    nxt = a
+                elif not inverts_b and control_root(module, a, drivers) in other_roots:
+                    nxt = b
+        if nxt is None:
+            return bit
+        bit = nxt
+    return bit
 
 
 # --- helpers ----------------------------------------------------------------

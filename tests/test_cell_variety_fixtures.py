@@ -22,7 +22,7 @@ Where the analyzer disagrees the test is written against the reasoned
 verdict and marked ``xfail(strict=True)`` (:data:`_XFAIL`), and
 :data:`_CURRENT` pins what it reports today, so a partial fix or a new
 regression still shows. The gate-level legs are held by
-``tests/test_gate_level_corpus.py`` (two allowlist rows); the slang
+``tests/test_gate_level_corpus.py`` (and its allowlist); the slang
 frontend's verdict is compared with the committed netlist's here.
 """
 
@@ -184,22 +184,12 @@ EXPECTED: dict[str, Verdict] = {
 # a finding for an issue; the test flips to XPASS (a failure, strict) the
 # day the analyzer is fixed, and the entry must then be removed together
 # with its :data:`_CURRENT` row.
-_XFAIL: dict[str, str] = {
-    "bad_flop_variety_handshake": (
-        "RDC-001 reads only $adff* ARST, so cap_a's $dffsre CLR driven by the "
-        "src_clk register clr_q is not reported as a reset crossing; RDC-004 "
-        "fires instead on the constant-leg mux proc builds on CLR "
-        "(`clr_q ? 1 : 0`, a buffer)"
-    ),
-}
+# (bad_flop_variety_handshake's RDC-001 on cap_a's foreign CLR was the
+# last row, fixed by rtl-buddy-cdc#383.)
+_XFAIL: dict[str, str] = {}
 
 # What the analyzer reports today on each :data:`_XFAIL` fixture.
-_CURRENT: dict[str, tuple[Finding, ...]] = {
-    "bad_flop_variety_handshake": tuple(
-        f for f in EXPECTED["bad_flop_variety_handshake"].findings if f[0] != "RDC-001"
-    )
-    + (("RDC-004", None, "cap_a"),),
-}
+_CURRENT: dict[str, tuple[Finding, ...]] = {}
 
 
 def _params() -> list:

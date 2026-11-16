@@ -1,0 +1,574 @@
+{
+  "creator": "Yosys 0.64+193 (git sha1 9d3f8efb2, clang++ 21.0.0 -fPIC -O3) [rtl-buddy/yosys at rtl-buddy]",
+  "modules": {
+    "bad_set_clear_foreign_controls": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:20.1-56.10"
+      },
+      "ports": {
+        "src_clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "dst_clk": {
+          "direction": "input",
+          "bits": [ 3 ]
+        },
+        "rst_n": {
+          "direction": "input",
+          "bits": [ 4 ]
+        },
+        "set_n": {
+          "direction": "input",
+          "bits": [ 5 ]
+        },
+        "set_in": {
+          "direction": "input",
+          "bits": [ 6 ]
+        },
+        "clr_in": {
+          "direction": "input",
+          "bits": [ 7 ]
+        },
+        "sel": {
+          "direction": "input",
+          "bits": [ 8 ]
+        },
+        "set_a_n": {
+          "direction": "input",
+          "bits": [ 9 ]
+        },
+        "set_b_n": {
+          "direction": "input",
+          "bits": [ 10 ]
+        },
+        "d_in": {
+          "direction": "input",
+          "bits": [ 11 ]
+        },
+        "qa": {
+          "direction": "output",
+          "bits": [ 12 ]
+        },
+        "qb": {
+          "direction": "output",
+          "bits": [ 13 ]
+        },
+        "qc": {
+          "direction": "output",
+          "bits": [ 14 ]
+        }
+      },
+      "cells": {
+        "$auto$proc_dff.cc:74:gen_dffsr_complex$13": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "1" ],
+            "B": [ "0" ],
+            "S": [ 5 ],
+            "Y": [ 15 ]
+          }
+        },
+        "$auto$proc_dff.cc:74:gen_dffsr_complex$19": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 15 ],
+            "B": [ "0" ],
+            "S": [ 16 ],
+            "Y": [ 17 ]
+          }
+        },
+        "$auto$proc_dff.cc:74:gen_dffsr_complex$28": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "1" ],
+            "B": [ "0" ],
+            "S": [ 18 ],
+            "Y": [ 19 ]
+          }
+        },
+        "$auto$proc_dff.cc:74:gen_dffsr_complex$36": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "0" ],
+            "B": [ 19 ],
+            "S": [ 4 ],
+            "Y": [ 20 ]
+          }
+        },
+        "$auto$proc_dff.cc:74:gen_dffsr_complex$45": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "1" ],
+            "B": [ "0" ],
+            "S": [ 21 ],
+            "Y": [ 22 ]
+          }
+        },
+        "$auto$proc_dff.cc:74:gen_dffsr_complex$53": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "0" ],
+            "B": [ 22 ],
+            "S": [ 4 ],
+            "Y": [ 23 ]
+          }
+        },
+        "$auto$proc_dff.cc:78:gen_dffsr_complex$23": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "0" ],
+            "B": [ "1" ],
+            "S": [ 16 ],
+            "Y": [ 24 ]
+          }
+        },
+        "$auto$proc_dff.cc:78:gen_dffsr_complex$40": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "1" ],
+            "B": [ "0" ],
+            "S": [ 4 ],
+            "Y": [ 25 ]
+          }
+        },
+        "$auto$proc_dff.cc:78:gen_dffsr_complex$57": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ "1" ],
+            "B": [ "0" ],
+            "S": [ 4 ],
+            "Y": [ 26 ]
+          }
+        },
+        "$procdff$25": {
+          "hide_name": 1,
+          "type": "$dffsr",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "CLR_POLARITY": "00000000000000000000000000000001",
+            "SET_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:52.5-55.37"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "CLR": "input",
+            "D": "input",
+            "Q": "output",
+            "SET": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "CLR": [ 24 ],
+            "D": [ 11 ],
+            "Q": [ 14 ],
+            "SET": [ 17 ]
+          }
+        },
+        "$procdff$42": {
+          "hide_name": 1,
+          "type": "$dffsr",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "CLR_POLARITY": "00000000000000000000000000000001",
+            "SET_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:47.5-50.41"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "CLR": "input",
+            "D": "input",
+            "Q": "output",
+            "SET": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "CLR": [ 25 ],
+            "D": [ 11 ],
+            "Q": [ 13 ],
+            "SET": [ 20 ]
+          }
+        },
+        "$procdff$59": {
+          "hide_name": 1,
+          "type": "$dffsr",
+          "parameters": {
+            "CLK_POLARITY": "00000000000000000000000000000001",
+            "CLR_POLARITY": "00000000000000000000000000000001",
+            "SET_POLARITY": "00000000000000000000000000000001",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:41.5-44.37"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "CLR": "input",
+            "D": "input",
+            "Q": "output",
+            "SET": "input"
+          },
+          "connections": {
+            "CLK": [ 3 ],
+            "CLR": [ 26 ],
+            "D": [ 11 ],
+            "Q": [ 12 ],
+            "SET": [ 23 ]
+          }
+        },
+        "$procdff$60": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:36.5-39.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 6 ],
+            "Q": [ 21 ]
+          }
+        },
+        "$procdff$61": {
+          "hide_name": 1,
+          "type": "$dff",
+          "parameters": {
+            "CLK_POLARITY": "1",
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:36.5-39.8"
+          },
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 7 ],
+            "Q": [ 16 ]
+          }
+        },
+        "$ternary$tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:46$5": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": {
+            "WIDTH": "00000000000000000000000000000001"
+          },
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:46.22-46.45"
+          },
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "S": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [ 10 ],
+            "B": [ 9 ],
+            "S": [ 8 ],
+            "Y": [ 18 ]
+          }
+        }
+      },
+      "netnames": {
+        "$auto$rtlil.cc:3390:Mux$14": {
+          "hide_name": 1,
+          "bits": [ 15 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3390:Mux$20": {
+          "hide_name": 1,
+          "bits": [ 17 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3390:Mux$24": {
+          "hide_name": 1,
+          "bits": [ 24 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3390:Mux$29": {
+          "hide_name": 1,
+          "bits": [ 19 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3390:Mux$37": {
+          "hide_name": 1,
+          "bits": [ 20 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3390:Mux$41": {
+          "hide_name": 1,
+          "bits": [ 25 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3390:Mux$46": {
+          "hide_name": 1,
+          "bits": [ 22 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3390:Mux$54": {
+          "hide_name": 1,
+          "bits": [ 23 ],
+          "attributes": {
+          }
+        },
+        "$auto$rtlil.cc:3390:Mux$58": {
+          "hide_name": 1,
+          "bits": [ 26 ],
+          "attributes": {
+          }
+        },
+        "clr_in": {
+          "hide_name": 0,
+          "bits": [ 7 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:26.18-26.24"
+          }
+        },
+        "clr_q": {
+          "hide_name": 0,
+          "bits": [ 16 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:35.18-35.23"
+          }
+        },
+        "d_in": {
+          "hide_name": 0,
+          "bits": [ 11 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:30.18-30.22"
+          }
+        },
+        "dst_clk": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:22.18-22.25"
+          }
+        },
+        "qa": {
+          "hide_name": 0,
+          "bits": [ 12 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:31.18-31.20"
+          }
+        },
+        "qb": {
+          "hide_name": 0,
+          "bits": [ 13 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:32.18-32.20"
+          }
+        },
+        "qc": {
+          "hide_name": 0,
+          "bits": [ 14 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:33.18-33.20"
+          }
+        },
+        "rst_n": {
+          "hide_name": 0,
+          "bits": [ 4 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:23.18-23.23"
+          }
+        },
+        "sel": {
+          "hide_name": 0,
+          "bits": [ 8 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:27.18-27.21"
+          }
+        },
+        "set_a_n": {
+          "hide_name": 0,
+          "bits": [ 9 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:28.18-28.25"
+          }
+        },
+        "set_b_n": {
+          "hide_name": 0,
+          "bits": [ 10 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:29.18-29.25"
+          }
+        },
+        "set_in": {
+          "hide_name": 0,
+          "bits": [ 6 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:25.18-25.24"
+          }
+        },
+        "set_mux_n": {
+          "hide_name": 0,
+          "bits": [ 18 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:46.10-46.19"
+          }
+        },
+        "set_n": {
+          "hide_name": 0,
+          "bits": [ 5 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:24.18-24.23"
+          }
+        },
+        "set_q": {
+          "hide_name": 0,
+          "bits": [ 21 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:35.11-35.16"
+          }
+        },
+        "src_clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "tests/fixtures/bad_set_clear_foreign_controls/bad_set_clear_foreign_controls.sv:21.18-21.25"
+          }
+        }
+      }
+    }
+  }
+}

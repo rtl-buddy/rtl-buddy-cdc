@@ -16,11 +16,11 @@
 // acknowledge returns, and each capture loads on the synchronised
 // request, so CDC-004 and CDC-012 accept all three buses. Nothing fires.
 //
-// Known gap, pinned as a strict xfail: at gate level the 8-bit `$dffsre`
-// stays eight one-bit flops (proc gives every lane its own SET / CLR
-// net), so CDC-020 fires there. The slang frontend builds the same
-// `$aldff` / `$dffsr` / `$sdffce` families (rtl-buddy-cdc#384) and
-// agrees with this netlist.
+// At gate level, where proc gives every lane of the 8-bit `$dffsre` its
+// own SET / CLR net, the lanes are regrouped into one register
+// (rtl-buddy-cdc#386). The slang frontend builds the same `$aldff` /
+// `$dffsr` / `$sdffce` families (rtl-buddy-cdc#384) and agrees with
+// this netlist.
 
 module good_flop_variety_handshake (
     input  logic       src_clk,

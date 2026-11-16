@@ -14,12 +14,12 @@
 // reports from the data side what RDC-003 reports from the reset side.
 // req_s1 / req_s2 (`$dffsr`) are still a correct request synchroniser.
 //
-// Known gap, pinned as a strict xfail: RDC-001 reads only `$adff*` ARST,
-// so cap_a's foreign async clear is not reported as a reset crossing.
-// RDC-004 fires instead, reading the constant-leg mux proc builds on CLR
-// (`clr_q ? 1 : 0`, a buffer) as glitch-prone logic. The gate-level
-// verdict differs too (see the gate-level allowlist); the slang frontend
-// agrees with this netlist (rtl-buddy-cdc#384).
+// cap_a's CLR is the mux `clr_q ? 1 : 0` that proc builds on a set /
+// clear flop: a buffer of the register, not combinational logic, so
+// RDC-001 reports the foreign clear and RDC-004 stays silent
+// (rtl-buddy-cdc#383). The gate-level legs (rtl-buddy-cdc#386) and
+// the slang frontend (rtl-buddy-cdc#384) agree with this netlist's
+// verdict.
 
 module bad_flop_variety_handshake (
     input  logic       src_clk,

@@ -145,7 +145,7 @@ def flop_clk_polarity(cell: Cell) -> int:
     return 1
 
 
-ResetRole = Literal["arst", "srst", "clr", "aload"]
+ResetRole = Literal["arst", "srst", "clr", "set", "aload"]
 
 
 @dataclass(frozen=True)
@@ -162,8 +162,13 @@ class ResetPin:
     arst      ``$adff*.ARST``            ``$_DFF_XXV_`` / ``$_DFFE_XXVX_`` R
     srst      ``$sdff*.SRST``            ``$_SDFF*_`` R
     clr       ``$dffsr*.CLR``            ``$_DFFSR*_`` R
+    set       ``$dffsr*.SET``            ``$_DFFSR*_`` S
     aload     ``$aldff*.ALOAD``          ``$_ALDFF*_`` L
     ========  =========================  ==================================
+
+    :func:`flop_reset` returns one pin per flop (``CLR`` on a set / clear
+    flop); :func:`flop_async_controls` returns every asynchronous one,
+    ``SET`` included (rtl-buddy-cdc#383).
 
     ``polarity`` is 1 for active high. ``value`` is the bit ``Q`` takes
     while the pin is asserted (``"0"`` / ``"1"``), or ``None`` for an
@@ -240,6 +245,45 @@ def flop_reset(cell: Cell) -> ResetPin | None:
             cell.connections.get("L", ()),
         )
     return None
+
+
+def flop_async_controls(cell: Cell) -> tuple[ResetPin, ...]:
+    """Every asynchronous control pin of flop ``cell``, in priority order
+    (rtl-buddy-cdc#383): ``ARST``, ``ALOAD``, or ``CLR`` then ``SET`` on a
+    set / clear flop (``R`` / ``L`` / ``R`` then ``S`` at gate level).
+    Empty for a flop with only a synchronous reset, or none.
+
+    :func:`flop_reset` names one reset pin per flop, so a rule reading it
+    never sees the ``SET`` of a ``$dffsr`` / ``$_DFFSR_*``. Rules that ask
+    "what can force this flop asynchronously" (RDC-001, RDC-004..-006)
+    read this instead.
+    """
+    rst = flop_reset(cell)
+    out: list[ResetPin] = []
+    if rst is not None and rst.kind == "async":
+        out.append(rst)
+    if cell.type in ("$dffsr", "$dffsre"):
+        params = cell.parameters or {}
+        polarity = 1 if _trailing(params.get("SET_POLARITY"), "1") == "1" else 0
+        out.append(
+            ResetPin(
+                "set", "SET", "async", polarity, "1", cell.connections.get("SET", ())
+            )
+        )
+        return tuple(out)
+    gate = parse_gate_storage_cell(cell.type)
+    if gate is not None and gate.is_flop and gate.set_polarity is not None:
+        out.append(
+            ResetPin(
+                "set",
+                "S",
+                "async",
+                gate.set_polarity,
+                "1",
+                cell.connections.get("S", ()),
+            )
+        )
+    return tuple(out)
 
 
 def flop_reset_bits(cell: Cell, *roles: ResetRole) -> tuple[Bit, ...]:
