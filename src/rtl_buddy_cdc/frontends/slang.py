@@ -77,7 +77,9 @@ What currently works
       always_ff @(posedge clk or negedge rst_n)
           if (!rst_n) q <= 0; else q <= d;
 
-  emit ``$adff`` cells with ``CLK``/``D``/``Q``/``ARST`` connections.
+  emit ``$adff`` cells with ``CLK``/``D``/``Q``/``ARST`` connections; an
+  async arm loading a non-constant value (``if (aload) q <= ad``) emits
+  the ``$aldff`` Yosys ``proc`` builds (rtl-buddy-cdc#384).
   Plain ``always_ff @(posedge clk) q <= d;`` emits ``$dff``.
 - Verilog-2001 ``always`` blocks (rtl-buddy-cdc#345), by what they
   infer: edge-triggered → the ``always_ff`` lowering; ``@*`` or a
@@ -643,7 +645,7 @@ class _ModuleBuilder:
         # Missing entries default to 0 — that's the conservative match
         # for the typical ``q <= '0`` reset and keeps the netlist
         # valid when the reset RHS isn't a recognised literal.
-        self._proc_resets: dict[tuple[Bit, ...], int] = {}
+        self._proc_resets: dict[tuple[Bit, ...], tuple[Bit, ...]] = {}
         # Placeholder bit -> RHS bit for every continuously-assigned net,
         # applied to all cells at the end of the walk so procedural reads
         # that precede the ``assign`` in source order see its driver.
@@ -1595,58 +1597,77 @@ class _ModuleBuilder:
             return "level"
         return None
 
-    def _collect_reset_assignments(self, stmt: Any) -> None:
-        """Walk an ``always_ff`` reset arm (``if (!rst_n) <stmt>``) and
-        record per-LHS reset values into ``self._proc_resets``.
+    def _collect_reset_assignments(
+        self,
+        stmt: Any,
+        into: dict[tuple[Bit, ...], tuple[Bit, ...]] | None = None,
+    ) -> None:
+        """Walk an ``always_ff`` reset / async-load arm (``if (!rst_n)
+        <stmt>``) and record the value each write loads, as LSB-first bits
+        keyed by the written register bits, into ``into`` (default
+        ``self._proc_resets``).
 
-        Captures nonblocking assignments whose RHS is a compile-time
-        constant. Anything else — non-literal RHS, struct/hierref LHS,
-        nested conditionals — is silently skipped, and the drain-time
-        lookup falls back to 0. The reset values feed ``$adff``'s
-        ``ARST_VALUE`` parameter (issue #40); the rule pack doesn't
-        read it today, so a default of 0 keeps the netlist valid even
-        when this walker doesn't recognise the shape.
+        A compile-time constant is its ``0`` / ``1`` bits (``$adff``'s
+        ``ARST_VALUE``, ``$sdff``'s ``SRST_VALUE``, issues #40 / #86). Any
+        other right-hand side is lowered, and a run whose value is not
+        constant becomes an ``$aldff`` loading it (rtl-buddy-cdc#384: it
+        was skipped, so ``if (aload) q <= ad`` reset ``q`` to 0). A
+        statement other than an assignment (a nested ``if``, a ``case``)
+        is reported; the registers it writes keep the default value 0.
         """
         if stmt is None:
             return
+        if into is None:
+            into = self._proc_resets
         kind = self._kind_name(stmt)
         if kind == "BlockStatement":
-            self._collect_reset_assignments(stmt.body)
+            self._collect_reset_assignments(stmt.body, into)
             return
         if kind in {"StatementList", "ListStatement"}:
             for s in getattr(stmt, "list", []) or []:
-                self._collect_reset_assignments(s)
+                self._collect_reset_assignments(s, into)
+            return
+        if kind == "VariableDeclStatement":
             return
         if kind != "ExpressionStatement":
+            self._other_statement(stmt, "reset / async-load arm")
             return
         expr = stmt.expr
         if type(expr).__name__ != "AssignmentExpression":
+            self._other_statement(stmt, "reset / async-load arm")
             return
+        val = self._const_int(expr.right)
         if type(expr.left).__name__ == "ConcatenationExpression":
             # ``{q, meta} <= 2'b01``: each register takes its slice of
-            # the constant (rtl-buddy-cdc#370), keyed as the data arm's
+            # the value (rtl-buddy-cdc#370), keyed as the data arm's
             # :meth:`_concat_writes` keys its writes.
             targets = self._lvalue_targets(expr.left)
-            val = self._const_int(expr.right)
-            if targets is None or val is None:
+            if targets is None:
+                self._warn_lvalue_dropped(expr, expr.left)
+                return
+            if val is None:
+                for q_part, bits in self._concat_writes(expr.left, expr.right) or []:
+                    into[q_part] = bits
                 return
             total = sum(width for _sym, _start, width in targets)
-            val_bits: tuple[Bit, ...] = tuple(
-                "1" if (val >> i) & 1 else "0" for i in range(total)
-            )
             for sym, start, bits in self._group_parts(
-                targets, self._split_rhs(val_bits, targets)
+                targets, self._split_rhs(self._int_bits(val, total), targets)
             ):
-                q_part = self._alloc_bits(sym)[start : start + len(bits)]
-                self._proc_resets[q_part] = int("".join(map(str, bits[::-1])), 2)
+                into[self._alloc_bits(sym)[start : start + len(bits)]] = bits
             return
         q_bits = self._lvalue_bits(expr.left)
         if q_bits is None:
+            self._warn_lvalue_dropped(expr, expr.left)
             return
-        val = self._const_int(expr.right)
         if val is None:
-            return
-        self._proc_resets[q_bits] = val
+            into[q_bits] = self._rhs_bits(expr.right, len(q_bits))
+        else:
+            into[q_bits] = self._int_bits(val, len(q_bits))
+
+    @staticmethod
+    def _int_bits(value: int, width: int) -> tuple[Bit, ...]:
+        """``value`` as ``width`` LSB-first ``0`` / ``1`` bits."""
+        return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
 
     def _analyse_event_list(
         self, timing: Any
@@ -2568,10 +2589,10 @@ class _ModuleBuilder:
         ``reset_sym=None`` for blocks with no reset. Reset values are
         assembled per bit from the reset arm's writes.
         """
-        reset_bit: dict[Bit, int] = {}
+        reset_bit: dict[Bit, Bit] = {}
         for key, value in self._proc_resets.items():
-            for i, bit in enumerate(key):
-                reset_bit[bit] = (value >> i) & 1
+            for bit, v in zip(key, value):
+                reset_bit[bit] = v
         for sym, (net, writes) in self._proc_writes.items():
             written = sorted(
                 {
@@ -2602,9 +2623,18 @@ class _ModuleBuilder:
                             enable, hold=tuple(d[a - lo : b - lo]), fire=piece
                         )
                     d[a - lo : b - lo] = piece
-                reset_value = sum(
-                    reset_bit.get(bit, 0) << i for i, bit in enumerate(q_bits)
-                )
+                # A bit the reset arm does not write resets to 0 (the
+                # long-standing default; Yosys holds it instead).
+                values = tuple(reset_bit.get(bit, "0") for bit in q_bits)
+                if reset_sym is not None and reset_kind != "sync":
+                    if any(isinstance(v, int) for v in values):
+                        # A non-constant async value: an async load.
+                        self._emit_aldff(
+                            clk_sym, reset_sym, reset_active_low, q_bits,
+                            tuple(d), values, src_node,
+                        )  # fmt: skip
+                        continue
+                reset_value = sum((1 << i) for i, v in enumerate(values) if v == "1")
                 self._emit_flop_cell(
                     clk_sym,
                     reset_sym,
@@ -2721,6 +2751,45 @@ class _ModuleBuilder:
             type=cell_type,
             connections=connections,
             parameters=parameters,
+            attributes=attrs,
+        )
+
+    def _emit_aldff(
+        self,
+        clk_sym: Any,
+        aload_sym: Any,
+        aload_active_low: bool,
+        q_bits: tuple[Bit, ...],
+        d_bits: tuple[Bit, ...],
+        ad_bits: tuple[Bit, ...],
+        src_node: Any,
+    ) -> None:
+        """An ``$aldff``: ``Q`` follows ``AD`` while ``ALOAD`` is asserted,
+        else loads ``D`` on the clock edge — what Yosys ``proc`` builds for
+        an async control whose value is not constant (rtl-buddy-cdc#384).
+        Same parameters as ``proc_dff``'s ``gen_aldff``."""
+        attrs: dict[str, str] = {}
+        src = self._src_attr(src_node) if src_node is not None else None
+        if src is not None:
+            attrs["src"] = src
+        name = self._fresh_cell_name("$aldff")
+        self._cells[name] = Cell(
+            name=name,
+            type="$aldff",
+            connections={
+                "CLK": self._alloc_bits(clk_sym),
+                "ALOAD": self._alloc_bits(aload_sym)
+                if not isinstance(aload_sym, tuple)
+                else aload_sym,
+                "AD": ad_bits,
+                "D": d_bits,
+                "Q": q_bits,
+            },
+            parameters={
+                "ALOAD_POLARITY": "0" if aload_active_low else "1",
+                "CLK_POLARITY": "0" if getattr(self, "_clk_negedge", False) else "1",
+                "WIDTH": _param_int32(len(q_bits)),
+            },
             attributes=attrs,
         )
 

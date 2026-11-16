@@ -497,3 +497,88 @@ endmodule
         module = _slang(tmp_path, src)
     assert any("not lowered" in w for w in _warnings(caplog))
     assert _cells(module, "$_UNKNOWN_")
+
+
+# --- 4. an async load of a value is an $aldff ----------------------------
+
+_ASYNC_FLOPS = frozenset({"$adff", "$aldff", "$dffsr", "$dff"})
+
+
+def _namer(module: Module):
+    """Bit -> frontend-neutral name: a top port bit, else the smallest
+    ``netname[i]`` holding it, else ``<driver type>.<pin>``."""
+    names: dict[Bit, str] = {}
+    for pname, port in sorted(module.ports.items()):
+        for i, b in enumerate(port.bits):
+            names.setdefault(b, f"{pname}[{i}]")
+    for nname, nn in sorted(module.netnames.items()):
+        if "$" in nname:
+            continue
+        for i, b in enumerate(nn.bits):
+            names.setdefault(b, f"{nname}[{i}]")
+    drivers: dict[Bit, str] = {}
+    for c in module.cells.values():
+        for pin in ("Y", "Q"):
+            for b in c.connections.get(pin, ()):
+                drivers.setdefault(b, f"{c.type}.{pin}")
+
+    def name(b: Bit) -> str:
+        if isinstance(b, str):
+            return b
+        return names.get(b) or drivers.get(b) or "?"
+
+    return name
+
+
+def _flop_view(module: Module) -> dict[str, tuple[str, dict[str, tuple[str, ...]]]]:
+    """Q name -> (flop type, {pin: bit names}) for every flop, with the
+    polarity parameters folded in as pseudo-pins (``ARST_POLARITY`` ...)."""
+    name = _namer(module)
+    out = {}
+    for c in module.cells.values():
+        if c.type not in _ASYNC_FLOPS:
+            continue
+        pins = {p: tuple(name(b) for b in bits) for p, bits in c.connections.items()}
+        for param in ("ARST_POLARITY", "ALOAD_POLARITY", "SET_POLARITY"):
+            if param in c.parameters:
+                pins[param] = (c.parameters[param][-1],)
+        if "ARST_VALUE" in c.parameters:
+            pins["ARST_VALUE"] = (c.parameters["ARST_VALUE"],)
+        out[name(c.connections["Q"][0])] = (c.type, pins)
+    return out
+
+
+_ALOAD = """module m (input clk_a, input clk_b, input al, input al_n, input d,
+          input [1:0] ad, input [1:0] dd, output reg [1:0] q, output reg [1:0] r,
+          output reg [1:0] t, output reg u);
+    always_ff @(posedge clk_a or posedge al)
+        if (al) q <= ad; else q <= dd;
+    always_ff @(posedge clk_a or negedge al_n)
+        if (!al_n) r <= ad; else r <= dd;
+    always_ff @(posedge clk_a or posedge al)
+        if (al) t <= {1'b1, ad[0]}; else t <= dd;
+    always_ff @(posedge clk_b or posedge al)
+        if (al) u <= 1'b1; else u <= d;
+endmodule
+"""
+
+
+def test_async_load_of_a_value_is_an_aldff(tmp_path: Path, caplog) -> None:
+    """``if (al) q <= ad`` loads ``ad`` asynchronously: an ``$aldff`` with
+    ``AD`` = ``ad`` and the load polarity of its event edge, as Yosys
+    ``proc`` builds it. It used to be an ``$adff`` resetting to 0, so
+    ``ad`` was dropped without a word. A constant load stays an
+    ``$adff``."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _ALOAD)
+    assert not _warnings(caplog)
+    view = _flop_view(module)
+    assert view["q[0]"][0] == "$aldff"
+    assert view["q[0]"][1]["AD"] == ("ad[0]", "ad[1]")
+    assert view["q[0]"][1]["ALOAD"] == ("al[0]",)
+    assert view["q[0]"][1]["ALOAD_POLARITY"] == ("1",)
+    assert view["r[0]"][1]["ALOAD_POLARITY"] == ("0",)
+    assert view["t[0]"][1]["AD"] == ("ad[0]", "1")
+    assert view["u[0]"][0] == "$adff"
+    if _HAVE_YOSYS:
+        assert view == _flop_view(_yosys(tmp_path, _ALOAD))

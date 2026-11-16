@@ -368,6 +368,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: an async load of a value is an `$aldff`**
+  (rtl-buddy-cdc#384). `if (aload) q <= ad` in an edge-triggered block
+  lowered as an `$adff` resetting to 0, with no warning: `ad` and its
+  driver vanished from the netlist. A non-constant value in the async arm
+  (whole or in some bits) now gives the `$aldff` Yosys `proc` builds
+  (`AD` the value, `ALOAD` the control, `ALOAD_POLARITY` its edge). A
+  statement in a reset / async-load arm other than an assignment (a nested
+  `if`, a `case`) is now reported instead of skipped silently.
+
 - **slang frontend: run-time index reads lower to `$shiftx`**
   (rtl-buddy-cdc#384). `a_q[idx_q]`, `a[i +: W]` and `a[i -: W]` on a
   packed value were reported and modelled as an opaque driver, so the
