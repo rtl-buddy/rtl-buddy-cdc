@@ -64,6 +64,16 @@ def _flops(module) -> list:
 
 
 def _flop_count(module) -> int:
+    """Flop *bits*: Yosys ``proc`` groups the written bits of one register
+    into one flop per contiguous run, and so does the slang frontend since
+    rtl-buddy-cdc#377, so an unrolled ``q[i] <= d[i]`` is one 4-bit flop,
+    not four 1-bit ones."""
+    return sum(
+        len(c.connections["Q"]) for c in module.cells.values() if c.type in FLOP_TYPES
+    )
+
+
+def _flop_cells(module) -> int:
     return sum(1 for c in module.cells.values() if c.type in FLOP_TYPES)
 
 
@@ -159,13 +169,10 @@ def test_multibit_if_condition_walks_both_arms(tmp_path: Path) -> None:
 # --- non-lowerable RHS: $_UNKNOWN_ driver ---------------------------------
 
 
-def test_function_call_rhs_emits_unknown_driver(tmp_path: Path) -> None:
-    """A nonblocking assign whose RHS is a function call
-    (``q <= inc(d)``) can't be lowered by ``_bits_of_expression``
-    (function calls aren't modelled), so the drain substitutes a
-    ``$_UNKNOWN_`` stub driver for D. The flop must still be emitted —
-    the netlist stays well-formed and the rule pack treats the D input
-    as opaque rather than crashing."""
+def test_function_call_rhs_is_inlined(tmp_path: Path) -> None:
+    """``q <= inc(d)`` with ``inc = x + 4'd1``: the function body is
+    inlined (rtl-buddy-cdc#377), so the flop's D is the ``$add`` of ``d``,
+    as on the Yosys path. It used to be an opaque ``$_UNKNOWN_`` stub."""
     src = """
     module m (input logic clk, rst_n, input logic [3:0] d, output logic [3:0] q);
         function automatic logic [3:0] inc(input logic [3:0] x);
@@ -178,19 +185,12 @@ def test_function_call_rhs_emits_unknown_driver(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     types = _cell_types(mod)
-    assert "$adff" in types, f"expected an $adff for q; got {sorted(types)}"
-    assert "$_UNKNOWN_" in types, (
-        f"function-call RHS should fall back to a $_UNKNOWN_ driver; "
-        f"got cell types {sorted(types)}"
-    )
-    # The flop's D must trace to the $_UNKNOWN_ output (opaque upstream).
+    assert "$_UNKNOWN_" not in types
+    (add,) = [c for c in mod.cells.values() if c.type == "$add"]
+    assert add.connections["A"] == mod.ports["d"].bits
     flop = _flops(mod)[0]
-    d_bit = flop.connections["D"][0]
-    drv = _build_drivers(mod).get(d_bit)
-    assert drv is not None, "flop D has no driver"
-    assert mod.cells[drv[0]].type == "$_UNKNOWN_", (
-        f"flop D should be driven by the $_UNKNOWN_ stub; got {mod.cells[drv[0]].type}"
-    )
+    assert flop.type == "$adff"
+    assert flop.connections["D"] == add.connections["Y"]
 
 
 # --- non-lowerable LHS: assignment site skipped ---------------------------
@@ -231,13 +231,11 @@ def test_unresolvable_lhs_is_reported(tmp_path: Path, caplog) -> None:
 # --- non-lowerable case-expr: conservative bail ---------------------------
 
 
-def test_case_on_function_call_bails_to_unconditional_walk(tmp_path: Path) -> None:
-    """``case (f(sel))`` — the case expression is a function call that
-    ``_bits_of_expression`` can't lower, so the walker takes the
-    conservative bail: it walks every item (and the default) with no
-    per-arm enable. The single ``q <= d`` arm still surfaces as a flop;
-    no ``$eq`` gating cell is emitted because the case-expr never
-    lowered to bits."""
+def test_case_on_unlowerable_expr_compares_an_opaque_value(tmp_path: Path) -> None:
+    """``case ($countones(sel))`` — the case expression does not lower,
+    so it becomes a reported opaque value the arms' ``$eq`` enables
+    compare against (rtl-buddy-cdc#377: every arm used to be walked as
+    if unconditional). The ``q`` writes still surface as one flop."""
     src = """
     module m (
         input  logic       clk, rst_n,
@@ -245,12 +243,9 @@ def test_case_on_function_call_bails_to_unconditional_walk(tmp_path: Path) -> No
         input  logic [3:0] d,
         output logic [3:0] q
     );
-        function automatic logic [1:0] f(input logic [1:0] x);
-            f = x ^ 2'b01;
-        endfunction
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
-            else case (f(sel))
+            else case ($countones(sel))
                 2'd0:    q <= d;
                 default: q <= 4'd0;
             endcase
@@ -260,12 +255,11 @@ def test_case_on_function_call_bails_to_unconditional_walk(tmp_path: Path) -> No
     mod = _elaborate(tmp_path, src)
     types = _cell_types(mod)
     assert "$adff" in types, f"expected an $adff for q; got {sorted(types)}"
-    assert "$eq" not in types, (
-        f"non-lowerable case-expr must NOT emit per-arm $eq gating cells "
-        f"(bail path walks unconditionally); got {sorted(types)}"
-    )
-    assert _flop_count(mod) == 1, (
-        f"distinct lvalue ``q`` collapses to one flop; got {_flop_count(mod)}"
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    (eq,) = [c for c in mod.cells.values() if c.type == "$eq"]
+    assert eq.connections["A"] == unknown.connections["Y"]
+    assert _flop_cells(mod) == 1, (
+        f"distinct lvalue ``q`` collapses to one flop; got {_flop_cells(mod)}"
     )
 
 
@@ -291,16 +285,16 @@ def test_case_match_function_call_walks_item_without_enable(tmp_path: Path) -> N
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
             else case (sel)
-                thresh(): q <= d;
+                $countones(d): q <= d;
                 default:  ;
             endcase
         end
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _flop_count(mod) == 1, (
+    assert _flop_cells(mod) == 1, (
         f"the unmatched-shape item should still emit its q-flop "
-        f"(walk-without-enable path); got {_flop_count(mod)}"
+        f"(walk-without-enable path); got {_flop_cells(mod)}"
     )
     types = _cell_types(mod)
     assert "$eq" not in types, (
@@ -360,7 +354,7 @@ def test_sync_reset_with_forloop_reset_arm(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     flops = _flops(mod)
-    assert len(flops) == 3, f"expected 3 unrolled flops (N=3); got {len(flops)}"
+    assert sum(len(f.connections["Q"]) for f in flops) == 3
     assert all(f.type == "$sdff" for f in flops), (
         f"for-loop reset arm of constants must classify as sync reset ($sdff); "
         f"got {[f.type for f in flops]}"
@@ -423,11 +417,11 @@ def test_reset_arm_with_task_call_is_not_sync(tmp_path: Path) -> None:
     )
 
 
-def test_reset_arm_with_blocking_assign_is_not_sync(tmp_path: Path) -> None:
-    """A *blocking* assign in the candidate reset arm (``if (rst) q =
-    0;``) likewise fails the constant-only check — the helper requires
-    nonblocking assigns (``isNonBlocking``), so it returns ``False``
-    and the block is not folded to ``$sdff``."""
+def test_reset_arm_with_blocking_assign_is_sync(tmp_path: Path) -> None:
+    """A *blocking* assign in the reset arm (``if (rst) q = 0;``) is a
+    constant write like a nonblocking one: the block folds to ``$sdff``
+    (rtl-buddy-cdc#377; blocking writes in ``always_ff`` used to be
+    skipped, which kept it a plain ``$dff``)."""
     src = """
     module m (input logic clk, rst, input logic [3:0] d, output logic [3:0] q);
         always_ff @(posedge clk) begin
@@ -438,10 +432,7 @@ def test_reset_arm_with_blocking_assign_is_not_sync(tmp_path: Path) -> None:
     """
     mod = _elaborate(tmp_path, src)
     types = _cell_types(mod)
-    assert "$sdff" not in types, (
-        f"a blocking-assign reset arm must not classify as sync; got {sorted(types)}"
-    )
-    assert "$dff" in types, f"expected a plain $dff; got {sorted(types)}"
+    assert types == {"$sdff"}, sorted(types)
 
 
 # --- async event list but mismatched reset symbol -------------------------
@@ -730,9 +721,9 @@ def test_task_call_statement_in_always_ff_is_skipped(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _flop_count(mod) == 1, (
+    assert _flop_cells(mod) == 1, (
         f"the task-call statement must be skipped while q<=d still emits "
-        f"its flop; got {_flop_count(mod)} flops"
+        f"its flop; got {_flop_cells(mod)} flops"
     )
     assert "$adff" in _cell_types(mod)
 
@@ -773,12 +764,11 @@ def test_nonconstant_reset_arm_is_not_a_sync_reset(tmp_path: Path) -> None:
 # --- blocking assignment inside always_ff ---------------------------------
 
 
-def test_blocking_assign_in_always_ff_is_skipped(tmp_path: Path) -> None:
-    """A *blocking* assignment (``q = d``) inside an ``always_ff`` body
-    is an SV style violation; ``_emit_assignment_expression`` checks
-    ``isNonBlocking`` and skips it rather than modelling it. The data
-    arm here is blocking, so no flop is accumulated for it — the block
-    emits nothing once the reset fold has nothing to attach to."""
+def test_blocking_assign_in_always_ff_is_registered(tmp_path: Path) -> None:
+    """A *blocking* assignment (``q = d``) inside an ``always_ff`` body is
+    a style violation the language allows, and synthesis registers it
+    like a nonblocking one (rtl-buddy-cdc#377: it was skipped without a
+    word, so the block emitted no flop at all)."""
     src = """
     module m (input logic clk, rst_n, input logic [3:0] d, output logic [3:0] q);
         always_ff @(posedge clk or negedge rst_n) begin
@@ -788,7 +778,6 @@ def test_blocking_assign_in_always_ff_is_skipped(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _flop_count(mod) == 0, (
-        f"blocking assign in always_ff must be skipped (not emitted); "
-        f"got {_flop_count(mod)} flops"
-    )
+    (flop,) = _flops(mod)
+    assert flop.type == "$adff"
+    assert flop.connections["D"] == mod.ports["d"].bits

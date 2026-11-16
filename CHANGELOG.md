@@ -893,6 +893,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   between two synchronous clocks fired RDC-001. The rules now compare the
   domain names as they are. No committed fixture changes verdict.
 
+- **slang frontend: silent drops and Yosys-parity gaps**
+  (rtl-buddy-cdc#377).
+  - A value computed by an `always @*` / `always_comb` block, or by a
+    `wire x = …;` declaration, now reaches logic that reads it earlier
+    in the file. Only continuous `assign`s re-pointed earlier readers;
+    a register stage above the block read an undriven net, so the
+    register feeding the block was pruned and its crossing vanished.
+    The integration corpus' `zipcpu_afifo` now matches Yosys on the
+    slang path (its false CDC-026 is gone); the
+    `slang-comb-forward-read` gap is closed.
+  - A level-sensitive `always` that leaves a variable unassigned on some
+    path is no longer dropped whole (with a warning) unless it is the
+    single `if (en) q = d;` shape. Each such variable becomes a
+    `$dlatch` whose enable is the condition under which it is assigned
+    and the rest of the block is combinational, as Yosys `proc` lowers
+    it. An `always_comb` doing the same (an error on the Yosys path) is
+    lowered the same way, with a warning.
+  - In a combinational `if` / `case`, an arm that does not write a
+    variable now contributes the variable's value before the statement:
+    `y = b; if (sel) y = a;` is `sel ? a : b`. It used to alias `y` to
+    `a`, dropping `b` and `sel`, and the alias rewrite also re-pointed
+    every other net holding the same value, so the input `b` itself
+    became `a` for every reader. A `case` whose constant labels cover
+    every value needs no `default` (no latch); a multi-bit condition is
+    true when non-zero (`$reduce_bool`, in clocked blocks too, where it
+    used to lose its enable); an `if` / `case` whose condition or labels
+    do not lower is reported instead of being walked as unconditional.
+  - A call to a user-defined function is inlined instead of becoming an
+    opaque `$_UNKNOWN_` cell: the formal arguments take the actual
+    arguments' bits and the body is lowered like a combinational block
+    (locals, `if` / `case`, `return` at the end of the body); a call
+    slang folds at elaboration time (`$clog2(N)`, a constant function of
+    parameters) is its constant. A function outside those shapes (an
+    early `return`, an `output` argument, a write to a module variable,
+    a statement the walker does not lower) stays opaque rather than
+    being half-lowered. The gray encoder `bin2gray()` in the corpus'
+    `axis_async_fifo` is now visible, so its false CDC-004 is gone and
+    the design matches Yosys on the slang path (`slang-function-call`
+    closed).
+  - No right-hand side is left silently undriven any more. One that does
+    not lower gets an opaque `$_UNKNOWN_` driver and a `WARNING` naming
+    the expression ("… not lowered; modelled as an opaque driver"), in
+    `assign`, `always_comb` / `always @*`, `wire x = …;`, part-select
+    and concatenation targets, latch data, memory ports and input port
+    connections, where it used to leave the target (or the child's
+    input) undriven, and in register inputs, which already had the
+    opaque driver but no warning. An `if` condition, `case` expression
+    or `case` label that does not lower is an opaque, reported value
+    too: such an `if` / `case` used to be walked as if every arm were
+    unconditional in clocked blocks.
+  - Constants that read as nets or opaque drivers lower to their value:
+    parameters and enum values (read as undriven nets), `'0` / `'1` and
+    literals with `x` / `z` digits (opaque drivers), and anything slang
+    folds at elaboration time (`$bits(x)`). `$signed(x)` / `$unsigned(x)`
+    lower to their operand. `casez` / `casex` (and `case inside`) labels
+    leave their wildcard digits out of the comparison.
+  - Integration corpus: `ptp_clock_cdc` goes from 0 crossings on the
+    slang path to the same 9 crossings and findings as on Yosys (the
+    `slang-incomplete-comb-block` and `slang-system-call` gaps are
+    closed). All seven corpus designs now agree across the two frontends
+    and no slang gap is pinned.
+  - A blocking `=` write in an `always_ff` is lowered instead of being
+    skipped without a word (a register with only blocking writes
+    vanished), and so is a nonblocking `<=` in `always_comb` /
+    `always @*` / `always_latch`. In a clocked block a blocking write's
+    value now reaches the reads after it in the same block, as synthesis
+    forwards it: `t = a + 1; q <= t;` loads `q` with `a + 1`. The slang
+    path used to read the register `t` there (with a warning since
+    rtl-buddy-cdc#345), which added a flop stage the hardware does not
+    have, so `s1 = x; q = s1;` counted as a two-flop synchroniser.
+  - `for` loops in combinational blocks and functions are unrolled (they
+    were skipped), and so is the Verilog-2001 loop everywhere: a loop
+    variable declared outside the loop (`integer i; for (i = 0; …)`)
+    and stepped `i = i + 1` / `i = i - 1`. A loop whose trip count is
+    not known at elaboration time is reported. The loop variable read as
+    a value is its iteration's constant.
+  - Statements the walkers have no lowering for (a `while` / `repeat` /
+    `foreach` loop, a task call, `disable`, …) are reported in clocked
+    and combinational blocks instead of being skipped; system tasks such
+    as `$display` and assertions carry no logic and stay silent. `n++` /
+    `--n` statements and compound assignments (`n += 1`, whose target
+    read as an opaque value) lower like `n = n + 1`; a block-local
+    declaration's initialiser is its first value.
+  - `always_latch` goes through the same lowering as `always @*`: any
+    body shape becomes one latch per held variable (an `else` arm, a
+    `case`, several writes in an arm were skipped or, for the `else`,
+    ignored), and a body that holds nothing infers no latch.
+  - A register written in several parts by one block is one flop per
+    contiguous run of written bits, as Yosys `proc` groups it. Each write
+    used to be its own flop: `q <= 0; if (c) q[1] <= b;` gave two flops
+    driving `q[1]`, and an unrolled `q[i] <= d[i]` four 1-bit flops
+    where Yosys has one 4-bit flop. Reset values are assembled per bit;
+    the elements of an unpacked array stay separate registers.
+  - Gate primitives lower as Yosys `read_verilog` lowers them: `and` /
+    `or` / `xor` fold their inputs through 2-input cells, `nand` / `nor` /
+    `xnor` add a `$not`, `not` / `buf` drive each of their outputs, and
+    an array of gates is one gate per element on its slices (Yosys
+    rejects primitive arrays). They were reported but not lowered since
+    rtl-buddy-cdc#353; tristate gates, switches, pulls and user-defined
+    primitives are still reported.
+  - A run-time-indexed bit write in a combinational block (the `v[i] =
+    1` decoder) shifts by the bit position the index selects, not by the
+    raw index: `i - lo` for a `[hi:lo]` range, `hi - i` for an ascending
+    one (`$sub` cells, as Yosys emits), times the element width of a
+    packed array. `logic [4:1] v` set the wrong bit and an ascending
+    vector came out reversed.
+  - A conditional expression whose condition is known at elaboration
+    time lowers to its live arm (`EN ? bus[OFF +: W] : '0` with the
+    field disabled was an opaque driver), and `**` lowers (`$pow`; a
+    constant power such as `2**N` folds). With these the corpus designs
+    lower on the slang path with no warning, and `ptp_clock_cdc` has
+    the same 729 flop bits as on the Yosys path.
+  - Inside the `if` / `case` arm that writes it, a blocking value in a
+    clocked block is the written value, and the arms are muxed only after
+    the statement, as `proc` evaluates them. Muxing at each write with
+    the prior value kept a temporary's register alive (`rd_ptr_temp` /
+    `wr_ptr_temp` in the corpus' `axis_async_fifo`); every corpus design
+    now has the same flop bits on both paths.
+
 ### Internal
 
 - **`bad_gray_phase_break`'s header misdescribed the design**

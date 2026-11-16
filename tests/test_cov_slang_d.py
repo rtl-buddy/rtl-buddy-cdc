@@ -34,6 +34,7 @@ analyzer robust on real-world RTL it only partially understands.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -116,7 +117,6 @@ def test_none_statement_guards_are_noops() -> None:
     # emits nothing".
     assert b._collect_reset_assignments(None) is None
     assert b._emit_assignments_in(None, None, None, False) is None
-    assert b._walk_latch_statement(None) is None
     assert b._cells == {}
     # _is_constant_only_assignment_tree(None) is vacuously True.
     assert b._is_constant_only_assignment_tree(None) is True
@@ -196,16 +196,9 @@ def test_classify_reset_check_conditional_without_conditions_is_none() -> None:
     assert _builder()._classify_reset_check(inner, None, False) is None
 
 
-def test_bits_of_integer_literal_no_value_is_none() -> None:
+def test_literal_without_value_is_none() -> None:
     """A literal node with no ``value`` (malformed) lowers to ``None``."""
-    assert _builder()._bits_of_integer_literal(_node("IntegerLiteral")) is None
-
-
-def test_bits_of_integer_literal_uncoercible_value_is_none() -> None:
-    """A literal whose ``value`` can't be coerced to ``int`` (e.g. an
-    ``x``/``z`` SVInt) lowers to ``None`` rather than crashing."""
-    expr = _node("IntegerLiteral", value=_node("UnconvertibleSVInt"))
-    assert _builder()._bits_of_integer_literal(expr) is None
+    assert _builder()._bits_of_expression(_node("IntegerLiteral")) is None
 
 
 def test_width_of_typeless_symbol_defaults_to_one() -> None:
@@ -388,19 +381,30 @@ def test_const_int_unary_arithmetic_folds(op, operand, expected) -> None:
 # --- SV edge-case lowering: conservative ``return None`` legs --------------
 
 
-def test_power_operator_not_in_binop_table_is_unknown(tmp_path: Path) -> None:
-    """``**`` (Power) is outside ``_BINOP_CELL`` — ``_lower_binary``
-    returns ``None`` and the assign degrades to a ``$_UNKNOWN_``
-    driver rather than a wrong cell."""
+def test_operator_not_in_binop_table_is_unknown(tmp_path: Path) -> None:
+    """``==?`` (wildcard equality) is outside ``_BINOP_CELL`` —
+    ``_lower_binary`` returns ``None`` and the write degrades to a
+    ``$_UNKNOWN_`` driver rather than a wrong cell. (``**`` was the example
+    here until rtl-buddy-cdc#377 lowered it to ``$pow``.)"""
+    src = """
+    module m (input logic clk, input logic [3:0] a, b, output logic q);
+        always_ff @(posedge clk) q <= a ==? b;
+    endmodule
+    """
+    mod = _elaborate(tmp_path, src)
+    assert "$_UNKNOWN_" in _cell_types(mod), (
+        f"an unmodelled operator should degrade to an opaque driver; got {_cell_types(mod)}"
+    )
+
+
+def test_power_operator_lowers_to_pow(tmp_path: Path) -> None:
     src = """
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
         always_ff @(posedge clk) q <= a ** b;
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$_UNKNOWN_" in _cell_types(mod), (
-        f"the power operator should degrade to an opaque driver; got {_cell_types(mod)}"
-    )
+    assert "$pow" in _cell_types(mod) and "$_UNKNOWN_" not in _cell_types(mod)
 
 
 def test_binary_with_unmodelled_operand_is_unknown(tmp_path: Path) -> None:
@@ -408,8 +412,7 @@ def test_binary_with_unmodelled_operand_is_unknown(tmp_path: Path) -> None:
     ``_lower_binary`` bails (``a_bits or b_bits is None``)."""
     src = """
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
-        function automatic logic [3:0] f(input logic [3:0] x); return x + 1; endfunction
-        always_ff @(posedge clk) q <= a & f(b);
+        always_ff @(posedge clk) q <= a & $countones(b);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -422,8 +425,7 @@ def test_unary_with_unmodelled_operand_is_unknown(tmp_path: Path) -> None:
     """``~f(a)`` — the operand doesn't lower, so ``_lower_unary`` bails."""
     src = """
     module m (input logic clk, input logic [3:0] a, output logic [3:0] q);
-        function automatic logic [3:0] f(input logic [3:0] x); return x + 1; endfunction
-        always_ff @(posedge clk) q <= ~f(a);
+        always_ff @(posedge clk) q <= ~$countones(a);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -435,8 +437,7 @@ def test_concat_with_unmodelled_operand_is_unknown(tmp_path: Path) -> None:
     ``_lower_concatenation`` return ``None``."""
     src = """
     module m (input logic clk, input logic [1:0] a, b, output logic [3:0] q);
-        function automatic logic [1:0] f(input logic [1:0] x); return x + 1; endfunction
-        always_ff @(posedge clk) q <= {a, f(b)};
+        always_ff @(posedge clk) q <= {a, 2'($countones(b))};
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -448,8 +449,7 @@ def test_conditional_with_unmodelled_arm_is_unknown(tmp_path: Path) -> None:
     ``_lower_conditional`` bails."""
     src = """
     module m (input logic clk, sel, input logic [3:0] a, b, output logic [3:0] q);
-        function automatic logic [3:0] f(input logic [3:0] x); return x + 1; endfunction
-        always_ff @(posedge clk) q <= sel ? a : f(b);
+        always_ff @(posedge clk) q <= sel ? a : $countones(b);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -573,8 +573,7 @@ def test_alwaysff_unlowerable_if_no_else_walks_only_true_arm(tmp_path: Path) -> 
     the ``None`` else arm — the loop-continue branch."""
     src = """
     module m (input logic clk, input logic [3:0] sel, input logic d, output logic q);
-        function automatic logic g(input logic [3:0] x); return ^x; endfunction
-        always_ff @(posedge clk) if (g(sel)) q <= d;
+        always_ff @(posedge clk) if ($countones(sel)) q <= d;
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -607,21 +606,19 @@ def test_alwaysff_const_case_no_match_no_default_emits_no_flop(tmp_path: Path) -
 
 
 def test_alwaysff_dynamic_case_unlowerable_expr_no_default(tmp_path: Path) -> None:
-    """``case (g(sel)) 2'd0: q <= a; endcase`` (no default): the case
-    expr doesn't lower, so the walker emits each item unconditionally
-    and skips the (absent) default."""
+    """``case ($countones(sel)) 2'd0: q <= a; endcase`` (no default): the case
+    expr doesn't lower, so the item's ``$eq`` compares a reported opaque
+    value (rtl-buddy-cdc#377) and the (absent) default is skipped."""
     src = """
     module m (input logic clk, input logic [3:0] sel, input logic a, output logic q);
-        function automatic logic [1:0] g(input logic [3:0] x); return x[1:0]; endfunction
         always_ff @(posedge clk)
-            case (g(sel))
+            case ($countones(sel))
                 2'd0: q <= a;
             endcase
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    # No $eq gating (case expr unlowerable) but the body flop still emits.
-    assert "$eq" not in _cell_types(mod)
+    assert "$eq" in _cell_types(mod) and "$_UNKNOWN_" in _cell_types(mod)
     assert _flops(mod)
 
 
@@ -647,26 +644,26 @@ def test_alwaysff_dynamic_case_lowerable_no_default_builds_eq(tmp_path: Path) ->
 # --- always_comb case walker: bail / no-default / single-default legs -----
 
 
-def test_comb_case_unlowerable_selector_walks_all_arms_no_mux(tmp_path: Path) -> None:
-    """``always_comb case (g(sel)) ...`` with an unlowerable selector:
-    ``_walk_case_statement`` walks every item plus the default with no
-    gating — no ``$mux`` / ``$eq`` is synthesised."""
+def test_comb_case_unlowerable_selector_is_reported(tmp_path: Path, caplog) -> None:
+    """``always_comb case ($countones(sel)) ...`` with an unlowerable selector:
+    ``_walk_case_statement`` compares a reported opaque value
+    (rtl-buddy-cdc#377; it used to walk every arm as unconditional)."""
     src = """
     module m (input logic [3:0] sel, input logic a, b, output logic y);
-        function automatic logic [1:0] g(input logic [3:0] x); return x[1:0]; endfunction
         always_comb begin
-            case (g(sel))
+            case ($countones(sel))
                 2'd0:    y = a;
                 default: y = b;
             endcase
         end
     endmodule
     """
-    mod = _elaborate(tmp_path, src)
-    types = _cell_types(mod)
-    assert "$mux" not in types and "$eq" not in types, (
-        f"an unlowerable case selector must not gate; got {types}"
-    )
+    with caplog.at_level(logging.WARNING):
+        mod = _elaborate(tmp_path, src)
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    (eq,) = [c for c in mod.cells.values() if c.type == "$eq"]
+    assert eq.connections["A"] == unknown.connections["Y"][: len(eq.connections["A"])]
+    assert any("`case` expression" in r.getMessage() for r in caplog.records)
 
 
 def test_comb_case_no_default_multi_writer_uses_prior_value(tmp_path: Path) -> None:
@@ -690,10 +687,10 @@ def test_comb_case_no_default_multi_writer_uses_prior_value(tmp_path: Path) -> N
     )
 
 
-def test_comb_case_var_written_only_in_default_aliases_default(tmp_path: Path) -> None:
-    """A var (``z``) written *only* in the default arm takes the
-    single-writer default-alias leg, while a different var (``y``)
-    written in two arms builds a mux chain."""
+def test_comb_case_var_written_only_in_default_is_a_latch(tmp_path: Path) -> None:
+    """A var (``z``) written *only* in the default arm, and one (``y``)
+    written in the two explicit arms, are each held on the other paths:
+    two latches (rtl-buddy-cdc#377)."""
     src = """
     module m (input logic [1:0] sel, input logic a, b, c, output logic y, z);
         always_comb begin
@@ -706,12 +703,9 @@ def test_comb_case_var_written_only_in_default_aliases_default(tmp_path: Path) -
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    z_bit = mod.ports["z"].bits[0]
-    c_bit = mod.ports["c"].bits[0]
-    # z aliases straight to c (the only arm that writes it).
-    assert mod.netnames["z"].bits == (c_bit,) or z_bit == c_bit or True
-    # The key assertion: y still mux-chains (2 writers).
-    assert _cell_types(mod).count("$mux") == 2
+    latches = {c.connections["Q"]: c for c in mod.cells.values() if c.type == "$dlatch"}
+    assert set(latches) == {mod.ports["y"].bits, mod.ports["z"].bits}
+    assert latches[mod.ports["z"].bits].connections["D"] == mod.ports["c"].bits
 
 
 def test_comb_case_var_absent_from_some_arms_skips_those(tmp_path: Path) -> None:
@@ -797,9 +791,8 @@ def test_latch_unmodelled_rhs_emits_dlatch_with_unknown_d(tmp_path: Path) -> Non
     ``$dlatch`` itself still emits."""
     src = """
     module m (input logic en, input logic [3:0] d, output logic [3:0] q);
-        function automatic logic [3:0] f(input logic [3:0] x); return x + 1; endfunction
         always_latch begin
-            if (en) q = f(d);
+            if (en) q = $countones(d);
         end
     endmodule
     """
@@ -849,10 +842,9 @@ def test_indexed_assign_unlowerable_selector_ignored(tmp_path: Path) -> None:
     ``_alias_indexed_assign`` bails (``idx_bits is None``)."""
     src = """
     module m (input logic [1:0] i, output logic [3:0] base);
-        function automatic logic [1:0] g(input logic [1:0] x); return x + 1; endfunction
         always_comb begin
             base = '0;
-            base[g(i)] = 1'b1;
+            base[$countones(i)] = 1'b1;
         end
     endmodule
     """
@@ -860,20 +852,22 @@ def test_indexed_assign_unlowerable_selector_ignored(tmp_path: Path) -> None:
     assert "$shl" not in _cell_types(mod)
 
 
-def test_indexed_assign_unlowerable_rhs_ignored(tmp_path: Path) -> None:
-    """``base[i] = g(v)`` — the RHS doesn't lower, so the one-hot
-    lowering bails (``rhs_bits is None``)."""
+def test_indexed_assign_unlowerable_rhs_is_opaque(tmp_path: Path) -> None:
+    """``base[i] = $countones(v)`` — the RHS doesn't lower, so the one-hot
+    shift takes a reported opaque operand (rtl-buddy-cdc#377; ``base``
+    used to be left as it was)."""
     src = """
     module m (input logic [1:0] i, input logic [3:0] v, output logic [3:0] base);
-        function automatic logic g(input logic [3:0] x); return ^x; endfunction
         always_comb begin
             base = '0;
-            base[i] = g(v);
+            base[i] = $countones(v);
         end
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$shl" not in _cell_types(mod)
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    (shl,) = [c for c in mod.cells.values() if c.type == "$shl"]
+    assert shl.connections["A"][:1] == unknown.connections["Y"]
 
 
 # --- range / element select conservative bails ----------------------------
@@ -925,10 +919,10 @@ def _no_loop_unroll_flops(mod) -> bool:
     return not _flops(mod)
 
 
-def test_for_loop_noncompound_step_does_not_unroll(tmp_path: Path) -> None:
-    """``for (i = 0; i < 4; i = i + 1)`` — the step is a plain (non-
-    compound) assignment, which ``_emit_for_loop`` doesn't model, so the
-    loop body isn't unrolled (no flops emitted)."""
+def test_for_loop_noncompound_step_unrolls(tmp_path: Path) -> None:
+    """``for (i = 0; i < 4; i = i + 1)`` — the Verilog-2001 step form
+    unrolls like ``i++`` (rtl-buddy-cdc#377; the loop used to be skipped
+    without a word)."""
     src = """
     module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
         logic [3:0] mem [4];
@@ -939,9 +933,7 @@ def test_for_loop_noncompound_step_does_not_unroll(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert _no_loop_unroll_flops(mod), (
-        f"a non-compound step must not unroll; got {_cell_types(mod)}"
-    )
+    assert not _no_loop_unroll_flops(mod)
 
 
 def test_for_loop_self_referential_step_does_not_unroll(tmp_path: Path) -> None:
@@ -1030,8 +1022,7 @@ def test_replication_unlowerable_pattern_is_unknown(tmp_path: Path) -> None:
     opaque driver."""
     src = """
     module m (input logic clk, input logic [1:0] x, output logic [3:0] q);
-        function automatic logic [1:0] g(input logic [1:0] v); return v + 1; endfunction
-        always_ff @(posedge clk) q <= {2{g(x)}};
+        always_ff @(posedge clk) q <= {2{2'($countones(x))}};
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -1046,8 +1037,7 @@ def test_net_initializer_unlowerable_rhs_emits_no_cell(tmp_path: Path) -> None:
     so no cell is emitted for the initializer."""
     src = """
     module m (input logic [3:0] x, output logic [3:0] y);
-        function automatic logic [3:0] g(input logic [3:0] v); return v + 1; endfunction
-        logic [3:0] w = g(x);
+        logic [3:0] w = $countones(x);
         assign y = w;
     endmodule
     """

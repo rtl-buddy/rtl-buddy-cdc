@@ -48,55 +48,9 @@ schema = 1
 # analyzer is fixed the affected design's test fails; update its counts,
 # drop the finding / missed entry, and remove the gap here.
 
-[gaps.slang-comb-forward-read]
-kind = "frontend"
-rules = []
-summary = """
-On the slang path a value computed by a procedural combinational block
-(always @* / always_comb) does not reach logic that reads it earlier in
-source order. The frontend lowers such a block by re-pointing the
-written variable at its new driver; continuous assigns also re-point
-every cell built before them (rtl-buddy-cdc#326), procedural blocks do
-not, so an earlier reader keeps the variable's undriven placeholder.
-Combinational blocks are order-independent in the language and on the
-Yosys path."""
-reproducer = """
-a_q is a clk_a register; `always @(posedge clk_b) begin s1 <= x; q <=
-s1; end` followed by `always @* x = a_q;`. Yosys: 3 flops, 1 crossing;
-slang: the s1 stage reads nothing, a_q is pruned, 0 crossings. Moving
-the always @* above the clocked block makes the frontends agree."""
-
-[gaps.slang-incomplete-comb-block]
-kind = "frontend"
-rules = []
-summary = """
-The slang frontend drops (with a 'procedural block not lowered'
-warning) a level-sensitive always block in which some variable is not
-assigned on every path, unless the block is the single `if (en) q = d;`
-latch shape. Yosys lowers the complete targets as combinational logic
-and infers a latch only for the incomplete one, so one scratch variable
-assigned under a condition costs every other output of the block on
-the slang path."""
-reproducer = """
-a_q is a clk_a register; `always @* begin x = a_q; if (v) t = a_q;
-end` with x captured by a two-flop clk_b synchroniser (t unused).
-Yosys: 3 flops, 1 crossing; slang: the block is dropped with a
-warning, 2 flops, 0 crossings."""
-
-[gaps.slang-function-call]
-kind = "frontend"
-rules = ["CDC-004"]
-summary = """
-The slang frontend does not lower a call to a user-defined function: the
-call becomes a `$_UNKNOWN_` cell, so the logic the function computes is
-invisible to the structural rules. A gray pointer written
-`gray <= bin2gray(b)` with `bin2gray = b ^ (b >> 1)` loses its `$xor`, and
-the gray-coded crossing reports CDC-004 on the slang path only."""
-reproducer = """
-`function [3:0] bin2gray(input [3:0] x); bin2gray = x ^ (x >> 1);
-endfunction` and `always @(posedge clk) g <= bin2gray(b + 1);`: Yosys
-emits `$add` + `$xor`; slang emits `$add` + `$_UNKNOWN_`. Writing the
-XOR inline makes the frontends agree."""
+# (none open: the slang-path gaps recorded here, slang-comb-forward-read,
+# slang-incomplete-comb-block, slang-function-call and slang-system-call,
+# were closed by rtl-buddy-cdc#377)
 
 # --- Designs -----------------------------------------------------------------
 
@@ -143,9 +97,9 @@ sources = ["rtl/axis_async_fifo.v"]
 top = "axis_async_fifo"
 sdc = "sdc/axis_async_fifo.sdc"
 expect = { clocks = ["s_clk", "m_clk"], crossings = 7, rules = {} }
-slang = { reads = true, matches_yosys = false, crossings = 7, rules = { "CDC-004" = 1 }, gap = "slang-function-call" }
+slang = { reads = true, matches_yosys = true }
 notes = """
-Clean on the Yosys path. wr_ptr_gray_reg / rd_ptr_gray_reg are the gray
+Clean on both paths. wr_ptr_gray_reg / rd_ptr_gray_reg are the gray
 code b ^ (b >> 1) of the next binary pointer, captured by a two-stage
 13-bit synchroniser (*_gray_sync1_reg -> *_gray_sync2_reg) whose stages
 are cleared synchronously by the destination's reset port (if (m_rst)
@@ -154,11 +108,10 @@ synchronised local reset folds away at the default parameters). The
 first-stage test looks through that reset mux since rtl-buddy-cdc#366
 (2 false CDC-004 before). The other five crossings
 (two reset synchronisers, three toggle-pulse status synchronisers) are
-correctly silent. On the slang path the write pointer still reports
-CDC-004 (a false positive): it is written wr_ptr_gray_reg <=
-bin2gray(wr_ptr_temp), and the slang frontend leaves the function call
-as an unknown cell, so the gray encoder is invisible; the read pointer
-writes the XOR inline and is clean on both paths."""
+correctly silent. The write pointer is written wr_ptr_gray_reg <=
+bin2gray(wr_ptr_temp); the slang frontend inlines the function since
+rtl-buddy-cdc#377 (before, the call was an unknown cell, the gray
+encoder was invisible and the slang path reported a false CDC-004)."""
 
 [[design]]
 name = "axil_cdc"
@@ -198,15 +151,15 @@ sources = ["rtl/afifo.v"]
 top = "afifo"
 sdc = "sdc/zipcpu_afifo.sdc"
 expect = { clocks = ["i_wclk", "i_rclk"], crossings = 2, rules = {} }
-slang = { reads = true, matches_yosys = false, crossings = 2, rules = { "CDC-026" = 1 }, gap = "slang-comb-forward-read" }
+slang = { reads = true, matches_yosys = true }
 notes = """
-Clean on the Yosys path, as expected for a textbook gray-pointer FIFO.
-On the slang path both pointer crossings are found (the packed
-{rd_wgray, wgray_cross} <= {wgray_cross, wgray} synchronisers lower
-since rtl-buddy-cdc#370), but CDC-026 fires on the RAM (false
-positive): the rd_addr register's enable reads lcl_read / lcl_rd_empty,
-which always @(*) blocks further down the file compute, so the
-synchronised write pointer never reaches the read address cone."""
+Clean on both paths, as expected for a textbook gray-pointer FIFO. The
+slang path lowers the packed {rd_wgray, wgray_cross} <= {wgray_cross,
+wgray} synchronisers since rtl-buddy-cdc#370, and since
+rtl-buddy-cdc#377 the rd_addr register's enable sees lcl_read /
+lcl_rd_empty, which always @(*) blocks further down the file compute
+(before, the synchronised write pointer never reached the read address
+cone and CDC-026 fired on the RAM)."""
 
 [[design]]
 name = "zipcpu_apbxclk"
@@ -273,19 +226,19 @@ sources = ["rtl/ptp_clock_cdc.v"]
 top = "ptp_clock_cdc"
 sdc = "sdc/ptp_clock_cdc.sdc"
 expect = { clocks = ["input_clk", "output_clk", "sample_clk"], crossings = 9, rules = { "CDC-001" = 1, "CDC-012" = 3 } }
-slang = { reads = true, matches_yosys = false, crossings = 0, rules = {}, gap = "slang-incomplete-comb-block" }
+slang = { reads = true, matches_yosys = true }
 notes = """
 Both next-state always @* blocks (dest_* at line 358, ts_* at line 551)
 assign a scratch overflow variable (dest_ovf / ptp_ovf) only under a
-condition, so each is dropped with a warning, and with them every
-register that feeds the outputs; dead-logic pruning then removes the
-source and sample domains. The concatenation targets in those blocks
-({dest_update_next, dest_phase_next} = ..., ...) lower since
-rtl-buddy-cdc#370. The clocked block at line 429 also reads values the
-line-551 block computes (slang-comb-forward-read). Lowering both blocks
-and forward reads (an experiment, not shipped) reaches 28 of Yosys' 77
-flops and 3 of 9 crossings, so further, untriaged slang gaps remain
-behind these two."""
+condition. The slang path used to drop each block whole, and with it
+every register feeding the outputs (0 crossings). Since
+rtl-buddy-cdc#377 the overflow variables are latches and the rest is
+combinational, as on the Yosys path; the clocked block at line 429 sees
+the values the line-551 block computes although they come later in the
+file; and the lock detectors' `$signed(...)` comparisons (lines 403 and
+653) and the gain-scheduling `casez` lower. The concatenation targets in
+those blocks ({dest_update_next, dest_phase_next} = ..., ...) lower
+since rtl-buddy-cdc#370."""
 
 [[design.finding]]
 rule = "CDC-001"

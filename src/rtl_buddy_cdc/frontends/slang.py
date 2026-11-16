@@ -80,9 +80,25 @@ What currently works
   Plain ``always_ff @(posedge clk) q <= d;`` emits ``$dff``.
 - Verilog-2001 ``always`` blocks (rtl-buddy-cdc#345), by what they
   infer: edge-triggered → the ``always_ff`` lowering; ``@*`` or a
-  complete level-sensitive body → ``always_comb``; a latch of the
-  ``if (en) q = d;`` shape → ``$dlatch``. Anything else is reported
-  with a ``WARNING`` (see :meth:`_ModuleBuilder._warn_dropped`).
+  level-sensitive list → the ``always_comb`` lowering. Anything else is
+  reported with a ``WARNING`` (see :meth:`_ModuleBuilder._warn_dropped`).
+- Level-sensitive bodies (``always_comb``, ``always @*``,
+  ``always_latch``) lower the way Yosys ``proc`` does
+  (rtl-buddy-cdc#377): an ``if`` / ``case`` merges each variable with a
+  ``$mux``, an arm that does not write it contributing its prior value,
+  and a variable held on some path becomes a ``$dlatch`` enabled by the
+  condition it is written under (:meth:`_ModuleBuilder._infer_latches`);
+  the rest is combinational. The result reaches readers anywhere in the
+  module, earlier in the file included.
+- In clocked blocks a blocking write's value reaches the later reads of
+  the same block; each register is one flop per contiguous run of the
+  bits the block writes, as ``proc`` groups them (rtl-buddy-cdc#377).
+- User-defined function calls are inlined; ``for`` loops (SV and
+  Verilog-2001 forms) are unrolled in every block; ``n++`` and compound
+  assignments are writes; ``casez`` / ``casex`` labels compare their
+  non-wildcard bits; parameters, enum values and ``x`` / ``z`` literals
+  are constants; gate primitives lower to ``$and`` / ``$or`` / ``$xor``
+  / ``$not`` (rtl-buddy-cdc#377).
 - Blackbox boundaries (rtl-buddy-cdc#345): ``(* blackbox *)`` modules
   and ``--blackbox`` / ``--greybox`` names stay as one cell per
   instance, with a sibling module — see :func:`elaborate_with_blackboxes`.
@@ -142,6 +158,9 @@ What currently works
   ``$shl``-decoder shapes, an unpacked-struct member, a hierarchical
   reference — is reported once per location with a ``WARNING`` (see
   :meth:`_ModuleBuilder._warn_lvalue_dropped`), never dropped silently.
+- A right-hand side, condition or statement the frontend cannot lower
+  is reported with a ``WARNING`` and modelled as an opaque ``$_UNKNOWN_``
+  driver or skipped, never dropped silently (rtl-buddy-cdc#377).
 - Concatenation (``{a, b, c}``) and replication (``{N{x}}``) on the
   RHS — see :meth:`_lower_concatenation` and
   :meth:`_lower_replication`. Pure bit-tuple aliasing, no Yosys
@@ -158,10 +177,9 @@ What currently works
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- **``casex`` / ``casez`` wildcard cases** — the
-  :meth:`_walk_case_statement` lowering treats every label as a
-  full ``$eq`` match, so wildcard bits in the label aren't honored.
-  Uncommon in CDC-sensitive code and not yet wired up.
+- ``while`` / ``repeat`` / ``foreach`` loops, task calls, functions
+  with an early ``return`` or an ``output`` argument, tristate gates,
+  switches and user-defined primitives: reported, not lowered.
 - (was: ``CLK_POLARITY = "0"`` for negedge-clocked flops — landed
   in rtl-buddy-cdc#221 to close the CDC-016 cross-frontend parity
   gap. ``_analyse_event_list`` now reports the clock edge alongside
@@ -172,9 +190,6 @@ What is NOT yet implemented (next slices)
   Yosys-binary form per issue #40, and width comes straight from
   the Q bit-tuple, so multi-bit flops have correct parameter
   shape.)
-- **Gate primitives** (``and g (y, a, b);``, alone or in an instance
-  array) are not lowered; each one is reported with a ``WARNING``
-  (Yosys ``read_verilog`` does lower them).
 - **Yosys-only constructs** (``$_BUF_`` / ``$_NOT_`` primitives in SV
   source) are correctly rejected by slang — they're post-synthesis
   cells, not legal SV. Fixtures that rely on them
@@ -498,6 +513,33 @@ def _literal_base_binary() -> Any:
     return pyslang.LiteralBase.Binary
 
 
+class _Bits:
+    """An already-lowered right-hand side, standing in for an expression
+    (see :class:`_Assign`); ``syntax`` / ``sourceRange`` are the source
+    construct's, for diagnostics."""
+
+    def __init__(self, bits: tuple[Bit, ...], node: Any) -> None:
+        self.bits = bits
+        self.type = None
+        self.syntax = getattr(node, "syntax", None)
+        self.sourceRange = getattr(node, "sourceRange", None)
+
+
+class _Assign:
+    """A write the procedural walkers lower like a blocking
+    ``AssignmentExpression``: ``n++`` / ``n--`` as ``n = n ± 1``
+    (rtl-buddy-cdc#377)."""
+
+    isNonBlocking = False
+    isCompound = False
+
+    def __init__(self, left: Any, right: _Bits, node: Any) -> None:
+        self.left = left
+        self.right = right
+        self.syntax = getattr(node, "syntax", None)
+        self.sourceRange = getattr(node, "sourceRange", None)
+
+
 class _ModuleBuilder:
     """Translate a pyslang elaborated :class:`InstanceSymbol` into a
     :class:`netlist.Module`.
@@ -535,10 +577,11 @@ class _ModuleBuilder:
         self._blackbox_names = blackbox_names
         self._greybox_names = greybox_names
         self._siblings: dict[str, Module] = siblings if siblings is not None else {}
-        # True while lowering a plain Verilog-2001 ``always`` block, which,
-        # unlike ``always_ff`` / ``always_comb``, carries no style rule
-        # about blocking vs nonblocking writes (rtl-buddy-cdc#345).
-        self._plain_always = False
+        # Blocking writes in the clocked block being lowered: variable ->
+        # its register bits (its net). Its entry in ``_var_bits`` holds
+        # the value written so far, which later reads in the block see
+        # (rtl-buddy-cdc#377).
+        self._blocking_nets: dict[Any, tuple[Bit, ...]] = {}
         self._next_bit_id = 2
         # Map canonical pyslang VariableSymbol → tuple of bit refs.
         # PortSymbols are normalised to their internal Variable before
@@ -570,18 +613,22 @@ class _ModuleBuilder:
         # recognises the resulting hold-feedback mux as a handshake-
         # gated bus crossing. See issue #64.
         self._enable_stack: list[Bit] = []
-        # Per-procedural-block write accumulator: maps each LHS bit
-        # tuple to a list of ``(enable, rhs)`` pairs in walk order.
-        # ``_emit_assignment_expression`` appends instead of emitting
-        # cells; ``_drain_proc_writes`` (called at end of
-        # ``_emit_procedural_block``) builds one flop per LHS with a
-        # mux tree from the accumulated writes. So
-        # ``if (cond) q <= a; else q <= b;`` collapses to one ``$adff``
-        # whose D is ``mux(cond, b, a)`` — not two flops with the same
-        # Q. Initialised fresh on each procedural-block entry.
+        # Per-procedural-block write accumulator: maps each written
+        # variable to ``(register bits, writes)``, each write a ``(start,
+        # enable, rhs bits)`` in walk order. ``_emit_assignment_expression``
+        # appends instead of emitting cells; ``_drain_proc_writes`` (called
+        # at the end of ``_emit_procedural_block``) builds one flop per
+        # contiguous run of written bits with a mux tree from the
+        # accumulated writes. So ``if (cond) q <= a; else q <= b;``
+        # collapses to one ``$adff`` whose D is ``mux(cond, b, a)`` — not
+        # two flops with the same Q — and so does ``q <= 0; if (c) q[1] <=
+        # b;`` (rtl-buddy-cdc#377). Initialised fresh on each block entry.
         self._proc_writes: dict[
-            tuple[Bit, ...],
-            list[tuple[Bit | None, tuple[Bit, ...]]],
+            Any,
+            tuple[
+                tuple[Bit, ...],
+                list[tuple[int, Bit | None, tuple[Bit, ...]]],
+            ],
         ] = {}
         # Per-procedural-block async-reset value accumulator: maps each
         # LHS bit tuple to the integer constant written in the reset
@@ -602,6 +649,27 @@ class _ModuleBuilder:
         # ``(location, reason)`` of every assignment already reported by
         # :meth:`_warn_lvalue_dropped` (rtl-buddy-cdc#370).
         self._lvalue_warned: set[tuple[str | None, str]] = set()
+        # Every bit :meth:`_alloc_bits` handed to a variable: the net a
+        # reader sees until the variable's driver is known. Only these are
+        # re-pointed by a forward rename (rtl-buddy-cdc#377).
+        self._placeholder_bits: set[int] = set()
+        # Branch-merge ``$mux`` cells of the combinational body being
+        # lowered, by output bits: ``(S, A, B)``. Read by
+        # :meth:`_infer_latches` (rtl-buddy-cdc#377).
+        # Function inlining (rtl-buddy-cdc#377): nesting depth, the return
+        # variable of each function being inlined, and a count of the
+        # constructs any walk failed to lower, which an inlined body must
+        # not add to.
+        self._inline_depth = 0
+        self._inline_returns: list[Any] = []
+        # Target of each compound assignment (``x += 1``) whose right-hand
+        # side is being lowered: what its ``LValueReferenceExpression``
+        # reads.
+        self._compound_lhs: list[Any] = []
+        self._lowering_failures = 0
+        self._branch_muxes: dict[
+            tuple[Bit, ...], tuple[Bit, tuple[Bit, ...], tuple[Bit, ...]]
+        ] = {}
 
     # -- public ----------------------------------------------------------
 
@@ -724,10 +792,10 @@ class _ModuleBuilder:
         if cached is not None:
             return cached
         width = self._width_of(var_sym)
-        bits: tuple[Bit, ...] = tuple(
-            range(self._next_bit_id, self._next_bit_id + width)
-        )
+        ids = range(self._next_bit_id, self._next_bit_id + width)
         self._next_bit_id += width
+        self._placeholder_bits.update(ids)
+        bits: tuple[Bit, ...] = tuple(ids)
         self._var_bits[var_sym] = bits
         return bits
 
@@ -909,13 +977,7 @@ class _ModuleBuilder:
         elif kind == "InstanceArraySymbol":
             self._emit_instance_array(member, hier_prefix, member.name)
         elif kind == "PrimitiveInstanceSymbol":
-            # Gate primitives (``and g (y, a, b);``) are not lowered;
-            # say so rather than drop their logic silently.
-            self._warn_dropped(
-                member,
-                f"gate primitive {member.name or '<unnamed>'}",
-                "primitive instance",
-            )
+            self._emit_primitive(member)
         elif kind == "NetSymbol":
             # ``wire foo = <expr>;`` lowers as a NetSymbol whose
             # ``initializer`` carries the RHS. pyslang doesn't emit a
@@ -948,16 +1010,18 @@ class _ModuleBuilder:
         init_expr = getattr(member, "initializer", None)
         if init_expr is None:
             return
-        rhs_bits = self._sized_rhs_bits(init_expr, len(self._alloc_bits(member)))
-        if rhs_bits is None:
-            return
+        rhs_bits = self._rhs_bits(init_expr, len(self._alloc_bits(member)))
         canonical = self._canonical_var(member)
         # Allocate the net's bits if it's the first time we've seen it;
         # then merge them into the RHS bits via the same alias-rewrite
         # primitive ``_emit_continuous_assign`` uses, so any reader of
         # the net follows through to the driving cell's output.
         net_bits = self._alloc_bits(member)
+        before = dict(self._var_bits)
         self._merge_canonical_var(canonical, net_bits, rhs_bits)
+        # A reader earlier in source order sees the driver too, as for
+        # ``assign`` (rtl-buddy-cdc#377).
+        self._record_forward_renames(before)
 
     def _emit_instance(self, inst: Any, parent_prefix: str, name: str) -> None:
         """Lower one module instance named ``name`` under ``parent_prefix``:
@@ -1004,6 +1068,10 @@ class _ModuleBuilder:
             kind = self._kind_name(element)
             if kind == "InstanceSymbol":
                 self._emit_instance(element, parent_prefix, elem_name)
+            elif kind == "PrimitiveInstanceSymbol":
+                # slang hands each element its own slice of a vector
+                # terminal (IEEE 1800-2017 28.3.6).
+                self._emit_primitive(element)
             elif kind == "InstanceArraySymbol":
                 self._emit_instance_array(element, parent_prefix, elem_name)
             else:
@@ -1094,9 +1162,67 @@ class _ModuleBuilder:
             return bits
         if kind == "EmptyArgumentExpression":
             return None
-        return self._bits_of_expression(ex)
+        return self._bits_of_expression(ex) or self._opaque(
+            ex, self._expr_width(ex), f"input port connection `{pc.port.name}`"
+        )
 
     # -- blackbox boundaries (rtl-buddy-cdc#345) --------------------------
+
+    # Built-in gates (IEEE 1800-2017 28.4/28.5) by the cell their
+    # inputs fold through and whether the result is inverted, as Yosys'
+    # ``read_verilog`` lowers them.
+    _GATE_CELLS: dict[str, tuple[str | None, bool]] = {
+        "and": ("$and", False),
+        "or": ("$or", False),
+        "xor": ("$xor", False),
+        "nand": ("$and", True),
+        "nor": ("$or", True),
+        "xnor": ("$xor", True),
+        "buf": (None, False),
+        "not": (None, True),
+    }
+
+    def _emit_primitive(self, prim: Any) -> None:
+        """Lower a built-in gate instance (``and g (y, a, b, c);``,
+        ``not n (y1, y2, a);``) as Yosys ``read_verilog`` does: the inputs
+        folded left to right through 2-input ``$and`` / ``$or`` / ``$xor``
+        cells, a ``$not`` for the inverting gates, every output driven
+        like a continuous ``assign`` (rtl-buddy-cdc#377; gates were
+        reported since rtl-buddy-cdc#353 but not lowered). The delay and
+        strengths have no logic. Tristate gates, switches, pulls and
+        user-defined primitives are reported, as before."""
+        name = getattr(getattr(prim, "primitiveType", None), "name", "")
+        conns = list(getattr(prim, "portConnections", None) or [])
+        spec = self._GATE_CELLS.get(name)
+        if spec is None or len(conns) < 2:
+            self._warn_dropped(
+                prim,
+                f"`{name or '?'}` primitive {prim.name or '<unnamed>'} is not modelled",
+                "primitive instance",
+            )
+            return
+        cell, invert = spec
+        if cell is None:  # buf / not: n outputs, one input
+            outputs, inputs = conns[:-1], conns[-1:]
+        else:  # and / or / xor / nand / nor / xnor: one output, n inputs
+            outputs, inputs = conns[:1], conns[1:]
+        bits = [self._rhs_bits(e, 1, "gate input")[0] for e in inputs]
+        value: Bit = bits[0]
+        for nxt in bits[1:]:
+            assert cell is not None
+            value = self._emit_comb_cell(
+                cell, {"A": (value,), "B": (nxt,)}, output_width=1, src_node=prim
+            )[0]
+        if invert:
+            value = self._emit_comb_cell(
+                "$not", {"A": (value,)}, output_width=1, src_node=prim
+            )[0]
+        for out in outputs:
+            target = getattr(out, "left", None)
+            if type(out).__name__ != "AssignmentExpression" or target is None:
+                continue
+            if not self._splice_assign(target, _Bits((value,), out), continuous=True):
+                self._warn_lvalue_dropped(prim, target)
 
     def _is_boundary_instance(self, inst: Any) -> bool:
         """True iff ``inst`` stays a boundary cell instead of being inlined.
@@ -1276,6 +1402,8 @@ class _ModuleBuilder:
         # the same target (the if/else both-arms case).
         self._proc_writes = {}
         self._proc_resets = {}
+        prev_blocking = self._blocking_nets
+        self._blocking_nets = {}
         block_reset_sym = reset_sym
         block_reset_active_low = reset_active_low
         block_reset_kind: str | None = None
@@ -1317,14 +1445,6 @@ class _ModuleBuilder:
                     block_reset_active_low,
                     src_node,
                 )
-            elif self._kind_name(inner) == "ExpressionStatement":
-                self._emit_assignment_expression(
-                    inner.expr,
-                    clk_sym,
-                    reset_sym=None,
-                    reset_active_low=False,
-                    src_node=src_node,
-                )
             else:
                 # Body isn't a single conditional or expression — defer
                 # to the general statement walker. Reached for no-reset
@@ -1345,6 +1465,9 @@ class _ModuleBuilder:
                 reset_kind=block_reset_kind,
             )
         finally:
+            # Outside the block a blocking-written variable is its register.
+            self._var_bits.update(self._blocking_nets)
+            self._blocking_nets = prev_blocking
             self._proc_writes = {}
             self._proc_resets = {}
             self._clk_negedge = prev_clk_negedge
@@ -1392,6 +1515,8 @@ class _ModuleBuilder:
         otherwise come back clean on a design it never saw. Logged at
         ``WARNING`` (stderr) with the source location, like the frontend's
         other non-fatal diagnostics."""
+        # (``getattr``: also reached on a bare builder in unit tests.)
+        self._lowering_failures = getattr(self, "_lowering_failures", 0) + 1
         where = self._src_attr(block) or "<unknown location>"
         _log.warning(
             "slang frontend: %s: %s not lowered (%s); its "
@@ -1407,45 +1532,30 @@ class _ModuleBuilder:
         - every event edge-qualified (``@(posedge clk)``, ``@(posedge clk
           or negedge rst_n)``, ``negedge`` clocks) → the ``always_ff``
           lowering, async reset and enables included;
-        - ``@*`` / ``@(*)`` or a level-sensitive list (``@(a or b)``) whose
-          body assigns every target on every path → ``always_comb``. Like
-          synthesis, the list itself is not checked for completeness;
-        - level-sensitive with a target left unassigned on some path (an
-          inferred latch) → the ``always_latch`` lowering when the body is
-          the ``if (en) q = d;`` shape it models.
+        - ``@*`` / ``@(*)`` or a level-sensitive list (``@(a or b)``) →
+          :meth:`_lower_comb_body`: combinational logic, plus a ``$dlatch``
+          for each target left unassigned on some path (rtl-buddy-cdc#377;
+          the whole block used to be dropped unless it was the single
+          ``if (en) q = d;`` shape). Like synthesis, the list itself is not
+          checked for completeness;
 
         Anything else (mixed edge / level lists, ``edge``, delays, event
         controls inside the body) is reported by :meth:`_warn_dropped`.
-        Blocking and nonblocking writes are both accepted.
+        Blocking and nonblocking writes are both accepted, here as in every
+        procedural block (rtl-buddy-cdc#377).
         """
         body = block.body
         form = self._plain_always_form(body)
-        prev = self._plain_always
-        self._plain_always = True
-        try:
-            if form == "ff":
-                self._emit_always_ff(block)
-                self._warn_blocking_temporaries(block, body.stmt)
-            elif form == "level":
-                written, always_written = self._assigned_symbols(body.stmt)
-                if not (written - always_written):
-                    self._walk_comb_statement(body.stmt)
-                elif self._is_latch_shape(body.stmt):
-                    self._walk_latch_statement(body.stmt)
-                else:
-                    self._warn_dropped(
-                        block,
-                        "level-sensitive `always` infers a latch in a shape "
-                        "other than `if (en) q = d;`",
-                    )
-            else:
-                self._warn_dropped(
-                    block,
-                    "`always` is not edge-triggered on every event, nor "
-                    "`@*` / level-sensitive",
-                )
-        finally:
-            self._plain_always = prev
+        if form == "ff":
+            self._emit_always_ff(block)
+        elif form == "level":
+            self._lower_comb_body(body.stmt, block)
+        else:
+            self._warn_dropped(
+                block,
+                "`always` is not edge-triggered on every event, nor "
+                "`@*` / level-sensitive",
+            )
 
     def _plain_always_form(self, body: Any) -> str | None:
         """``"ff"`` / ``"level"`` / ``None`` (not lowerable) for the
@@ -1473,169 +1583,6 @@ class _ModuleBuilder:
             return "level"
         return None
 
-    def _assigned_symbols(self, stmt: Any) -> tuple[set[Any], set[Any]]:
-        """``(written, always_written)``: the variables ``stmt`` assigns
-        on some path, and those it assigns on every path.
-
-        A variable in the first set but not the second holds its value on
-        some path, which is a latch. Tracked per variable, not per bit;
-        a ``case`` without ``default`` counts as incomplete."""
-        none: tuple[set[Any], set[Any]] = (set(), set())
-        if stmt is None:
-            return none
-        kind = self._kind_name(stmt)
-        if kind == "BlockStatement":
-            return self._assigned_symbols(stmt.body)
-        if kind in {"StatementList", "ListStatement"}:
-            written: set[Any] = set()
-            always: set[Any] = set()
-            for s in getattr(stmt, "list", []) or []:
-                w, a = self._assigned_symbols(s)
-                written |= w
-                always |= a
-            return written, always
-        if kind == "ExpressionStatement":
-            expr = stmt.expr
-            if type(expr).__name__ != "AssignmentExpression":
-                return none
-            syms = self._lvalue_symbols(expr.left)
-            return set(syms), set(syms)
-        if kind == "ConditionalStatement":
-            conds = getattr(stmt, "conditions", None)
-            const = self._const_int(conds[0].expr) if conds else None
-            if const is not None:
-                return self._assigned_symbols(
-                    stmt.ifTrue if const != 0 else stmt.ifFalse
-                )
-            tw, ta = self._assigned_symbols(stmt.ifTrue)
-            if stmt.ifFalse is None:
-                return tw, set()
-            fw, fa = self._assigned_symbols(stmt.ifFalse)
-            return tw | fw, ta & fa
-        if kind == "CaseStatement":
-            arms = [
-                self._assigned_symbols(getattr(it, "stmt", None))
-                for it in (getattr(stmt, "items", []) or [])
-            ]
-            default = getattr(stmt, "defaultCase", None)
-            written = set().union(*(w for w, _ in arms)) if arms else set()
-            if default is None:
-                return written, set()
-            dw, da = self._assigned_symbols(default)
-            always = set(da)
-            for _, a in arms:
-                always &= a
-            return written | dw, always
-        if kind == "ForLoopStatement":
-            return self._assigned_symbols(getattr(stmt, "body", None))
-        return none
-
-    def _lvalue_symbols(self, expr: Any) -> list[Any]:
-        """Root variable symbols an assignment target writes."""
-        kind = type(expr).__name__
-        if kind == "NamedValueExpression":
-            return [self._canonical_var(expr.symbol)]
-        if kind in {
-            "ElementSelectExpression",
-            "RangeSelectExpression",
-            "MemberAccessExpression",
-        }:
-            return self._lvalue_symbols(getattr(expr, "value", None))
-        if kind == "ConcatenationExpression":
-            out: list[Any] = []
-            for op in getattr(expr, "operands", []) or []:
-                out.extend(self._lvalue_symbols(op))
-            return out
-        return []
-
-    def _is_latch_shape(self, stmt: Any) -> bool:
-        """Every statement is the single-arm ``if (en) lhs = rhs;`` shape
-        :meth:`_walk_latch_statement` lowers to a ``$dlatch``."""
-        kind = self._kind_name(stmt)
-        if kind == "BlockStatement":
-            return self._is_latch_shape(stmt.body)
-        if kind in {"StatementList", "ListStatement"}:
-            items = getattr(stmt, "list", []) or []
-            return bool(items) and all(self._is_latch_shape(s) for s in items)
-        if kind != "ConditionalStatement" or stmt.ifFalse is not None:
-            return False
-        arm = stmt.ifTrue
-        while arm is not None and self._kind_name(arm) == "BlockStatement":
-            arm = arm.body
-        return (
-            arm is not None
-            and self._kind_name(arm) == "ExpressionStatement"
-            and type(arm.expr).__name__ == "AssignmentExpression"
-        )
-
-    def _warn_blocking_temporaries(self, block: Any, stmt: Any) -> None:
-        """Warn when an edge-triggered plain ``always`` reads a variable
-        after writing it with a blocking ``=`` earlier in the same block.
-
-        Each written variable lowers to a register, so such a read sees
-        the registered value, where synthesis forwards the value written
-        earlier in the block (``t = a; q = t;`` makes ``q`` a copy of
-        ``a``, not of ``t``). The netlist can then show more flop stages
-        than the hardware has. Reading before writing (``n = n + 1``)
-        is exact and not reported."""
-        written: set[Any] = set()
-        late_reads: set[Any] = set()
-
-        def reads(node: Any) -> set[Any]:
-            found: set[Any] = set()
-
-            def visit(n: Any) -> bool:
-                if type(n).__name__ == "NamedValueExpression":
-                    found.add(self._canonical_var(n.symbol))
-                return True
-
-            if node is not None:
-                node.visit(visit)
-            return found
-
-        def walk(st: Any) -> None:
-            if st is None:
-                return
-            kind = self._kind_name(st)
-            if kind == "BlockStatement":
-                walk(st.body)
-            elif kind in {"StatementList", "ListStatement"}:
-                for s in getattr(st, "list", []) or []:
-                    walk(s)
-            elif kind == "ExpressionStatement":
-                expr = st.expr
-                if type(expr).__name__ != "AssignmentExpression":
-                    late_reads.update(reads(expr) & written)
-                    return
-                late_reads.update(reads(expr.right) & written)
-                if not getattr(expr, "isNonBlocking", False):
-                    written.update(self._lvalue_symbols(expr.left))
-            elif kind == "ConditionalStatement":
-                for cond in getattr(st, "conditions", []) or []:
-                    late_reads.update(reads(cond.expr) & written)
-                walk(st.ifTrue)
-                walk(st.ifFalse)
-            elif kind == "CaseStatement":
-                late_reads.update(reads(getattr(st, "expr", None)) & written)
-                for item in getattr(st, "items", []) or []:
-                    walk(getattr(item, "stmt", None))
-                walk(getattr(st, "defaultCase", None))
-            elif kind == "ForLoopStatement":
-                # Twice: a write in one iteration precedes the next one's reads.
-                walk(getattr(st, "body", None))
-                walk(getattr(st, "body", None))
-
-        walk(stmt)
-        if late_reads:
-            _log.warning(
-                "slang frontend: %s: blocking-assigned %s read later in the "
-                "same edge-triggered `always`; modelled as register(s), so "
-                "the read sees the registered value rather than the one "
-                "written earlier in the block",
-                self._src_attr(block) or "<unknown location>",
-                ", ".join(f"`{getattr(s, 'name', '?')}`" for s in late_reads),
-            )
-
     def _collect_reset_assignments(self, stmt: Any) -> None:
         """Walk an ``always_ff`` reset arm (``if (!rst_n) <stmt>``) and
         record per-LHS reset values into ``self._proc_resets``.
@@ -1662,8 +1609,6 @@ class _ModuleBuilder:
             return
         expr = stmt.expr
         if type(expr).__name__ != "AssignmentExpression":
-            return
-        if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
             return
         if type(expr.left).__name__ == "ConcatenationExpression":
             # ``{q, meta} <= 2'b01``: each register takes its slice of
@@ -1867,8 +1812,6 @@ class _ModuleBuilder:
                 # Non-assignment ExpressionStatement (e.g. function
                 # call) — not a reset assign; bail conservatively.
                 return False
-            if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
-                return False
             return self._const_int(expr.right) is not None
         if kind == "VariableDeclStatement":
             return True  # loop-var declarations etc. contribute no flop
@@ -1902,8 +1845,12 @@ class _ModuleBuilder:
             )
             return
         if kind == "ExpressionStatement":
+            write = self._as_assignment(statement.expr)
+            if write is None:
+                self._other_statement(statement, "clocked block")
+                return
             self._emit_assignment_expression(
-                statement.expr,
+                write,
                 clk_sym,
                 reset_sym,
                 reset_active_low,
@@ -1952,42 +1899,22 @@ class _ModuleBuilder:
             #   but with the explicit hold-feedback shape the rule
             #   pack's ``_is_gated_bus_crossing`` matches).
             #
-            # If the condition can't be lowered to a single bit
-            # (multi-pattern match, etc.) fall back to walking both
-            # arms unconditionally — same conservative policy as
-            # before, but rare on real RTL.
-            cond_bit = self._lower_condition_to_bit(statement.conditions)
-            if cond_bit is None:
-                for arm in (statement.ifTrue, statement.ifFalse):
-                    if arm is not None:
-                        self._emit_assignments_in(
-                            arm, clk_sym, reset_sym, reset_active_low, src_node
-                        )
-                return
-            self._enable_stack.append(cond_bit)
-            try:
+            # A condition that does not lower becomes an opaque select
+            # (reported), never an unconditional walk of both arms.
+            cond_bit = self._condition_bit(statement)
+
+            def walk(arm: Any) -> None:
                 self._emit_assignments_in(
-                    statement.ifTrue,
-                    clk_sym,
-                    reset_sym,
-                    reset_active_low,
-                    src_node,
+                    arm, clk_sym, reset_sym, reset_active_low, src_node
                 )
-            finally:
-                self._enable_stack.pop()
+
+            base = self._blocking_values()
+            true_state = self._clocked_arm(cond_bit, statement.ifTrue, walk, base)
+            false_state = base
             if statement.ifFalse is not None:
                 not_cond = self._lower_not(cond_bit)
-                self._enable_stack.append(not_cond)
-                try:
-                    self._emit_assignments_in(
-                        statement.ifFalse,
-                        clk_sym,
-                        reset_sym,
-                        reset_active_low,
-                        src_node,
-                    )
-                finally:
-                    self._enable_stack.pop()
+                false_state = self._clocked_arm(not_cond, statement.ifFalse, walk, base)
+            self._merge_blocking(base, [(cond_bit, true_state)], false_state)
             return
         if kind == "CaseStatement":
             self._emit_case_statement(
@@ -2000,15 +1927,12 @@ class _ModuleBuilder:
             )
             return
         if kind == "VariableDeclStatement":
-            # Loop variable declarations are emitted as siblings of the
-            # ForLoopStatement (``for (int i = ...; ...; ...)``). They
-            # contribute no flops; the loopvar's initial value is
-            # already on its VariableSymbol's ``.initializer``.
+            # A block-local declaration (``for (int i = ...)`` emits its
+            # loop variable as one too): its initialiser is its first
+            # value, visible to the rest of the block.
+            self._declare_local(statement, clocked=True)
             return
-        # Other statement kinds (function/task call, immediate assert,
-        # event, timing control inside always_ff — atypical) fall
-        # through silently; the missing flops surface in analyze
-        # output and we file the next gap when it bites a real design.
+        self._other_statement(statement, "clocked block")
 
     def _emit_case_statement(
         self,
@@ -2071,84 +1995,96 @@ class _ModuleBuilder:
                 )
             return
 
-        # #85: dynamic case-expr — build per-item enables.
-        case_expr_bits = (
-            self._bits_of_expression(case_expr) if case_expr is not None else None
-        )
-        if case_expr_bits is None:
-            # Couldn't lower the case-expr. Conservative bail: walk
-            # every item with no enable so writes still surface as
-            # unconditional flops. Matches the pre-PR shape, so any
-            # design that hit the old path still does.
-            for item in items:
-                self._emit_assignments_in(
-                    getattr(item, "stmt", None),
-                    clk_sym,
-                    reset_sym,
-                    reset_active_low,
-                    src_node,
-                )
-            if default_arm is not None:
-                self._emit_assignments_in(
-                    default_arm, clk_sym, reset_sym, reset_active_low, src_node
-                )
-            return
+        # #85: dynamic case-expr — build per-item enables. A case
+        # expression or label that does not lower is a reported opaque
+        # value (rtl-buddy-cdc#377), never a walk of every arm as if
+        # unconditional.
+        case_expr_bits = self._case_expr_bits(statement)
 
+        def walk(arm: Any) -> None:
+            self._emit_assignments_in(
+                arm, clk_sym, reset_sym, reset_active_low, src_node
+            )
+
+        base = self._blocking_values()
         explicit_match_bits: list[Bit] = []
+        arm_states: list[tuple[Bit, dict[Any, tuple[Bit, ...]]]] = []
         for item in items:
-            item_match_bits: list[Bit] = []
-            for match_expr in getattr(item, "expressions", []) or []:
-                match_bits = self._bits_of_expression(match_expr)
-                if match_bits is None:
-                    continue
-                eq_y = self._alloc_anon_bits(1)
-                eq_name = self._fresh_cell_name("$eq")
-                self._cells[eq_name] = Cell(
-                    name=eq_name,
-                    type="$eq",
-                    connections={
-                        "A": case_expr_bits,
-                        "B": match_bits,
-                        "Y": eq_y,
-                    },
-                    parameters={},
-                    attributes={},
-                )
-                item_match_bits.append(eq_y[0])
-                explicit_match_bits.append(eq_y[0])
+            item_match_bits = [
+                self._case_label_match(case_expr_bits, match_expr, statement)
+                for match_expr in getattr(item, "expressions", []) or []
+            ]
+            explicit_match_bits.extend(item_match_bits)
             item_enable = self._or_bits(item_match_bits)
             item_stmt = getattr(item, "stmt", None)
             if item_enable is None:
-                # No lowerable match in this item (unmodelled pattern
-                # shape). Walk without enable so the body's flops still
-                # emit — same shape as the case-expr bail above.
-                self._emit_assignments_in(
-                    item_stmt, clk_sym, reset_sym, reset_active_low, src_node
-                )
-                continue
-            self._enable_stack.append(item_enable)
-            try:
-                self._emit_assignments_in(
-                    item_stmt, clk_sym, reset_sym, reset_active_low, src_node
-                )
-            finally:
-                self._enable_stack.pop()
+                continue  # an item with no labels never matches
+            arm_states.append(
+                (item_enable, self._clocked_arm(item_enable, item_stmt, walk, base))
+            )
 
+        default_state = base
         if default_arm is not None:
             no_match = self._or_bits(explicit_match_bits)
-            default_enable = self._lower_not(no_match) if no_match is not None else None
-            if default_enable is None:
-                self._emit_assignments_in(
-                    default_arm, clk_sym, reset_sym, reset_active_low, src_node
-                )
+            if no_match is None:
+                walk(default_arm)
+                default_state = self._blocking_values()
             else:
-                self._enable_stack.append(default_enable)
-                try:
-                    self._emit_assignments_in(
-                        default_arm, clk_sym, reset_sym, reset_active_low, src_node
-                    )
-                finally:
-                    self._enable_stack.pop()
+                default_state = self._clocked_arm(
+                    self._lower_not(no_match), default_arm, walk, base
+                )
+        self._merge_blocking(base, arm_states, default_state)
+
+    def _case_expr_bits(self, stmt: Any) -> tuple[Bit, ...]:
+        """The bits of a ``case`` statement's expression, or a reported
+        opaque value of its width."""
+        expr = getattr(stmt, "expr", None)
+        bits = self._bits_of_expression(expr) if expr is not None else None
+        if bits:
+            return bits
+        return self._opaque(
+            expr if expr is not None else stmt,
+            self._expr_width(expr),
+            "`case` expression",
+        )
+
+    def _case_label_match(
+        self, sel_bits: tuple[Bit, ...], label: Any, stmt: Any
+    ) -> Bit:
+        """One bit: ``case`` expression ``sel_bits`` matches ``label``.
+
+        ``$eq`` of the two, like Yosys. In a ``casez`` a ``z`` / ``?``
+        digit of a constant label matches anything, in a ``casex`` (and
+        ``case … inside``) an ``x`` too, so those bit positions are left
+        out of the comparison (rtl-buddy-cdc#377: they were compared as
+        literal ``z`` / ``x`` values, and such a label used to drop its
+        arm). A label that does not lower (a ``case inside`` range, …) is
+        a reported opaque match."""
+        if self._kind_name(label) == "RangeExpression" or label is None:
+            return self._opaque(
+                label if label is not None else stmt, 1, "`case` label"
+            )[0]
+        bits = self._bits_of_expression(label)
+        if not bits:
+            return self._opaque(label, 1, "`case` label")[0]
+        width = max(len(bits), len(sel_bits))
+        bits = self._resize_bits(bits, width)
+        sel = self._resize_bits(sel_bits, width)
+        condition = str(getattr(stmt, "condition", "")).rsplit(".", 1)[-1]
+        wild = {
+            "WildcardJustZ": {"z"},
+            "WildcardXOrZ": {"x", "z"},
+            "Inside": {"x", "z"},
+        }.get(condition, set())
+        lanes = [i for i in range(width) if bits[i] not in wild]
+        if not lanes:
+            return "1"
+        return self._emit_comb_cell(
+            "$eq",
+            {"A": tuple(sel[i] for i in lanes), "B": tuple(bits[i] for i in lanes)},
+            output_width=1,
+            src_node=label,
+        )[0]
 
     def _emit_for_loop(
         self,
@@ -2158,94 +2094,93 @@ class _ModuleBuilder:
         reset_active_low: bool,
         src_node: Any,
     ) -> None:
-        """Virtually unroll a procedural ``for`` loop with compile-time
-        constant bounds and walk the body once per iteration with the
-        loop variable bound to the iteration value.
+        """Virtually unroll a procedural ``for`` loop in a clocked block
+        (see :meth:`_for_loop_iterations`) and walk the body once per
+        iteration with the loop variable bound to the iteration value."""
 
-        Yosys' frontend unrolls these in elaboration; we have to do
-        the same so element selects in the body (``chain[i]`` /
-        ``chain[i-1]``) fold to per-iteration bits. Loops whose bounds
-        can't be folded — runtime stop expression, non-trivial step,
-        multi-variable header — fall through with no emit, matching
-        the existing walker's "skip on unrecognised shape" policy.
+        def walk(body: Any) -> None:
+            self._emit_assignments_in(
+                body, clk_sym, reset_sym, reset_active_low, src_node
+            )
 
-        Hard iteration cap (1024) is defensive against pathological
-        SV that would otherwise spin the unroller.
+        self._unroll_for(stmt, walk)
+
+    def _unroll_for(self, stmt: Any, walk: Any) -> None:
+        """Walk ``stmt``'s body once per iteration (``walk(body)``) with the
+        loop variable bound in :attr:`_loop_bindings`, so element selects
+        like ``chain[i]`` / ``chain[i-1]`` fold to per-iteration bits, as
+        Yosys' frontend unrolls them. A loop whose trip count is not known
+        at elaboration time is reported, never skipped silently
+        (rtl-buddy-cdc#377)."""
+        header = self._for_loop_iterations(stmt)
+        if header is None:
+            self._warn_dropped(
+                stmt,
+                "bounds, step or loop variable are not constant",
+                "`for` loop",
+            )
+            return
+        loopvar, values = header
+        for v in values:
+            prev = self._loop_bindings.pop(loopvar, _SENTINEL)
+            self._loop_bindings[loopvar] = v
+            try:
+                walk(getattr(stmt, "body", None))
+            finally:
+                if prev is _SENTINEL:
+                    self._loop_bindings.pop(loopvar, None)
+                else:
+                    self._loop_bindings[loopvar] = prev
+
+    _ITER_CAP = 1024
+
+    def _for_loop_iterations(self, stmt: Any) -> tuple[Any, list[int]] | None:
+        """``(loop variable, iteration values)`` of a ``for`` loop with one
+        loop variable, a constant start, a ``var <op> const`` stop
+        condition and a constant step (``i++`` / ``i--``, ``i += N`` /
+        ``i -= N``, ``i = i + N`` / ``i = i - N``); ``None`` otherwise.
+
+        The variable may be declared in the header (``for (int i = 0;
+        …)``) or outside it (``integer i; for (i = 0; …)``, the
+        Verilog-2001 form). At most :data:`_ITER_CAP` iterations, a guard
+        against pathological source.
         """
         loop_vars = list(getattr(stmt, "loopVars", []) or [])
-        if len(loop_vars) != 1:
-            return
-        loopvar = loop_vars[0]
-        init_expr = getattr(loopvar, "initializer", None)
-        start = self._const_int(init_expr)
+        if len(loop_vars) == 1:
+            loopvar = loop_vars[0]
+            start = self._const_int(getattr(loopvar, "initializer", None))
+        elif not loop_vars:
+            inits = list(getattr(stmt, "initializers", []) or [])
+            if len(inits) != 1 or type(inits[0]).__name__ != "AssignmentExpression":
+                return None
+            target = inits[0].left
+            if type(target).__name__ != "NamedValueExpression":
+                return None
+            loopvar = target.symbol
+            start = self._const_int(inits[0].right)
+        else:
+            return None
         if start is None:
-            return
+            return None
 
         stop_expr = getattr(stmt, "stopExpr", None)
         if stop_expr is None or type(stop_expr).__name__ != "BinaryExpression":
-            return
+            return None
         stop_op = str(getattr(stop_expr, "op", "")).rsplit(".", 1)[-1]
-        left = getattr(stop_expr, "left", None)
-        if (
-            type(left).__name__ != "NamedValueExpression"
-            or getattr(left, "symbol", None) is not loopvar
-        ):
-            return
+        if self._loop_var_of(getattr(stop_expr, "left", None)) is not loopvar:
+            return None
         stop_val = self._const_int(getattr(stop_expr, "right", None))
         if stop_val is None:
-            return
+            return None
 
         steps = list(getattr(stmt, "steps", []) or [])
         if len(steps) != 1:
-            return
-        step_expr = steps[0]
-        step_kind = type(step_expr).__name__
-        step_amount: int | None = None
-        if step_kind == "UnaryExpression":
-            op_name = str(getattr(step_expr, "op", "")).rsplit(".", 1)[-1]
-            if op_name in ("Postincrement", "Preincrement"):
-                step_amount = 1
-            elif op_name in ("Postdecrement", "Predecrement"):
-                step_amount = -1
-        elif step_kind == "AssignmentExpression":
-            # ``i += N`` / ``i -= N`` is the only compound shape we
-            # support; pyslang desugars these to ``i = i op N`` and
-            # stores the RHS as a BinaryExpression whose ``.left`` is
-            # an ``LValueReferenceExpression`` (the read of ``i`` on
-            # the right of the assignment) and whose ``.right`` is the
-            # step constant. ``_const_int`` returns None on the
-            # LValueReferenceExpression (it's not a NamedValueExpression
-            # so the loop-binding lookup misses), which is what lets us
-            # tell which operand is the constant.
-            if not getattr(step_expr, "isCompound", False):
-                return
-            desugared = getattr(step_expr, "right", None)
-            if desugared is None or type(desugared).__name__ != "BinaryExpression":
-                return
-            left_const = self._const_int(getattr(desugared, "left", None))
-            right_const = self._const_int(getattr(desugared, "right", None))
-            if left_const is None and right_const is not None:
-                step_const = right_const
-                lvalue_on_left = True
-            elif right_const is None and left_const is not None:
-                step_const = left_const
-                lvalue_on_left = False
-            else:
-                return
-            bin_op = str(getattr(desugared, "op", "")).rsplit(".", 1)[-1]
-            if bin_op == "Add":
-                step_amount = step_const
-            elif bin_op == "Subtract" and lvalue_on_left:
-                # ``i = i - N`` → i decreases by N
-                step_amount = -step_const
-            # Other compound shapes (``*=``, ``/=``, …) intentionally
-            # fall through; they don't produce constant trip counts.
+            return None
+        step_amount = self._loop_step(steps[0], loopvar)
         if step_amount is None or step_amount == 0:
-            return
+            return None
 
-        ITER_CAP = 1024
-
-        def _still_iterating(v: int) -> bool:
+        def still_iterating(v: int) -> bool:
             if stop_op == "LessThan":
                 return v < stop_val
             if stop_op == "LessThanEqual":
@@ -2258,26 +2193,77 @@ class _ModuleBuilder:
                 return v != stop_val
             return False
 
+        values: list[int] = []
         v = start
-        count = 0
-        while _still_iterating(v) and count < ITER_CAP:
-            prev = self._loop_bindings.pop(loopvar, _SENTINEL)
-            self._loop_bindings[loopvar] = v
-            try:
-                self._emit_assignments_in(
-                    getattr(stmt, "body", None),
-                    clk_sym,
-                    reset_sym,
-                    reset_active_low,
-                    src_node,
-                )
-            finally:
-                if prev is _SENTINEL:
-                    self._loop_bindings.pop(loopvar, None)
-                else:
-                    self._loop_bindings[loopvar] = prev
+        while still_iterating(v) and len(values) < self._ITER_CAP:
+            values.append(v)
             v += step_amount
-            count += 1
+        return loopvar, values
+
+    @staticmethod
+    def _loop_var_of(expr: Any) -> Any | None:
+        """The variable a (possibly implicitly converted) name refers to."""
+        while type(expr).__name__ == "ConversionExpression":
+            expr = getattr(expr, "operand", None)
+        if type(expr).__name__ in {"NamedValueExpression", "LValueReferenceExpression"}:
+            return getattr(expr, "symbol", None)
+        return None
+
+    def _loop_step(self, step_expr: Any, loopvar: Any) -> int | None:
+        """The constant increment of a ``for`` loop step expression."""
+        step_kind = type(step_expr).__name__
+        if step_kind == "UnaryExpression":
+            op_name = str(getattr(step_expr, "op", "")).rsplit(".", 1)[-1]
+            if op_name in ("Postincrement", "Preincrement"):
+                return 1
+            if op_name in ("Postdecrement", "Predecrement"):
+                return -1
+            return None
+        if step_kind != "AssignmentExpression":
+            return None
+        if self._loop_var_of(getattr(step_expr, "left", None)) is not loopvar:
+            return None
+        # ``i += N`` desugars to ``i = <lvalue ref> + N``; ``i = i + N`` is
+        # written out. Either way the right-hand side is a binary operator
+        # with the loop variable on one side and a constant on the other.
+        desugared: Any = getattr(step_expr, "right", None)
+        while type(desugared).__name__ == "ConversionExpression":
+            desugared = getattr(desugared, "operand", None)
+        if type(desugared).__name__ != "BinaryExpression":
+            return None
+        left, right = desugared.left, desugared.right
+        bin_op = str(getattr(desugared, "op", "")).rsplit(".", 1)[-1]
+        if self._is_loop_var_ref(left, loopvar):
+            step_const = self._const_int_unbound(right, loopvar)
+            if step_const is None:
+                return None
+            if bin_op == "Add":
+                return step_const
+            if bin_op == "Subtract":
+                return -step_const
+            return None
+        if self._is_loop_var_ref(right, loopvar) and bin_op == "Add":
+            return self._const_int_unbound(left, loopvar)
+        return None
+
+    def _is_loop_var_ref(self, expr: Any, loopvar: Any) -> bool:
+        """``expr`` reads the loop variable (or is the compound-assignment
+        reference to the target, which is the loop variable)."""
+        while type(expr).__name__ == "ConversionExpression":
+            expr = getattr(expr, "operand", None)
+        if type(expr).__name__ == "LValueReferenceExpression":
+            return True
+        return self._loop_var_of(expr) is loopvar
+
+    def _const_int_unbound(self, expr: Any, loopvar: Any) -> int | None:
+        """:meth:`_const_int` with ``loopvar`` unbound (its iteration value
+        must not leak into a step constant)."""
+        prev = self._loop_bindings.pop(loopvar, _SENTINEL)
+        try:
+            return self._const_int(expr)
+        finally:
+            if prev is not _SENTINEL:
+                self._loop_bindings[loopvar] = prev
 
     def _emit_assignment_expression(
         self,
@@ -2298,13 +2284,14 @@ class _ModuleBuilder:
         pre-deferred-emission walker but only ``src_node`` is read.
         """
         del reset_sym, reset_active_low  # captured at block level
-        if type(expr).__name__ != "AssignmentExpression":
-            return
-        if not getattr(expr, "isNonBlocking", False) and not self._plain_always:
-            # Blocking inside always_ff is a SV style violation; skip
-            # rather than try to model it. A plain ``always`` has no such
-            # rule and synthesis registers both kinds (#345).
-            return
+        self._compound_lhs.append(expr.left)
+        try:
+            self._clocked_write(expr, clk_sym, src_node)
+        finally:
+            self._compound_lhs.pop()
+
+    def _clocked_write(self, expr: Any, clk_sym: Any, src_node: Any) -> None:
+        """:meth:`_emit_assignment_expression` for one write."""
         lhs = expr.left
         rhs = expr.right
         # ``mem[addr] <= data`` with a run-time ``addr`` is a memory
@@ -2314,44 +2301,101 @@ class _ModuleBuilder:
         if mem_select is not None:
             self._emit_memory_write(*mem_select, rhs, clk_sym, src_node)
             return
-        if type(lhs).__name__ == "ConcatenationExpression":
-            # ``{q, meta} <= {meta, d}`` (rtl-buddy-cdc#370): one write
-            # per register, each taking its slice of the sized RHS.
-            writes = self._concat_writes(lhs, rhs)
-            if writes is None:
-                self._warn_lvalue_dropped(expr, lhs)
-                return
-            enable = self._combine_enable_stack()
-            for q_part, d_part in writes:
-                self._proc_writes.setdefault(q_part, []).append((enable, d_part))
-            return
-        # Resolve the LHS to the subset of a variable's bits that the
-        # flop's Q should drive: a bare ``NamedValueExpression`` (full
-        # width), a constant ``ElementSelectExpression`` /
-        # ``RangeSelectExpression`` or a packed-struct member. Anything
-        # else (run-time index, streaming concatenation, hierarchical
-        # reference, …) is reported, not dropped silently.
-        q_bits = self._lvalue_bits(lhs)
-        if q_bits is None:
+        # Resolve the target to ``(variable, start, width)`` parts: a whole
+        # variable, a constant bit / part select, a packed-struct member,
+        # or a concatenation of those (``{q, meta} <= {meta, d}``,
+        # rtl-buddy-cdc#370), one write per register run, each taking its
+        # slice of the sized RHS. Anything else (run-time index, streaming
+        # concatenation, hierarchical reference, …) is reported.
+        targets = self._lvalue_targets(lhs)
+        if targets is None:
             self._warn_lvalue_dropped(expr, lhs)
             return
-        d_bits = self._sized_rhs_bits(rhs, len(q_bits))
-        if d_bits is None:
-            # RHS isn't a bare named value yet — we'd need primitive
-            # lowering to model it. Emit a $_UNKNOWN_ driver so the
-            # netlist isn't corrupt; the rule pack will treat the D
-            # input as opaque (no upstream flops trace through it).
-            d_bits = self._unknown_driver(width=len(q_bits))
-
-        # Combine the active enable stack into a single bit (chain
-        # $and cells). None when the stack is empty — the write is
-        # unconditional in the current control-flow context.
+        total = sum(width for _sym, _start, width in targets)
+        # An unlowerable RHS gets a reported $_UNKNOWN_ driver: the rule
+        # pack treats the D input as opaque (no upstream flops trace
+        # through it). Read before the write: ``n = n + 1`` reads ``n``.
+        rhs_bits = self._rhs_bits(rhs, total)
+        # The enable stack combined into one bit (chained $and cells);
+        # None when the write is unconditional here.
         enable = self._combine_enable_stack()
-        # Stash the write source for cell-attribute use at drain time.
-        # We only need one src_node per LHS (the procedural block's
-        # range); the per-assignment fallback in the old code was
-        # rarely used.
-        self._proc_writes.setdefault(q_bits, []).append((enable, d_bits))
+        blocking = not getattr(expr, "isNonBlocking", False)
+        for sym, start, bits in self._group_parts(
+            targets, self._split_rhs(rhs_bits, targets)
+        ):
+            net = self._blocking_nets.get(sym) or self._alloc_bits(sym)
+            self._proc_writes.setdefault(sym, (net, []))[1].append(
+                (start, enable, bits)
+            )
+            if blocking:
+                self._forward_blocking_write(sym, net, start, bits)
+
+    def _forward_blocking_write(
+        self,
+        sym: Any,
+        net: tuple[Bit, ...],
+        start: int,
+        bits: tuple[Bit, ...],
+    ) -> None:
+        """Make a blocking write in a clocked block visible to the reads
+        after it in the same block, as synthesis does: ``t = a + 1; q <=
+        t;`` loads ``q`` with ``a + 1``, not with the register ``t``
+        (rtl-buddy-cdc#377; it read the register, which added a flop stage
+        that is not in the hardware). The variable is still a register
+        (its writes drive its D); until the block ends its value is the
+        written one, within the ``if`` / ``case`` arm that wrote it and,
+        after the statement, behind the arms' merge mux
+        (:meth:`_clocked_arm`)."""
+        self._blocking_nets.setdefault(sym, net)
+        current = self._var_bits.get(sym, net)
+        self._var_bits[sym] = current[:start] + bits + current[start + len(bits) :]
+
+    def _blocking_values(self) -> dict[Any, tuple[Bit, ...]]:
+        """The current value of every blocking-written variable."""
+        return {
+            sym: self._var_bits.get(sym, net)
+            for sym, net in self._blocking_nets.items()
+        }
+
+    def _clocked_arm(
+        self,
+        enable: Bit,
+        stmt: Any,
+        walk: Any,
+        base: dict[Any, tuple[Bit, ...]],
+    ) -> dict[Any, tuple[Bit, ...]]:
+        """Walk one arm of a clocked ``if`` / ``case`` with ``enable`` on the
+        enable stack; return the blocking-written values it leaves and
+        restore the values from before it. Inside the arm a blocking write
+        is seen as written, as Yosys ``proc`` evaluates the arm's
+        statements; :meth:`_merge_blocking` muxes the arms afterwards."""
+        self._enable_stack.append(enable)
+        try:
+            walk(stmt)
+        finally:
+            self._enable_stack.pop()
+        state = self._blocking_values()
+        for sym, net in self._blocking_nets.items():
+            self._var_bits[sym] = base.get(sym, net)
+        return state
+
+    def _merge_blocking(
+        self,
+        base: dict[Any, tuple[Bit, ...]],
+        arms: list[tuple[Bit, dict[Any, tuple[Bit, ...]]]],
+        fallback: dict[Any, tuple[Bit, ...]],
+    ) -> None:
+        """Merge the values blocking writes left in each arm (first arm
+        highest priority; ``fallback`` when none is selected) into one
+        ``$mux`` chain per variable."""
+        for sym, net in self._blocking_nets.items():
+            prior = base.get(sym, net)
+            chain = fallback.get(sym, prior)
+            for select, state in reversed(arms):
+                value = state.get(sym, prior)
+                if value != chain:
+                    chain = self._build_hold_mux(select, chain, value)
+            self._var_bits[sym] = chain
 
     def _lower_not(self, bit: Bit) -> Bit:
         """Allocate a ``$not`` cell over ``bit`` and return the output
@@ -2434,16 +2478,21 @@ class _ModuleBuilder:
         src_node: Any,
         reset_kind: str | None = None,
     ) -> None:
-        """Emit one flop per accumulated LHS.
+        """Emit one flop per contiguous run of the bits each variable is
+        written in, as Yosys ``proc`` groups them (rtl-buddy-cdc#377: one
+        flop per written part, so ``q <= 0; if (c) q[1] <= b;`` gave two
+        flops driving ``q[1]``, and ``p[0] <= a; p[1] <= b;`` two 1-bit
+        flops where Yosys has one 2-bit flop; ``r[3]`` and ``r[1:0]`` stay
+        two).
 
-        For each LHS, walks its ``(enable, rhs)`` writes in source
-        order to build the flop's D input:
+        For each run, walks the writes that touch it in source order to
+        build the flop's D input:
 
-        - The initial "hold" value is the LHS's own Q bits — when no
+        - The initial "hold" value is the run's own Q bits — when no
           enable in any later write fires, D = Q (the flop holds).
-        - An unconditional write (``enable is None``) replaces the
-          current D entirely; later muxes apply on top.
-        - A conditional write wraps D in a hold-feedback mux
+        - An unconditional write (``enable is None``) replaces its slice
+          of the current D; later muxes apply on top.
+        - A conditional write wraps its slice of D in a hold-feedback mux
           ``mux(S=enable, A=prev_D, B=rhs)`` so the rule pack's
           gated-bus detector can see the select signal.
 
@@ -2456,26 +2505,70 @@ class _ModuleBuilder:
         ``reset_kind`` (``"async"`` / ``"sync"`` / ``None``) controls
         whether ``_emit_flop_cell`` materialises ``$adff``, ``$sdff``,
         or plain ``$dff``. ``None`` is also accepted alongside
-        ``reset_sym=None`` for blocks with no reset.
+        ``reset_sym=None`` for blocks with no reset. Reset values are
+        assembled per bit from the reset arm's writes.
         """
-        for q_bits, writes in self._proc_writes.items():
-            d_bits: tuple[Bit, ...] = q_bits  # initial Q-feedback
-            for enable, rhs in writes:
-                if enable is None:
-                    d_bits = rhs
-                else:
-                    d_bits = self._build_hold_mux(enable, hold=d_bits, fire=rhs)
-            reset_value = self._proc_resets.get(q_bits, 0)
-            self._emit_flop_cell(
-                clk_sym,
-                reset_sym,
-                reset_active_low,
-                q_bits,
-                d_bits,
-                src_node,
-                reset_value=reset_value,
-                reset_kind=reset_kind,
+        reset_bit: dict[Bit, int] = {}
+        for key, value in self._proc_resets.items():
+            for i, bit in enumerate(key):
+                reset_bit[bit] = (value >> i) & 1
+        for sym, (net, writes) in self._proc_writes.items():
+            written = sorted(
+                {
+                    pos
+                    for start, _en, bits in writes
+                    for pos in range(start, start + len(bits))
+                }
             )
+            # The elements of an unpacked array are separate registers
+            # (Yosys ``mem2reg``): a run never spans two of them.
+            element = self._unpacked_element_width(sym)
+            runs: list[tuple[int, int]] = []
+            for pos in written:
+                if runs and runs[-1][1] == pos and (not element or pos % element):
+                    runs[-1] = (runs[-1][0], pos + 1)
+                else:
+                    runs.append((pos, pos + 1))
+            for lo, hi in runs:
+                q_bits = net[lo:hi]
+                d: list[Bit] = list(q_bits)  # initial Q-feedback
+                for start, enable, rhs in writes:
+                    a, b = max(lo, start), min(hi, start + len(rhs))
+                    if a >= b:
+                        continue
+                    piece = rhs[a - start : b - start]
+                    if enable is not None:
+                        piece = self._build_hold_mux(
+                            enable, hold=tuple(d[a - lo : b - lo]), fire=piece
+                        )
+                    d[a - lo : b - lo] = piece
+                reset_value = sum(
+                    reset_bit.get(bit, 0) << i for i, bit in enumerate(q_bits)
+                )
+                self._emit_flop_cell(
+                    clk_sym,
+                    reset_sym,
+                    reset_active_low,
+                    q_bits,
+                    tuple(d),
+                    src_node,
+                    reset_value=reset_value,
+                    reset_kind=reset_kind,
+                )
+
+    @staticmethod
+    def _unpacked_element_width(sym: Any) -> int | None:
+        """Bits per innermost element of an unpacked-array variable, or
+        ``None`` for a packed one."""
+        t = getattr(sym, "type", None)
+        t = getattr(t, "canonicalType", None) or t
+        if not getattr(t, "isUnpackedArray", False):
+            return None
+        while getattr(t, "isUnpackedArray", False):
+            t = getattr(t, "elementType", None)
+            t = getattr(t, "canonicalType", None) or t
+        width = getattr(t, "selectableWidth", None) or getattr(t, "bitWidth", None)
+        return int(width) if width else None
 
     def _build_hold_mux(
         self, enable: Bit, hold: tuple[Bit, ...], fire: tuple[Bit, ...]
@@ -2571,6 +2664,18 @@ class _ModuleBuilder:
             attributes=attrs,
         )
 
+    def _condition_bit(self, stmt: Any) -> Bit:
+        """The single-bit condition of an ``if`` statement, or, when it does
+        not lower (a pattern match, an unmodelled operator), a reported
+        opaque select (rtl-buddy-cdc#377: such an ``if`` used to be walked
+        as if both arms were unconditional)."""
+        conds = getattr(stmt, "conditions", None)
+        bit = self._lower_condition_to_bit(conds)
+        if bit is not None:
+            return bit
+        node = conds[0].expr if conds and len(conds) == 1 else stmt
+        return self._opaque(node, 1, "`if` condition")[0]
+
     def _lower_condition_to_bit(self, conditions: Any) -> Bit | None:
         """Lower a ``ConditionalStatement``'s condition list to a
         single Yosys-shape bit suitable for use as a mux ``S`` input.
@@ -2593,14 +2698,17 @@ class _ModuleBuilder:
         bits = self._bits_of_expression(expr)
         if bits is None:
             return None
-        # ``if (expr)`` treats the expression as a boolean. For a
-        # single-bit signal that's already correct; for a multi-bit
-        # signal SV semantics are "non-zero is true", but in practice
-        # always_ff conditions in production RTL are single-bit
-        # qualifiers. Bail when the width doesn't fit.
-        if len(bits) != 1:
+        # ``if (expr)`` treats the expression as a boolean: a multi-bit
+        # value is true when non-zero, the ``$reduce_bool`` Yosys emits
+        # for it (rtl-buddy-cdc#377; such a condition used to lose its
+        # enable or, in a combinational block, its mux).
+        if len(bits) == 1:
+            return bits[0]
+        if not bits:
             return None
-        return bits[0]
+        return self._emit_comb_cell(
+            "$reduce_bool", {"A": bits}, output_width=1, src_node=expr
+        )[0]
 
     def _alloc_anon_bits(self, width: int) -> tuple[Bit, ...]:
         """Allocate ``width`` fresh anonymous bits for a comb cell's
@@ -2761,9 +2869,7 @@ class _ModuleBuilder:
         if targets is None:
             return None
         total = sum(width for _sym, _start, width in targets)
-        rhs_bits = self._sized_rhs_bits(rhs, total)
-        if rhs_bits is None:
-            rhs_bits = self._unknown_driver(total)
+        rhs_bits = self._rhs_bits(rhs, total)
         return [
             (self._alloc_bits(sym)[start : start + len(bits)], bits)
             for sym, start, bits in self._group_parts(
@@ -2786,11 +2892,7 @@ class _ModuleBuilder:
         if targets is None:
             return False
         total = sum(width for _sym, _start, width in targets)
-        rhs_bits = self._sized_rhs_bits(rhs, total)
-        if rhs_bits is None:
-            # Unlowerable right-hand side: left undriven, as for a
-            # whole-variable target.
-            return True
+        rhs_bits = self._rhs_bits(rhs, total)
         for (sym, start, width), piece in zip(
             targets, self._split_rhs(rhs_bits, targets)
         ):
@@ -2799,7 +2901,7 @@ class _ModuleBuilder:
             self._merge_canonical_var(sym, old, new)
             if continuous:
                 for o, n in zip(old, new):
-                    if isinstance(o, int) and o != n:
+                    if o in self._placeholder_bits and o != n:
                         self._forward_renames[o] = n
         return True
 
@@ -2827,6 +2929,7 @@ class _ModuleBuilder:
         reason = self._lvalue_unsupported_reason(lhs)
         key = (self._src_attr(node), reason)
         if key in self._lvalue_warned:
+            self._lowering_failures += 1
             return
         self._lvalue_warned.add(key)
         self._warn_dropped(node, reason, "assignment")
@@ -3148,6 +3251,8 @@ class _ModuleBuilder:
                 return left // right
             if op == "Mod" and right != 0:
                 return left % right
+            if op == "Power" and right >= 0:
+                return left**right
             return None
         if kind == "UnaryExpression":
             op = str(getattr(expr, "op", "")).rsplit(".", 1)[-1]
@@ -3198,13 +3303,26 @@ class _ModuleBuilder:
         """
         kind = type(expr).__name__
         if kind == "NamedValueExpression":
+            if expr.symbol in self._loop_bindings:
+                # An unrolled loop's variable read as a value.
+                value = self._loop_bindings[expr.symbol]
+                width = self._expr_width(expr) or 32
+                return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
+            if self._kind_name(expr.symbol) in self._CONSTANT_SYMBOLS:
+                # A parameter / enum value is its value, not a net
+                # (rtl-buddy-cdc#377: it read as an undriven placeholder).
+                return self._value_bits(
+                    getattr(expr.symbol, "value", None), self._expr_width(expr)
+                )
             return self._alloc_bits(expr.symbol)
         if kind == "ConversionExpression":
             inner = getattr(expr, "operand", None)
             if inner is not None:
                 return self._bits_of_expression(inner)
-        if kind == "IntegerLiteral":
-            return self._bits_of_integer_literal(expr)
+        if kind in {"IntegerLiteral", "UnbasedUnsizedIntegerLiteral"}:
+            return self._value_bits(
+                getattr(expr, "value", None), self._expr_width(expr)
+            )
         if kind == "BinaryExpression":
             return self._lower_binary(expr)
         if kind == "UnaryExpression":
@@ -3226,7 +3344,174 @@ class _ModuleBuilder:
             return self._lower_concatenation(expr)
         if kind == "ReplicationExpression":
             return self._lower_replication(expr)
-        return None
+        if kind == "CallExpression":
+            return self._lower_call(expr)
+        if kind == "_Bits":
+            return expr.bits
+        if kind == "LValueReferenceExpression":
+            # ``x += 1`` reads its own target (rtl-buddy-cdc#377).
+            if self._compound_lhs:
+                return self._bits_of_expression(self._compound_lhs[-1])
+            return None
+        # Anything else slang folded at elaboration time (``$bits(x)``, …).
+        return self._constant_bits(expr)
+
+    # Symbols a NamedValueExpression reads as a constant.
+    _CONSTANT_SYMBOLS = frozenset(
+        {"ParameterSymbol", "EnumValueSymbol", "SpecparamSymbol"}
+    )
+
+    def _value_bits(self, value: Any, width: int) -> tuple[Bit, ...] | None:
+        """LSB-first bits of an elaboration-time value (``SVInt`` or
+        ``ConstantValue``) with ``x`` / ``z`` digits kept, sized to
+        ``width`` (its own width when ``width`` is 0): zero-extended, or
+        sign-extended when the value is signed."""
+        digits = _encode_param(value) if value is not None else None
+        if digits is None:
+            return None
+        bits: tuple[Bit, ...] = tuple(digits[::-1])
+        if width < 1:
+            return bits
+        inner = getattr(value, "value", value)
+        signed = bool(getattr(inner, "isSigned", False))
+        return self._resize_bits(bits, width, signed)
+
+    # -- function calls (rtl-buddy-cdc#377) -------------------------------
+
+    _INLINE_DEPTH_CAP = 16
+
+    def _lower_call(self, expr: Any) -> tuple[Bit, ...] | None:
+        """A function call on the right-hand side: its constant value when
+        slang folds it (``$clog2(N)``, a constant function of parameters),
+        the operand of a ``$signed`` / ``$unsigned`` cast (no logic of its
+        own; the width conversion around it does any extension), else the
+        body of a user-defined function inlined (:meth:`_inline_function`).
+        ``None`` for anything else (another system function)."""
+        constant = self._constant_bits(expr)
+        if constant is not None:
+            return constant
+        if getattr(expr, "isSystemCall", False):
+            args = list(getattr(expr, "arguments", None) or [])
+            name = getattr(expr, "subroutineName", "")
+            if name in {"$signed", "$unsigned"} and len(args) == 1:
+                return self._bits_of_expression(args[0])
+            return None
+        return self._inline_function(expr)
+
+    def _constant_bits(self, expr: Any) -> tuple[Bit, ...] | None:
+        """LSB-first bits of ``expr``'s elaboration-time value, sized to its
+        type, with ``x`` / ``z`` digits kept; ``None`` when slang did not
+        fold it."""
+        value = getattr(expr, "constant", None)
+        inner = getattr(value, "value", value)
+        width = self._expr_width(expr)
+        if inner is None or width < 1 or getattr(inner, "bitWidth", None) is None:
+            return None
+        return self._value_bits(inner, width)
+
+    def _inline_function(self, expr: Any) -> tuple[Bit, ...] | None:
+        """Inline a call to a combinational user-defined function, as
+        Yosys' frontend does: bind each formal argument to its actual
+        argument's bits, walk the body as a combinational block, and read
+        the result off the function's return variable.
+
+        Locals (formals, the return variable, declared variables) start
+        as ``x``, are visible only during the walk, and are removed
+        afterwards, so two calls never share a value. ``None`` (the
+        caller then treats the call as unlowered) for a task or void
+        function, an ``output`` / ``inout`` / ``ref`` argument, a ``return``
+        anywhere but at the end of the body, a write to a variable outside
+        the function, a statement or target the walker cannot lower,
+        recursion deeper than :data:`_INLINE_DEPTH_CAP`.
+        """
+        sub = getattr(expr, "subroutine", None)
+        if sub is None or self._inline_depth >= self._INLINE_DEPTH_CAP:
+            return None
+        if str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] != "Function":
+            return None
+        ret = getattr(sub, "returnValVar", None)
+        locals_: list[Any] = []
+        for member in sub:
+            if self._kind_name(member) not in {
+                "VariableSymbol",
+                "FormalArgumentSymbol",
+            }:
+                continue
+            locals_.append(member)
+            if (
+                ret is None
+                and self._kind_name(member) == "VariableSymbol"
+                and member.name == sub.name
+            ):
+                ret = member
+        formals = list(getattr(sub, "arguments", None) or [])
+        actuals = list(getattr(expr, "arguments", None) or [])
+        if ret is None or len(formals) != len(actuals):
+            return None
+        if any(
+            str(getattr(f, "direction", "")).rsplit(".", 1)[-1] != "In" for f in formals
+        ):
+            return None
+        body = getattr(sub, "body", None)
+        if not self._returns_only_at_end(body, top=True):
+            return None
+        arg_bits: list[tuple[Bit, ...]] = []
+        for formal, actual in zip(formals, actuals):
+            bits = self._sized_rhs_bits(actual, self._width_of(formal))
+            if bits is None:
+                return None
+            arg_bits.append(bits)
+        saved = dict(self._var_bits)
+        failures = self._lowering_failures
+        self._inline_depth += 1
+        try:
+            for local in locals_:
+                self._var_bits[local] = ("x",) * self._width_of(local)
+            for formal, bits in zip(formals, arg_bits):
+                self._var_bits[formal] = bits
+            self._inline_returns.append(ret)
+            try:
+                self._walk_comb_statement(body)
+            finally:
+                self._inline_returns.pop()
+            result = self._var_bits.get(ret)
+            local_set = set(locals_)
+            clean = self._lowering_failures == failures and all(
+                self._var_bits.get(k) == v
+                for k, v in saved.items()
+                if k not in local_set
+            )
+        finally:
+            self._inline_depth -= 1
+            self._var_bits = saved
+        return result if clean else None
+
+    def _returns_only_at_end(self, stmt: Any, *, top: bool) -> bool:
+        """``return`` appears in ``stmt`` only as the last statement of the
+        function body's top-level list (the shape inlining supports)."""
+        if stmt is None:
+            return True
+        kind = self._kind_name(stmt)
+        if kind == "ReturnStatement":
+            return top
+        if kind == "BlockStatement":
+            return self._returns_only_at_end(stmt.body, top=top)
+        if kind in {"StatementList", "ListStatement"}:
+            items = list(getattr(stmt, "list", []) or [])
+            return all(
+                self._returns_only_at_end(s, top=top and i == len(items) - 1)
+                for i, s in enumerate(items)
+            )
+        found = False
+
+        def visit(node: Any) -> bool:
+            nonlocal found
+            if type(node).__name__ == "ReturnStatement":
+                found = True
+            return not found
+
+        stmt.visit(visit)
+        return not found
 
     def _lower_concatenation(self, expr: Any) -> tuple[Bit, ...] | None:
         """``{a, b, c}`` — return a single LSB-first bit tuple.
@@ -3299,6 +3584,7 @@ class _ModuleBuilder:
         "LogicalShiftRight": "$shr",
         "ArithmeticShiftLeft": "$sshl",
         "ArithmeticShiftRight": "$sshr",
+        "Power": "$pow",
     }
 
     _UNOP_CELL: dict[str, str] = {
@@ -3344,6 +3630,11 @@ class _ModuleBuilder:
                     a_bits, shift, width, left=(cell_type == "$shl")
                 )
         width = self._expr_width(expr)
+        if cell_type == "$pow":
+            # ``2**N`` of constants is a constant (Yosys folds it).
+            value = self._const_int(expr)
+            if value is not None and width:
+                return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
         return self._emit_comb_cell(
             cell_type, {"A": a_bits, "B": b_bits}, output_width=width, src_node=expr
         )
@@ -3408,6 +3699,12 @@ class _ModuleBuilder:
         conds = getattr(expr, "conditions", None)
         if not conds:
             return None
+        # A condition known at elaboration time picks its arm, as Yosys
+        # folds it: the dead arm may not even be a valid select (``EN ?
+        # bus[OFF +: W] : '0`` with the field disabled).
+        const = self._const_int(conds[0].expr) if len(conds) == 1 else None
+        if const is not None:
+            return self._bits_of_expression(expr.left if const else expr.right)
         sel_bits = self._bits_of_expression(conds[0].expr)
         # pyslang names the branches from source order: ``left`` is the
         # TRUE branch of ``s ? left : right``, ``right`` the FALSE one.
@@ -3431,28 +3728,6 @@ class _ModuleBuilder:
             output_width=width,
             src_node=expr,
         )
-
-    def _bits_of_integer_literal(self, expr: Any) -> tuple[Bit, ...] | None:
-        """Map an :class:`IntegerLiteral` to Yosys constant bits.
-
-        Yosys represents constant bits as the strings ``"0"``, ``"1"``,
-        ``"x"``, ``"z"``. The bit tuple is LSB-first to match Yosys
-        write_json ordering.
-        """
-        # pyslang exposes the value via ``expr.value`` as an SVInt.
-        # SVInt has a ``__int__`` for small concrete values; bigger
-        # ones we'd need to walk per-bit. For our fixtures the literals
-        # are 1-bit (``1'b0`` / ``1'b1``).
-        val = getattr(expr, "value", None)
-        if val is None:
-            return None
-        try:
-            as_int = int(val)
-        except (TypeError, ValueError):
-            return None
-        width = self._expr_width(expr) or 1
-        # LSB-first per Yosys convention.
-        return tuple("1" if (as_int >> i) & 1 else "0" for i in range(width))
 
     def _expr_width(self, expr: Any) -> int:
         t = getattr(expr, "type", None)
@@ -3566,13 +3841,12 @@ class _ModuleBuilder:
         replicated per data bit. Unlowerable address / data expressions
         get an ``$_UNKNOWN_`` driver, as for any other unmodelled RHS.
         """
-        addr = self._bits_of_expression(selector) or self._unknown_driver(1)
+        addr = self._bits_of_expression(selector) or self._opaque(
+            selector, 1, "memory address"
+        )
         params = self._memory_params(sym, len(addr))
         width = int(params["WIDTH"], 2)
-        data = self._bits_of_expression(rhs)
-        if data is None:
-            data = self._unknown_driver(width)
-        data = (tuple(data) + ("0",) * width)[:width]
+        data = self._rhs_bits(rhs, width)
         enable = self._combine_enable_stack()
         en: tuple[Bit, ...] = ((enable if enable is not None else "1"),) * width
         portid = self._memory_write_ports.get(params["MEMID"], 0)
@@ -3596,7 +3870,9 @@ class _ModuleBuilder:
         """Emit an asynchronous ``$memrd_v2`` for an R-value ``mem[addr]``
         and return its data bits — what Yosys ``proc`` leaves too; a
         registered read is this port followed by the ordinary flop."""
-        addr = self._bits_of_expression(selector) or self._unknown_driver(1)
+        addr = self._bits_of_expression(selector) or self._opaque(
+            selector, 1, "memory address"
+        )
         params = self._memory_params(sym, len(addr))
         width = int(params["WIDTH"], 2)
         data = self._alloc_anon_bits(width)
@@ -3627,6 +3903,47 @@ class _ModuleBuilder:
         )
         return data
 
+    def _rhs_bits(
+        self, expr: Any, width: int, what: str = "right-hand side"
+    ) -> tuple[Bit, ...]:
+        """``expr`` sized to ``width`` bits, or, when it does not lower, an
+        opaque driver reported by :meth:`_warn_opaque` — never nothing: an
+        undriven target reads as a clean run (rtl-buddy-cdc#377)."""
+        bits = self._sized_rhs_bits(expr, width)
+        if bits is not None:
+            return bits
+        return self._opaque(expr, width, what)
+
+    def _opaque(self, node: Any, width: int, what: str) -> tuple[Bit, ...]:
+        """An ``$_UNKNOWN_`` driver standing in for ``node``, reported."""
+        self._warn_opaque(node, what)
+        return self._unknown_driver(max(width, 1))
+
+    def _warn_opaque(self, node: Any, what: str) -> None:
+        """Report an expression replaced by an opaque ``$_UNKNOWN_`` driver,
+        once per source location (an unrolled loop or an inlined function
+        reaches it repeatedly). The logic behind it is invisible to the
+        rules, so a crossing through it can be missed."""
+        self._lowering_failures = getattr(self, "_lowering_failures", 0) + 1
+        where = self._src_attr(node)
+        key = (where, what)
+        if key in self._lvalue_warned:
+            return
+        self._lvalue_warned.add(key)
+        # An implicit conversion has no syntax of its own: name its operand.
+        while getattr(node, "syntax", None) is None and getattr(node, "operand", None):
+            node = node.operand
+        text = " ".join(str(getattr(node, "syntax", "") or "").split())
+        if len(text) > 60:
+            text = text[:57] + "..."
+        _log.warning(
+            "slang frontend: %s: %s%s not lowered; modelled as an opaque "
+            "driver, so the logic feeding it is invisible to the CDC rules",
+            where or "<unknown location>",
+            what,
+            f" `{text}`" if text else "",
+        )
+
     def _unknown_driver(self, width: int) -> tuple[Bit, ...]:
         """Allocate a fresh net driven by a stub ``$_UNKNOWN_`` cell.
 
@@ -3654,79 +3971,20 @@ class _ModuleBuilder:
     # -- always_latch ---------------------------------------------------
 
     def _emit_always_latch(self, block: Any) -> None:
-        """Walk an ``always_latch`` body and emit a ``$dlatch`` cell
-        for each ``if (en) lhs = rhs;`` single-arm shape.
+        """Lower an ``always_latch`` block like any level-sensitive body
+        (:meth:`_lower_comb_body`): each variable held on some path is a
+        ``$dlatch`` loading its value under the condition it is written.
 
-        Issue #39: pre-fix the slang frontend silently dropped every
-        ``always_latch`` block, so the ICG enable-latch in the
-        ``clock_gating`` fixture (and any other legitimate latch) had
-        no driver in the resulting netlist. The latch is intentionally
-        outside ``flops.FF_CELL_TYPES`` — latches don't bound clock
-        domains and stay transparent to ``find_crossings``; making
-        them visible is purely about netlist completeness so the rule
-        pack and any future latch-aware rule see them.
-
-        Only the single-arm ``if (cond) lhs = rhs;`` shape is
-        modelled (the canonical pattern Yosys's ``proc_dlatch``
-        infers). Multi-arm if/else, case, and explicit-`else` shapes
-        fall through silently — they don't synthesise to a clean
-        ``$dlatch`` either, so leaving them unmodelled mirrors the
-        Yosys frontend's behaviour. ``$adlatch`` (latch with async
-        reset) is explicitly out of scope per #39.
+        Issue #39 first lowered the single-arm ``if (en) q = d;`` shape;
+        every other body (an ``else`` arm, a ``case``, several statements
+        in the arm) was skipped silently, until rtl-buddy-cdc#377 routed
+        the block through the general lowering. The latch stays outside
+        ``flops.FF_CELL_TYPES``: it does not bound a clock domain and is
+        transparent to ``find_crossings``. ``$adlatch`` (async reset) is
+        not modelled. A body that assigns every variable on every path
+        infers no latch, as on the Yosys path.
         """
-        self._walk_latch_statement(block.body)
-
-    def _walk_latch_statement(self, stmt: Any) -> None:
-        if stmt is None:
-            return
-        kind = self._kind_name(stmt)
-        if kind == "BlockStatement":
-            self._walk_latch_statement(stmt.body)
-            return
-        if kind in {"StatementList", "ListStatement"}:
-            for s in getattr(stmt, "list", []) or []:
-                self._walk_latch_statement(s)
-            return
-        if kind != "ConditionalStatement":
-            return
-        en_bit = self._lower_condition_to_bit(getattr(stmt, "conditions", None))
-        if en_bit is None:
-            return
-        # Drill through the optional BlockStatement on the ifTrue arm.
-        arm = stmt.ifTrue
-        while arm is not None and self._kind_name(arm) == "BlockStatement":
-            arm = arm.body
-        if arm is None or self._kind_name(arm) != "ExpressionStatement":
-            return
-        expr = arm.expr
-        if type(expr).__name__ != "AssignmentExpression":
-            return
-        # Latch bodies should use blocking assigns (``=``); a
-        # nonblocking write here would be a SV style violation that
-        # we'd rather surface as "latch dropped" than silently model.
-        if getattr(expr, "isNonBlocking", False) and not self._plain_always:
-            return
-        if type(expr.left).__name__ == "ConcatenationExpression":
-            writes = self._concat_writes(expr.left, expr.right)
-            if writes is None:
-                self._warn_lvalue_dropped(expr, expr.left)
-                return
-            for q_part, d_part in writes:
-                self._emit_dlatch_cell(en_bit, q_part, d_part, src_node=stmt)
-            return
-        q_bits = self._lvalue_bits(expr.left)
-        if q_bits is None:
-            self._warn_lvalue_dropped(expr, expr.left)
-            return
-        d_bits = self._sized_rhs_bits(expr.right, len(q_bits))
-        if d_bits is None:
-            d_bits = self._unknown_driver(width=len(q_bits))
-        self._emit_dlatch_cell(en_bit, q_bits, d_bits, src_node=stmt)
-        # An explicit ``else`` would write a second value and break
-        # the single-arm-implicit-hold semantics — uncommon, and Yosys
-        # ``proc_dlatch`` doesn't infer a clean ``$dlatch`` for it
-        # either. Conservative skip; the analyzer surfaces the
-        # missing driver if it bites.
+        self._lower_comb_body(block.body, block)
 
     def _emit_dlatch_cell(
         self,
@@ -3772,17 +4030,221 @@ class _ModuleBuilder:
     # -- always_comb ----------------------------------------------------
 
     def _emit_always_comb(self, block: Any) -> None:
-        """Treat each blocking assignment in an ``always_comb`` block as
-        a continuous assign of its RHS to its LHS.
+        """Lower an ``always_comb`` block: see :meth:`_lower_comb_body`.
 
-        SV semantics already require an ``always_comb`` to be
-        combinational, so the rewrite is semantically faithful (no
-        priority encoding or latching to model). We descend through
-        the typical ``BlockStatement(body=ExpressionStatement(...))``
-        wrapper plus optional ``ListStatement`` for multi-assign
-        bodies.
+        An ``always_comb`` that leaves a variable unassigned on some path
+        describes a latch, which the language forbids there; Yosys stops
+        with an error. This frontend lowers the latch and says so."""
+        self._lower_comb_body(block.body, block, comb_keyword=True)
+
+    def _lower_comb_body(
+        self, stmt: Any, block: Any = None, *, comb_keyword: bool = False
+    ) -> None:
+        """Lower a level-sensitive procedural body (``always_comb``,
+        ``always @*``, ``always @(a or b)``) the way Yosys ``proc`` does.
+
+        Each blocking write re-points the written variable's current value
+        at its right-hand side; an ``if`` / ``case`` merges the values its
+        branches leave with a ``$mux`` per variable, a branch that does
+        not write a variable contributing the variable's value before the
+        statement (:meth:`_walk_conditional_statement`). A variable whose
+        final value still holds its own value on some path is a latch:
+        :meth:`_infer_latches` turns that path into the enable of a
+        ``$dlatch`` (rtl-buddy-cdc#377), so one incompletely assigned
+        scratch variable no longer costs the whole block. Every other
+        written variable is combinational.
+
+        The block is order-independent in the language (and on the Yosys
+        path), so a reader earlier in source order (``always @(posedge
+        clk) s1 <= x;`` above ``always @* x = a_q;``) must see the result
+        too: each written placeholder bit is recorded for
+        :meth:`_apply_forward_renames`, as a continuous assign records its
+        own.
         """
-        self._walk_comb_statement(block.body)
+        before = dict(self._var_bits)
+        first_cell = len(self._cells)
+        prev_muxes = self._branch_muxes
+        self._branch_muxes = {}
+        try:
+            self._walk_comb_statement(stmt)
+            latched = self._infer_latches(before, block if block is not None else stmt)
+            if latched:
+                self._drop_dead_branch_muxes(before, first_cell)
+        finally:
+            self._branch_muxes = prev_muxes
+        if latched and comb_keyword:
+            _log.warning(
+                "slang frontend: %s: `always_comb` leaves %s unassigned on "
+                "some path; lowered as a latch",
+                self._src_attr(block) or "<unknown location>",
+                ", ".join(f"`{name}`" for name in latched),
+            )
+        self._record_forward_renames(before)
+
+    def _record_forward_renames(self, before: dict[Any, tuple[Bit, ...]]) -> None:
+        """Record ``old placeholder bit -> new driver bit`` for every
+        variable whose bits differ from ``before`` (see
+        :meth:`_lower_comb_body`)."""
+        for sym, old in before.items():
+            new = self._var_bits.get(sym)
+            if new is None or new == old or len(new) != len(old):
+                continue
+            for o, n in zip(old, new):
+                # Only a variable's own placeholder bit is renamed: an old
+                # bit that is some cell's output (a variable written by two
+                # blocks) must keep its driver.
+                if o in self._placeholder_bits and o != n:
+                    self._forward_renames[o] = n
+
+    def _branch_mux(
+        self, sel: Bit, a: tuple[Bit, ...], b: tuple[Bit, ...], src_node: Any
+    ) -> tuple[Bit, ...]:
+        """``$mux(S=sel, A=a, B=b)`` merging two branch values, recorded
+        so :meth:`_infer_latches` can follow it. The whole value goes
+        through one mux even where the legs agree, as Yosys ``proc`` muxes
+        the assigned signal: a one-hot ``case`` decode is then one
+        multi-bit driver per arm, the shape CDC-019 keys on."""
+        width = max(len(a), len(b))
+        a = self._resize_bits(a, width)
+        b = self._resize_bits(b, width)
+        if a == b:
+            return a
+        y = self._emit_comb_cell(
+            cell_type="$mux",
+            inputs={"A": a, "B": b, "S": (sel,)},
+            output_width=width,
+            src_node=src_node,
+        )
+        self._branch_muxes[y] = (sel, a, b)
+        return y
+
+    def _infer_latches(
+        self, before: dict[Any, tuple[Bit, ...]], src_node: Any
+    ) -> list[str]:
+        """Turn every variable a level-sensitive body holds on some path
+        into a ``$dlatch``; return their names.
+
+        A held path shows up in the variable's final value as a branch
+        ``$mux`` leg that is the variable's own value from before the body
+        (its placeholder net). Following the merge muxes from the final
+        value splits it into the data loaded when the latch is open and
+        the condition under which it is (Yosys ``proc_dlatch``):
+
+        - a leg that is the held value contributes no data and enable 0;
+        - ``mux(s, held, v)`` loads ``v`` when ``s`` (enable ``s & en_v``),
+          ``mux(s, v, held)`` when ``!s``;
+        - ``mux(s, a, b)`` with both legs live keeps the mux for the data
+          (the original one when neither leg changed), enable ``s ? en_b :
+          en_a``;
+        - anything else is loaded unconditionally (enable 1).
+
+        A variable with enable 1 is combinational and keeps its value.
+        For a latch, bits no path writes (data is their own net) stay out
+        of it and undriven, as before; the latch's ``Q`` is the variable's
+        net, which becomes its value again.
+        """
+        latched: list[str] = []
+        for sym, held in before.items():
+            final = self._var_bits.get(sym)
+            if final is None or final == held or len(final) != len(held):
+                continue
+            if not all(b in self._placeholder_bits for b in held):
+                continue  # driven elsewhere too: no hold value to find
+            split = self._split_hold(final, held)
+            if split is None:
+                continue  # never written on any path
+            data, enable = split
+            if enable == "1":
+                continue
+            # A bit whose loaded data is its own net is never written.
+            lanes = [i for i in range(len(held)) if data[i] != held[i]]
+            self._emit_dlatch_cell(
+                enable,
+                tuple(held[i] for i in lanes),
+                tuple(data[i] for i in lanes),
+                src_node=src_node,
+            )
+            self._var_bits[sym] = held
+            latched.append(str(getattr(sym, "name", "?")))
+        return latched
+
+    def _drop_dead_branch_muxes(
+        self, before: dict[Any, tuple[Bit, ...]], first_cell: int
+    ) -> None:
+        """Remove the branch muxes a latch made dead: the hold-feedback
+        merges :meth:`_infer_latches` replaced by the latch's data and
+        enable. Left in place, they would read the latch output and its
+        enable condition as data with nothing to observe them (Yosys
+        ``proc_dlatch`` leaves no such cell either). Only cells emitted
+        by this body can read them, and only values it changed."""
+        new_cells = list(self._cells)[first_cell:]
+        live_values: set[Bit] = {
+            b
+            for sym, bits in self._var_bits.items()
+            if before.get(sym) != bits
+            for b in bits
+        }
+        candidates = {
+            name
+            for name in new_cells
+            if self._cells[name].connections.get("Y") in self._branch_muxes
+        }
+        changed = True
+        while changed:
+            changed = False
+            used = set(live_values)
+            for name in new_cells:
+                if name in self._cells:
+                    for pin, bits in self._cells[name].connections.items():
+                        if pin != "Y":
+                            used.update(bits)
+            for name in sorted(candidates):
+                cell = self._cells.get(name)
+                if cell is not None and not used.intersection(cell.connections["Y"]):
+                    del self._cells[name]
+                    candidates.discard(name)
+                    changed = True
+
+    def _split_hold(
+        self, value: tuple[Bit, ...], held: tuple[Bit, ...]
+    ) -> tuple[tuple[Bit, ...], Bit] | None:
+        """``(data, enable)`` of ``value`` relative to the held value
+        ``held``, or ``None`` when ``value`` is ``held`` on every path (see
+        :meth:`_infer_latches`). ``enable`` is ``"1"`` when no path holds."""
+        if value == held:
+            return None
+        mux = self._branch_muxes.get(value)
+        if mux is None:
+            return value, "1"
+        sel, a, b = mux
+        split_a = self._split_hold(a, held)
+        split_b = self._split_hold(b, held)
+        if split_a is None and split_b is None:
+            return None
+        if split_a is None:
+            assert split_b is not None
+            return split_b[0], self._and_bit(sel, split_b[1])
+        if split_b is None:
+            return split_a[0], self._and_bit(self._lower_not(sel), split_a[1])
+        (data_a, en_a), (data_b, en_b) = split_a, split_b
+        if (data_a, data_b) == (a, b):
+            data = value
+        else:
+            data = self._branch_mux(sel, data_a, data_b, None)
+        if en_a == en_b:
+            return data, en_a
+        enable = self._emit_comb_cell(
+            "$mux", {"A": (en_a,), "B": (en_b,), "S": (sel,)}, output_width=1
+        )
+        return data, enable[0]
+
+    def _and_bit(self, a: Bit, b: Bit) -> Bit:
+        """``a & b`` for single bits, folding a constant ``"1"``."""
+        if b == "1":
+            return a
+        if a == "1":
+            return b
+        return self._emit_comb_cell("$and", {"A": (a,), "B": (b,)}, output_width=1)[0]
 
     def _walk_comb_statement(self, stmt: Any) -> None:
         kind = self._kind_name(stmt)
@@ -3794,7 +4256,11 @@ class _ModuleBuilder:
                 self._walk_comb_statement(s)
             return
         if kind == "ExpressionStatement":
-            self._alias_assign(stmt.expr)
+            write = self._as_assignment(stmt.expr)
+            if write is None:
+                self._other_statement(stmt, "combinational block")
+                return
+            self._alias_assign(write)
             return
         if kind == "ConditionalStatement":
             self._walk_conditional_statement(stmt)
@@ -3802,250 +4268,253 @@ class _ModuleBuilder:
         if kind == "CaseStatement":
             self._walk_case_statement(stmt)
             return
-        # for/while loops etc. → ignore for now.
+        if kind == "ReturnStatement" and self._inline_returns:
+            # ``return expr;`` ending an inlined function body.
+            ret = self._inline_returns[-1]
+            value = getattr(stmt, "expr", None)
+            bits = (
+                self._sized_rhs_bits(value, self._width_of(ret))
+                if value is not None
+                else None
+            )
+            if bits is None:
+                self._lowering_failures += 1
+            else:
+                self._var_bits[ret] = bits
+            return
+        if kind == "ForLoopStatement":
+            self._unroll_for(stmt, self._walk_comb_statement)
+            return
+        if kind == "VariableDeclStatement":
+            self._declare_local(stmt, clocked=False)
+            return
+        self._other_statement(stmt, "combinational block")
+
+    # Statements with no logic of their own: skipped without a word.
+    _NO_LOGIC_STATEMENTS = frozenset(
+        {
+            "EmptyStatement",
+            "ImmediateAssertionStatement",
+            "ConcurrentAssertionStatement",
+            "ProceduralCheckerStatement",
+        }
+    )
+
+    def _other_statement(self, stmt: Any, where: str) -> None:
+        """A statement the procedural walkers have no dedicated lowering
+        for. Increments / decrements (``n++``) are writes; a system task
+        (``$display``) and an assertion have no logic; anything else (a
+        task call, a ``while`` / ``repeat`` / ``foreach`` loop, an event
+        control inside the body, ``disable``, …) is reported rather than
+        skipped silently (rtl-buddy-cdc#377)."""
+        kind = self._kind_name(stmt)
+        if kind in self._NO_LOGIC_STATEMENTS:
+            return
+        if kind == "ExpressionStatement":
+            expr = stmt.expr
+            if type(expr).__name__ == "CallExpression" and getattr(
+                expr, "isSystemCall", False
+            ):
+                return
+        self._warn_dropped(stmt, f"`{kind}` is not modelled in a {where}", "statement")
+
+    _STEP_OPS = {
+        "Postincrement": "$add",
+        "Preincrement": "$add",
+        "Postdecrement": "$sub",
+        "Predecrement": "$sub",
+    }
+
+    def _as_assignment(self, expr: Any) -> Any | None:
+        """``expr`` as a write the walkers lower: an assignment itself, an
+        ``n++`` / ``n--`` statement as ``n = n ± 1``, else ``None``."""
+        kind = type(expr).__name__
+        if kind == "AssignmentExpression":
+            return expr
+        if kind != "UnaryExpression":
+            return None
+        cell = self._STEP_OPS.get(str(getattr(expr, "op", "")).rsplit(".", 1)[-1])
+        if cell is None:
+            return None
+        operand = expr.operand
+        current = self._bits_of_expression(operand)
+        if not current:
+            return None
+        one: tuple[Bit, ...] = ("1",) + ("0",) * (len(current) - 1)
+        bits = self._emit_comb_cell(
+            cell, {"A": current, "B": one}, output_width=len(current), src_node=expr
+        )
+        return _Assign(operand, _Bits(bits, expr), expr)
+
+    def _declare_local(self, stmt: Any, *, clocked: bool) -> None:
+        """A block-local variable declaration: its initialiser, when it has
+        one, is its value for the rest of the block."""
+        sym = getattr(stmt, "symbol", None)
+        init = getattr(sym, "initializer", None)
+        if sym is None or init is None:
+            return
+        canonical = self._canonical_var(sym)
+        net = self._alloc_bits(sym)
+        value = self._rhs_bits(init, len(net))
+        if clocked:
+            self._blocking_nets.setdefault(canonical, net)
+        self._var_bits[canonical] = value
+
+    def _walk_branches(self, arms: list[Any]) -> list[dict[Any, tuple[Bit, ...]]]:
+        """Walk each statement of ``arms`` (``None`` for an empty arm) from
+        the same starting values; return the values each leaves. The
+        current values are restored afterwards, and cells emitted in each
+        arm are kept."""
+        base = dict(self._var_bits)
+        states: list[dict[Any, tuple[Bit, ...]]] = []
+        for arm in arms:
+            if arm is not None:
+                self._walk_comb_statement(arm)
+            states.append(dict(self._var_bits))
+            self._var_bits = dict(base)
+        return states
 
     def _walk_conditional_statement(self, stmt: Any) -> None:
-        """Lower an ``always_comb`` ``if`` / ``else`` into a per-LHS
-        ``$mux``.
+        """Lower a combinational ``if`` / ``else`` into a per-variable
+        ``$mux(S=cond, A=else value, B=then value)``.
 
-        Strategy: snapshot the alias state, walk each branch
-        independently, capture the per-branch result for every LHS
-        that was written, then merge:
-
-        - Written in **both** branches → emit ``$mux(S=cond, A=false,
-          B=true)`` and alias the LHS to the mux output.
-        - Written in **only one** branch → keep the single-branch
-          aliasing. Per SV ``always_comb`` semantics the unwritten side
-          is undefined, but the conservative choice (no mux) keeps the
-          rule pack's data-cone walk honest — we don't pretend the
-          condition gates the value when no real gate exists.
-
-        Cells emitted while walking each branch (e.g. ``$and`` for a
-        ``y = a & b`` body) are preserved across the snapshot/restore
-        — only the alias maps are rolled back, so the bits returned
-        by ``_bits_of_expression`` still resolve to a real Yosys cell.
+        Each arm is walked from the same starting values; a variable
+        written in either arm gets the mux, an arm that does not write it
+        contributing its value before the ``if`` (Yosys ``proc``). When
+        that value is the variable's own net — not assigned yet in this
+        body — the leg is a held value, and :meth:`_infer_latches` turns
+        it into a latch enable. A condition known at elaboration time
+        walks the live arm only.
         """
         conds = getattr(stmt, "conditions", None) or []
-        sel_bits = (
-            self._bits_of_expression(conds[0].expr)
-            if conds and conds[0].expr is not None
-            else None
-        )
-        if sel_bits is None:
-            # Can't lower the selector → conservative descend. Matches
-            # pre-mux behaviour: unconditional writes get aliased, any
-            # branch-mismatched LHS picks "whichever wrote last".
-            self._walk_comb_statement(stmt.ifTrue)
-            if stmt.ifFalse is not None:
-                self._walk_comb_statement(stmt.ifFalse)
+        cond_expr = conds[0].expr if conds else None
+        const = self._const_int(cond_expr) if len(conds) == 1 else None
+        if const is not None:
+            live = stmt.ifTrue if const != 0 else stmt.ifFalse
+            if live is not None:
+                self._walk_comb_statement(live)
             return
-
-        base_var_bits = dict(self._var_bits)
-        base_ports = dict(self._ports)
-        base_netnames = dict(self._netnames)
-
-        self._walk_comb_statement(stmt.ifTrue)
-        true_var_bits = dict(self._var_bits)
-        self._var_bits = dict(base_var_bits)
-        self._ports = dict(base_ports)
-        self._netnames = dict(base_netnames)
-
-        if stmt.ifFalse is not None:
-            self._walk_comb_statement(stmt.ifFalse)
-            false_var_bits = dict(self._var_bits)
-            self._var_bits = dict(base_var_bits)
-            self._ports = dict(base_ports)
-            self._netnames = dict(base_netnames)
-        else:
-            # No else → the false side is the prior value.
-            false_var_bits = dict(base_var_bits)
-
-        all_vars: set[Any] = set()
-        for k, v in true_var_bits.items():
-            if base_var_bits.get(k) != v:
-                all_vars.add(k)
-        for k, v in false_var_bits.items():
-            if base_var_bits.get(k) != v:
-                all_vars.add(k)
-
-        for var in all_vars:
-            base_v = base_var_bits.get(var)
-            t = true_var_bits.get(var)
-            f = false_var_bits.get(var)
-            t_changed = t is not None and t != base_v
-            f_changed = f is not None and f != base_v
-            if t_changed and f_changed:
-                assert t is not None and f is not None
-                if t == f:
-                    # Both branches assigned the same value — no mux
-                    # needed, just alias to the common bits.
-                    self._merge_canonical_var(var, base_v, t)
-                    continue
-                width = max(len(t), len(f))
-                y_bits = self._emit_comb_cell(
-                    cell_type="$mux",
-                    inputs={"A": f, "B": t, "S": sel_bits[:1]},
-                    output_width=width,
-                    src_node=stmt,
-                )
-                self._merge_canonical_var(var, base_v, y_bits)
-            elif t_changed:
-                # Only the true branch wrote → keep single-branch
-                # aliasing (issue #36 spec).
-                assert t is not None
-                self._merge_canonical_var(var, base_v, t)
-            elif f_changed:
-                assert f is not None
-                self._merge_canonical_var(var, base_v, f)
+        sel = self._condition_bit(stmt)
+        base = dict(self._var_bits)
+        true_state, false_state = self._walk_branches([stmt.ifTrue, stmt.ifFalse])
+        written = {
+            k
+            for state in (true_state, false_state)
+            for k, v in state.items()
+            if base.get(k) != v
+        }
+        for var in written:
+            base_v = base.get(var)
+            t = true_state.get(var, base_v)
+            f = false_state.get(var, base_v)
+            if t is None or f is None or t == f:
+                chosen = t if t is not None else f
+                assert chosen is not None
+                self._var_bits[var] = chosen
+                continue
+            self._var_bits[var] = self._branch_mux(sel, f, t, stmt)
 
     def _walk_case_statement(self, stmt: Any) -> None:
-        """Lower an ``always_comb`` ``case`` into a chained ``$mux``
-        per LHS, with item arms wrapped highest-priority-outermost.
+        """Lower a combinational ``case`` into a chained ``$mux`` per
+        variable, item 0 outermost (first match wins).
 
-        For each LHS, the chain starts at the ``default`` arm's
-        contribution (or the prior value, if no default) and folds in
-        each item arm that writes the LHS, in reverse order — item 0
-        ends up as the outermost mux, matching SV's first-match-wins
-        priority semantics. Selector bits for each arm are ``$eq``
-        comparisons against ``stmt.expr``; multi-label arms OR the
-        per-label matches together.
-
-        LHS written in only one arm keeps single-arm aliasing (no
-        mux), matching the conservative shape used by
-        :meth:`_walk_conditional_statement`.
+        The chain starts at the ``default`` arm's value, or, with no
+        ``default``, at the variable's value before the ``case`` — unless
+        the items' constant labels cover every value of the case
+        expression, when the last item is the fallback (Yosys infers no
+        latch for a full ``case`` either). An item that does not write
+        the variable contributes its value before the ``case``. Each
+        item's select is the OR of ``case_expr == label`` per label.
+        A case expression known at elaboration time walks the matching
+        arm only.
         """
-        sel_bits = self._bits_of_expression(stmt.expr)
         items = list(getattr(stmt, "items", []) or [])
         default_arm = getattr(stmt, "defaultCase", None)
-        if sel_bits is None or not items:
+        case_const = self._const_int(stmt.expr)
+        if case_const is not None:
+            live: Any = default_arm
             for item in items:
-                self._walk_comb_statement(getattr(item, "stmt", None))
+                labels = [self._const_int(e) for e in item.expressions]
+                if case_const in labels:
+                    live = getattr(item, "stmt", None)
+                    break
+            if live is not None:
+                self._walk_comb_statement(live)
+            return
+        sel_bits = self._case_expr_bits(stmt)
+        if not items:
             if default_arm is not None:
                 self._walk_comb_statement(default_arm)
             return
-
-        base_var_bits = dict(self._var_bits)
-        base_ports = dict(self._ports)
-        base_netnames = dict(self._netnames)
-
-        def restore() -> None:
-            self._var_bits = dict(base_var_bits)
-            self._ports = dict(base_ports)
-            self._netnames = dict(base_netnames)
-
-        arms: list[tuple[list[Any], dict[Any, tuple[Bit, ...]]]] = []
+        selects: list[Bit] = []
         for item in items:
-            self._walk_comb_statement(getattr(item, "stmt", None))
-            arms.append(
-                (list(getattr(item, "expressions", []) or []), dict(self._var_bits))
+            labels = list(getattr(item, "expressions", []) or [])
+            match = self._or_bits(
+                [self._case_label_match(sel_bits, label, stmt) for label in labels]
             )
-            restore()
-
-        if default_arm is not None:
-            self._walk_comb_statement(default_arm)
-            default_state = dict(self._var_bits)
-            restore()
-        else:
-            default_state = dict(base_var_bits)
-
-        def writes(state: dict[Any, tuple[Bit, ...]]) -> set[Any]:
-            return {k for k, v in state.items() if base_var_bits.get(k) != v}
-
-        arm_writes = [writes(s) for _, s in arms]
-        default_writes = writes(default_state)
-        all_written: set[Any] = set(default_writes)
-        for w in arm_writes:
-            all_written |= w
-
-        for var in all_written:
-            base_v = base_var_bits.get(var)
-            writer_indices = [i for i, w in enumerate(arm_writes) if var in w]
-            default_has = var in default_writes
-            total_writers = len(writer_indices) + (1 if default_has else 0)
-
-            if total_writers == 1:
-                # Only one arm (or only default) writes → single-branch
-                # aliasing.
-                if writer_indices:
-                    self._merge_canonical_var(
-                        var, base_v, arms[writer_indices[0]][1][var]
-                    )
-                else:
-                    self._merge_canonical_var(var, base_v, default_state[var])
-                continue
-
-            # 2+ writers → build a chained $mux, default (or prior
-            # value) as the innermost fallback, item-arm 0 outermost.
-            chain = default_state.get(var) if default_has else base_v
-            if chain is None:
-                continue
-            for i in range(len(arms) - 1, -1, -1):
-                if var not in arm_writes[i]:
+            selects.append(match if match is not None else "0")
+        fallback_arm = default_arm
+        if fallback_arm is None and self._case_is_full(stmt, items, len(sel_bits)):
+            fallback_arm = getattr(items[-1], "stmt", None)
+            items, selects = items[:-1], selects[:-1]
+        base = dict(self._var_bits)
+        states = self._walk_branches(
+            [getattr(item, "stmt", None) for item in items] + [fallback_arm]
+        )
+        arm_states, fallback_state = states[:-1], states[-1]
+        written = {k for state in states for k, v in state.items() if base.get(k) != v}
+        for var in written:
+            base_v = base.get(var)
+            chain = fallback_state.get(var, base_v)
+            for sel, state in zip(reversed(selects), reversed(arm_states)):
+                value = state.get(var, base_v)
+                if chain is None or value is None:
+                    chain = value if value is not None else chain
                     continue
-                label_exprs, arm_state = arms[i]
-                arm_bits = arm_state[var]
-                sel_match = self._lower_case_arm_selector(sel_bits, label_exprs, stmt)
-                if sel_match is None:
-                    continue
-                width = max(len(arm_bits), len(chain))
-                chain = self._emit_comb_cell(
-                    cell_type="$mux",
-                    inputs={"A": chain, "B": arm_bits, "S": sel_match[:1]},
-                    output_width=width,
-                    src_node=stmt,
-                )
-            self._merge_canonical_var(var, base_v, chain)
+                if value != chain:
+                    chain = self._branch_mux(sel, chain, value, stmt)
+            assert chain is not None
+            self._var_bits[var] = chain
 
-    def _lower_case_arm_selector(
-        self,
-        sel_bits: tuple[Bit, ...],
-        label_exprs: list[Any],
-        src_node: Any,
-    ) -> tuple[Bit, ...] | None:
-        """Build the 1-bit ``$mux.S`` selector for a single case arm:
-        OR of ``(case_expr == label_i)`` ``$eq`` cells.
-
-        Returns ``None`` if none of the labels could be lowered, so
-        the caller can drop the arm rather than emit a broken mux.
-        """
-        sel_match: tuple[Bit, ...] | None = None
-        for label_expr in label_exprs:
-            lb = self._bits_of_expression(label_expr)
-            if lb is None:
-                continue
-            eq_y = self._emit_comb_cell(
-                cell_type="$eq",
-                inputs={"A": sel_bits, "B": lb},
-                output_width=1,
-                src_node=src_node,
-            )
-            if sel_match is None:
-                sel_match = eq_y
-            else:
-                sel_match = self._emit_comb_cell(
-                    cell_type="$or",
-                    inputs={"A": sel_match, "B": eq_y},
-                    output_width=1,
-                    src_node=src_node,
-                )
-        return sel_match
+    def _case_is_full(self, stmt: Any, items: list[Any], width: int) -> bool:
+        """The items' labels are constants covering all ``2**width`` values
+        of a plain ``case`` expression (no wildcards)."""
+        if width > 16:
+            return False
+        if str(getattr(stmt, "condition", "")).rsplit(".", 1)[-1] not in {
+            "Normal",
+            "",
+        }:
+            return False
+        seen: set[int] = set()
+        for item in items:
+            for expr in getattr(item, "expressions", []) or []:
+                value = self._const_int(expr)
+                if value is None:
+                    return False
+                seen.add(value & ((1 << width) - 1))
+        return len(seen) == 1 << width
 
     def _alias_assign(self, expr: Any) -> None:
         """For a blocking assignment ``lhs = rhs``, rewrite ``lhs``'s
         bits to point at ``rhs``'s lowered bits — same aliasing trick
         the continuous-assign path uses."""
-        if type(expr).__name__ != "AssignmentExpression":
-            return
-        if getattr(expr, "isNonBlocking", False) and not self._plain_always:
-            return  # nonblocking in always_comb is a SV style violation
+        self._compound_lhs.append(expr.left)
+        try:
+            self._comb_write(expr)
+        finally:
+            self._compound_lhs.pop()
+
+    def _comb_write(self, expr: Any) -> None:
+        """:meth:`_alias_assign` for one write."""
+        # A nonblocking write in a combinational block is a style
+        # violation the language allows; Yosys lowers it like a blocking
+        # one, and so does this frontend (rtl-buddy-cdc#377: it was
+        # skipped without a word).
         lhs = expr.left
         lhs_kind = type(lhs).__name__
         if lhs_kind == "NamedValueExpression":
-            rhs_bits = self._sized_rhs_bits(
-                expr.right, len(self._alloc_bits(lhs.symbol))
-            )
-            if rhs_bits is None:
-                return
+            rhs_bits = self._rhs_bits(expr.right, len(self._alloc_bits(lhs.symbol)))
             self._rewrite_aliased(lhs, rhs_bits)
             return
         if (
@@ -4105,17 +4574,22 @@ class _ModuleBuilder:
         idx_bits = self._bits_of_expression(selector)
         if idx_bits is None:
             return False
+        shift_bits = self._index_shift_bits(
+            getattr(base, "type", None) or getattr(base_sym, "type", None),
+            idx_bits,
+            lhs,
+        )
 
-        rhs_bits = self._bits_of_expression(rhs)
-        if rhs_bits is None or len(rhs_bits) == 0:
-            return True  # unlowerable RHS: left undriven, as elsewhere
+        rhs_bits = self._bits_of_expression(rhs) or self._opaque(
+            rhs, self._expr_width(rhs), "right-hand side"
+        )
         # Zero-extend rhs to base width so the shift operand and the
         # ``base | shl(rhs, idx)`` widths line up.
         a_bits: tuple[Bit, ...] = rhs_bits + ("0",) * (width - len(rhs_bits))
         a_bits = a_bits[:width]
         shl_y = self._emit_comb_cell(
             cell_type="$shl",
-            inputs={"A": a_bits, "B": idx_bits},
+            inputs={"A": a_bits, "B": shift_bits},
             output_width=width,
             src_node=lhs,
         )
@@ -4135,6 +4609,50 @@ class _ModuleBuilder:
         self._merge_canonical_var(canonical, prev_bits, new_bits)
         return True
 
+    def _index_shift_bits(
+        self, base_type: Any, idx_bits: tuple[Bit, ...], node: Any
+    ) -> tuple[Bit, ...]:
+        """The bit position a run-time index selects in a vector of
+        ``base_type``, LSB-first: ``idx - lo`` for a descending ``[hi:lo]``
+        range, ``hi - idx`` for an ascending ``[lo:hi]`` one (``$sub``
+        cells, as Yosys emits them), times the element width of a packed
+        array (rtl-buddy-cdc#377: the raw index was used, so ``v[i] = 1``
+        of ``logic [4:1] v`` set bit ``i`` instead of ``i - 1``, and an
+        ascending vector's bits came out reversed)."""
+        t = getattr(base_type, "canonicalType", None) or base_type
+        rng = getattr(t, "range", None)
+        left = getattr(rng, "left", None)
+        right = getattr(rng, "right", None)
+        pos = idx_bits
+        if left is not None and right is not None:
+            left, right = int(left), int(right)
+            width = max(len(idx_bits), max(abs(left), abs(right)).bit_length()) + 1
+            idx = self._resize_bits(idx_bits, width)
+
+            def const(v: int) -> tuple[Bit, ...]:
+                return tuple("1" if (v >> i) & 1 else "0" for i in range(width))
+
+            if left >= right and right != 0:
+                pos = self._emit_comb_cell(
+                    "$sub", {"A": idx, "B": const(right)}, width, src_node=node
+                )
+            elif left < right:
+                pos = self._emit_comb_cell(
+                    "$sub", {"A": const(right), "B": idx}, width, src_node=node
+                )
+        stride = self._element_stride(t)
+        if stride > 1:
+            factor: tuple[Bit, ...] = tuple(
+                "1" if (stride >> i) & 1 else "0" for i in range(stride.bit_length())
+            )
+            pos = self._emit_comb_cell(
+                "$mul",
+                {"A": pos, "B": factor},
+                len(pos) + len(factor),
+                src_node=node,
+            )
+        return pos
+
     # -- continuous assigns ---------------------------------------------
 
     def _emit_continuous_assign(self, member: Any) -> None:
@@ -4148,10 +4666,7 @@ class _ModuleBuilder:
             if not self._splice_assign(lhs, rhs, continuous=True):
                 self._warn_lvalue_dropped(member, lhs)
             return
-        rhs_bits = self._sized_rhs_bits(rhs, len(self._alloc_bits(lhs.symbol)))
-        if rhs_bits is None:
-            # Comb-driven port — primitive lowering will handle this.
-            return
+        rhs_bits = self._rhs_bits(rhs, len(self._alloc_bits(lhs.symbol)))
         # Aliasing trick: rewrite the LHS variable's bits to point at
         # the RHS's bits so any reader of the LHS sees the RHS source
         # directly. This matches Yosys' post-opt_clean output for
@@ -4166,7 +4681,7 @@ class _ModuleBuilder:
         # (#326: the async-FIFO flags are the canonical forward use).
         if old_bits is not None:
             for o, n in zip(old_bits, rhs_bits):
-                if isinstance(o, int) and o != n:
+                if o in self._placeholder_bits and o != n:
                     self._forward_renames[o] = n
 
     def _apply_forward_renames(self) -> None:
@@ -4217,22 +4732,8 @@ class _ModuleBuilder:
                 )
 
     def _rewrite_aliased(self, lhs: Any, rhs_bits: tuple[Bit, ...]) -> None:
-        """Make every alias that currently holds ``lhs``'s bits point at
-        ``rhs_bits`` instead.
-
-        Crossing the hierarchy boundary, a single net (the parent's
-        ``a_q`` wire, say) is represented by several aliased entries:
-        the parent's :class:`VariableSymbol`, the child instance's
-        :class:`PortSymbol`-internal variable, and any local wires
-        that capture it. When ``assign a_q = q`` runs inside the child,
-        every one of those aliases needs to follow — not just the
-        child's own a_q entry — or the parent's reader sees stale bits.
-
-        Thin shim over :meth:`_merge_canonical_var`; the
-        canonical-keyed variant is the one used by branch-merge sites
-        like :meth:`_walk_conditional_statement` that don't have a
-        live LHS expression to read ``.symbol`` from.
-        """
+        """Set ``lhs``'s current value to ``rhs_bits`` (see
+        :meth:`_merge_canonical_var`)."""
         canonical = self._canonical_var(lhs.symbol)
         self._merge_canonical_var(canonical, self._var_bits.get(canonical), rhs_bits)
 
@@ -4242,27 +4743,22 @@ class _ModuleBuilder:
         old_bits: tuple[Bit, ...] | None,
         new_bits: tuple[Bit, ...],
     ) -> None:
-        """Alias-propagation primitive: rewrite every map entry whose
-        bits equal ``old_bits`` to point at ``new_bits``.
+        """Set ``canonical``'s current value to ``new_bits``.
 
-        We do the cheap thing: scan ``_var_bits`` / ``_ports`` /
-        ``_netnames`` for entries whose bits equal the old tuple and
-        rewrite them. O(n) per assign, fine for the design sizes the
-        analyzer targets.
+        ``_var_bits`` holds each variable's *value* as the walk has
+        lowered it so far; its *net* (the placeholder bits
+        :meth:`_alloc_bits` allocated, shared with every hierarchy alias
+        and recorded in the variable's netname and port) is re-pointed at
+        the final driver only by :meth:`_apply_forward_renames`, which
+        every writer feeds: continuous assigns, net initialisers and
+        combinational blocks (:meth:`_record_forward_renames`).
+
+        Nothing else is rewritten here. Rewriting every other entry that
+        held ``old_bits`` (as this did before rtl-buddy-cdc#377) cannot
+        tell a hierarchy alias of the same net from a variable that
+        merely holds the same value: after ``y = b; if (sel) y = a;`` it
+        re-pointed the input ``b`` itself at ``a``. ``old_bits`` is kept
+        for the callers' symmetry.
         """
+        del old_bits
         self._var_bits[canonical] = new_bits
-        if old_bits is None or old_bits == new_bits:
-            return
-        for sym, bits in list(self._var_bits.items()):
-            if bits == old_bits:
-                self._var_bits[sym] = new_bits
-        for name, port in list(self._ports.items()):
-            if port.bits == old_bits:
-                self._ports[name] = Port(
-                    name=port.name, direction=port.direction, bits=new_bits
-                )
-        for name, nn in list(self._netnames.items()):
-            if nn.bits == old_bits:
-                self._netnames[name] = Netname(
-                    name=nn.name, bits=new_bits, attributes=nn.attributes
-                )

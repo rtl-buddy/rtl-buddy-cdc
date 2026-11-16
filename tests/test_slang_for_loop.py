@@ -37,7 +37,13 @@ FLOP_TYPES = frozenset({"$dff", "$adff", "$dffe", "$adffe", "$sdff", "$sdffe"})
 
 
 def _flop_count(module) -> int:
-    return sum(1 for c in module.cells.values() if c.type in FLOP_TYPES)
+    """Flop *bits*: Yosys ``proc`` groups the written bits of one register
+    into one flop per contiguous run, and so does the slang frontend since
+    rtl-buddy-cdc#377, so an unrolled ``q[i] <= d[i]`` is one 4-bit flop,
+    not four 1-bit ones."""
+    return sum(
+        len(c.connections["Q"]) for c in module.cells.values() if c.type in FLOP_TYPES
+    )
 
 
 def _elaborate(tmp_path: Path, src: str, top: str = "m"):

@@ -569,18 +569,17 @@ endmodule
 
 
 def test_unlowerable_rhs_into_concatenation(tmp_path: Path) -> None:
-    """An RHS with no lowering (a function call) still gives the
+    """An RHS with no lowering (``$countones``) still gives the
     registers an opaque ``$_UNKNOWN_`` driver, as for a plain target; a
     combinational splice leaves the bits undriven, as a whole-variable
     combinational target does."""
     src = """module m (input clk_b, input rst_n, input [2:0] x, output reg a,
           output reg [1:0] b, output reg [2:0] c);
-    function automatic [2:0] f(input [2:0] v); f = v ^ 3'b101; endfunction
     always @(posedge clk_b or negedge rst_n)
         if (!rst_n) {a, b} <= x;
-        else {a, b} <= f(x);
+        else {a, b} <= $countones(x);
     reg [2:0] w;
-    always_comb {w[2], w[1:0]} = f(x);
+    always_comb {w[2], w[1:0]} = $countones(x);
     always @(posedge clk_b) c <= w;
 endmodule
 """

@@ -34,6 +34,7 @@ a call returned.
 from __future__ import annotations
 
 import importlib.util
+import logging
 from pathlib import Path
 
 import pytest
@@ -146,11 +147,11 @@ def test_comb_if_else_same_value_both_arms_no_mux(tmp_path: Path) -> None:
     )
 
 
-def test_comb_if_only_true_branch_keeps_single_branch_alias(tmp_path: Path) -> None:
-    """``y = b; if (sel) y = a;`` — only the true branch rewrites ``y``
-    relative to its prior value, so :meth:`_walk_conditional_statement`
-    keeps the single-branch aliasing (issue #36): no mux, the flop reads
-    the true-arm value ``a``."""
+def test_comb_if_only_true_branch_muxes_with_prior_value(tmp_path: Path) -> None:
+    """``y = b; if (sel) y = a;`` — the arm that does not write ``y``
+    keeps its value before the ``if``, so the merge is ``$mux(S=sel,
+    A=b, B=a)``, as Yosys ``proc`` builds it (rtl-buddy-cdc#377; this
+    used to alias ``y`` to ``a`` and drop ``b`` and ``sel``)."""
     src = """
     module m (input logic clk, sel, a, b, output logic q);
         logic y;
@@ -162,19 +163,16 @@ def test_comb_if_only_true_branch_keeps_single_branch_alias(tmp_path: Path) -> N
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$mux" not in _cell_types(mod), (
-        f"single written branch must not emit a $mux; got {_cell_types(mod)}"
-    )
-    a_bit = mod.ports["a"].bits[0]
-    assert _one_dff(mod).connections["D"] == (a_bit,), (
-        "with only the true arm rewriting y, the flop should read a"
-    )
+    (mux,) = [c for c in mod.cells.values() if c.type == "$mux"]
+    assert mux.connections["S"] == mod.ports["sel"].bits
+    assert mux.connections["A"] == mod.ports["b"].bits
+    assert mux.connections["B"] == mod.ports["a"].bits
+    assert _one_dff(mod).connections["D"] == mux.connections["Y"]
 
 
-def test_comb_if_only_false_branch_keeps_single_branch_alias(tmp_path: Path) -> None:
-    """Mirror of the above for the ``f_changed`` leg: ``y = b; if (sel)
-    ; else y = a;`` rewrites ``y`` only on the else side, so the flop
-    reads ``a`` with no mux emitted."""
+def test_comb_if_only_false_branch_muxes_with_prior_value(tmp_path: Path) -> None:
+    """Mirror of the above for the ``else`` arm: ``y = b; if (sel) ;
+    else y = a;`` is ``$mux(S=sel, A=a, B=b)``."""
     src = """
     module m (input logic clk, sel, a, b, output logic q);
         logic y;
@@ -187,11 +185,10 @@ def test_comb_if_only_false_branch_keeps_single_branch_alias(tmp_path: Path) -> 
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$mux" not in _cell_types(mod), (
-        f"single written (else) branch must not emit a $mux; got {_cell_types(mod)}"
-    )
-    a_bit = mod.ports["a"].bits[0]
-    assert _one_dff(mod).connections["D"] == (a_bit,)
+    (mux,) = [c for c in mod.cells.values() if c.type == "$mux"]
+    assert mux.connections["A"] == mod.ports["a"].bits
+    assert mux.connections["B"] == mod.ports["b"].bits
+    assert _one_dff(mod).connections["D"] == mux.connections["Y"]
 
 
 # --- always_comb case -> chained $mux -------------------------------------
@@ -266,12 +263,12 @@ def test_comb_case_builds_chained_mux_with_eq_selectors(tmp_path: Path) -> None:
         )
 
 
-def test_comb_case_single_writer_per_lhs_keeps_single_arm_alias(tmp_path: Path) -> None:
-    """When each LHS is written in exactly one arm (no pre-case default,
-    empty ``default``), :meth:`_walk_case_statement` takes the
-    ``total_writers == 1`` single-arm-aliasing leg: no ``$mux`` and no
-    ``$eq`` selector is emitted — the var simply aliases to that arm's
-    value."""
+def test_comb_case_single_writer_per_lhs_infers_latches(tmp_path: Path) -> None:
+    """Each variable written in exactly one arm (empty ``default``) is held
+    in the others: a latch loading its arm's value when that arm is
+    selected (rtl-buddy-cdc#377; this used to alias each variable
+    straight to its arm's value). ``always_comb`` forbids the latch, and
+    Yosys rejects it; this frontend lowers it with a warning."""
     src = """
     module m (
         input  logic       clk,
@@ -291,18 +288,25 @@ def test_comb_case_single_writer_per_lhs_keeps_single_arm_alias(tmp_path: Path) 
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    types = _cell_types(mod)
-    assert "$mux" not in types and "$eq" not in types, (
-        f"single-writer-per-LHS arms must not synthesise mux/eq gating; got {types}"
-    )
-    by_name = sorted(_flops(mod), key=lambda c: c.name)
-    assert len(by_name) == 2
-    assert by_name[0].connections["D"] == (mod.ports["a"].bits[0],), (
-        "y1 (written only in arm 0) should alias to a"
-    )
-    assert by_name[1].connections["D"] == (mod.ports["b"].bits[0],), (
-        "y2 (written only in arm 1) should alias to b"
-    )
+    latches = {c.connections["Q"]: c for c in mod.cells.values() if c.type == "$dlatch"}
+    eqs = {
+        c.connections["B"]: c.connections["Y"][0]
+        for c in mod.cells.values()
+        if c.type == "$eq"
+    }
+    y1 = mod.netnames["y1"].bits
+    y2 = mod.netnames["y2"].bits
+    assert latches[y1].connections["D"] == mod.ports["a"].bits
+    assert latches[y1].connections["EN"] == (eqs[("0", "0")],)
+    assert latches[y2].connections["D"] == mod.ports["b"].bits
+    # Item 1 is selected when item 0 is not: ``!(sel == 0) & (sel == 1)``.
+    (en2,) = latches[y2].connections["EN"]
+    (and2,) = [c for c in mod.cells.values() if c.connections.get("Y") == (en2,)]
+    assert and2.type == "$and"
+    assert and2.connections["B"] == (eqs[("1", "0")],)
+    by_q = {c.connections["Q"]: c for c in _flops(mod)}
+    assert by_q[mod.ports["q1"].bits].connections["D"] == y1
+    assert by_q[mod.ports["q2"].bits].connections["D"] == y2
 
 
 def test_comb_case_multilabel_item_ors_equalities(tmp_path: Path) -> None:
@@ -339,14 +343,14 @@ def test_comb_case_multilabel_item_ors_equalities(tmp_path: Path) -> None:
 
 
 def test_indexed_assign_onehot_emits_shift(tmp_path: Path) -> None:
-    """``oh = '0; oh[idx] = 1'b1;`` — :meth:`_alias_indexed_assign`
+    """``oh = m; oh[idx] = 1'b1;`` — :meth:`_alias_indexed_assign`
     models ``oh = oh | (1 << idx)``, emitting a ``$shl`` whose B is the
-    index and (because the prior alias is not the literal zero constant)
-    an ``$or`` folding the shift onto the previous bits."""
+    index and (because the prior value is not the all-zero constant) an
+    ``$or`` folding the shift onto the previous bits."""
     src = """
-    module m (input logic [1:0] idx, output logic [3:0] oh);
+    module m (input logic [1:0] idx, input logic [3:0] m, output logic [3:0] oh);
         always_comb begin
-            oh = '0;
+            oh = m;
             oh[idx] = 1'b1;
         end
     endmodule
@@ -447,23 +451,20 @@ def test_unary_plus_is_identity_no_cell(tmp_path: Path) -> None:
     assert "$pos" not in _cell_types(mod), "unary plus must not emit a cell"
 
 
-def test_continuous_assign_unmodelled_rhs_emits_no_cell(tmp_path: Path) -> None:
-    """``assign y = f(a);`` where the RHS isn't modelled —
-    :meth:`_emit_continuous_assign` bails when ``_bits_of_expression``
-    returns ``None`` (the comb-driven-port leg), so no aliasing happens
-    and no cell is emitted for the assign."""
+def test_continuous_assign_unmodelled_rhs_is_opaque(tmp_path: Path, caplog) -> None:
+    """``assign y = $countones(a);`` where the RHS isn't modelled: ``y``
+    is driven by a reported ``$_UNKNOWN_`` cell (rtl-buddy-cdc#377; it
+    used to be left silently undriven)."""
     src = """
     module m (input logic [3:0] a, output logic [3:0] y);
-        function automatic logic [3:0] f(input logic [3:0] x);
-            return x + 1;
-        endfunction
-        assign y = f(a);
+        assign y = $countones(a);
     endmodule
     """
-    mod = _elaborate(tmp_path, src)
-    assert _cell_types(mod) == [], (
-        f"an unmodelled continuous-assign RHS should emit no cell; got {_cell_types(mod)}"
-    )
+    with caplog.at_level(logging.WARNING):
+        mod = _elaborate(tmp_path, src)
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    assert mod.ports["y"].bits == unknown.connections["Y"]
+    assert any("$countones(a)" in r.getMessage() for r in caplog.records)
 
 
 def test_arithmetic_shift_left_emits_sshl(tmp_path: Path) -> None:
@@ -570,17 +571,14 @@ def test_parameter_replication_count_folds(tmp_path: Path) -> None:
 
 
 def test_unmodelled_rhs_becomes_unknown_driver(tmp_path: Path) -> None:
-    """A function-call RHS isn't modelled by ``_bits_of_expression``, so
+    """A system-call RHS isn't modelled by ``_bits_of_expression``, so
     the flop's D must be driven by a fresh ``$_UNKNOWN_`` cell — the
     driver exists (so the rule pack's lookup finds *something*) but its
     type stops the data-cone walk, and the real source ``d`` does not
     reach D."""
     src = """
     module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
-        function automatic logic [3:0] f(input logic [3:0] x);
-            return x + 1;
-        endfunction
-        always_ff @(posedge clk) q <= f(d);
+        always_ff @(posedge clk) q <= $countones(d);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -599,10 +597,10 @@ def test_unmodelled_rhs_becomes_unknown_driver(tmp_path: Path) -> None:
     )
 
 
-def test_multibit_latch_enable_drops_latch(tmp_path: Path) -> None:
-    """A multi-bit ``always_latch`` enable can't lower to a single mux
-    select (``_lower_condition_to_bit`` bails on width != 1), so the
-    latch is conservatively dropped — no ``$dlatch`` emitted."""
+def test_multibit_latch_enable_reduces_to_one_bit(tmp_path: Path) -> None:
+    """A multi-bit ``always_latch`` enable is true when non-zero: the
+    latch's ``EN`` is the ``$reduce_bool`` of it, as Yosys lowers the
+    condition (rtl-buddy-cdc#377; the latch used to be dropped)."""
     src = """
     module m (input logic [1:0] en, input logic d, output logic q);
         always_latch begin
@@ -611,15 +609,16 @@ def test_multibit_latch_enable_drops_latch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$dlatch" not in _cell_types(mod), (
-        f"a multi-bit latch enable can't be lowered; latch should drop. got {_cell_types(mod)}"
-    )
+    (red,) = [c for c in mod.cells.values() if c.type == "$reduce_bool"]
+    assert red.connections["A"] == mod.ports["en"].bits
+    (latch,) = [c for c in mod.cells.values() if c.type == "$dlatch"]
+    assert latch.connections["EN"] == red.connections["Y"]
 
 
-def test_nonblocking_latch_body_drops_latch(tmp_path: Path) -> None:
-    """A non-blocking write inside ``always_latch`` is a style violation;
-    :meth:`_walk_latch_statement` bails rather than model it, so no
-    ``$dlatch`` is emitted."""
+def test_nonblocking_latch_body_is_a_latch(tmp_path: Path) -> None:
+    """A non-blocking write inside ``always_latch`` is a style violation
+    synthesis lowers anyway: one ``$dlatch`` (rtl-buddy-cdc#377; it was
+    dropped without a word)."""
     src = """
     module m (input logic en, d, output logic q);
         always_latch begin
@@ -628,15 +627,12 @@ def test_nonblocking_latch_body_drops_latch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$dlatch" not in _cell_types(mod), (
-        f"non-blocking latch body must drop the latch; got {_cell_types(mod)}"
-    )
+    assert _cell_types(mod).count("$dlatch") == 1
 
 
-def test_no_conditional_latch_body_drops_latch(tmp_path: Path) -> None:
-    """An ``always_latch`` body with no ``if`` (a bare ``q = d;``) isn't
-    the single-arm-implicit-hold shape, so the walker returns without
-    emitting a ``$dlatch``."""
+def test_no_conditional_latch_body_infers_no_latch(tmp_path: Path) -> None:
+    """An ``always_latch`` body with no ``if`` (a bare ``q = d;``) holds
+    nothing: no ``$dlatch``, ``q`` is ``d`` (as on the Yosys path)."""
     src = """
     module m (input logic d, output logic q);
         always_latch begin
@@ -645,15 +641,14 @@ def test_no_conditional_latch_body_drops_latch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$dlatch" not in _cell_types(mod), (
-        f"latch body with no if-guard isn't a clean $dlatch shape; got {_cell_types(mod)}"
-    )
+    assert "$dlatch" not in _cell_types(mod)
+    assert mod.ports["q"].bits == mod.ports["d"].bits
 
 
-def test_multistatement_latch_arm_drops_latch(tmp_path: Path) -> None:
-    """``if (en) begin q = a; r = b; end`` — the ifTrue arm is a multi-
-    statement block, not a single ``ExpressionStatement``, so
-    :meth:`_walk_latch_statement` bails and emits no ``$dlatch``."""
+def test_multistatement_latch_arm_emits_two_latches(tmp_path: Path) -> None:
+    """``if (en) begin q = a; r = b; end`` — a multi-statement arm: one
+    ``$dlatch`` per variable, both enabled by ``en`` (rtl-buddy-cdc#377;
+    the block used to be skipped silently)."""
     src = """
     module m (input logic en, a, b, output logic q, r);
         always_latch begin
@@ -662,15 +657,18 @@ def test_multistatement_latch_arm_drops_latch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$dlatch" not in _cell_types(mod), (
-        f"multi-statement latch arm isn't the single-arm shape; got {_cell_types(mod)}"
-    )
+    latches = [c for c in mod.cells.values() if c.type == "$dlatch"]
+    assert {c.connections["D"] for c in latches} == {
+        mod.ports["a"].bits,
+        mod.ports["b"].bits,
+    }
+    assert {c.connections["EN"] for c in latches} == {mod.ports["en"].bits}
 
 
-def test_latch_with_else_still_emits_single_dlatch(tmp_path: Path) -> None:
-    """``if (en) q = a; else q = b;`` — the explicit ``else`` is ignored
-    (it would break single-arm implicit-hold semantics), but the ifTrue
-    arm still produces exactly one ``$dlatch`` whose D reads ``a``."""
+def test_latch_with_else_is_combinational(tmp_path: Path) -> None:
+    """``if (en) q = a; else q = b;`` assigns ``q`` on every path: no
+    latch, a ``$mux`` (as on the Yosys path; rtl-buddy-cdc#377 — the
+    ``else`` arm used to be ignored and a latch on ``a`` emitted)."""
     src = """
     module m (input logic en, a, b, output logic q);
         always_latch begin
@@ -680,22 +678,16 @@ def test_latch_with_else_still_emits_single_dlatch(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    latches = [c for c in mod.cells.values() if c.type == "$dlatch"]
-    assert len(latches) == 1, (
-        f"latch-with-else should still emit one $dlatch from the ifTrue arm; "
-        f"got {_cell_types(mod)}"
-    )
-    a_bit = mod.ports["a"].bits[0]
-    assert latches[0].connections["D"] == (a_bit,), (
-        f"the $dlatch D should read the ifTrue value a (else ignored); "
-        f"got {latches[0].connections['D']}"
-    )
+    assert "$dlatch" not in _cell_types(mod)
+    (mux,) = [c for c in mod.cells.values() if c.type == "$mux"]
+    assert mux.connections["S"] == mod.ports["en"].bits
+    assert mod.ports["q"].bits == mux.connections["Y"]
 
 
-def test_nonblocking_assign_in_always_comb_is_ignored(tmp_path: Path) -> None:
+def test_nonblocking_assign_in_always_comb_is_lowered(tmp_path: Path) -> None:
     """A non-blocking ``y <= a`` inside ``always_comb`` is a style
-    violation; :meth:`_alias_assign` bails on it, so ``y`` keeps its own
-    fresh bits and the downstream flop does NOT alias through to ``a``."""
+    violation Yosys lowers like ``y = a``, and so does this frontend
+    (rtl-buddy-cdc#377; it was skipped, leaving ``y`` undriven)."""
     src = """
     module m (input logic clk, a, output logic q);
         logic y;
@@ -706,37 +698,31 @@ def test_nonblocking_assign_in_always_comb_is_ignored(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    a_bit = mod.ports["a"].bits[0]
-    ff = _one_dff(mod)
-    assert ff.connections["D"] != (a_bit,), (
-        "a non-blocking write in always_comb must NOT alias y onto a; "
-        f"got D={ff.connections['D']} a={a_bit}"
-    )
+    assert _one_dff(mod).connections["D"] == mod.ports["a"].bits
 
 
-def test_comb_if_with_unlowerable_selector_descends_without_mux(tmp_path: Path) -> None:
-    """When the ``if`` condition can't be lowered to bits (a function
-    call here), :meth:`_walk_conditional_statement` takes the
-    conservative-descend leg: it walks both arms unconditionally and
-    emits **no** ``$mux``. Contrast :func:`test_comb_if_else_both_arms_emit_mux`,
-    where a lowerable selector *does* produce a mux — the only
-    difference is whether the selector lowered."""
+def test_comb_if_with_unlowerable_selector_is_reported(tmp_path: Path, caplog) -> None:
+    """When the ``if`` condition can't be lowered to bits (a system call
+    here), :meth:`_walk_conditional_statement` muxes the arms on a
+    reported opaque select (rtl-buddy-cdc#377; it used to walk both arms
+    as if unconditional, so ``y`` silently read ``b``)."""
     src = """
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
         logic [3:0] y;
-        function automatic logic g(input logic [3:0] x); return ^x; endfunction
         always_comb begin
-            if (g(a)) y = a;
+            if ($countones(a)) y = a;
             else      y = b;
         end
         always_ff @(posedge clk) q <= y;
     endmodule
     """
-    mod = _elaborate(tmp_path, src)
-    assert "$mux" not in _cell_types(mod), (
-        "an unlowerable if-selector must skip the mux merge and descend "
-        f"conservatively; got {_cell_types(mod)}"
-    )
+    with caplog.at_level(logging.WARNING):
+        mod = _elaborate(tmp_path, src)
+    (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
+    (mux,) = [c for c in mod.cells.values() if c.type == "$mux"]
+    assert mux.connections["S"] == unknown.connections["Y"]
+    assert _one_dff(mod).connections["D"] == mux.connections["Y"]
+    assert any("`if` condition" in r.getMessage() for r in caplog.records)
 
 
 def test_latch_body_with_two_if_arms_emits_two_dlatches(tmp_path: Path) -> None:
