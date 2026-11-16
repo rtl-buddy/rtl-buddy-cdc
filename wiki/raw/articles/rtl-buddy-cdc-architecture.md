@@ -2499,8 +2499,15 @@ sync hazard, but the source is a true multi-bit register rather
 than a shared combinational decoder.
 
 Detection walks `crossings` looking for src flops with `len(q) >=
-2`, groups by `(src_flop, dst_clock)`, and fires when the group
-contains ≥2 distinct `dst_flop`s. Suppression mirrors CDC-004:
+2`, keeps the *slices* — crossings with `width < len(src.q)` — groups
+them by `(src_flop, dst_clock)`, and fires when the group contains ≥2
+distinct `dst_flop`s. A crossing whose `width` reaches the source's is
+the whole bus landing on one register: a bus crossing, which CDC-004
+judges (gated, gray, …), not a lane. Until rtl-buddy-cdc#386 every
+destination counted, so two full-width captures of one held payload
+under one synchronised enable — two gated buses CDC-004 accepts — were
+reported as a sliced bus. A slice still counts beside a full-width
+capture of the same source. Suppression mirrors CDC-004:
 
 * `(* cdc_gray *)` on the source flop,
 * `(* cdc_static *)` on the source flop, or

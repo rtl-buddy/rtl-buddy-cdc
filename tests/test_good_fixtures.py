@@ -343,6 +343,10 @@ GOOD_FIXTURES = [
     # $mul / $le / $reduce_* / $shiftx between handshake-held operands
     # and a gated capture: three operand crossings, request, acknowledge.
     ("good_comb_ops_handshake", 5),
+    # rtl-buddy-cdc#386: one held 8-bit payload captured twice, full width,
+    # under one synchronised request — two gated buses, not a sliced one
+    # (CDC-020 silent). Two captures, the request and the acknowledge.
+    ("good_gated_bus_double_capture", 4),
 ]
 
 

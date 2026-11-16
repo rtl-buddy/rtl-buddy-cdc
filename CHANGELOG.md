@@ -368,6 +368,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CDC-020 on full-width gated captures** (rtl-buddy-cdc#386, item 2).
+  CDC-020 (sliced-bus reconvergence) counted every destination of a
+  multi-bit source, whatever the crossing's width, so two 8-bit captures
+  of one held payload under one synchronised enable — two properly gated
+  buses, which CDC-004 accepts — read as a bus sliced into two lanes. It
+  now counts only slices, crossings narrower than the source, as its
+  docstring and the architecture article always described; a slice still
+  counts beside a full-width capture. New good fixture
+  `good_gated_bus_double_capture`. No committed fixture changes verdict;
+  the two that report CDC-020 (`bad_sliced_bus_reconvergence`,
+  `bad_comb_ops_before_sync`) still do.
+
 - **Gate level: a multi-bit `$dffsr` / `$dffsre` was never regrouped**
   (rtl-buddy-cdc#386, item 1). `proc` builds a W-bit `$dffsr`'s `SET` /
   `CLR` from W-bit muxes, so after `techmap` each `$_DFFSR_` /

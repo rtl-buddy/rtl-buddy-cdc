@@ -5999,7 +5999,11 @@ def check_cdc_020(
 
     Detection groups by ``(src_flop, dst_clock)``: one finding per
     affected source register per destination domain, listing every
-    sliced lane.
+    sliced lane. A *lane* is a crossing narrower than the source
+    (``width < len(src.q)``); a crossing that lands the whole bus on one
+    destination is a bus crossing, CDC-004's to judge, and is not
+    counted (rtl-buddy-cdc#386: two gated full-width captures of one held
+    payload are two properly gated buses, not a sliced one).
 
     Suppressed when:
 
@@ -6022,6 +6026,12 @@ def check_cdc_020(
         src_flop = c.src_flop
         if len(src_flop.q) < 2:
             continue  # truly width-1 source — CDC-001/004's domain
+        if c.width >= len(src_flop.q):
+            # Not a slice: the whole bus lands on this destination, and
+            # CDC-004 judges that bus crossing (gated, gray, …) as a whole.
+            # Two full-width captures of one register are two bus
+            # crossings, not lanes of one (rtl-buddy-cdc#386).
+            continue
         src_name = src_flop.cell.name
         src_flop_lookup[src_name] = src_flop
         key = (src_name, c.dst_clock)
