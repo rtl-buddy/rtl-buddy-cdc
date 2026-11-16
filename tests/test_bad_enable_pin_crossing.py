@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from rtl_buddy_cdc import netlist, sdc as sdc_mod, sdc_objects
+from rtl_buddy_cdc import domain as domain_mod, netlist, sdc as sdc_mod, sdc_objects
 from rtl_buddy_cdc.cli import app
 from rtl_buddy_cdc.domain import capture_control_pins, find_crossings
 from rtl_buddy_cdc.netlist import BoundarySummary, Cell, Module, Port, PortBoundary
@@ -238,6 +238,74 @@ def test_one_bit_of_a_wide_boundary_port_on_an_enable_is_single_bit() -> None:
     crossings = find_crossings(_module(dst, inst), boundaries={"u": summary})
     (c,) = [c for c in crossings if c.src_boundary is not None]
     assert c.width == 1
+
+
+def test_wide_source_walk_expands_each_bit_at_most_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The single-bit test rides on the crossing walk itself: each bit
+    carries the one source bit it was reached from, or "several", and is
+    expanded again only when that label rises — at most twice per source,
+    whatever the source's width (rtl-buddy-cdc#390). A per-source-bit
+    re-walk would expand the shared adder cone below once per bit.
+
+    ``a`` (clk_a, 64 bits): ``a[0]`` enables ``b`` (clk_b), so ``b`` is
+    reached from one bit; every bit feeds a 64-bit ``$add`` (each input
+    reaches every output) into ``c`` (clk_b).
+    """
+    w = 64
+    a_q = tuple(range(100, 100 + w))
+    add_y = tuple(range(300, 300 + w))
+    cells = [
+        _ff("a", "$dff", 2, D=tuple(range(500, 500 + w)), Q=a_q),
+        Cell(
+            name="add",
+            type="$add",
+            connections={"A": a_q, "B": a_q[::-1], "Y": add_y},
+        ),
+        _ff("c", "$dff", 3, D=add_y, Q=tuple(range(700, 700 + w))),
+        _ff("b", "$dffe", 3, D=(5, 13), Q=(6, 14), EN=(a_q[0],)),
+    ]
+    module = Module(
+        name="m",
+        ports={
+            "clk_a": Port(name="clk_a", direction="input", bits=(2,)),
+            "clk_b": Port(name="clk_b", direction="input", bits=(3,)),
+        },
+        cells={c.name: c for c in cells},
+        netnames={},
+    )
+    calls: dict[tuple[str, str, int], int] = {}
+    real = domain_mod._lane_targets
+
+    def counting(cell: Cell, port: str, idx: int):  # noqa: ANN202
+        key = (cell.name, port, idx)
+        calls[key] = calls.get(key, 0) + 1
+        return real(cell, port, idx)
+
+    monkeypatch.setattr(domain_mod, "_lane_targets", counting)
+    widths = {c.dst_flop.name: c.width for c in find_crossings(module)}
+    assert widths == {"b": 1, "c": w}
+    # Every consumer site of the one source is expanded at most twice.
+    assert calls and max(calls.values()) <= 2
+    assert sum(calls.values()) <= 2 * 2 * w
+
+
+def test_second_source_bit_arriving_late_is_replayed() -> None:
+    """``x = a[1] & ~~a[0]``: the walk reaches ``x`` from ``a[1]`` in one
+    cell and expands it before ``a[0]`` arrives two cells later. The rise
+    to "several source bits" is replayed through ``x`` (and ``z = ~x``)
+    afterwards, so ``b`` — whose lanes are ``x`` and ``z`` — is a 2-bit
+    crossing, not a single-bit one."""
+    cells = [
+        Cell(name="n1", type="$not", connections={"A": (15,), "Y": (30,)}),
+        Cell(name="n2", type="$not", connections={"A": (30,), "Y": (31,)}),
+        Cell(name="x", type="$and", connections={"A": (4,), "B": (31,), "Y": (32,)}),
+        Cell(name="z", type="$not", connections={"A": (32,), "Y": (33,)}),
+        _ff("b", "$dff", 3, D=(32, 33), Q=(6, 14)),
+    ]
+    (c,) = find_crossings(_wide_src(*cells, dst=cells[-1]))
+    assert (c.width, c.min_hops) == (2, 1)
 
 
 def test_port_sourced_enable_crossing() -> None:

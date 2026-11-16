@@ -419,6 +419,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RDC-003 for a sync reset); a bit replicated onto several lanes is read
   the same way. Source bits are the same in the `proc`, `opt_dff` and
   gate-level forms, so the forms still agree (and the slang frontend).
+  The source bits are counted during the crossing walk itself: each
+  visited bit carries the one source bit it was reached from, or
+  "several", and is expanded at most twice per source whatever its width
+  (a rise after a bit's first expansion is replayed only while some
+  destination still has a one-bit label). Measured whole-run cost
+  against `main` is within noise on a 101k-cell gate-level design, the
+  `scaling_perf` fixture and a 4,000 × 64-bit-register synthetic.
   Verdict changes, all a single bit on a register's reset or enable:
   - `bad_bus_foreign_sync_reset` (both forms): `r` → `gq` CDC-004 →
     CDC-001, `r` → `cap` CDC-012 → CDC-001 (RDC-003 and the payload's

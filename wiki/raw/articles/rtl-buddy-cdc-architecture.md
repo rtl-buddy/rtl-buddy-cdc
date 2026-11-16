@@ -1873,13 +1873,19 @@ same pair widen `width` and lower `min_hops`. This is what makes
 multi-bit buses produce one record with `width = N` instead of N
 records with `width = 1`.
 
-After the walk, a record with `width > 1` whose source is wider than
-one bit (flop `Q`, port, boundary port) is re-walked from each source
-bit alone, with the same edges, cap and pruning, until two bits are
-seen to reach its destination; if only one does, `width` becomes 1
-(rtl-buddy-cdc#390, §4.4). A one-bit source needs no re-walk. A real
-bus stops after two walks; the cost is only paid in full by a wide
-register whose bits each reach a different destination.
+The walk also labels every bit it visits with the one source bit
+(flop `Q`, port or boundary-port bit) it was reached from, or
+"several" once a second one reaches it, and a record whose capture
+inputs all carry a one-bit label gets `width = 1` (rtl-buddy-cdc#390,
+§4.4). The first pass is the plain level-ordered walk, each bit
+expanded once with the label it has by then; a label that rises on a
+bit already expanded is replayed afterwards — only while some
+destination of that source still has a one-bit label — at the bit's
+first hop count, so cap, pruning, cuts and `min_hops` are the
+unlabelled walk's. A label rises once, so a bit is expanded at most
+twice per source, whatever the source's width (pinned by
+`tests/test_bad_enable_pin_crossing.py::test_wide_source_walk_expands_each_bit_at_most_twice`);
+on a design whose destinations are all buses the replay never runs.
 
 ### 7.3 What's intentionally excluded
 

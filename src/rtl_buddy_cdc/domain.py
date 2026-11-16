@@ -37,6 +37,18 @@ if TYPE_CHECKING:
     from rtl_buddy_cdc.sdc import ClockSpec
 
 
+#: The label of a bit two or more source bits reach, in
+#: :func:`find_crossings`'s walk (rtl-buddy-cdc#390). Net bits are
+#: non-negative, so it is no source bit.
+_MULTI_SOURCE = -1
+
+
+def _width(bits: set[Bit], label: int) -> int:
+    """:attr:`Crossing.width` of a group: the ``D`` bits reached, or 1
+    when they were all reached from one source bit (rtl-buddy-cdc#390)."""
+    return len(bits) if label == _MULTI_SOURCE else 1
+
+
 class _CrossingGroup(TypedDict):
     """Per (src_flop, dst_flop) accumulator inside ``find_crossings``.
 
@@ -52,6 +64,7 @@ class _CrossingGroup(TypedDict):
     dst_clock: str
     min_hops: int
     bits: set[Bit]
+    label: int  # the one source bit reaching dst, or _MULTI_SOURCE
 
 
 class _PortCrossingGroup(TypedDict):
@@ -63,6 +76,7 @@ class _PortCrossingGroup(TypedDict):
     dst_clock: str
     min_hops: int
     bits: set[Bit]
+    label: int  # the one source bit reaching dst, or _MULTI_SOURCE
 
 
 class _BoundaryCrossingGroup(TypedDict):
@@ -77,6 +91,7 @@ class _BoundaryCrossingGroup(TypedDict):
     dst_clock: str
     min_hops: int
     bits: set[Bit]
+    label: int  # the one source bit reaching dst, or _MULTI_SOURCE
 
 
 @dataclass(frozen=True)
@@ -2035,144 +2050,140 @@ def find_crossings(
             if c != src_clock and d > budget:
                 cuts.add(DepthCut(src=src, src_clock=src_clock, dst_clock=c))
 
-    def _reached(bit: Bit, src_clock: str, lane_aware: bool) -> set[str]:
-        """Flop cells another clock than ``src_clock`` whose capture pins
-        the walk from ``bit`` alone lands on (rtl-buddy-cdc#390): the same
-        edges, cap and pruning as the crossing walks, no grouping."""
-        seen: dict[Bit, int] = {bit: 0}
-        frontier: list[tuple[Bit, int]] = [(bit, 0)]
-        out: set[str] = set()
-        while frontier:
-            nxt: list[tuple[Bit, int]] = []
-            for b, hops in frontier:
-                for f in flop_by_d_bit.get(b, ()):
-                    out.add(f.cell.name)
-                for f, depth in flop_by_ctrl_bit.get(b, ()):
-                    if hops + depth <= cap:
-                        out.add(f.cell.name)
-                if hops >= cap or not useful(b, hops, src_clock):
-                    continue
-                for cell_name, cport, idx in consumers.get(b, ()):
-                    cell = module.cells[cell_name]
-                    if cell.type == "$scopeinfo" or is_ff_cell(cell.type):
-                        continue
-                    outs = (
-                        _lane_targets(cell, cport, idx)
-                        if lane_aware
-                        else _cell_outputs(cell)
-                    )
-                    for ob in outs:
-                        if isinstance(ob, int) and seen.get(ob, hops + 2) > hops + 1:
-                            seen[ob] = hops + 1
-                            nxt.append((ob, hops + 1))
-            frontier = nxt
-        return out
+    cells = module.cells
 
-    def _one_source_bit(
-        src_bits: Sequence[Bit],
-        dst_bits: dict[str, set[Bit]],
+    def _walk(
+        seeds: Sequence[Bit],
+        src: str,
         src_clock: str,
+        land: Callable[[Flop, int, tuple[Bit, ...], int], bool],
         *,
+        prune: bool = True,
         lane_aware: bool = True,
-    ) -> set[str]:
-        """The destinations in ``dst_bits`` (flop cell -> the ``D`` bits a
-        source reaches) that the source reaches on more than one ``D`` bit
-        but from exactly one of its ``src_bits`` (rtl-buddy-cdc#390): a
-        single bit fanned out to several lanes — a reset, enable or select
-        shared by the lanes, or a replicated bit — not a bus."""
-        cand = {d for d, bits in dst_bits.items() if len(bits) > 1}
-        ints = list(dict.fromkeys(b for b in src_bits if isinstance(b, int)))
-        if not cand or not ints:
-            return set()
-        if len(ints) == 1:
-            return cand
-        count: dict[str, int] = {}
-        for b in ints:
-            live = {d for d in cand if count.get(d, 0) < 2}
-            if not live:
-                break
-            for d in _reached(b, src_clock, lane_aware) & live:
-                count[d] = count.get(d, 0) + 1
-        return {d for d in cand if count.get(d, 0) == 1}
+    ) -> None:
+        """Walk forward from ``seeds`` (a source's bits) and call ``land``
+        for every capture pin reached: ``(flop, hops at its D, the D bits
+        reached, source label)``; ``land`` returns whether the flop is a
+        crossing destination.
 
-    for src_fd in domains.values():
-        if src_fd.clock is None:
-            continue
-        # Per source-flop visited set, keyed by net bit. Hop count is the
-        # number of *cells* traversed, so we record the minimum hop count
-        # at which each bit was first seen.
+        Each visited bit carries a label in the lattice *one source bit* <
+        :data:`_MULTI_SOURCE` (rtl-buddy-cdc#390): the seed it was reached
+        from, or ``_MULTI_SOURCE`` once a second seed reaches it. The first
+        pass is the plain level-ordered walk, every bit expanded once, at
+        its fewest cells, with the label it has by then. A label that
+        rises on a bit already expanded is replayed afterwards — and only
+        while some destination still has a single-bit label, since only
+        those can change — at the bit's first hop count, so cap, pruning,
+        cuts and ``min_hops`` are exactly the unlabelled walk's. A label
+        rises once, so a bit is expanded at most twice per walk, whatever
+        the source's width. ``prune`` applies :func:`_make_fanout_filter`'s
+        test (the flop walk), ``lane_aware`` :func:`_lane_targets` (the
+        boundary walk follows every output of a cell instead).
+        """
         seen: dict[Bit, int] = {}
-        # frontier: list[(bit, hops_to_here)]
-        frontier: list[tuple[Bit, int]] = [
-            (b, 0) for b in src_fd.flop.q if isinstance(b, int)
-        ]
-        for b, h in frontier:
-            seen[b] = h
-
+        label: dict[Bit, int] = {}
+        expanded: set[Bit] = set()
+        dst_label: dict[str, int] = {}
+        replay: list[Bit] = []
+        frontier: list[Bit] = []
+        for b in seeds:
+            if isinstance(b, int) and b not in seen:
+                seen[b] = 0
+                label[b] = b
+                frontier.append(b)
+        first_pass = True
         while frontier:
-            next_frontier: list[tuple[Bit, int]] = []
-            for bit, hops in frontier:
+            next_frontier: list[Bit] = []
+            for bit in frontier:
+                lab = label[bit]
+                expanded.add(bit)
+                hops = seen[bit]
                 # Did we land on any flop's D (or capture-control) pin?
-                for dst_flop, at_hops, d_bits in _landings(
-                    bit, hops, src_fd.flop.name, src_fd.clock
-                ):
-                    if dst_flop.cell.name == src_fd.flop.cell.name:
-                        continue
-                    dst_fd = domains[dst_flop.cell.name]
-                    if dst_fd.clock is None or dst_fd.clock == src_fd.clock:
-                        continue
-                    key = (src_fd.flop.cell.name, dst_flop.cell.name)
-                    g = grouped.get(key)
-                    if g is None:
-                        grouped[key] = {
-                            "src_flop": src_fd.flop,
-                            "src_clock": src_fd.clock,
-                            "dst_flop": dst_fd.flop,
-                            "dst_clock": dst_fd.clock,
-                            "min_hops": at_hops,
-                            "bits": set(d_bits),
-                        }
-                    else:
-                        g["bits"].update(d_bits)
-                        if at_hops < g["min_hops"]:
-                            g["min_hops"] = at_hops
-                if hops >= cap or not useful(bit, hops, src_fd.clock):
-                    _note_cut(bit, hops, src_fd.flop.name, src_fd.clock)
+                for dst_flop, at_hops, d_bits in _landings(bit, hops, src, src_clock):
+                    if land(dst_flop, at_hops, d_bits, lab):
+                        name = dst_flop.cell.name
+                        old_dst = dst_label.get(name, lab)
+                        dst_label[name] = lab if old_dst == lab else _MULTI_SOURCE
+                if hops >= cap or (prune and not useful(bit, hops, src_clock)):
+                    if first_pass:
+                        _note_cut(bit, hops, src, src_clock)
                     continue
                 # Push the bit through every consumer cell that isn't a
                 # flop, propagating along the data lanes it actually drives
                 # (see _lane_targets — bit-precise for bitwise/mux, all-outputs
-                # otherwise).
+                # otherwise). Flops are not transit nodes: landing on their
+                # capture pins is checked above.
                 for cell_name, cport, idx in consumers.get(bit, ()):
-                    cell = module.cells[cell_name]
-                    if cell.type in {"$scopeinfo"}:
+                    cell = cells[cell_name]
+                    if cell.type == "$scopeinfo" or is_ff_cell(cell.type):
                         continue
-                    # Skip flops as transit nodes — we already check above
-                    # whether we landed on a flop's D pin.
-                    if is_ff_cell(cell.type):
-                        continue
-                    out_bits = _lane_targets(cell, cport, idx)
+                    if lane_aware:
+                        out_bits = _lane_targets(cell, cport, idx)
+                    else:
+                        out_bits = _cell_outputs(cell)
                     for ob in out_bits:
                         if not isinstance(ob, int):
                             continue
-                        prev = seen.get(ob)
-                        new_hops = hops + 1
-                        if prev is None or new_hops < prev:
-                            seen[ob] = new_hops
-                            next_frontier.append((ob, new_hops))
+                        old = label.get(ob)
+                        if old is None:
+                            # First reached: level-ordered, so at its
+                            # fewest cells.
+                            seen[ob] = hops + 1
+                            label[ob] = lab
+                            next_frontier.append(ob)
+                        elif old != lab and old != _MULTI_SOURCE:
+                            label[ob] = _MULTI_SOURCE
+                            if ob in expanded:
+                                # Expanded with the lower label: replay it.
+                                (replay if first_pass else next_frontier).append(ob)
             frontier = next_frontier
+            if first_pass and not frontier:
+                first_pass, frontier, replay = False, replay, []
+            if not first_pass and all(v == _MULTI_SOURCE for v in dst_label.values()):
+                break  # no single-bit destination left to settle
 
-    # A destination reached from one source bit only is a single-bit
-    # crossing however many of its lanes that bit reaches
-    # (rtl-buddy-cdc#390): see :attr:`Crossing.width`.
-    single: set[tuple[str, str]] = set()
-    by_src: dict[str, dict[str, set[Bit]]] = defaultdict(dict)
-    for (src_name, dst_name), g in grouped.items():
-        by_src[src_name][dst_name] = g["bits"]
-    for src_name, dsts in by_src.items():
-        g0 = grouped[(src_name, next(iter(dsts)))]
-        for d in _one_source_bit(g0["src_flop"].q, dsts, g0["src_clock"]):
-            single.add((src_name, d))
+    def _join(a: int, b: int) -> int:
+        return a if a == b else _MULTI_SOURCE
+
+    for src_fd in domains.values():
+        if src_fd.clock is None:
+            continue
+        src_flop, src_clock = src_fd.flop, src_fd.clock
+
+        def _land_flop(
+            dst_flop: Flop,
+            at_hops: int,
+            d_bits: tuple[Bit, ...],
+            lab: int,
+            src_flop: Flop = src_flop,
+            src_clock: str = src_clock,
+        ) -> bool:
+            if dst_flop.cell.name == src_flop.cell.name:
+                return False
+            dst_fd = domains[dst_flop.cell.name]
+            if dst_fd.clock is None or dst_fd.clock == src_clock:
+                return False
+            key = (src_flop.cell.name, dst_flop.cell.name)
+            g = grouped.get(key)
+            if g is None:
+                grouped[key] = {
+                    "src_flop": src_flop,
+                    "src_clock": src_clock,
+                    "dst_flop": dst_fd.flop,
+                    "dst_clock": dst_fd.clock,
+                    "min_hops": at_hops,
+                    "bits": set(d_bits),
+                    "label": lab,
+                }
+            else:
+                g["bits"].update(d_bits)
+                g["label"] = _join(g["label"], lab)
+                if at_hops < g["min_hops"]:
+                    g["min_hops"] = at_hops
+            return True
+
+        _walk(src_flop.q, src_flop.name, src_clock, _land_flop)
+
     out_crossings: list[Crossing] = [
         Crossing(
             src_flop=g["src_flop"],
@@ -2180,11 +2191,11 @@ def find_crossings(
             dst_flop=g["dst_flop"],
             dst_clock=g["dst_clock"],
             min_hops=g["min_hops"],
-            width=1 if key in single else len(g["bits"]),
+            width=_width(g["bits"], g["label"]),
             dst_boundary=_dst_boundary_of(g["dst_flop"]),
             scan_mode=g["dst_flop"].cell.name in scan_mode_flops,
         )
-        for key, g in grouped.items()
+        for g in grouped.values()
     ]
 
     # Port-sourced crossings: walk forward from each typed input port
@@ -2195,72 +2206,51 @@ def find_crossings(
             port = module.ports.get(port_name)
             if port is None or port.direction != "input":
                 continue
-            seen = {}
-            frontier = [(b, 0) for b in port.bits if isinstance(b, int)]
-            for b, h in frontier:
-                seen[b] = h
-            while frontier:
-                next_frontier = []
-                for bit, hops in frontier:
-                    for dst_flop, at_hops, d_bits in _landings(
-                        bit, hops, f"port {port_name}", port_clk_name
-                    ):
-                        dst_fd = domains[dst_flop.cell.name]
-                        if dst_fd.clock is None:
-                            continue
-                        # Skip when the port's typed clock matches the
-                        # destination's clock domain (no crossing).
-                        if dst_fd.clock == port_clk_name:
-                            continue
-                        key = (port_name, dst_flop.cell.name)
-                        pg = port_grouped.get(key)
-                        if pg is None:
-                            port_grouped[key] = {
-                                "port": port_name,
-                                "src_clock": port_clk_name,
-                                "dst_flop": dst_fd.flop,
-                                "dst_clock": dst_fd.clock,
-                                "min_hops": at_hops,
-                                "bits": set(d_bits),
-                            }
-                        else:
-                            pg["bits"].update(d_bits)
-                            if at_hops < pg["min_hops"]:
-                                pg["min_hops"] = at_hops
-                    if hops >= cap:
-                        _note_cut(bit, hops, f"port {port_name}", port_clk_name)
-                        continue
-                    for cell_name, cport, idx in consumers.get(bit, ()):
-                        cell = module.cells[cell_name]
-                        if cell.type in {"$scopeinfo"}:
-                            continue
-                        if is_ff_cell(cell.type):
-                            continue
-                        for ob in _lane_targets(cell, cport, idx):
-                            if not isinstance(ob, int):
-                                continue
-                            prev = seen.get(ob)
-                            new_hops = hops + 1
-                            if prev is None or new_hops < prev:
-                                seen[ob] = new_hops
-                                next_frontier.append((ob, new_hops))
-                frontier = next_frontier
 
-        port_single: set[tuple[str, str]] = set()
-        port_dsts: dict[str, dict[str, set[Bit]]] = defaultdict(dict)
-        for (pname, dname), pg in port_grouped.items():
-            port_dsts[pname][dname] = pg["bits"]
-        for pname, dsts in port_dsts.items():
-            for d in _one_source_bit(module.ports[pname].bits, dsts, port_clock[pname]):
-                port_single.add((pname, d))
-        for pkey, pg in port_grouped.items():
+            def _land_port(
+                dst_flop: Flop,
+                at_hops: int,
+                d_bits: tuple[Bit, ...],
+                lab: int,
+                port_name: str = port_name,
+                port_clk_name: str = port_clk_name,
+            ) -> bool:
+                dst_fd = domains[dst_flop.cell.name]
+                # Skip when the port's typed clock matches the
+                # destination's clock domain (no crossing).
+                if dst_fd.clock is None or dst_fd.clock == port_clk_name:
+                    return False
+                key = (port_name, dst_flop.cell.name)
+                pg = port_grouped.get(key)
+                if pg is None:
+                    port_grouped[key] = {
+                        "port": port_name,
+                        "src_clock": port_clk_name,
+                        "dst_flop": dst_fd.flop,
+                        "dst_clock": dst_fd.clock,
+                        "min_hops": at_hops,
+                        "bits": set(d_bits),
+                        "label": lab,
+                    }
+                else:
+                    pg["bits"].update(d_bits)
+                    pg["label"] = _join(pg["label"], lab)
+                    if at_hops < pg["min_hops"]:
+                        pg["min_hops"] = at_hops
+                return True
+
+            _walk(
+                port.bits, f"port {port_name}", port_clk_name, _land_port, prune=False
+            )
+
+        for pg in port_grouped.values():
             out_crossings.append(
                 Crossing(
                     src_clock=pg["src_clock"],
                     dst_flop=pg["dst_flop"],
                     dst_clock=pg["dst_clock"],
                     min_hops=pg["min_hops"],
-                    width=1 if pkey in port_single else len(pg["bits"]),
+                    width=_width(pg["bits"], pg["label"]),
                     src_port=pg["port"],
                     dst_boundary=_dst_boundary_of(pg["dst_flop"]),
                     scan_mode=pg["dst_flop"].cell.name in scan_mode_flops,
@@ -2291,81 +2281,56 @@ def find_crossings(
                     else _UNKNOWN_BOUNDARY_CLOCK
                 )
                 conn = cell.connections.get(port_name, ())
-                bnd_seen: dict[Bit, int] = {}
-                bnd_frontier: list[tuple[Bit, int]] = [
-                    (b, 0) for b in conn if isinstance(b, int)
-                ]
-                for b, h in bnd_frontier:
-                    bnd_seen[b] = h
-                while bnd_frontier:
-                    bnd_next: list[tuple[Bit, int]] = []
-                    for bit, hops in bnd_frontier:
-                        for dst_flop, at_hops, d_bits in _landings(
-                            bit, hops, bnd_src, bnd_clock
-                        ):
-                            dst_fd = domains[dst_flop.cell.name]
-                            if dst_fd.clock is None:
-                                continue
-                            if (
-                                src_clk_name is not None
-                                and dst_fd.clock == src_clk_name
-                            ):
-                                continue
-                            bnd_key = (inst_name, port_name, dst_flop.cell.name)
-                            bg = bnd_grouped.get(bnd_key)
-                            if bg is None:
-                                bnd_grouped[bnd_key] = {
-                                    "instance": inst_name,
-                                    "boundary_port": port_name,
-                                    "src_clock": src_clk_name
-                                    if src_clk_name is not None
-                                    else _UNKNOWN_BOUNDARY_CLOCK,
-                                    "dst_flop": dst_fd.flop,
-                                    "dst_clock": dst_fd.clock,
-                                    "min_hops": at_hops,
-                                    "bits": set(d_bits),
-                                }
-                            else:
-                                bg["bits"].update(d_bits)
-                                if at_hops < bg["min_hops"]:
-                                    bg["min_hops"] = at_hops
-                        if hops >= cap:
-                            _note_cut(bit, hops, bnd_src, bnd_clock)
-                            continue
-                        for cell_name, _port, _idx in consumers.get(bit, ()):
-                            c = module.cells[cell_name]
-                            if c.type in {"$scopeinfo"}:
-                                continue
-                            if is_ff_cell(c.type):
-                                continue
-                            for ob in _cell_outputs(c):
-                                if not isinstance(ob, int):
-                                    continue
-                                prev = bnd_seen.get(ob)
-                                new_hops = hops + 1
-                                if prev is None or new_hops < prev:
-                                    bnd_seen[ob] = new_hops
-                                    bnd_next.append((ob, new_hops))
-                    bnd_frontier = bnd_next
 
-        bnd_single: set[tuple[str, str, str]] = set()
-        bnd_dsts: dict[tuple[str, str], dict[str, set[Bit]]] = defaultdict(dict)
-        for (iname, bport, dname), bg in bnd_grouped.items():
-            bnd_dsts[(iname, bport)][dname] = bg["bits"]
-        for (iname, bport), dsts in bnd_dsts.items():
-            bconn = module.cells[iname].connections.get(bport, ())
-            bclk = bnd_grouped[(iname, bport, next(iter(dsts)))]["src_clock"]
-            # The boundary walk is not lane-aware (``_cell_outputs``).
-            for d in _one_source_bit(bconn, dsts, bclk, lane_aware=False):
-                bnd_single.add((iname, bport, d))
-        for bkey, bg in bnd_grouped.items():
+                def _land_bnd(
+                    dst_flop: Flop,
+                    at_hops: int,
+                    d_bits: tuple[Bit, ...],
+                    lab: int,
+                    inst_name: str = inst_name,
+                    port_name: str = port_name,
+                    src_clk_name: str | None = src_clk_name,
+                ) -> bool:
+                    dst_fd = domains[dst_flop.cell.name]
+                    if dst_fd.clock is None:
+                        return False
+                    if src_clk_name is not None and dst_fd.clock == src_clk_name:
+                        return False
+                    bnd_key = (inst_name, port_name, dst_flop.cell.name)
+                    bg = bnd_grouped.get(bnd_key)
+                    if bg is None:
+                        bnd_grouped[bnd_key] = {
+                            "instance": inst_name,
+                            "boundary_port": port_name,
+                            "src_clock": src_clk_name
+                            if src_clk_name is not None
+                            else _UNKNOWN_BOUNDARY_CLOCK,
+                            "dst_flop": dst_fd.flop,
+                            "dst_clock": dst_fd.clock,
+                            "min_hops": at_hops,
+                            "bits": set(d_bits),
+                            "label": lab,
+                        }
+                    else:
+                        bg["bits"].update(d_bits)
+                        bg["label"] = _join(bg["label"], lab)
+                        if at_hops < bg["min_hops"]:
+                            bg["min_hops"] = at_hops
+                    return True
+
+                # The boundary walk follows every output of a cell.
+                _walk(
+                    conn, bnd_src, bnd_clock, _land_bnd, prune=False, lane_aware=False
+                )
+
+        for bg in bnd_grouped.values():
             out_crossings.append(
                 Crossing(
                     src_clock=bg["src_clock"],
                     dst_flop=bg["dst_flop"],
                     dst_clock=bg["dst_clock"],
                     min_hops=bg["min_hops"],
-                    width=1 if bkey in bnd_single else len(bg["bits"]),
+                    width=_width(bg["bits"], bg["label"]),
                     src_boundary=(bg["instance"], bg["boundary_port"]),
                     dst_boundary=_dst_boundary_of(bg["dst_flop"]),
                     scan_mode=bg["dst_flop"].cell.name in scan_mode_flops,
