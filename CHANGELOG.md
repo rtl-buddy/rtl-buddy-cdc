@@ -368,6 +368,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: wires get a netname** (rtl-buddy-cdc#384). Only
+  variables were named on the slang path, so a waiver, an SDC `get_nets`
+  or a declaration attribute naming a `wire` (or a port declared as one)
+  matched on the Yosys path only, and messages quoting a net (CDC-023's
+  clock net) gave the driver cell's name instead. Nets are now named like
+  variables, `inst.wire` inside an instance, as Yosys `flatten` names
+  them.
+
 - **Crossings behind more than 4 combinational cells were dropped
   silently** (rtl-buddy-cdc#347). `find_crossings` stopped its walk at
   `max_hops=4` and the CLI never changed it, so a deeper path from one

@@ -67,7 +67,8 @@ What currently works
 ~~~~~~~~~~~~~~~~~~~~
 - Parse + elaborate one or more SV sources, resolve the top module.
 - Ports (input / output / inout) with their bit-id allocation.
-- Local ``logic`` / ``reg`` variables become :class:`Netname`s, with
+- Local ``logic`` / ``reg`` variables and ``wire`` nets become
+  :class:`Netname`s (``inst.name`` inside an instance), with
   any ``(* attr *)`` declaration attributes propagated (looked up via
   ``Compilation.getAttributes(symbol)`` — pyslang stores attributes
   on the compilation, not on the symbol).
@@ -707,7 +708,7 @@ class _ModuleBuilder:
         try:
             for member, prefix in self._iter_scope(inst.body, hier_prefix):
                 if (
-                    self._kind_name(member) == "VariableSymbol"
+                    self._kind_name(member) in self._NAMED_STORAGE
                     and member not in bound_internals
                 ):
                     self._collect_variable(member, prefix)
@@ -907,8 +908,15 @@ class _ModuleBuilder:
 
     # -- pass 1: variables ----------------------------------------------
 
+    # Declarations that get a netname: variables (``logic`` / ``reg``) and
+    # nets (``wire`` and the other net types, a port declared as one, an
+    # implicit net). Yosys names both (rtl-buddy-cdc#384: nets had no
+    # netname here, so a waiver or an SDC ``get_nets`` naming a wire, and
+    # an attribute on one, matched only on the Yosys path).
+    _NAMED_STORAGE = frozenset({"VariableSymbol", "NetSymbol"})
+
     def _collect_variable(self, member: Any, hier_prefix: str = "") -> None:
-        if self._kind_name(member) != "VariableSymbol":
+        if self._kind_name(member) not in self._NAMED_STORAGE:
             return
         bits = self._alloc_bits(member)
         # Forward declaration-site attributes. pyslang stores them on

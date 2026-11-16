@@ -995,9 +995,9 @@ def test_gate_primitives_lower_like_read_verilog(tmp_path: Path, caplog) -> None
     )
     assert types == ["$and", "$and", "$and", "$not", "$not", "$not", "$or", "$xor"]
     assert module.ports["y5"].bits == module.ports["b"].bits
-    assert ("s1[0]", "$or.Y", "clk_b[0]", 1) in _flop_lanes(module)
-    # (No lane-by-lane comparison: the wire ``x`` has a netname on the
-    # Yosys path only.)
+    assert ("s1[0]", "x[0]", "clk_b[0]", 1) in _flop_lanes(module)
+    # The wire ``x`` has a netname on both paths since rtl-buddy-cdc#384.
+    _agree_with_yosys(tmp_path, _GATES, module)
     assert _same_verdict(tmp_path, _GATES)[0] >= 1
 
 
