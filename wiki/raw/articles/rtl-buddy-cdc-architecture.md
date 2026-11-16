@@ -432,7 +432,7 @@ class Crossing:
     dst_flop: Flop
     dst_clock: str
     min_hops: int                # # comb cells on shortest path
-    width: int                   # # distinct dst-D bits reachable from src
+    width: int                   # # distinct dst-D bits reachable from src (1 if from one src bit)
     src_flop: Flop | None = None # set for register-to-register
     src_port: str | None = None  # set for typed-port-to-register
     src_boundary: tuple[str, str] | None = None  # (instance, port): abstracted-subtree output
@@ -446,7 +446,14 @@ Three design choices matter here:
 1. **One record per (src, dst) pair**, not per bit. A multi-bit bus
    crossing collapses to a single `Crossing` with `width = N`. This
    is how rules like CDC-004 ("multi-bit bus crossing") get a width
-   directly without re-walking.
+   directly without re-walking. A destination reached from exactly
+   one source bit is `width = 1` however many of its lanes that bit
+   reaches (rtl-buddy-cdc#390): a reset, enable or mux select shared
+   by the lanes, or a bit replicated onto them, gives every lane the
+   same bit, so there is no inter-bit skew to be incoherent and the fix
+   is a synchroniser on the bit (CDC-001), not a gray code or a
+   handshake (CDC-004 / CDC-012). Which source bits reach a destination
+   does not depend on the netlist form, so neither does the width.
 2. **`min_hops` is the shortest path length in *combinational cells*
    crossed.** `min_hops == 0` means a direct flop-to-flop (or
    port-to-flop) wire — the classic sync first stage. `min_hops >= 1`
@@ -1968,6 +1975,20 @@ same pair widen `width` and lower `min_hops`. This is what makes
 multi-bit buses produce one record with `width = N` instead of N
 records with `width = 1`.
 
+The walk also labels every bit it visits with the one source bit
+(flop `Q`, port or boundary-port bit) it was reached from, or
+"several" once a second one reaches it, and a record whose capture
+inputs all carry a one-bit label gets `width = 1` (rtl-buddy-cdc#390,
+§4.4). The first pass is the plain level-ordered walk, each bit
+expanded once with the label it has by then; a label that rises on a
+bit already expanded is replayed afterwards — only while some
+destination of that source still has a one-bit label — at the bit's
+first hop count, so cap, pruning, cuts and `min_hops` are the
+unlabelled walk's. A label rises once, so a bit is expanded at most
+twice per source, whatever the source's width (pinned by
+`tests/test_bad_enable_pin_crossing.py::test_wide_source_walk_expands_each_bit_at_most_twice`);
+on a design whose destinations are all buses the replay never runs.
+
 ### 7.3 What's intentionally excluded
 
 - **Flop→port crossings.** When a flop drives a top-level *output*
@@ -2013,7 +2034,9 @@ records with `width = 1`.
   number of folded muxes between each and `D` (1; 2 for the lower-
   priority pin of `$sdffe` — enable — and `$sdffce` — reset), and the
   walk lands on them at that depth, reaching every `D` bit (the folded
-  select fanned out to all lanes). The crossing model is therefore the
+  select fanned out to all lanes) — from one source bit, so the crossing
+  is single-bit (§4.4, rtl-buddy-cdc#390; it was `width` = the
+  register's, a bus). The crossing model is therefore the
   `proc` form's: the same `(src, dst)` pairs, `min_hops` and `width`
   before and after `opt_dff`, which
   `tests/test_gate_level_corpus.py::test_crossings_invariant_under_opt_dff`
@@ -2241,9 +2264,9 @@ free functions in `rules.py`:
 | `_sync_chain_depth(module, dst_flop, dst_clock, ...)` | CDC-001, -002, -003 | Walk forward from a flop's Q lane-wise; count the chain length of single-reader same-domain flops |
 | `_bit_reader_count(module)` | `_build_context` (cached as `ctx.reader_counts`), every single-reader test above and in `compositional` | The one definition of "who reads this bit": cell **input** pins except `CLK` (a pin `port_directions` marks `output`, or `Y` / `Q` when the cell has no directions, is a driver, not a reader — so a blackbox's `clk_out` / `dout` never counts), plus every module **output / inout port** bit. A synchroniser stage exported straight to a port therefore has a second reader and ends the chain, exactly as it would through a buffer (rtl-buddy-cdc#344) |
 | `_packed_shift_register_depth(head, reader_counts, module, bit_drivers)` | `_sync_chain_depth` | Recognise a synchroniser packed into one multi-bit flop (`s <= {s[N-2:0], d}`): `D` must be, lane for lane, either one of the flop's own `Q` bits or — for exactly one lane — an external bit; follow the per-lane shift and return the effective depth (#264). With a **synchronous reset** the lane test runs on the data leg of the `$mux` `proc` leaves on `D` (#301) |
-| `_constant_leg_reset_mux_data_bits(head, module, bit_drivers, reader_counts)` | `_packed_shift_register_depth`, CDC-003 | Return the data leg of a single `$mux` whose `Y` is exactly the flop's `D` vector and whose other leg is entirely constant (either polarity, any reset value) — i.e. an un-folded synchronous reset. Rejects enable muxes (other leg = own `Q`), any other live leg, both-constant legs, `$pmux`, chained muxes, and a `Y` with more than one reader (#301) |
+| `_constant_leg_reset_mux_data_bits(head, module, bit_drivers, reader_counts, *, whole=False)` / `_sync_reset_lanes(...)` | `_packed_shift_register_depth`, CDC-003, the single-bit chain walk; with `whole`: `_own_srst_data_leg`, `_is_multibit_sync_first_stage` | The data leg behind a flop's un-folded synchronous reset, lane for lane, read where Yosys `opt_dff` folds it (rtl-buddy-cdc#390, §8.23): per `D` lane, through every 2:1 mux whose output only that step reads, with one leg the constant `0` / `1` (every constant on the lane equal to its first) and the other leg not the lane's own `Q`. Stops at an enable mux, an `x` leg, two constant legs, `$pmux`, a mux output with another reader. A lane with no reset keeps its `D` bit; `None` when no lane has one. `whole` requires every lane reset by the same selects, the case `opt_dff` keeps as one cell (#301) |
 | `_srst_mux_data_bit_to_single_bit_flop(module, d_bit_to_single_bit_flop, bit_drivers, reader_counts)` | `_build_context` (cached as `ctx.srst_mux_data_bit_to_single_bit_flop`), `_sync_chain_depth`, `_sync_chain_flops`, `_chain_has_inter_stage_comb` | Reverse index from a constant-leg sync-reset `$mux`'s *data-leg* bit to the 1-bit flop it feeds. The chain walkers consult it when the `D`-bit lookup misses, so a separate-flop chain steps over each stage's own reset mux (depth 2 for `if (rst) … else begin s1 <= d; s2 <= s1; end`), and the inter-stage-comb detector skips that mux so CDC-014 matches the slang `$sdff` verdict (#304) |
-| `_own_srst_data_leg(module, flop, clock, domains, bit_drivers, reader_counts)` | gated-bus test, single-bit handshake hold test, `_carries_synchronised_control`, CDC-006, CDC-013 | The data leg behind `flop`'s own synchronous reset: the constant-leg `$mux` shape `_constant_leg_reset_mux_data_bits` accepts, whatever drives its select (as `opt_dff` folds it). Callers read what the flop samples between resets, which is what the `$sdff` form shows directly (rtl-buddy-cdc#376). Until rtl-buddy-cdc#383 it also required a destination-domain select, which made the two forms disagree whenever the reset came from another domain (§8.23) |
+| `_own_srst_data_leg(module, flop, clock, domains, bit_drivers, reader_counts)` | gated-bus test, single-bit handshake hold test, `_carries_synchronised_control`, CDC-006, CDC-013 | The data leg behind `flop`'s own synchronous reset: the reset muxes `_constant_leg_reset_mux_data_bits` looks through, with `whole` (rtl-buddy-cdc#390), whatever drives their selects (as `opt_dff` folds them). Callers read what the flop samples between resets, which is what the `$sdff` form shows directly (rtl-buddy-cdc#376). Until rtl-buddy-cdc#383 it also required a destination-domain select, which made the two forms disagree whenever the reset came from another domain (§8.23) |
 | `_folded_srst_selects(flop, module, bit_drivers, reader_counts)` | RDC-003 | The selects of the reset muxes on `flop`'s `D` that `opt_dff` would fold into `SRST`, read lane by lane the way `opt_dff` reads them: through enable muxes (a leg is the lane's own `Q`) and constant-leg muxes, collecting the latter's selects; empty for a flop with an asynchronous control (rtl-buddy-cdc#383, §8.23) |
 | `reset_domain.async_controls(module, cell, drivers)` / `effective_control_bit(...)` | `assign_reset_domains` (`ResetDomain.controls`), RDC-004, -005, -006 | Every asynchronous control pin of a flop (`ARST`, `ALOAD`, `CLR` and `SET`, gate-level `R` / `L` / `S`) with the signal it acts on once the cells Yosys wraps around a set / clear flop's pins are stepped through: a buffer mux `s ? 1 : 0`, the priority term (`SET = clr ? 0 : set`, `~clr & set` after `abc`) and, on a flop with two such pins, the inverter that stands in for an active-low polarity (rtl-buddy-cdc#383, §8.23) |
 | `_crossing_enters_through_reset_mux_only(module, crossing, ctx)` | CDC-003 | True when the only cell between the source flop and the destination flop's `D` is that flop's constant-leg sync-reset `$mux` — part of the flop, not logic on the crossing path. Keeps the yosys frontend in step with slang, which emits `$sdff` for the same source (#86/#301) |
@@ -2252,7 +2275,7 @@ free functions in `rules.py`:
 | `_comb_driven_bits(module, bits, drivers)` | CDC-006 | The bits a genuine combinational cell drives, looking back through single-input buffers / inverters. CDC-006 walks `_backward_fanin` from these only (after stepping over the stage's own constant-leg sync-reset `$mux`), so a port wired straight to a synchroniser's `D` is an ordinary port-sourced crossing, not a glitchy comb source (rtl-buddy-cdc#360) |
 | `_forward_reachable_flops(module, start_bits, consumers, ...)` | available for rule writers | Forward analog of `_backward_fanin`: returns the set of *flop* cell names whose `D` is on the cone |
 | `_forward_reachable_cells(module, start_bits, consumers, ...)` | CDC-005 | Forward walk that returns *every* cell on the cone — flop or comb. CDC-005 uses this for reconvergence detection so a comb-cell recombination (sync outputs into an OR driving an output port) still counts |
-| `_is_multibit_sync_first_stage(...)` | CDC-004 | Verify the destination is a width-N flop whose Q exactly equals another same-domain flop's D lane-wise — directly, or as the data leg of that flop's constant-leg synchronous-reset `$mux` (the shape `_constant_leg_reset_mux_data_bits` accepts for the single-bit walk), whatever drives the select (rtl-buddy-cdc#366, #383) |
+| `_is_multibit_sync_first_stage(...)` | CDC-004 | Verify the destination is a width-N flop whose Q exactly equals another same-domain flop's D lane-wise — directly, or as the data leg of that flop's synchronous-reset muxes (`_constant_leg_reset_mux_data_bits` with `whole`, chained muxes included), whatever drives the select (rtl-buddy-cdc#366, #383, #390) |
 | `_is_gray_encoded_source(...)` | CDC-004 | Backward-walk from src D, looking for the canonical `g = b ^ (b >> 1)` XOR pattern; the shifted operand may be on either `$xor` input (`(b >> 1) ^ b`, rtl-buddy-cdc#365) |
 | `_is_gated_bus_crossing(...)` | CDC-004 | Recognise handshake-style gating — D updates only when an enable from the dst domain has been synchronized across. Three shapes are accepted: (1) `$mux` directly driving `D` with a dst-domain `S` (the original handshake), (2) the same mux behind up to `_GATING_BUF_BUDGET`=2 transparent fanout buffers (`$buf`/`$_BUF_`/`$_NOT_`/`$not`/`$pos`), (3) destination cell is a `$dffe`-style flop with a dst-domain `EN` fanin. The destination flop's own sync-reset mux is not a gate: it is stepped over (`_own_srst_data_leg`) and the shapes are tested on its data leg, as on the `$sdff` `opt_dff` folds it into (rtl-buddy-cdc#376) |
 | `_trace_through_bus_buffers(module, bit, drivers, ...)` | CDC-004 | Walk one D bit backward through up to `_GATING_BUF_BUDGET` transparent single-input buffers and return the surviving upstream driver. Used by `_is_gated_bus_crossing`'s shape-2 path so Yosys-inserted fanout buffers don't hide the originating mux |
@@ -3516,6 +3539,23 @@ from. The rules follow it:
   select in the chain walks and CDC-003 instead (rtl-buddy-cdc#383 item
   1) would have made those disagree the other way, since in the `$sdff`
   form the stage's `D` is the previous stage's `Q` with no mux at all.
+- The look-throughs read the reset where `opt_dff` folds it
+  (rtl-buddy-cdc#390, observed on Yosys 0.64 by building the same RTL
+  both ways): lane by lane — a constant-leg mux on some lanes of a
+  vector is folded on those lanes and the register sliced; through every
+  chained constant-leg mux whose constant matches the lane's first
+  (`if (r1) q <= 0; else if (r2) q <= 0;` is one `SRST = r1 | r2`, a
+  second reset to `1` stays a mux on `D`); never through an `x` leg, an
+  enable mux (a leg that is the lane's own `Q`), two constant legs, a
+  `$pmux` or a mux output with another reader. `opt_dff` folds a data
+  mux with a constant leg too, on the lanes where the leg is constant,
+  so the rules do. A whole-register test (the next stage of a multi-bit
+  synchroniser, a gated capture) needs every lane reset by the same
+  selects: otherwise `opt_dff` slices the register and the `opt_dff`
+  form has no single flop to match. They used to look through one mux,
+  over the whole vector, `x` legs included, so a chained or one-lane
+  reset was CDC-001 / CDC-003 / CDC-004 in the `proc` form and clean
+  after `opt_dff` (`good_sync_reset_mux_folds`).
 - RDC-003 reads the `SRST` pin and, in the `proc` form, the selects of
   the reset muxes `opt_dff` would fold into it (`_folded_srst_selects`:
   per lane, through enable muxes and constant-leg muxes, not on a flop
@@ -3548,7 +3588,10 @@ these cells stepped through by `effective_control_bit`:
 RDC-004, -005 and -006 test every asynchronous pin on that signal (one
 finding per flop), and RDC-001 walks every asynchronous pin's cone, so a
 `CLR`, `SET` or `ALOAD` driven from another domain's register is a reset
-crossing as an `ARST` is. `ResetDomain.reset` (the one pin RDC-002,
+crossing as an `ARST` is; `find_reset_crossings` (and so the
+reset-domain map) reports each such pin as well. CDC-015 walks the same pins of every
+synchroniser stage, on the same signals (rtl-buddy-cdc#390): a chain set
+or async-loaded from another domain is as broken as one reset from it. `ResetDomain.reset` (the one pin RDC-002,
 RDC-007, RDC-008 and the reset-domain map read) is classified on the same
 signal. Any other combinational logic on a pin still fires as before.
 
@@ -3807,7 +3850,9 @@ backward-compatible evolution) but a different payload: distinct
 upstream reset sources (port / inferred / constant), the recognised
 reset-synchroniser stages, per-flop reset assignments, and structural
 reset crossings (kinds `async-deassert`, `polarity-mismatch`,
-`sync-crossing`, `comb-driven`). The two maps are intentionally
+`sync-crossing`, `comb-driven`; one per reset pin, named by `pin`, so
+a set / clear flop's `SET` is read as well as its `CLR`,
+rtl-buddy-cdc#390). The two maps are intentionally
 separate artefacts — clock and reset analyses evolve on different
 schedules, and consumers enable each overlay independently. Both
 flags compose in a single run; the shared `design.top` /

@@ -91,7 +91,8 @@ def _serialize_reset_sources(
 ) -> list[dict[str, Any]]:
     """Distinct upstream reset sources observed across every flop.
 
-    Deduplicated by ``(name, source)``. Combinational and untracked
+    Deduplicated by ``(name, source)``, over every reset pin: each
+    flop's ``reset`` and every asynchronous control. Combinational and untracked
     sources (``source == "comb"``) are skipped — they're surfaced in
     ``reset_crossings`` instead, where the per-flop context makes the
     finding actionable.
@@ -103,8 +104,14 @@ def _serialize_reset_sources(
     surfaces as a ``polarity-mismatch`` crossing).
     """
     seen: dict[tuple[str, str], dict[str, Any]] = {}
-    for rd in reset_domains.values():
-        rsrc = rd.reset
+    # Each flop's ``reset`` first, so an entry's ``polarity`` / ``type``
+    # are read from the same consumer as before; then the sources seen
+    # only on another async control (a set / clear flop's ``SET``,
+    # rtl-buddy-cdc#390), which a ``reset_crossings`` record can name.
+    sources = [rd.reset for rd in reset_domains.values()] + [
+        c.source for rd in reset_domains.values() for c in rd.controls
+    ]
+    for rsrc in sources:
         if rsrc is None or rsrc.source == "comb":
             continue
         key = (rsrc.name, rsrc.source)
@@ -207,7 +214,9 @@ def _serialize_reset_crossings(
     ``polarity-mismatch`` → RDC-002, ``sync-crossing`` → RDC-003,
     ``comb-driven`` → RDC-004). Rule severity and waiver status are
     intentionally not emitted here; they live in the analyzer's normal
-    findings report.
+    findings report. ``pin`` (additive, rtl-buddy-cdc#390) names the flop
+    pin the reset arrives on; a set / clear flop can have a record per
+    pin.
     """
     out: list[dict[str, Any]] = []
     for c in crossings:
@@ -219,12 +228,13 @@ def _serialize_reset_crossings(
             "reset_kind": c.reset.source,
             "polarity": c.reset.polarity,
             "type": c.reset.type,
+            "pin": c.pin,
         }
         loc = _source_location(module, c.flop)
         if loc is not None:
             entry["location"] = loc
         out.append(entry)
-    out.sort(key=lambda e: (str(e["instance_path"]), str(e["kind"])))
+    out.sort(key=lambda e: (str(e["instance_path"]), str(e["kind"]), str(e["pin"])))
     return out
 
 

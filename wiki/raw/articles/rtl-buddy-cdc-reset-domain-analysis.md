@@ -42,7 +42,7 @@ Three frozen dataclasses, all in `rtl_buddy_cdc.reset_domain`:
 |---|---|---|
 | `ResetSource` | `name`, `polarity` (`"high"`/`"low"`), `type` (`"sync"`/`"async"`), `source` (`"port"`/`"inferred"`/`"constant"`/`"comb"`), `clock` (`str | None`, see §7) | `assign_reset_domains` |
 | `ResetDomain` | `flop` (cell name), `reset` (`ResetSource | None` — `None` for plain `$dff`/`$dffe`) | `assign_reset_domains` |
-| `ResetCrossing` | `flop`, `reset`, `flop_clock` (`str | None`), `kind` (`"async-deassert"` / `"polarity-mismatch"` / `"sync-crossing"` / `"comb-driven"`) | `find_reset_crossings` |
+| `ResetCrossing` | `flop`, `reset`, `flop_clock` (`str | None`), `kind` (`"async-deassert"` / `"polarity-mismatch"` / `"sync-crossing"` / `"comb-driven"`), `pin` (`"ARST"` / `"ALOAD"` / `"CLR"` / `"SET"` / `"SRST"`, rtl-buddy-cdc#390) | `find_reset_crossings` |
 
 `ResetSource.name` carries a different identifier per `source`:
 
@@ -81,14 +81,12 @@ exactly as a coarse `$dffsr.CLR` is.
 
 A few deliberate choices:
 
-- **`$dffsr` surfaces `CLR`, not `SET`** (gate-level `$_DFFSR_`:
-  `R`, not `S`). The SR-latch flop has
-  independent `SET` and `CLR` async pins. `CLR` matches the
-  dominant industry idiom (active-low clear); `SET` semantics
-  differ enough that v1 punts. A future PR can add `SET`-aware
-  handling without breaking the existing surface — extend the map,
-  emit a second `ResetDomain` per cell, or attach the `SET` info to
-  `ResetSource`. None of those are decided.
+- **`$dffsr`'s `ResetDomain.reset` is `CLR`, not `SET`** (gate-level
+  `$_DFFSR_`: `R`, not `S`). The SR-latch flop has independent `SET`
+  and `CLR` async pins; `reset` names one of them. Every asynchronous
+  pin, `SET` included, is in `ResetDomain.controls`
+  (rtl-buddy-cdc#383), which RDC-001 / -004 / -005 / -006, CDC-015 and
+  `find_reset_crossings` read (rtl-buddy-cdc#390).
 - **Polarity decode is conservative.** Yosys emits polarity as a
   multi-bit binary string (`"1"`, `"0"`, or the 32-bit padded form).
   `flops.flop_reset` reads only the trailing bit; a missing
@@ -175,7 +173,13 @@ substituted.
 
 `find_reset_crossings(module, clock_domains, *, recognised_syncs=None,
 polarity_overrides=None) → list[ResetCrossing]` walks every flop
-and emits one `ResetCrossing` per crossing-shape detected. Kinds:
+and emits one `ResetCrossing` per crossing-shape detected on each reset
+pin, naming the pin (`ResetCrossing.pin`). Each kind reads the pins its
+rule reads (rtl-buddy-cdc#390): `async-deassert` and `comb-driven`
+every asynchronous control (`ResetDomain.controls`, so a set / clear
+flop's `SET` as well as its `CLR`), `sync-crossing` the `SRST` pin,
+`polarity-mismatch` `ResetDomain.reset`, the one pin RDC-002 reads. In
+the table, `reset` is the source on that pin. Kinds:
 
 | Kind | Triggered when |
 |---|---|

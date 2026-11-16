@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from rtl_buddy_cdc import netlist, sdc as sdc_mod, sdc_objects
+from rtl_buddy_cdc import domain as domain_mod, netlist, sdc as sdc_mod, sdc_objects
 from rtl_buddy_cdc.cli import app
 from rtl_buddy_cdc.domain import capture_control_pins, find_crossings
 from rtl_buddy_cdc.netlist import BoundarySummary, Cell, Module, Port, PortBoundary
@@ -150,8 +150,9 @@ def test_crossing_through_control_pin(ctype: str, pin: str, hops: int) -> None:
     conns[pin] = (4,)
     (c,) = find_crossings(_module(_ff("b", ctype, 3, **conns)))
     assert (c.src_flop.name, c.dst_flop.name) == ("a", "b")
-    # Every D lane is reached through the pin, like the mux select was.
-    assert (c.min_hops, c.width) == (hops, 2)
+    # Every D lane is reached through the pin, like the mux select was,
+    # but from one source bit: a single-bit crossing (rtl-buddy-cdc#390).
+    assert (c.min_hops, c.width) == (hops, 1)
 
 
 def test_control_pin_counts_cells_in_front_of_it() -> None:
@@ -177,6 +178,134 @@ def test_constant_d_reports_width_one() -> None:
     dst = _ff("b", "$dffe", 3, D=("1",), Q=(6,), EN=(4,))
     (c,) = find_crossings(_module(dst))
     assert c.width == 1
+
+
+# --- one source bit fanned out to several lanes (rtl-buddy-cdc#390) -------
+
+
+def _wide_src(*extra: Cell, dst: Cell, ports: tuple[Port, ...] = ()) -> Module:
+    """``_module`` with ``a`` two bits wide: ``Q = (4, 15)``."""
+    module = _module(dst, *extra, ports=ports)
+    module.cells["a"] = _ff("a", "$dff", 2, D=(10, 16), Q=(4, 15))
+    return module
+
+
+def test_one_bit_of_a_wide_source_on_an_enable_is_single_bit() -> None:
+    dst = _ff("b", "$dffe", 3, D=(5, 13), Q=(6, 14), EN=(4,))
+    (c,) = find_crossings(_wide_src(dst=dst))
+    assert c.width == 1
+
+
+def test_two_bits_of_a_source_are_a_bus() -> None:
+    """Bit 4 on the enable, bit 15 on a ``D`` lane: two source bits."""
+    dst = _ff("b", "$dffe", 3, D=(15, 13), Q=(6, 14), EN=(4,))
+    (c,) = find_crossings(_wide_src(dst=dst))
+    assert c.width == 2
+
+
+def test_lane_aligned_bus_keeps_its_width() -> None:
+    dst = _ff("b", "$dff", 3, D=(4, 15), Q=(6, 14))
+    (c,) = find_crossings(_wide_src(dst=dst))
+    assert c.width == 2
+
+
+def test_one_bit_replicated_on_every_lane_is_single_bit() -> None:
+    """``b <= {~a, ~a}`` through two inverters: two ``D`` bits, one source
+    bit."""
+    dst = _ff("b", "$dff", 3, D=(7, 19), Q=(6, 14))
+    inv = Cell(name="inv2", type="$not", connections={"A": (4,), "Y": (19,)})
+    (c,) = find_crossings(_module(dst, inv))
+    assert (c.width, c.min_hops) == (1, 1)
+
+
+def test_one_bit_of_a_wide_port_on_an_enable_is_single_bit() -> None:
+    dst = _ff("b", "$dffe", 3, D=(5, 13), Q=(6, 14), EN=(8,))
+    p = Port(name="p", direction="input", bits=(8, 17))
+    (c,) = find_crossings(_module(dst, ports=(p,)), port_clock={"p": "clk_a"})
+    assert (c.src_port, c.width) == ("p", 1)
+
+
+def test_one_bit_of_a_wide_boundary_port_on_an_enable_is_single_bit() -> None:
+    dst = _ff("b", "$dffe", 3, D=(5, 13), Q=(6, 14), EN=(9,))
+    inst = Cell(name="u", type="sub", connections={"o": (9, 18)})
+    summary = BoundarySummary(
+        module="sub",
+        clock="clk_a",
+        ports={
+            "o": PortBoundary(port="o", src_clock="clk_a", synchronised=False, width=2)
+        },
+    )
+    crossings = find_crossings(_module(dst, inst), boundaries={"u": summary})
+    (c,) = [c for c in crossings if c.src_boundary is not None]
+    assert c.width == 1
+
+
+def test_wide_source_walk_expands_each_bit_at_most_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The single-bit test rides on the crossing walk itself: each bit
+    carries the one source bit it was reached from, or "several", and is
+    expanded again only when that label rises — at most twice per source,
+    whatever the source's width (rtl-buddy-cdc#390). A per-source-bit
+    re-walk would expand the shared adder cone below once per bit.
+
+    ``a`` (clk_a, 64 bits): ``a[0]`` enables ``b`` (clk_b), so ``b`` is
+    reached from one bit; every bit feeds a 64-bit ``$add`` (each input
+    reaches every output) into ``c`` (clk_b).
+    """
+    w = 64
+    a_q = tuple(range(100, 100 + w))
+    add_y = tuple(range(300, 300 + w))
+    cells = [
+        _ff("a", "$dff", 2, D=tuple(range(500, 500 + w)), Q=a_q),
+        Cell(
+            name="add",
+            type="$add",
+            connections={"A": a_q, "B": a_q[::-1], "Y": add_y},
+        ),
+        _ff("c", "$dff", 3, D=add_y, Q=tuple(range(700, 700 + w))),
+        _ff("b", "$dffe", 3, D=(5, 13), Q=(6, 14), EN=(a_q[0],)),
+    ]
+    module = Module(
+        name="m",
+        ports={
+            "clk_a": Port(name="clk_a", direction="input", bits=(2,)),
+            "clk_b": Port(name="clk_b", direction="input", bits=(3,)),
+        },
+        cells={c.name: c for c in cells},
+        netnames={},
+    )
+    calls: dict[tuple[str, str, int], int] = {}
+    real = domain_mod._lane_targets
+
+    def counting(cell: Cell, port: str, idx: int):  # noqa: ANN202
+        key = (cell.name, port, idx)
+        calls[key] = calls.get(key, 0) + 1
+        return real(cell, port, idx)
+
+    monkeypatch.setattr(domain_mod, "_lane_targets", counting)
+    widths = {c.dst_flop.name: c.width for c in find_crossings(module)}
+    assert widths == {"b": 1, "c": w}
+    # Every consumer site of the one source is expanded at most twice.
+    assert calls and max(calls.values()) <= 2
+    assert sum(calls.values()) <= 2 * 2 * w
+
+
+def test_second_source_bit_arriving_late_is_replayed() -> None:
+    """``x = a[1] & ~~a[0]``: the walk reaches ``x`` from ``a[1]`` in one
+    cell and expands it before ``a[0]`` arrives two cells later. The rise
+    to "several source bits" is replayed through ``x`` (and ``z = ~x``)
+    afterwards, so ``b`` — whose lanes are ``x`` and ``z`` — is a 2-bit
+    crossing, not a single-bit one."""
+    cells = [
+        Cell(name="n1", type="$not", connections={"A": (15,), "Y": (30,)}),
+        Cell(name="n2", type="$not", connections={"A": (30,), "Y": (31,)}),
+        Cell(name="x", type="$and", connections={"A": (4,), "B": (31,), "Y": (32,)}),
+        Cell(name="z", type="$not", connections={"A": (32,), "Y": (33,)}),
+        _ff("b", "$dff", 3, D=(32, 33), Q=(6, 14)),
+    ]
+    (c,) = find_crossings(_wide_src(*cells, dst=cells[-1]))
+    assert (c.width, c.min_hops) == (2, 1)
 
 
 def test_port_sourced_enable_crossing() -> None:

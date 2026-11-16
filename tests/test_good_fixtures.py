@@ -352,6 +352,9 @@ GOOD_FIXTURES = [
     # active high: the muxes proc builds on CLR / SET are the priority
     # and polarity encoding, not reset muxes. One clock, no crossing.
     ("good_set_clear_priority", 0),
+    # Chained sync resets and a one-lane reset on synchronisers, read
+    # the way opt_dff folds them (rtl-buddy-cdc#390).
+    ("good_sync_reset_mux_folds", 3),
 ]
 
 

@@ -1330,6 +1330,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-pointed. `netlist.py` and `sdc_objects.py` already read both
   frontends' fields the same way.
 
+- **One control bit on every lane of a register is a single-bit
+  crossing, not a bus** (rtl-buddy-cdc#390). A 1-bit foreign reset,
+  enable or mux select shared by a W-bit register's lanes was a W-bit
+  crossing (CDC-004, or CDC-012 behind a synchronised enable), the same
+  in every netlist form: the walk reaches every `D` lane through the
+  select, or through the `SRST` / `EN` pin it is folded into. Every lane
+  sees the same bit, so there is nothing to be incoherent; the fix is a
+  synchroniser on that bit. A crossing whose destination is reached from
+  exactly one source bit (flop `Q`, port or boundary port bit) now has
+  `width` 1 however many lanes it reaches, so CDC-001 judges it (plus
+  RDC-003 for a sync reset); a bit replicated onto several lanes is read
+  the same way. Source bits are the same in the `proc`, `opt_dff` and
+  gate-level forms, so the forms still agree (and the slang frontend).
+  The source bits are counted during the crossing walk itself: each
+  visited bit carries the one source bit it was reached from, or
+  "several", and is expanded at most twice per source whatever its width
+  (a rise after a bit's first expansion is replayed only while some
+  destination still has a one-bit label). Measured whole-run cost
+  against `main` is within noise on a 101k-cell gate-level design, the
+  `scaling_perf` fixture and a 4,000 × 64-bit-register synthetic.
+  Verdict changes, all a single bit on a register's reset or enable:
+  - `bad_bus_foreign_sync_reset` (both forms): `r` → `gq` CDC-004 →
+    CDC-001, `r` → `cap` CDC-012 → CDC-001 (RDC-003 and the payload's
+    CDC-012 unchanged).
+  - `bad_flop_variety_handshake`: `src_load_q` → `cap_b` (the request on
+    the enable) CDC-004 → CDC-001; `srst_q` → `cap_c` (the sync reset)
+    CDC-012 → CDC-001.
+  - New fixture `bad_control_bit_fanout` (`proc`, `opt_dff`, gate level).
+  - `test_liveness`'s exposed `ip_cdc_handshake` loop-counter register
+    (its 32 lanes reset by the one unconstrained `rst_n` bit): CDC-011
+    only, no longer also CDC-004.
+  A waiver written for CDC-004 / CDC-012 on such a crossing needs to name
+  CDC-001 instead.
+
+- **A sync reset is looked through where `opt_dff` folds it**
+  (rtl-buddy-cdc#390). The rules step over a flop's own sync-reset mux
+  (synchroniser chain walks, packed shift registers, CDC-003, multi-bit
+  synchronisers, gated captures) but read only one mux covering the
+  whole `D` vector, where Yosys `opt_dff` folds lane by lane and through
+  chained reset muxes of the same value. Two resets on one stage
+  (`if (!rst_n) q <= 0; else if (flush) q <= 0;`) or a reset on one lane
+  of a packed shift therefore reported CDC-001 / CDC-004 / CDC-003 in
+  the `proc` form and nothing after `opt_dff`. The look-through now
+  follows `opt_dff` (Yosys 0.64): per lane, every constant-leg mux whose
+  constant matches the lane's first; not an `x` leg (which `opt_dff`
+  leaves on `D`, and which used to count) nor a leg that is the flop's
+  own `Q` (an enable). Whole-register tests require every lane reset by
+  the same selects, the case `opt_dff` keeps as one cell. New fixture
+  `good_sync_reset_mux_folds` (`proc` and `opt_dff` forms). No committed
+  fixture changes verdict.
+
+- **`find_reset_crossings` and the reset-domain map read every reset
+  pin** (rtl-buddy-cdc#390). They read only `ResetDomain.reset` (one pin
+  per flop, `CLR` on a set / clear flop), so a `SET` driven from another
+  domain's register or from combinational logic was in no
+  `reset_crossings` record although RDC-001 / RDC-004 report it. Each
+  kind now reads its rule's pins — `async-deassert` and `comb-driven`
+  every asynchronous control, `sync-crossing` `SRST`, `polarity-mismatch`
+  the flop's reset — and each record names its pin:
+  `ResetCrossing.pin` and the additive `reset_crossings[].pin` field
+  (`"ARST"` / `"ALOAD"` / `"CLR"` / `"SET"` / `"SRST"`); entries sort by
+  `(instance_path, kind, pin)`. `reset_sources` also lists a source seen
+  only on such a pin. Schema stays 1.0 (additive); the
+  `bad_marked_reset_polarity` golden gains `"pin": "ARST"`. No rule
+  verdict changes.
+
+- **CDC-015 reads every asynchronous control pin** (rtl-buddy-cdc#390).
+  It read only `ARST`, so a synchroniser stage set, cleared or
+  async-loaded by another domain's register (`$dffsr` `SET` / `CLR`,
+  `$aldff` `ALOAD`, gate-level `S` / `R` / `L`) was reported by RDC-001
+  but not by CDC-015. It now walks the same pins RDC-001 does, each on
+  the signal it acts on (`ResetDomain.controls`), and names them in the
+  message. New fixture `bad_sync_chain_foreign_set` (`proc` and
+  gate-level forms). No committed fixture changes verdict.
+
 ### Internal
 
 - **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —

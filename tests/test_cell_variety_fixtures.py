@@ -139,9 +139,11 @@ EXPECTED: dict[str, Verdict] = {
         (
             ("CDC-001", "dst_ack", "ack_sync"),
             ("CDC-004", "pay_b", "cap_b"),
-            ("CDC-004", "src_load_q", "cap_b"),
+            # One request bit on all eight enable lanes, one reset bit on
+            # all eight reset lanes: single-bit crossings (rtl-buddy-cdc#390).
+            ("CDC-001", "src_load_q", "cap_b"),
             ("RDC-003", None, "cap_c"),
-            ("CDC-012", "srst_q", "cap_c"),
+            ("CDC-001", "srst_q", "cap_c"),
             ("RDC-001", None, "cap_a"),
         ),
     ),

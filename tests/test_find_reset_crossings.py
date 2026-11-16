@@ -121,3 +121,75 @@ def test_polarity_override_quiet_when_matching() -> None:
         f"unexpected polarity-mismatch on matching fixture: "
         f"{[(c.flop, c.kind) for c in crossings]}"
     )
+
+
+# --- every async control, not only ``ResetDomain.reset`` (rtl-buddy-cdc#390) ---
+
+
+def _register_of(module, cell_name: str) -> str:
+    """The named register a flop cell drives, so the ``proc`` and the
+    gate-level form name the same flop the same way."""
+    q = module.cells[cell_name].connections["Q"][0]
+    for nn in sorted(
+        module.netnames.values(), key=lambda n: (n.name in module.ports, n.name)
+    ):
+        if "$" not in nn.name and q in nn.bits:
+            return nn.name
+    return cell_name
+
+
+def _crossings_by_register(fixture: str, form: str) -> set[tuple[str, str, str, str]]:
+    dir_ = FIX_ROOT / fixture
+    module = netlist.load(dir_ / f"{fixture}.{form}")
+    spec = sdc_mod.parse_file(dir_ / f"{fixture}.sdc")
+    clock_domains = {
+        fd.flop.cell.name: fd.clock
+        for fd in assign_domains(module, pin_clocks=spec.pin_clocks)
+    }
+    syncs = find_reset_synchronizers(module, clock_domains)
+    return {
+        (
+            _register_of(module, c.flop),
+            c.kind,
+            str(c.pin),
+            _register_of(module, c.reset.name)
+            if c.reset.source == "inferred"
+            else c.reset.source,
+        )
+        for c in find_reset_crossings(module, clock_domains, recognised_syncs=syncs)
+    }
+
+
+@pytest.mark.parametrize("form", ["json", "synth.json"])
+def test_set_pin_crossings(form: str) -> None:
+    """``bad_set_clear_foreign_controls``: qa's SET is a src_clk register
+    and qb's SET a mux, while both flops' CLR is the clean ``rst_n``
+    port. Only qc's CLR was seen when the walk read ``ResetDomain.reset``
+    alone. Each record names the pin it is on."""
+    got = _crossings_by_register("bad_set_clear_foreign_controls", form)
+    assert got == {
+        ("qa", "async-deassert", "SET", "set_q"),
+        ("qb", "comb-driven", "SET", "comb"),
+        ("qc", "async-deassert", "CLR", "clr_q"),
+    }
+
+
+@pytest.mark.parametrize("form", ["json", "synth.json"])
+def test_set_and_aload_pin_crossings(form: str) -> None:
+    got = _crossings_by_register("bad_sync_chain_foreign_set", form)
+    assert got == {
+        ("l1", "async-deassert", "ALOAD", "load_q"),
+        ("l2", "async-deassert", "ALOAD", "load_q"),
+        ("s1", "async-deassert", "SET", "set_q"),
+        ("s2", "async-deassert", "SET", "set_q"),
+    }
+
+
+def test_single_reset_pin_is_named() -> None:
+    """A one-reset flop's record names its pin too: ``ARST`` / ``SRST``."""
+    module, clock_domains, _ = _load("bad_rdc_003_sync_reset_crossing")
+    pins = {(c.kind, c.pin) for c in find_reset_crossings(module, clock_domains)}
+    assert ("sync-crossing", "SRST") in pins
+    module, clock_domains, _ = _load("bad_reset_crossing")
+    pins = {(c.kind, c.pin) for c in find_reset_crossings(module, clock_domains)}
+    assert ("async-deassert", "ARST") in pins

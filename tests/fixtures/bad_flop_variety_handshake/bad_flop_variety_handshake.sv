@@ -4,14 +4,14 @@
 // families (netlist built with `opt_dff` after `proc`):
 //
 //   ack_sync  $aldff   one-stage ack synchroniser          CDC-001
-//   cap_b     $aldffe  loads on the unsynchronised req     CDC-004 x2
-//   cap_c     $sdffce  sync reset from a src_clk register  RDC-003, CDC-012
+//   cap_b     $aldffe  loads on the unsynchronised req     CDC-004, CDC-001
+//   cap_c     $sdffce  sync reset from a src_clk register  RDC-003, CDC-001
 //   cap_a     $dffsre  async clear from a src_clk register RDC-001
 //
-// cap_b's two CDC-004s are the payload bus and the 1-bit request, which
-// fans out to all eight enable lanes. cap_c's reset register is loaded
-// under the synchronised enable, but nothing holds it stable: CDC-012
-// reports from the data side what RDC-003 reports from the reset side.
+// cap_b: CDC-004 on the payload bus, CDC-001 on the 1-bit request on all
+// eight enable lanes (one bit, not a bus: rtl-buddy-cdc#390). cap_c's
+// reset register is loaded under the synchronised enable, but nothing
+// holds it stable: CDC-001 from the data side, RDC-003 from the reset.
 // req_s1 / req_s2 (`$dffsr`) are still a correct request synchroniser.
 //
 // cap_a's CLR is the mux `clr_q ? 1 : 0` that proc builds on a set /

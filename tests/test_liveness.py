@@ -270,17 +270,19 @@ def test_live_inverter_of_a_clock_still_fires_cdc_008(
     assert _fired(exposed, sdc) == expected
 
 
-def test_live_counter_register_still_fires_cdc_004_and_cdc_011(
+def test_live_counter_register_still_fires_cdc_011(
     tmp_path: Path,
 ) -> None:
     """``ip_cdc_handshake``: the ``for (int i …)`` register ``proc`` keeps
     in each synchroniser's reset branch is captured under an
     unconstrained reset port. Nothing reads it, so it is not reported;
-    once its Q drives a port, the crossing into it is real and both
-    rules fire for that instance."""
+    once its Q drives a port, the crossing into it is real and CDC-011
+    fires for that instance. The crossing is the one ``rst_n`` bit on all
+    32 lanes' reset mux, a single-bit crossing (rtl-buddy-cdc#390), so it
+    is no longer also a 32-bit CDC-004."""
     _, raw, sdc = _paths("ip_cdc_handshake")
     reg = "$flatten\\u_sync_ack.$procdff$49"
     data = json.loads(raw.read_text())
     assert data["modules"]["ip_cdc_handshake"]["cells"][reg]["type"] == "$dff"
     exposed = _expose(raw, tmp_path, reg, "Q")
-    assert _fired(exposed, sdc) == {"CDC-004": 1, "CDC-011": 1}
+    assert _fired(exposed, sdc) == {"CDC-011": 1}

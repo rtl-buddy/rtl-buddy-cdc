@@ -53,6 +53,7 @@
       "reset_kind": "port",
       "polarity": "high",
       "type": "async",
+      "pin": "ARST",
       "location": {
         "file": "bad_marked_reset_polarity.sv",
         "start_line": 35,

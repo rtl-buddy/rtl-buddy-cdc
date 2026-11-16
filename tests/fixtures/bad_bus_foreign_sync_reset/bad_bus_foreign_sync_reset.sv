@@ -6,11 +6,11 @@
 // dst_clk registers:
 //
 //   cap   loads `pay` under `en_s2`, a 2FF-synchronised request, with no
-//         acknowledge back to src_clk: a gated capture (CDC-012 on pay
-//         and on r, which reaches all four lanes through the reset)
+//         acknowledge back to src_clk: a gated capture (CDC-012 on pay);
+//         r -> cap is one bit on all four lanes' reset (CDC-001)
 //   gq    second stage of a 2FF gray-code bus synchroniser (`gray` ->
-//         `meta` -> `gq`): accepted; r -> gq is a 4-lane crossing with
-//         no gate (CDC-004)
+//         `meta` -> `gq`): accepted; r -> gq is again one unsynchronised
+//         bit, not a 4-bit bus (CDC-001, rtl-buddy-cdc#390)
 //   r     RDC-003 (one finding for cap and gq)
 //
 // After `proc` each reset is a constant-leg `$mux` on `D` selected by

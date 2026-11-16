@@ -8,11 +8,11 @@ Buses into dst_clk registers whose synchronous reset comes from another clock do
 
 ```text
   cap   loads `pay` under `en_s2`, a 2FF-synchronised request, with no
-        acknowledge back to src_clk: a gated capture (CDC-012 on pay
-        and on r, which reaches all four lanes through the reset)
+        acknowledge back to src_clk: a gated capture (CDC-012 on pay);
+        r -> cap is one bit on all four lanes' reset (CDC-001)
   gq    second stage of a 2FF gray-code bus synchroniser (`gray` ->
-        `meta` -> `gq`): accepted; r -> gq is a 4-lane crossing with
-        no gate (CDC-004)
+        `meta` -> `gq`): accepted; r -> gq is again one unsynchronised
+        bit, not a 4-bit bus (CDC-001, rtl-buddy-cdc#390)
   r     RDC-003 (one finding for cap and gq)
 ```
 
@@ -46,8 +46,8 @@ flowchart LR
     f_429f3799["$procdff$28<br/><i>sv:33</i>"]:::ckcls_src_clk
     f_269a4d71["$procdff$29<br/><i>sv:33</i>"]:::ckcls_src_clk
   end
-  f_25aab39f -. "⚠ async · 4b" .-> f_852ba5ce
-  f_25aab39f -. "⚠ async · 4b" .-> f_9d154b6d
+  f_25aab39f -. "⚠ async · 1b" .-> f_852ba5ce
+  f_25aab39f -. "⚠ async · 1b" .-> f_9d154b6d
   f_3699968d -. "⚠ async · 1b" .-> f_b04fdff9
   f_e6d7bbfb -. "⚠ async · 4b" .-> f_9d154b6d
   f_269a4d71 -. "⚠ async · 4b" .-> f_336e279e

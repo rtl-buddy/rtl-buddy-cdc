@@ -1108,87 +1108,117 @@ def _bit_reader_count(module: Module) -> dict[Bit, int]:
     return counts
 
 
+# How many reset muxes :func:`_sync_reset_lanes` steps through on one lane.
+# ``opt_dff`` has no limit; real designs chain two or three.
+_MAX_RESET_MUXES = 16
+_RESET_CONSTANTS = ("0", "1")
+
+
+def _sync_reset_lanes(
+    head: Flop,
+    module: Module,
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int],
+) -> list[tuple[Bit, frozenset[tuple[Bit, bool]]]]:
+    """``head``'s sync reset read lane by lane the way Yosys ``opt_dff``
+    folds it into ``SRST`` (rtl-buddy-cdc#390): per ``D`` lane, the bit
+    left once the reset muxes are stepped through and the set of
+    ``(select, active-high)`` resets collected on the way (empty: no
+    reset on that lane).
+
+    Per lane, from ``D``, a step is a 2:1 mux (``$mux`` / ``$_MUX_``) with
+    a 1-bit select whose output lane has no reader but the step before,
+    one leg the constant ``0`` or ``1`` and the other leg anything but
+    the lane's own ``Q``. Every constant collected on a lane must equal
+    the lane's first: ``if (r1) q <= 0; else if (r2) q <= 0;`` folds into
+    ``SRST = r1 | r2``, ``... else if (r2) q <= 1;`` leaves the second mux
+    on ``D``. The walk stops at anything else — two constant legs, an
+    ``x`` / ``z`` leg, a leg that is the lane's own ``Q`` (an enable, which
+    ``opt_dff`` folds into ``EN`` instead), a ``$pmux``, a mux output read
+    twice. Observed on Yosys 0.64 by building the same RTL with and
+    without ``opt_dff``; ``tests/test_srst_set_pins.py`` pins each case.
+    """
+    out: list[tuple[Bit, frozenset[tuple[Bit, bool]]]] = []
+    for i, d_bit in enumerate(head.d):
+        q_bit = head.q[i] if i < len(head.q) else None
+        bit = d_bit
+        value: str | None = None
+        resets: set[tuple[Bit, bool]] = set()
+        for _ in range(_MAX_RESET_MUXES):
+            drv = bit_drivers.get(bit) if isinstance(bit, int) else None
+            if drv is None or drv[1] != "Y" or reader_counts.get(bit, 0) != 1:
+                break
+            cell = module.cells.get(drv[0])
+            # ``$pmux`` (and every other cell type) is not walked;
+            # gate-level ``$_MUX_`` is the 1-bit ``$mux`` (rtl-buddy-cdc#336).
+            if cell is None or cell.type not in MUX2_TYPES:
+                break
+            sel = cell.connections.get("S", ())
+            a_bits = cell.connections.get("A", ())
+            b_bits = cell.connections.get("B", ())
+            idx = drv[2]
+            if len(sel) != 1 or idx >= len(a_bits) or idx >= len(b_bits):
+                break
+            a, b = a_bits[idx], b_bits[idx]
+            if a in _RESET_CONSTANTS and b in _RESET_CONSTANTS:
+                break
+            if b in _RESET_CONSTANTS and value in (None, b) and a != q_bit:
+                value, bit = b, a
+                resets.add((sel[0], True))
+            elif a in _RESET_CONSTANTS and value in (None, a) and b != q_bit:
+                value, bit = a, b
+                resets.add((sel[0], False))
+            else:
+                break
+        out.append((bit, frozenset(resets)))
+    return out
+
+
 def _constant_leg_reset_mux_data_bits(
     head: Flop,
     module: Module,
     bit_drivers: dict[Bit, tuple[str, str, int]],
     reader_counts: dict[Bit, int],
+    *,
+    whole: bool = False,
 ) -> tuple[Bit, ...] | None:
-    """The *data* leg of a synchronous-reset ``$mux`` sitting on ``head``'s
-    ``D`` vector, or ``None`` when ``D`` isn't that shape (issue #301).
+    """The *data* leg behind the synchronous-reset muxes on ``head``'s
+    ``D``, lane for lane, or ``None`` when no lane of ``D`` has one
+    (issue #301).
 
     ``always_ff @(posedge clk) if (rst) q <= '0; else q <= {q[0], d};``
-    lowers, after ``proc``, to one multi-bit ``$mux`` in front of the
-    flop: the shift vector on one leg, an all-constant reset value on
-    the other, and the reset on ``S``. (The slang frontend folds the
-    same source into an ``$sdff`` whose ``D`` is already the shift
-    vector, so it never reaches here — see CHANGELOG #86.) The reset
-    only forces every lane to a constant; it carries no data between
-    lanes, so the shift structure behind it is still the whole story
-    for synchroniser depth.
+    lowers, after ``proc``, to a ``$mux`` in front of the flop: the shift
+    vector on one leg, the constant reset value on the other, the reset
+    on ``S``. ``opt_dff`` (and the slang frontend, CHANGELOG #86) fold the
+    same source into an ``$sdff`` whose ``D`` is already the shift vector.
+    The reset only forces lanes to a constant; it carries no data between
+    lanes, so what is behind it is still the whole story for synchroniser
+    depth and for what the flop samples.
 
-    Returns the bit vector of the non-constant leg so
-    :func:`_packed_shift_register_depth` can run its lane-for-lane test
-    against it. Requirements, all deliberately strict:
+    A lane's data bit is where :func:`_sync_reset_lanes` stops: the reset
+    is read exactly where ``opt_dff`` folds it, lane by lane and through
+    every chained reset mux of the lane's reset value (rtl-buddy-cdc#390;
+    it used to be one mux, whole vector, ``x`` legs allowed, which made the
+    ``proc`` and ``opt_dff`` forms of a chained or one-lane reset
+    disagree). A lane with no reset keeps its ``D`` bit. What ``opt_dff``
+    leaves on ``D`` is not looked through: an enable mux (one leg the
+    flop's own ``Q``), a data mux with no constant leg, an ``x`` leg, a
+    ``$pmux``, a mux output with another reader — the extra reader would
+    leak a pre-flop value out of a synchroniser.
 
-    - ``D`` is *exactly* one ``$mux`` cell's ``Y`` vector, lane for lane.
-    - Exactly one of ``A`` / ``B`` is entirely constant. Yosys writes
-      constants as string bits (``"0"`` / ``"1"`` / ``"x"`` / ``"z"``),
-      so both reset polarities are covered: an active-high reset puts
-      the constant on ``B``, an active-low reset on ``A``, and the reset
-      value may be all-zero, all-one or any mix (a ``x``/``z`` lane is
-      a don't-care reset value — still a constant, still no data).
-    - Every ``Y`` bit has exactly one reader. The flop's ``D`` pin is
-      that reader by construction; an extra one means the *pre-flop*
-      mux output is consumed combinationally, which leaks an earlier
-      stage's value out of the chain.
-
-    Everything else is rejected and the caller falls back to its
-    depth-1 verdict — in particular an **enable** mux (the other leg is
-    the flop's own ``Q``, an ``int`` bit, not a constant) and a mux
-    whose other leg is any other live signal. ``$pmux`` is rejected
-    explicitly: its ``B`` is ``len(S)`` concatenated legs of ``WIDTH``
-    bits, i.e. a priority structure (several reset sources, or a
-    reset/enable nest), which is out of scope here. So are chained
-    muxes — only a single mux level is looked through, so a reset mux
-    feeding an enable mux still reads as depth 1.
+    ``whole`` asks for the case where ``opt_dff`` keeps the register one
+    cell: every lane reset, all by the same selects. Otherwise it slices
+    the register, and a test of the whole register (the next stage of a
+    multi-bit synchroniser, a gated capture) has no single flop to match
+    in that form.
     """
-    if not head.d:
+    lanes = _sync_reset_lanes(head, module, bit_drivers, reader_counts)
+    resets = {r for _, r in lanes}
+    if not any(resets):
         return None
-    first = head.d[0]
-    if not isinstance(first, int):
+    if whole and (len(resets) != 1 or frozenset() in resets):
         return None
-    drv = bit_drivers.get(first)
-    if drv is None:
-        return None
-    cell_name, port, _idx = drv
-    if port != "Y":
-        return None
-    cell = module.cells.get(cell_name)
-    # ``$pmux`` (and every other cell type) is deliberately not walked;
-    # gate-level ``$_MUX_`` is the 1-bit ``$mux`` (rtl-buddy-cdc#336).
-    if cell is None or cell.type not in MUX2_TYPES:
-        return None
-    y = cell.connections.get("Y", ())
-    a = cell.connections.get("A", ())
-    b = cell.connections.get("B", ())
-    n = len(head.d)
-    if len(y) != n or len(a) != n or len(b) != n:
-        return None
-    if tuple(y) != tuple(head.d):
-        return None
-    # The mux output must feed the flop's D and nothing else, or an
-    # intermediate stage escapes the chain through the mux.
-    if any(reader_counts.get(yb, 0) != 1 for yb in y):
-        return None
-    a_const = all(not isinstance(bit, int) for bit in a)
-    b_const = all(not isinstance(bit, int) for bit in b)
-    if a_const == b_const:
-        # Both constant: the register never shifts. Neither constant:
-        # an enable mux (own Q on the other leg) or an unrelated
-        # select — not a reset.
-        return None
-    return tuple(a) if b_const else tuple(b)
+    return tuple(bit for bit, _ in lanes)
 
 
 def _srst_mux_data_bit_to_single_bit_flop(
@@ -1208,12 +1238,13 @@ def _srst_mux_data_bit_to_single_bit_flop(
     over it, and :func:`_chain_has_inter_stage_comb` can tell it apart
     from a real gate wedged between the stages.
 
-    Only the shape :func:`_constant_leg_reset_mux_data_bits` accepts is
-    indexed — one ``$mux`` whose ``Y`` is exactly the flop's ``D``,
-    exactly one leg entirely constant, ``Y`` read by nothing else. An
-    enable mux (other leg is the flop's own ``Q``) or a mux with a live
-    other leg is not a reset and is not indexed, so it still breaks the
-    chain and still counts as inter-stage comb.
+    Only what :func:`_constant_leg_reset_mux_data_bits` looks through is
+    indexed — the reset muxes ``opt_dff`` folds (constant-leg muxes,
+    chained ones of the same reset value included, each output read only
+    by the next, rtl-buddy-cdc#390). An enable mux (other leg is the
+    flop's own ``Q``) or a mux with a live other leg is not a reset and is
+    not indexed, so it still breaks the chain and still counts as
+    inter-stage comb.
     """
     out: dict[Bit, Flop] = {}
     for flop in d_bit_to_single_bit_flop.values():
@@ -2412,11 +2443,12 @@ def _is_multibit_sync_first_stage(
     A **synchronous reset** on the second stage puts a ``$mux`` between
     the stages after ``proc`` (``if (rst) s2 <= '0; else s2 <= s1;``),
     so ``Q`` is that mux's data leg rather than the next flop's ``D``
-    (rtl-buddy-cdc#366). The mux is looked through when it is the shape
+    (rtl-buddy-cdc#366). The muxes are looked through when they are what
     the single-bit chain walk already steps over
-    (:func:`_constant_leg_reset_mux_data_bits`: one ``$mux`` whose ``Y``
-    is exactly the next flop's ``D``, the other leg all-constant, ``Y``
-    read by nothing else), whatever drives its select: after ``opt_dff``
+    (:func:`_constant_leg_reset_mux_data_bits`, here with ``whole``: the
+    reset muxes ``opt_dff`` folds, chained ones included, on every lane by
+    the same selects, so the folded stage is one cell; rtl-buddy-cdc#390),
+    whatever drives their selects: after ``opt_dff``
     the reset is folded into an ``$sdff`` whose ``D`` is ``Q`` directly,
     which the plain lane test accepts, and a reset from another domain is
     a crossing of its own, reported on its own (rtl-buddy-cdc#383).
@@ -2455,43 +2487,58 @@ def _srst_mux_next_stage(
     flops_by_d: dict[tuple[Bit, ...], tuple[Flop, ...]],
     ctx: _RuleContext | None,
 ) -> Flop | None:
-    """The flop behind a synchronous-reset ``$mux`` whose data leg is
+    """The flop behind the synchronous-reset muxes whose data leg is
     exactly ``q_bits`` (rtl-buddy-cdc#366), or ``None``.
 
-    The candidate mux is found from ``q_bits[0]``'s consumers; the shape
-    test is :func:`_constant_leg_reset_mux_data_bits`, shared with the
-    single-bit chain walk (#301 / #304), so a mux it rejects (an enable
-    mux, a live other leg, a ``$pmux``, a mux output read elsewhere) is
-    not looked through here either.
+    Candidates are found from ``q_bits``' consumers, forward through
+    muxes that take the whole vector on a data leg (a chain of reset muxes,
+    rtl-buddy-cdc#390); the shape test is
+    :func:`_constant_leg_reset_mux_data_bits` with ``whole`` (every lane
+    reset by the same selects, so ``opt_dff`` keeps the next stage one
+    cell), shared with the single-bit chain walk (#301 / #304). A mux it
+    rejects (an enable mux, a live other leg, a ``$pmux``, a mux output
+    read elsewhere) is not looked through here either.
     """
     if ctx is not None:
         bit_drivers = ctx.bit_drivers
         reader_counts = ctx.reader_counts
-        consumers: tuple[tuple[str, str, int], ...] = ctx.bit_consumers.get(
-            q_bits[0], ()
-        )
+        bit_consumers = ctx.bit_consumers
     else:
         bit_drivers = _bit_drivers(module)
         reader_counts = _bit_reader_count(module)
-        consumers = tuple(
-            (cell.name, pin, i)
-            for cell in module.cells.values()
-            for pin in ("A", "B")
-            for i, b in enumerate(cell.connections.get(pin, ()))
-            if b == q_bits[0]
-        )
-    for cell_name, pin, _idx in consumers:
-        cell = module.cells.get(cell_name)
-        if cell is None or cell.type not in MUX2_TYPES or pin not in ("A", "B"):
-            continue
-        if tuple(cell.connections.get(pin, ())) != q_bits:
-            continue
-        for f in flops_by_d.get(tuple(cell.connections.get("Y", ())), ()):
-            if (
-                _constant_leg_reset_mux_data_bits(f, module, bit_drivers, reader_counts)
-                == q_bits
-            ):
-                return f
+        consumer_map: dict[Bit, list[tuple[str, str, int]]] = defaultdict(list)
+        for c in module.cells.values():
+            for pin in ("A", "B"):
+                for i, b in enumerate(c.connections.get(pin, ())):
+                    consumer_map[b].append((c.name, pin, i))
+        bit_consumers = {b: tuple(v) for b, v in consumer_map.items()}
+    seen: set[str] = set()
+    frontier = [q_bits]
+    for _ in range(_MAX_RESET_MUXES):
+        nxt_frontier: list[tuple[Bit, ...]] = []
+        for vec in frontier:
+            for cell_name, pin, _idx in bit_consumers.get(vec[0], ()):
+                cell = module.cells.get(cell_name)
+                if (
+                    cell is None
+                    or cell_name in seen
+                    or cell.type not in MUX2_TYPES
+                    or pin not in ("A", "B")
+                    or tuple(cell.connections.get(pin, ())) != vec
+                ):
+                    continue
+                seen.add(cell_name)
+                y = tuple(cell.connections.get("Y", ()))
+                for f in flops_by_d.get(y, ()):
+                    leg = _constant_leg_reset_mux_data_bits(
+                        f, module, bit_drivers, reader_counts, whole=True
+                    )
+                    if leg == q_bits:
+                        return f
+                nxt_frontier.append(y)
+        if not nxt_frontier:
+            break
+        frontier = nxt_frontier
     return None
 
 
@@ -2513,10 +2560,11 @@ def _own_srst_data_leg(
     asks "what does this flop sample" looks through it and reads ``x``,
     which keeps the two netlist forms on the same verdict.
 
-    The mux qualifies when it is the shape
-    :func:`_constant_leg_reset_mux_data_bits` accepts (one ``$mux`` whose
-    ``Y`` is exactly ``D`` and read by nothing else, one leg all-constant),
-    whatever drives its select. ``opt_dff`` folds it into ``SRST`` on that
+    The muxes qualify when they are the shape
+    :func:`_constant_leg_reset_mux_data_bits` accepts with ``whole`` (the
+    reset muxes ``opt_dff`` folds, on every lane, by the same selects, so
+    the folded flop stays one cell; rtl-buddy-cdc#390), whatever drives
+    their selects. ``opt_dff`` folds it into ``SRST`` on that
     shape alone, so a select from another domain is looked through too
     (rtl-buddy-cdc#383): the crossing it carries is found through the
     select (or the ``SRST`` pin) and reported on its own, CDC-001 /
@@ -2530,7 +2578,9 @@ def _own_srst_data_leg(
     """
     if clock is None:
         return None
-    return _constant_leg_reset_mux_data_bits(flop, module, bit_drivers, reader_counts)
+    return _constant_leg_reset_mux_data_bits(
+        flop, module, bit_drivers, reader_counts, whole=True
+    )
 
 
 def check_cdc_004(
@@ -5508,9 +5558,12 @@ def check_cdc_015(
     are independent and can coexist — users can act on either one.
 
     Walks each crossing's chain via :func:`_sync_chain_flops` and
-    checks every chain flop's ``ARST`` pin. Fires (one finding per
-    chain) when any chain flop's reset reaches back to a flop in a
-    clock domain async to ``c.dst_clock``. Suppressed when the chain
+    checks every asynchronous control pin of every chain flop
+    (``ResetDomain.controls``: ``ARST``, ``ALOAD``, a set / clear flop's
+    ``CLR`` and ``SET``, rtl-buddy-cdc#390), each on the signal it acts
+    on (:func:`~rtl_buddy_cdc.reset_domain.effective_control_bit`), the
+    pins RDC-001 walks. Fires (one finding per chain) when any of them
+    reaches back to a flop in a clock domain async to ``c.dst_clock``. Suppressed when the chain
     head is ``(* cdc_sync *)``-marked — user vouches for the chain
     shape including its reset routing.
 
@@ -5553,18 +5606,19 @@ def check_cdc_015(
             continue
 
         offending: set[tuple[str, str]] = set()
+        pins: set[str] = set()
         for chain_flop in chain:
-            arst_bits = flop_reset_bits(chain_flop.cell, "arst")
-            if not arst_bits:
-                continue
-            fanin = _backward_flop_fanin(module, arst_bits, ctx.bit_drivers)
-            for src_name in fanin:
-                src_clk = ctx.domains.get(src_name)
-                if src_clk is None or src_clk == c.dst_clock:
-                    continue
-                if not _async(src_clk, c.dst_clock):
-                    continue
-                offending.add((src_name, src_clk))
+            rd = ctx.reset_domains.get(chain_flop.cell.name)
+            for ctl in rd.controls if rd is not None else ():
+                fanin = _backward_flop_fanin(module, ctl.bits, ctx.bit_drivers)
+                for src_name in fanin:
+                    src_clk = ctx.domains.get(src_name)
+                    if src_clk is None or src_clk == c.dst_clock:
+                        continue
+                    if not _async(src_clk, c.dst_clock):
+                        continue
+                    offending.add((src_name, src_clk))
+                    pins.add(_ASYNC_PIN_LABEL[ctl.pin.role])
 
         if not offending:
             continue
@@ -5576,7 +5630,8 @@ def check_cdc_015(
                 severity="error",
                 message=(
                     f"synchroniser chain in {c.dst_clock} (head "
-                    f"{head.name}) has ARST driven by foreign-domain "
+                    f"{head.name}) has {'/'.join(sorted(pins))} driven by "
+                    f"foreign-domain "
                     f"source(s): {srcs_desc}. The chain cannot reach "
                     f"steady state because its resolving flops are "
                     f"asynchronously released by a reset that is not "
