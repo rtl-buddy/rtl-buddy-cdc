@@ -476,3 +476,146 @@ def test_reset_only_register_verdict_matches_yosys(tmp_path: Path) -> None:
     sdc = _SDC + "set_input_delay -clock clk_b 1 [get_ports d]\n"
     _crossings, live, _ = _same_verdict(tmp_path, _RESET_ONLY_CROSSING, sdc=sdc)
     assert live.get("RDC-001") == 1
+
+
+# --- 12. netnames carry the declared range (offset / upto) ------------------
+
+_RANGES = """module m (input clk_a, input [7:4] a, input [0:7] b, input [3:-4] c,
+          input [4:7] e, input signed [11:8] f, output [7:4] y,
+          output [0:3] z, output [1:0][3:2] pk);
+    logic [7:4] ra;
+    logic [0:7] rb;
+    wire [5:2] wa;
+    wire [2:5] wb;
+    logic [3:0][1:0] p2;
+    integer it;
+    always_ff @(posedge clk_a) begin
+        ra <= a; rb <= b ^ {c[3:0], e}; p2 <= {f, f}; it <= it + 1;
+    end
+    assign wa = ra;
+    assign wb = rb[0:3];
+    assign y = wa;
+    assign z = wb;
+    assign pk = p2[1:0] ^ {4{it[0]}};
+endmodule
+"""
+
+
+def _ranges(module: Module) -> dict[str, tuple[int, int, bool]]:
+    return {
+        n: (len(nn.bits), nn.offset, nn.upto)
+        for n, nn in module.netnames.items()
+        if "$" not in n
+    }
+
+
+def test_netnames_carry_declared_offset_and_direction(tmp_path: Path) -> None:
+    """A vector declared ``[7:4]`` (``offset`` 4), ``[0:7]`` (``upto``) or
+    ``[3:-4]`` (``offset`` -4) carries its declared range on its netname,
+    variable, net or port alike, as Yosys ``write_json`` emits it; a
+    multi-dimensional packed array or an ``integer`` is ``[N-1:0]``.
+    Every name both frontends define agrees."""
+    module = _slang(tmp_path, _RANGES)
+    got = _ranges(module)
+    assert got["a"] == (4, 4, False)
+    assert got["b"] == (8, 0, True)
+    assert got["c"] == (8, -4, False)
+    assert got["e"] == (4, 4, True)
+    assert got["f"] == (4, 8, False)
+    assert got["ra"] == (4, 4, False)
+    assert got["wb"] == (4, 2, True)
+    assert got["p2"] == (8, 0, False)
+    assert got["pk"] == (4, 0, False)
+    assert got["it"] == (32, 0, False)
+    assert got["clk_a"] == (1, 0, False)
+    if _HAVE_YOSYS:
+        want = _ranges(_yosys(tmp_path, _RANGES))
+        common = set(got) & set(want)
+        assert {"a", "b", "c", "e", "f", "ra", "rb", "wa", "wb", "y", "z"} <= common
+        assert {n: got[n] for n in common} == {n: want[n] for n in common}
+
+
+_BIT_NAMES = """module m (input clk_a, input clk_b, input d0, input d1, input d2,
+          output reg [5:4] s, output reg [0:1] t, output reg [9:8] u);
+    reg a0, a1, a2;
+    always_ff @(posedge clk_a) begin a0 <= d0; a1 <= d1; a2 <= d2; end
+    wire [7:4] w;
+    wire [0:3] v;
+    assign w = {2'b00, a1, a0};
+    assign v = {a2, 1'b0, a1, 1'b0};
+    reg [3:2] r;
+    always_ff @(posedge clk_a) r <= {a1, a0};
+    always_ff @(posedge clk_b) begin
+        s <= w[5:4];   // s[5] <- a1 via w[5], s[4] <- a0 via w[4]
+        t <= {v[0], v[2]};
+        u <= r;
+    end
+endmodule
+"""
+
+
+@pytest.mark.parametrize(
+    ("constraint", "cut"),
+    [
+        ("set_false_path -through [get_nets w[5]]", 2),  # a1: s[5], t[1]
+        ("set_false_path -through [get_nets w[4]]", 1),  # a0: s[4]
+        ("set_false_path -through [get_nets v[0]]", 1),  # a2: t[0]
+        ("set_false_path -through [get_nets {v[2]}]", 2),  # a1
+    ],
+)
+def test_bit_select_net_names_cut_alike(
+    tmp_path: Path, constraint: str, cut: int
+) -> None:
+    """``get_nets w[5]`` on a ``[7:4]`` wire and ``v[0]`` on a ``[0:3]``
+    one select the same bit on both frontends, so the same crossings are
+    cut (on slang ``w[5]`` named a bit past the end and ``v[0]`` the
+    wrong end)."""
+    sdc = _SDC + "set_input_delay -clock clk_a 1 [get_ports {d0 d1 d2}]\n"
+    base = _same_verdict(tmp_path, _BIT_NAMES, sdc=sdc)
+    assert base == (5, {"CDC-001": 4, "CDC-004": 1}, {})
+    got = _same_verdict(tmp_path, _BIT_NAMES, sdc=sdc + constraint + "\n")
+    assert got == (5, {"CDC-001": 4 - cut, "CDC-004": 1}, {"CDC-001": cut})
+
+
+@pytest.mark.parametrize(
+    ("kind", "pattern"),
+    [
+        ("registers", "r_reg[3]"),
+        ("registers", "r[2]"),
+        ("registers", "s_reg[5]"),
+        ("registers", "t_reg[0]"),
+        ("registers", "u[9]"),
+        ("ports", "s[4]"),
+        ("ports", "t[1]"),
+        ("ports", "u[8]"),
+    ],
+)
+def test_bit_select_register_and_port_names_resolve_alike(
+    tmp_path: Path, kind: str, pattern: str
+) -> None:
+    """``x_reg[k]`` / ``x[k]`` register names and ``x[k]`` port names on a
+    ``[3:2]``, ``[5:4]``, ``[0:1]`` or ``[9:8]`` vector pick the same
+    register bit (by its ``Q`` netname bit) on both frontends."""
+    from rtl_buddy_cdc.sdc_objects import NameIndex
+
+    def resolve(module: Module) -> set[str]:
+        sel = getattr(NameIndex(module), kind)(pattern)
+        assert sel, pattern
+        if kind == "ports":
+            return {f"{p}:{i}" for p, pos in sel.items() for i in pos}
+        names = {
+            b: f"{n}:{i}"
+            for n, nn in module.netnames.items()
+            for i, b in enumerate(nn.bits)
+            if "$" not in n and n in ("r", "s", "t", "u")
+        }
+        return {
+            names[module.cells[f].connections["Q"][q]]
+            for f, pos in sel.items()
+            for q in pos
+        }
+
+    got = resolve(_slang(tmp_path, _BIT_NAMES))
+    assert len(got) == 1
+    if _HAVE_YOSYS:
+        assert resolve(_yosys(tmp_path, _BIT_NAMES)) == got

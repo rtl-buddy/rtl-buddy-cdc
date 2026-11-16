@@ -431,6 +431,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that register's `$aldff`, the `proc` reset mux on a `$dff` for a sync
   reset, a `$dffsr` for one of several async controls.
 
+- **slang frontend: netnames carry the declared range** (rtl-buddy-cdc#390,
+  item 12). Slang netnames never set `offset` / `upto`, so a bit-indexed
+  name on a `[7:4]` or `[0:7]` vector (`get_nets w[5]`, `get_ports s[4]`,
+  `get_cells r_reg[3]`) named a bit past the end or the wrong end where the
+  Yosys path named the right one. Variables, nets, top ports and a child
+  instance's port netnames now carry the lower bound of a one-dimensional
+  packed range and whether it ascends, as Yosys `write_json` emits them
+  (a multi-dimensional packed array, an `integer` or a struct stays
+  `[N-1:0]`, as on Yosys), and keep them when a netname's bits are
+  re-pointed. `netlist.py` and `sdc_objects.py` already read both
+  frontends' fields the same way.
+
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
   design (reset and enable muxes on `D`, a set / clear flop's `CLR` and
