@@ -406,6 +406,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reset analysis: set / clear polarity, resets outside an enable,
+  `proc`-form sync resets** (rtl-buddy-cdc#394, items 1, 2, 3, 5). No
+  committed fixture or integration golden changes verdict (per-rule
+  counts), and the committed reset-domain-map golden is unchanged. One
+  message changes: `bad_bus_foreign_sync_reset`'s CDC-001 (a crossing
+  through a foreign sync reset over an enable) no longer says the flop
+  "captures only under an enable"; it is the no-second-stage message.
+  - **RDC-002 / RDC-007 on set / clear flops.** A reset's polarity is now
+    the polarity its *signal* acts with. `proc` writes an active-low clear
+    of a `$dffsr` as an inverter in front of an active-high `CLR`;
+    `AsyncControl.source.polarity` (and so `ResetDomain.reset.polarity`)
+    was the pin's, so both RDC-002 variants (port-declared `(*
+    reset_polarity = "low" *)` and flop-to-flop) reported the correctly
+    wired flops and missed the wrong ones in the `proc` and `opt_dff`
+    forms, and RDC-007 reported a correct reset synchroniser built from
+    set / clear flops (head loading 1 under an active-low clear) in every
+    form, gate level included. The polarity is flipped once per inverter
+    `effective_control` (new; returns the bit and the polarity,
+    `effective_control_bit` keeps returning the bit) steps through.
+    Consumers: RDC-002, RDC-007 and RDC-001's reset-synchroniser
+    exemption (`_deasserting_reset_sync_members`), `find_reset_crossings`
+    and the reset-domain map's `polarity` fields.
+  - **CDC-001 no longer accepts a crossing through an ungated sync reset
+    as a gated capture.** On a reset-over-enable flop (`$sdffe` /
+    `$_SDFFE_*`, or a reset mux in front of the hold mux in the `proc`
+    form) a crossing that reaches the flop through the reset is sampled on
+    any edge; the single-bit gated-capture test read the enable as gating
+    it, said "captures only under an enable", and with an acknowledge
+    present accepted it silently. It is now CDC-001 with the
+    no-second-stage message. Under an `$sdffce` / `$_SDFFCE_*` (reset only
+    while enabled, or the reset mux behind the hold mux) it is gated, as
+    before. Same verdict in the `proc`, `opt_dff` and gate-level forms.
+  - **Reset-domain classification reads `proc`-form sync resets.** A flop
+    with no reset pin whose `D` carries the constant-leg reset muxes
+    `opt_dff` folds into `SRST` (over or under an enable, every lane reset
+    by the same selects) now has that reset as `ResetDomain.reset` (`type:
+    "sync"`; several selects classify as `"comb"`, like the `$reduce_or`
+    `opt_dff` adds). The `proc` and `opt_dff` reset-domain maps of one
+    design agree, and on the `lint` path the Yosys frontend's map lists the
+    sync resets the slang frontend's `$sdff*` carry. A register whose lanes
+    are reset differently (sliced by `opt_dff`) keeps no reset. The lane
+    walk is the rule pack's `_sync_reset_lanes` (now
+    `reset_domain.sync_reset_lanes`, with `through_enable`), and
+    `_bit_reader_count` moved beside it (`reset_domain.bit_reader_count`);
+    the `rules` names remain.
+  - The golden-regeneration command in `tests/test_reset_domain_map.py`
+    and the reset-domain-map schema doc now passes `--project-root .`:
+    a relative `--emit-*` path is anchored at the SDC's directory, so the
+    documented command wrote the golden under
+    `tests/fixtures/<fix>/tests/fixtures/...`. A test runs both documented
+    commands.
+  - New fixtures `bad_set_clear_reset_polarity`,
+    `bad_sync_reset_over_enable_capture` and `good_sync_reset_forms`,
+    checked by `tests/test_reset_analyzer_394.py`.
+
 - **SDC clock collections are evaluated, not read as names**
   (rtl-buddy-cdc#390). No committed fixture or integration golden changes
   verdict.

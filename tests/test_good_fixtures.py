@@ -355,6 +355,9 @@ GOOD_FIXTURES = [
     # Chained sync resets and a one-lane reset on synchronisers, read
     # the way opt_dff folds them (rtl-buddy-cdc#390).
     ("good_sync_reset_mux_folds", 3),
+    # Sync resets in every shape opt_dff folds, one clock (rtl-buddy-cdc#394;
+    # the reset-domain classification is pinned in test_reset_analyzer_394).
+    ("good_sync_reset_forms", 0),
 ]
 
 
