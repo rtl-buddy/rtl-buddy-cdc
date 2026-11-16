@@ -336,7 +336,12 @@ def test_cell_clock_input_with_dangling_input_classifies_nothing() -> None:
     spec = sdc_mod.parse("create_clock -name clkA -period 10 [get_ports clkA]\n")
     drivers = _bit_drivers_with_idx(module)
     domains = _cell_clock_input_domains(
-        module, module.cells["icg"], drivers, {"F_src": "clkA"}, spec, frozenset({"EN"})
+        module,
+        module.cells["icg"],
+        drivers,
+        {"F_src": "clkA"},
+        spec.port_typing(module),
+        frozenset({"EN"}),
     )
     assert domains == set()
 

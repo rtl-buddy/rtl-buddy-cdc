@@ -406,6 +406,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Port typing is per bit** (rtl-buddy-cdc#394, item 4). A
+  `set_input_delay` / `set_output_delay` whose target selects only some
+  bits of a bus port — `[get_ports {d[0] d[1]}]`, an unbraced
+  `[get_ports d[3]]` (bit 3 on the Tcl backend too), or
+  `[remove_from_collection [get_ports {d[*]}] [get_ports {d[3]}]]` —
+  typed the whole port with its clock (since rtl-buddy-cdc#390 with a
+  warning), and the bits of one bus given different clocks by separate
+  statements all took the last one. Each statement now types exactly the
+  bits it selects, in file order. A bit no statement types behaves like
+  an untyped scalar port: an input bit is `<unconstrained>` (CDC-011,
+  naming `'d[3]'`), an output bit has no contract (CDC-025). Both
+  warnings are gone. `ClockSpec.port_clock` keys such a port by bit, in
+  the SDC's declared index (`d[3]`), and whole ports exactly as before;
+  `ClockSpec.port_typing(module)` reads it per bit for every consumer:
+  the crossing walk (one crossing per port, clock and destination, with
+  the new `Crossing.src_port_bits`), CDC-006, CDC-010 and the
+  clock-network view, RDC-008, CDC-011, CDC-024, CDC-025, the memory
+  read-domain fallback, object-scoped `set_false_path` /
+  `set_max_delay -datapath_only` coverage and its `-through` walk, the
+  domain map and its mermaid rendering. `find_crossings(port_clock=…)`
+  reads bit keys itself, so the API path needs no new argument. JSON
+  (additive, no schema change): a crossing from such a port carries
+  `src_port_bits` (declared indices), and the domain map's
+  `port_domains` lists one entry per clock with a `bits` list; whole-port
+  crossings and entries are unchanged. New fixture
+  `bad_partial_bus_port_typing`. No committed fixture or integration
+  golden changes verdict.
+
 - **SDC clock collections are evaluated, not read as names**
   (rtl-buddy-cdc#390). No committed fixture or integration golden changes
   verdict.

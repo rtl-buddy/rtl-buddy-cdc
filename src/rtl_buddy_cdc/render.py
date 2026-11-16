@@ -19,6 +19,8 @@ import hashlib
 from io import StringIO
 from typing import Any
 
+from rtl_buddy_cdc.netlist import format_bit_select
+
 SUPPORTED_SCHEMA_MAJOR = 1
 
 # Per-clock fill/stroke palette. Light pastels stay readable on both
@@ -150,7 +152,7 @@ def render_mermaid(map_data: dict[str, Any]) -> str:
         if src_flop:
             src_id = _flop_node_id(src_flop)
         elif src_port:
-            src_id = _port_node_id(src_port, "input")
+            src_id = _port_node_id(_port_ref(src_port, x.get("src_port_bits")), "input")
         else:
             continue
         dst_id = _flop_node_id(dst)
@@ -338,13 +340,20 @@ def _port_node_id(port_name: str, kind: str) -> str:
     return f"p_{kind[:2]}_{_safe_id(port_name)}"
 
 
+def _port_ref(port: str, bits: list[int] | None) -> str:
+    """``d`` or, for some bits of a port typed bit by bit
+    (rtl-buddy-cdc#394), ``d[2:0]``: one node per typed part."""
+    return port + format_bit_select(bits) if bits else port
+
+
 def _emit_port_line(
     buf: StringIO, port: dict[str, Any], cls: str, *, indent: str
 ) -> None:
-    port_id = _port_node_id(port["port"], port.get("kind", "input"))
+    name = _port_ref(port["port"], port.get("bits"))
+    port_id = _port_node_id(name, port.get("kind", "input"))
     kind = port.get("kind", "input")
     marker = "in" if kind == "input" else "out"
-    buf.write(f'{indent}{port_id}[/"{port["port"]}⟨{marker}⟩"/]:::{cls}\n')
+    buf.write(f'{indent}{port_id}[/"{name}⟨{marker}⟩"/]:::{cls}\n')
 
 
 def _safe_id(name: str) -> str:

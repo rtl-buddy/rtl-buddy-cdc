@@ -77,6 +77,7 @@ from rtl_buddy_cdc.sdc import (
     DatapathOnlyDelay,
     FalsePathException,
     SdcObject,
+    split_bit_key,
 )
 from rtl_buddy_cdc.waivers import SdcJustification, SuppressedViolation, Waiver
 
@@ -579,31 +580,34 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
 
     The parser records each target as written (:class:`~rtl_buddy_cdc.sdc.PortDelay`);
     an exact port name already keys ``port_clock`` correctly, so an SDC
-    naming only whole ports returns here untouched. Otherwise, in file
-    order (last write wins, as for exact names):
+    naming only whole ports returns here untouched. Otherwise each
+    statement types the port **bits** it selects, in file order (last
+    write wins, bit by bit; rtl-buddy-cdc#394):
 
-    - A **bus index** (``d[3]``, braced in Tcl) types the **whole port**
-      ``d``. Port typing — every consumer of ``port_clock`` — is per
-      port, not per bit, so this over-approximates a partial selection;
-      when the bits of one port are given *different* clocks the port
-      takes the last one, and that is warned about.
-    - A **glob** (``d*``, ``a?``, ``d*[3]``) types every top-level port it
-      matches, through the same :class:`NameIndex` matcher as the object
-      patterns (``*`` / ``?`` never cross a hierarchy level). A glob only
-      selects ports of the command's direction (inputs / inouts for
-      ``set_input_delay``, outputs / inouts for ``set_output_delay``) and
-      never a port a ``create_clock`` declares a clock on: ``[get_ports
-      *]`` is not meant to re-type the clock pins.
+    - A **bus index** (``d[3]``, braced in Tcl, or unbraced on the Tcl
+      backend, which reads it back as ``d[3]``) types that bit of ``d``
+      only; its other bits keep whatever typing they had, or none.
+    - A **glob** (``d*``, ``a?``, ``d*[3]``) types every top-level port bit
+      it matches, through the same :class:`NameIndex` matcher as the
+      object patterns (``*`` / ``?`` never cross a hierarchy level). A
+      glob only selects ports of the command's direction (inputs / inouts
+      for ``set_input_delay``, outputs / inouts for ``set_output_delay``)
+      and never a port a ``create_clock`` declares a clock on:
+      ``[get_ports *]`` is not meant to re-type the clock pins.
     - A target that matches nothing is warned about and kept as written,
       which, as before, types nothing.
     - Patterns a ``remove_from_collection`` took out of a target
       (:attr:`~rtl_buddy_cdc.sdc.PortDelay.excludes`, rtl-buddy-cdc#382)
       are resolved the same way, without the direction / clock filter,
-      and their bits are removed from the target's; a port left with no
-      bit is not typed. A port left with *some* bits stays typed whole,
-      removed bits included — typing is per port — and that is warned
-      about (rtl-buddy-cdc#390). A removed pattern that matches no port is
+      and their bits are removed from the target's: the statement does
+      not type them, so they keep their earlier typing or stay untyped —
+      an untyped input bit then reads ``<unconstrained>`` exactly like an
+      untyped scalar port. A removed pattern that matches no port is
       warned about.
+
+    The result keys ``port_clock`` by the whole port when every bit of it
+    ends up with one clock, and by bit (``d[3]``, the declared index) for
+    each typed bit otherwise — see :class:`~rtl_buddy_cdc.sdc.PortTyping`.
     """
     targets = [(d, t, excl) for d in spec.port_delays for t, excl in d.terms()]
     if all(t in module.ports and not excl for _d, t, excl in targets):
@@ -611,14 +615,14 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
     index = NameIndex(module)
     clock_ports = {p for clk in spec.clocks.values() for p in clk.ports}
     warnings: list[str] = []
-    rebuilt: dict[str, str] = {}
-    # Port → the (clock, target) assignments still in force on its bits:
-    # a whole-port typing replaces them all, a bit-select adds one.
-    in_force: dict[str, list[tuple[str, str]]] = {}
+    # Port → its bits' clocks, by position; ``None`` = not typed (yet).
+    # Insertion order is first-typed order, the order ``port_clock`` had.
+    assigned: dict[str, list[str | None]] = {}
+    unmatched: dict[str, str] = {}
     for d, target, excl in targets:
-        if target in module.ports and not excl:
-            rebuilt[target] = d.clock
-            in_force[target] = [(d.clock, target)]
+        port = module.ports.get(target)
+        if port is not None and not excl:
+            assigned[target] = [d.clock] * len(port.bits)
             continue
         where = f"{d.command} -clock {d.clock}{_at_line(d.line)}"
         is_glob = _has_glob(target)
@@ -631,22 +635,9 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
                 if module.ports[name].direction in allowed and name not in clock_ports
             }
         if excl and hits:
-            selected = hits
             hits = _remove_ports(index, hits, excl, where, warnings)
-            for name in sorted(hits):
-                if hits[name] != selected[name]:
-                    # Per-bit typing would change every port_clock
-                    # consumer (crossing sources, CDC-006/-011/-024/-025,
-                    # the domain map); say what the per-port model does.
-                    warnings.append(
-                        f"{where}: remove_from_collection {', '.join(excl)} "
-                        f"takes only some bits of port '{name}' out of "
-                        f"{target!r}; port typing is per port, so the whole "
-                        f"port '{name}' — the removed bits included — is typed "
-                        f"to '{d.clock}'"
-                    )
             if not hits:
-                continue  # every port it selected was removed
+                continue  # every bit it selected was removed
         if not hits:
             what = (
                 f"no {'input' if d.command == 'set_input_delay' else 'output'} "
@@ -658,29 +649,57 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
                 f"{where}: port pattern {target!r} matches {what} — constraint "
                 f"typo? (it types nothing)"
             )
-            rebuilt[target] = d.clock
+            unmatched[target] = d.clock
             continue
         for name in sorted(hits):
-            rebuilt[name] = d.clock
-            if len(hits[name]) < len(module.ports[name].bits):
-                in_force.setdefault(name, []).append((d.clock, target))
-            else:
-                in_force[name] = [(d.clock, target)]
+            per = assigned.get(name)
+            if per is None:
+                per = assigned[name] = [None] * len(module.ports[name].bits)
+            for pos in hits[name]:
+                per[pos] = d.clock
     # Entries that did not come from a recorded delay statement (a spec
-    # built by hand) are kept.
+    # built by hand, or the sentinels of an earlier
+    # ``synthesize_unconstrained_inputs``) are kept. On a port a statement
+    # types they fill only the bits no statement typed: a whole-port
+    # entry first, then bit entries over it.
     written = {t for _d, t, _excl in targets}
-    for name, clock in spec.port_clock.items():
-        if name not in written:
-            rebuilt.setdefault(name, clock)
-    for name, assigned in sorted(in_force.items()):
-        if len({clock for clock, _t in assigned}) < 2:
+    kept: dict[str, str] = {}
+    fill: dict[str, list[str | None]] = {}
+    for key, clock in spec.port_clock.items():
+        if key in written:
             continue
-        named = ", ".join(f"{t} → {clock}" for clock, t in assigned)
-        warnings.append(
-            f"set_*_delay: bits of port '{name}' are typed to different clocks "
-            f"({named}); port typing is per port, so the whole port is typed "
-            f"to the last one, '{rebuilt[name]}'"
-        )
+        base: str = key
+        idx: int | None = None
+        if key not in module.ports:
+            split = split_bit_key(key)
+            if split is not None:
+                base, idx = split
+        if base not in assigned:
+            kept[key] = clock
+            continue
+        per = fill.setdefault(base, [None] * len(assigned[base]))
+        if idx is None:
+            per[:] = [clock if p is None else p for p in per]
+        else:
+            at = module.port_bit_position(base, idx)
+            if at is not None:
+                per[at] = clock
+    rebuilt: dict[str, str] = {}
+    for name, bit_clocks in assigned.items():
+        gaps = fill.get(name)
+        if gaps is not None:
+            bit_clocks = [g if c is None else c for c, g in zip(bit_clocks, gaps)]
+        first = bit_clocks[0] if bit_clocks else None
+        if first is not None and bit_clocks.count(first) == len(bit_clocks):
+            rebuilt[name] = first
+            continue
+        for i, bit_clock in enumerate(bit_clocks):
+            if bit_clock is not None:
+                rebuilt[f"{name}[{module.port_bit_index(name, i)}]"] = bit_clock
+    for name, clock in unmatched.items():
+        rebuilt.setdefault(name, clock)
+    for name, clock in kept.items():
+        rebuilt.setdefault(name, clock)
     spec.port_clock.clear()
     spec.port_clock.update(rebuilt)
     return warnings
@@ -917,12 +936,25 @@ def coverage(
     return out
 
 
-def _src_width(c: Crossing, module: Module) -> int | None:
+def _src_bit_positions(c: Crossing, module: Module) -> frozenset[int] | None:
+    """Positions of ``c``'s source bits in its source object (the flop's
+    ``Q`` / the port's bits), or ``None`` for a source this module cannot
+    name. A port typed bit by bit is the crossing's own bits
+    (:attr:`Crossing.src_port_bits`, rtl-buddy-cdc#394), not the whole
+    port, so a statement naming exactly those bits covers it."""
     if c.src_flop is not None:
-        return len(c.src_flop.q)
+        return frozenset(range(len(c.src_flop.q)))
     if c.src_port is not None:
         port = module.ports.get(c.src_port)
-        return len(port.bits) if port is not None else None
+        if port is None:
+            return None
+        if c.src_port_bits is None:
+            return frozenset(range(len(port.bits)))
+        return frozenset(
+            p
+            for i in c.src_port_bits
+            if (p := module.port_bit_position(c.src_port, i)) is not None
+        )
     return None
 
 
@@ -935,13 +967,13 @@ def _clocks_cover(side: _Side, clock: str, spec: ClockSpec) -> bool:
 def _src_positions(
     rc: ResolvedConstraint,
     c: Crossing,
-    width: int | None,
+    full: frozenset[int],
     spec: ClockSpec,
     *,
     objects_only: bool,
 ) -> frozenset[int] | None:
-    """Source bit positions ``rc`` names on ``c`` (``None`` = none)."""
-    full = frozenset(range(width or 1))
+    """Source bit positions ``rc`` names on ``c`` (``None`` = none);
+    ``full`` is every source bit of ``c``."""
     if not objects_only:
         if rc.src.unconstrained or _clocks_cover(rc.src, c.src_clock, spec):
             return full
@@ -949,7 +981,7 @@ def _src_positions(
     if c.src_flop is not None:
         got = rc.src.flops.get(c.src_flop.cell.name, frozenset())
     elif c.src_port is not None:
-        got = rc.src.ports.get(c.src_port, frozenset())
+        got = rc.src.ports.get(c.src_port, frozenset()) & full
     return got or None
 
 
@@ -973,15 +1005,15 @@ def _cover(
     """The statements of ``group`` that together fully cover ``c``, or []."""
     if not group:
         return []
-    width = _src_width(c, walker.module)
-    src_full = frozenset(range(width or 1))
+    src_bits = _src_bit_positions(c, walker.module)
+    src_full = src_bits or frozenset({0})
     dst_full = frozenset(range(len(c.dst_flop.d) or 1))
     rects: list[tuple[ResolvedConstraint, frozenset[int], frozenset[int]]] = []
     for rc in group:
         # Acknowledging needs the source named by object; a -through
         # pins the path itself, so there any source form will do.
         objects_only = eligible_only and not rc.through
-        sb = _src_positions(rc, c, width, spec, objects_only=objects_only)
+        sb = _src_positions(rc, c, src_full, spec, objects_only=objects_only)
         if sb is None:
             continue
         db = _dst_positions(rc, c, spec)
@@ -994,7 +1026,7 @@ def _cover(
         if sb == src_full and db == dst_full:
             return [rc]
         rects.append((rc, sb, db))
-    if not rects or width is None:
+    if not rects or src_bits is None:
         return []
     for s in src_full:
         reach: set[int] = set()
@@ -1030,7 +1062,14 @@ class _ThroughWalker:
         if c.src_flop is not None:
             return ("flop", c.src_flop.cell.name), c.src_flop.q
         if c.src_port is not None and c.src_port in self.module.ports:
-            return ("port", c.src_port), self.module.ports[c.src_port].bits
+            bits = self.module.ports[c.src_port].bits
+            if c.src_port_bits is None:
+                return ("port", c.src_port), bits
+            # A port typed bit by bit (rtl-buddy-cdc#394): only the
+            # crossing's own bits are its source.
+            positions = sorted(_src_bit_positions(c, self.module) or ())
+            label = c.src_port_label or c.src_port
+            return ("port", label), tuple(bits[p] for p in positions)
         return None
 
     def all_paths_through(self, c: Crossing, rc: ResolvedConstraint) -> bool:
