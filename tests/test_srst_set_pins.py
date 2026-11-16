@@ -19,6 +19,9 @@ leading comment reasons out:
   (``.json`` / ``.synth.json``): every async pin counts (``SET`` too), a
   foreign ``CLR`` / ``SET`` is RDC-001, and the cells Yosys builds around
   the pins are not reset logic.
+- ``bad_sync_chain_foreign_set`` (``.json`` / ``.synth.json``): CDC-015
+  reads every async pin of a synchroniser stage, ``SET`` and ``ALOAD``
+  too (rtl-buddy-cdc#390).
 
 Hand-built cells pin the helpers: ``flop_async_controls``,
 ``reset_domain.effective_control_bit`` / ``control_root`` and
@@ -92,6 +95,17 @@ EXPECTED: dict[str, tuple[tuple[str, ...], set[tuple[str, str]], list[Finding]]]
         ],
     ),
     "good_set_clear_priority": (("json", "synth.json"), set(), []),
+    "bad_sync_chain_foreign_set": (
+        ("json", "synth.json"),
+        {("src_q", "l1"), ("src_q", "s1")},
+        [
+            ("CDC-015", "src_q", "l1"),
+            ("CDC-015", "src_q", "s1"),
+            # Anchored on the alphabetically first destination cell.
+            ("RDC-001", None, "l2"),
+            ("RDC-001", None, "s2"),
+        ],
+    ),
 }
 
 CASES = [(name, form) for name, (forms, _, _) in EXPECTED.items() for form in forms]

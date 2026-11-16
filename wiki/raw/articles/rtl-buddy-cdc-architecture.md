@@ -3446,7 +3446,9 @@ these cells stepped through by `effective_control_bit`:
 RDC-004, -005 and -006 test every asynchronous pin on that signal (one
 finding per flop), and RDC-001 walks every asynchronous pin's cone, so a
 `CLR`, `SET` or `ALOAD` driven from another domain's register is a reset
-crossing as an `ARST` is. `ResetDomain.reset` (the one pin RDC-002,
+crossing as an `ARST` is. CDC-015 walks the same pins of every
+synchroniser stage, on the same signals (rtl-buddy-cdc#390): a chain set
+or async-loaded from another domain is as broken as one reset from it. `ResetDomain.reset` (the one pin RDC-002,
 RDC-007, RDC-008 and the reset-domain map read) is classified on the same
 signal. Any other combinational logic on a pin still fires as before.
 

@@ -5508,9 +5508,12 @@ def check_cdc_015(
     are independent and can coexist — users can act on either one.
 
     Walks each crossing's chain via :func:`_sync_chain_flops` and
-    checks every chain flop's ``ARST`` pin. Fires (one finding per
-    chain) when any chain flop's reset reaches back to a flop in a
-    clock domain async to ``c.dst_clock``. Suppressed when the chain
+    checks every asynchronous control pin of every chain flop
+    (``ResetDomain.controls``: ``ARST``, ``ALOAD``, a set / clear flop's
+    ``CLR`` and ``SET``, rtl-buddy-cdc#390), each on the signal it acts
+    on (:func:`~rtl_buddy_cdc.reset_domain.effective_control_bit`), the
+    pins RDC-001 walks. Fires (one finding per chain) when any of them
+    reaches back to a flop in a clock domain async to ``c.dst_clock``. Suppressed when the chain
     head is ``(* cdc_sync *)``-marked — user vouches for the chain
     shape including its reset routing.
 
@@ -5553,18 +5556,19 @@ def check_cdc_015(
             continue
 
         offending: set[tuple[str, str]] = set()
+        pins: set[str] = set()
         for chain_flop in chain:
-            arst_bits = flop_reset_bits(chain_flop.cell, "arst")
-            if not arst_bits:
-                continue
-            fanin = _backward_flop_fanin(module, arst_bits, ctx.bit_drivers)
-            for src_name in fanin:
-                src_clk = ctx.domains.get(src_name)
-                if src_clk is None or src_clk == c.dst_clock:
-                    continue
-                if not _async(src_clk, c.dst_clock):
-                    continue
-                offending.add((src_name, src_clk))
+            rd = ctx.reset_domains.get(chain_flop.cell.name)
+            for ctl in rd.controls if rd is not None else ():
+                fanin = _backward_flop_fanin(module, ctl.bits, ctx.bit_drivers)
+                for src_name in fanin:
+                    src_clk = ctx.domains.get(src_name)
+                    if src_clk is None or src_clk == c.dst_clock:
+                        continue
+                    if not _async(src_clk, c.dst_clock):
+                        continue
+                    offending.add((src_name, src_clk))
+                    pins.add(_ASYNC_PIN_LABEL[ctl.pin.role])
 
         if not offending:
             continue
@@ -5576,7 +5580,8 @@ def check_cdc_015(
                 severity="error",
                 message=(
                     f"synchroniser chain in {c.dst_clock} (head "
-                    f"{head.name}) has ARST driven by foreign-domain "
+                    f"{head.name}) has {'/'.join(sorted(pins))} driven by "
+                    f"foreign-domain "
                     f"source(s): {srcs_desc}. The chain cannot reach "
                     f"steady state because its resolving flops are "
                     f"asynchronously released by a reset that is not "

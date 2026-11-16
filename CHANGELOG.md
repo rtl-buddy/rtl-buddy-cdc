@@ -406,6 +406,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CDC-015 reads every asynchronous control pin** (rtl-buddy-cdc#390).
+  It read only `ARST`, so a synchroniser stage set, cleared or
+  async-loaded by another domain's register (`$dffsr` `SET` / `CLR`,
+  `$aldff` `ALOAD`, gate-level `S` / `R` / `L`) was reported by RDC-001
+  but not by CDC-015. It now walks the same pins RDC-001 does, each on
+  the signal it acts on (`ResetDomain.controls`), and names them in the
+  message. New fixture `bad_sync_chain_foreign_set` (`proc` and
+  gate-level forms). No committed fixture changes verdict.
+
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
   design (reset and enable muxes on `D`, a set / clear flop's `CLR` and
