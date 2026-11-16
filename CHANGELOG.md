@@ -406,6 +406,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SDC clock collections are evaluated, not read as names**
+  (rtl-buddy-cdc#390). No committed fixture or integration golden changes
+  verdict.
+  - `[all_clocks]` in a clock position (`set_clock_groups -group`, the
+    clock endpoints of `set_false_path` / `set_max_delay -datapath_only`,
+    `-clock`, `-master_clock`) was a clock called `all_clocks`; it is now
+    every declared clock (generated and virtual ones too), and
+    `[get_clocks <glob>]` expands against the same set instead of staying
+    a literal name that matched nothing. Clock references are resolved
+    against the whole file, as clock names already were, so a clock
+    declared below the statement is included — with a warning, since a
+    timer evaluates in file order. `[all_registers]`, `[all_inputs]`,
+    `[all_outputs]`, `[get_cells …]` and `[get_nets …]` there (and in a
+    `-group`: a `[get_cells u]` was read as the clocks `get_cells` and
+    `u`) now select nothing, with a warning. A `set_false_path` side whose
+    operands all select nothing ignores the statement instead of leaving
+    that side open to every object. `-clock` / `-master_clock` given
+    several clocks (`{a b}`) took the first silently; that is now ignored
+    and reported, as is a `-filter` in a `-group` or single-clock option
+    (a filtered `-master_clock` used to become the raw word itself).
+  - `remove_from_collection` / `add_to_collection` are evaluated over
+    clocks in `set_clock_groups -group` and the `set_false_path` /
+    `set_max_delay -datapath_only` clock endpoints, with the evaluator the
+    `set_*_delay` targets got in rtl-buddy-cdc#382. `-group
+    [remove_from_collection [all_clocks] [get_clocks x]]` was dropped
+    with a warning (and silently mis-read before #382); it is now every
+    clock but `x`. Unsupported forms (`-intersect`, a removal inside the
+    removed operand, an operator over design objects) still select
+    nothing, with a warning.
+  - `list` / `concat`-built collections are read item by item in every
+    command that takes a collection. On the Tcl backend `[list [get_ports
+    a] [get_ports b]]` evaluates to `{[get_ports a]} {[get_ports b]}`, and
+    `create_clock`, `create_generated_clock` (targets and `-source`),
+    `set_false_path -through`, `set_case_analysis` and the
+    `set_max_delay -datapath_only` endpoints split that into the ports
+    `a`, `get_ports` and `b`; the tokenizer, which does not evaluate
+    `list`, dropped the operand with a warning and now expands `list` /
+    `concat` the same way, so both backends agree. A `create_clock` /
+    `create_generated_clock` target naming no port or pin (`[get_cells
+    u]` was the ports `get_cells` and `u`) selects nothing, with a
+    warning; a bus-bit target `{clk[0]}` (the ports `clk` and `0`) is the
+    whole port `clk`, with a warning; and on the tokenizer a nested
+    `[get_pins [get_cells u]/C]` clock target is the pin `u/C`, as on the
+    Tcl backend, instead of two bogus names. Mixed pin and port targets
+    of one `create_generated_clock` are each recorded as what they are
+    (all of them were pins as soon as one was).
+  - `remove_from_collection` taking only some bits of a bus port out of a
+    `set_*_delay` target still types the whole port (port typing is per
+    port in every consumer, so per-bit typing is a larger model change
+    and is not done here), but now says so: the warning names the port,
+    the removed pattern and the clock the removed bits are typed to. It
+    used to be silent.
+
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
   design (reset and enable muxes on `D`, a set / clear flop's `CLR` and

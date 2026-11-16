@@ -254,14 +254,30 @@ def test_removed_glob(tmp_path: Path, sdc_backend: str) -> None:
     assert spec.port_clock == {"e1": "clk_a"}
 
 
-def test_removing_some_bits_keeps_the_port(tmp_path: Path, sdc_backend: str) -> None:
-    """Port typing is per port: the bits left over still type ``d``."""
+@pytest.mark.parametrize(
+    ("base", "removed"),
+    [
+        ("[get_ports d]", "[get_ports {d[0]}]"),
+        ("{d}", "{d[0]}"),
+        ("d", "{d[0]}"),
+        ("[all_inputs]", "{d[0] d[1]}"),
+    ],
+    ids=["bracket", "brace", "bare", "all-inputs"],
+)
+def test_removing_some_bits_keeps_the_port_and_warns(
+    tmp_path: Path, sdc_backend: str, base: str, removed: str
+) -> None:
+    """Port typing is per port: the bits left over still type ``d``, so the
+    removed bits are typed too. That is not silent (rtl-buddy-cdc#390):
+    the warning names the port, the removed pattern and the clock."""
     spec, warnings = _resolve(
         tmp_path,
-        "set_input_delay -clock clk_a 1 [remove_from_collection [get_ports d] {d[0]}]\n",
+        f"set_input_delay -clock clk_a 1 [remove_from_collection {base} {removed}]\n",
     )
-    assert warnings == []
-    assert spec.port_clock == {"d": "clk_a"}
+    assert spec.port_clock["d"] == "clk_a"
+    (warning,) = warnings
+    assert "port 'd'" in warning and "per port" in warning and "clk_a" in warning
+    assert "d[0]" in warning
 
 
 def test_removing_every_bit_drops_the_port(tmp_path: Path, sdc_backend: str) -> None:
@@ -363,18 +379,39 @@ def test_unrecognised_false_path_endpoint(sdc_backend: str) -> None:
     assert len(_unrecognised(spec)) == 1
 
 
-def test_unrecognised_clock_group(sdc_backend: str) -> None:
+def test_clock_group_operator_is_evaluated(sdc_backend: str) -> None:
+    """Dropped with a warning before rtl-buddy-cdc#390; now evaluated over
+    clocks (``tests/test_sdc_clock_collections.py`` has the rest)."""
     spec = parse(
         _CLOCKS + "set_clock_groups -asynchronous -group [get_clocks clk_a] "
         "-group [remove_from_collection [all_clocks] [get_clocks clk_a]]\n"
+    )
+    assert spec.async_groups == [[{"clk_a"}, {"clk_b"}]]
+    assert spec.partial_warnings == []
+
+
+def test_unrecognised_clock_group(sdc_backend: str) -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group [get_clocks clk_a] "
+        "-group [filter_collection [all_clocks] {name != clk_a}]\n"
     )
     assert spec.async_groups == []
     assert len(_unrecognised(spec)) == 1
 
 
-def test_unevaluated_tcl_builtin_is_reported_by_the_tokenizer() -> None:
-    """The tokenizer does not evaluate ``list``; the Tcl backend does."""
+def test_list_builder_is_expanded_by_the_tokenizer() -> None:
+    """The Tcl backend evaluates ``list``; since rtl-buddy-cdc#390 the
+    tokenizer expands it to the same items (it used to report it as an
+    unrecognised command and type nothing)."""
     text = _CLOCKS + "set_input_delay 1 -clock clk_a [list a b]\n"
+    tok = parse(text, backend="tokenizer")
+    assert tok.port_clock == {"a": "clk_a", "b": "clk_a"}
+    assert _unrecognised(tok) == []
+
+
+def test_unevaluated_tcl_builtin_is_reported_by_the_tokenizer() -> None:
+    """Any other Tcl builtin the tokenizer does not evaluate is reported."""
+    text = _CLOCKS + "set_input_delay 1 -clock clk_a [lsort {b a}]\n"
     tok = parse(text, backend="tokenizer")
     assert tok.port_clock == {}
     assert len(_unrecognised(tok)) == 1
