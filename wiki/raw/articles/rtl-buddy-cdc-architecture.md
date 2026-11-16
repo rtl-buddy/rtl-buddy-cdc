@@ -1492,6 +1492,28 @@ one word, `{ck_a ck_b}` is one word, `clk` is one word.
 tolerates the un-collection form (`-group ck_a ck_b` without braces)
 that some SDC files in the wild use.
 
+**Unrecognised commands in operands** (rtl-buddy-cdc#382). The Tcl
+backend's `unknown` handler hands a command the safe interpreter does
+not define back as its own call, re-bracketed with its operands intact
+(`[filter_collection [all_inputs] {name =~ d*}]`) — the word the
+tokenizer backend sees for it. (It used to return the call's *last
+argument*, so `[remove_from_collection [all_inputs] [get_ports clk]]`
+typed `clk`, the port meant to be removed.) After slicing,
+`_drop_unrecognised_operands` drops every operand item whose bracketed
+command heads are not all ones a handler evaluates — `get_clocks` /
+`get_ports` / `get_pins` / `get_cells` / `get_nets`, `all_inputs` /
+`all_outputs` / `all_clocks` / `all_registers`, `expr` (a tokenizer delay
+value), a bus index (`p[3]`, `p[*]`), and, in a `set_*_delay` target
+only, the collection operators — with one `partial_warnings` entry each.
+An operand that was nothing but such a call becomes `""`, which every
+handler reads as naming nothing. One pass, after the reader, so both
+backends and every command behave the same. A side effect: an unbraced
+bus index (`[get_ports p[3]]`) now reads `p[3]` on the Tcl backend too
+(the command `3` comes back as `[3]`), where it used to collapse to the
+whole bus `p`; the "unbraced bus index" warning stays.
+`foreach_in_collection` is in `_UNSUPPORTED_COMMANDS`: its body is never
+evaluated, and that is now reported instead of being dropped at DEBUG.
+
 ### 6.1 What the parser handles today
 
 ```text
@@ -1562,6 +1584,25 @@ warnings and changes nothing:
   `set_output_delay`) that no `create_clock` declares a clock on.
 - A target matching nothing is warned about and kept as written, so it
   types nothing, as before.
+- **Collection operators** (rtl-buddy-cdc#382). In a `set_*_delay`
+  target, `remove_from_collection <c> <removed>` and
+  `add_to_collection [-unique] <c> <added>` are evaluated over port sets,
+  nested to any depth, by `sdc._port_terms`. The result is a union of
+  *terms* — an included pattern and the patterns removed from it —
+  recorded on the `PortDelay` as `targets` plus a parallel `excludes`
+  (`PortDelay.terms()` pairs them): `[remove_from_collection [all_inputs]
+  [get_ports clk]]` is the target `*` excluding `clk`, and
+  `[add_to_collection [remove_from_collection A B] C]` the terms
+  `(A, {B})`, `(C, {})`. The parser applies a removal to `port_clock`
+  only where the text decides it (`{a b c}` minus `b`); the resolver
+  resolves each removed pattern with the same matcher, without the
+  direction / clock filter, subtracts its bits, and drops a port left
+  with none (removing some bits of a bus leaves the port typed — typing
+  is per port). A removed pattern that matches nothing is warned about.
+  Not supported, and reported with the target ignored: `-intersect`, a
+  removal inside the removed operand (`A − (B − C)`), a pin / cell
+  operand. Elsewhere (clock lists, endpoints, case analysis) the
+  operators are unrecognised commands, dropped as above.
 
 At the end of parsing, each delay whose `-clock` names no declared
 clock (`create_clock`, virtual or not, or `create_generated_clock`) gets

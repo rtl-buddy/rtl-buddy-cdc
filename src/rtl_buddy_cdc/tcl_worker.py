@@ -77,7 +77,7 @@ from typing import Any
 #: spawn site and the diagnostics cannot drift apart.
 WORKER_MODULE = "rtl_buddy_cdc.tcl_worker"
 
-__all__ = ["WORKER_MODULE", "main"]
+__all__ = ["COLLECTION_OPERATORS", "WORKER_MODULE", "main"]
 
 
 class _WorkerError(Exception):
@@ -95,6 +95,45 @@ class _WorkerError(Exception):
 # so we re-wrap the evaluated operands in the canonical bracket form.
 def _is_collection_command(cmd: str) -> bool:
     return cmd.startswith("get_") or cmd.startswith("all_")
+
+
+#: Collection *operators* (rtl-buddy-cdc#382). Their operands are
+#: collections themselves, so they are re-wrapped with every operand
+#: intact (``[remove_from_collection [all_inputs] [get_ports clk]]``) —
+#: the word the tokenizer backend sees — and evaluated by
+#: :mod:`rtl_buddy_cdc.sdc`. They are expressions, never constraints, so
+#: they are not recorded as commands.
+COLLECTION_OPERATORS = frozenset({"remove_from_collection", "add_to_collection"})
+
+
+def _is_one_word(text: str) -> bool:
+    """True when ``text`` reads back as one Tcl word: non-empty, with no
+    whitespace outside ``[…]`` / ``{…}`` and balanced nesting."""
+    if not text:
+        return False
+    depth = 0
+    for ch in text:
+        if ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif ch.isspace() and depth == 0:
+            return False
+    return depth == 0
+
+
+def _rewrap(cmd: str, args: list[str]) -> str:
+    """Render ``cmd args…`` back as the bracketed command it was.
+
+    An operand that is no longer one word after evaluation (``{a b}``
+    became ``a b``, ``{}`` became the empty string) is braced again, so
+    the result splits into the same operands it was called with — and
+    matches the tokenizer backend's opaque ``[…]`` word.
+    """
+    words = [cmd] + [a if _is_one_word(a) else "{" + a + "}" for a in args]
+    return "[" + " ".join(words) + "]"
 
 
 _NESTED_COLLECTION_RE = re.compile(r"\[(?:get|all)_[A-Za-z0-9_]*\s*([^][]*)\]")
@@ -182,15 +221,22 @@ def _evaluate(
                 s for s in (_strip_collection_wrappers(a) for a in args) if s
             )
             return f"[{cmd} {inner}]" if inner else f"[{cmd}]"
+        if cmd in COLLECTION_OPERATORS:
+            return _rewrap(cmd, args)
         try:
             lineno: int | None = int(line)
         except (TypeError, ValueError):
             lineno = None
         records.append({"name": cmd, "words": [cmd, *args], "line": lineno})
-        # Mirror the reference ``unknown`` from issue #298: hand back
-        # the last word so a command used as a nested substitution
-        # still produces something printable.
-        return args[-1] if args else ""
+        # A command used as a nested substitution hands back its own
+        # call, re-bracketed — the word the tokenizer backend sees for
+        # it — never one of its arguments. Issue #298's reference
+        # ``unknown`` returned the last argument, which silently turned
+        # ``[remove_from_collection [all_inputs] [get_ports clk]]`` into
+        # ``[get_ports clk]`` (rtl-buddy-cdc#382); ``sdc`` now reports an
+        # operand it cannot evaluate and drops it. An unbraced bus index
+        # (``p[3]``) runs a command ``3`` and so reads back as ``p[3]``.
+        return _rewrap(cmd, args)
 
     try:
         interp = tkinter.Tcl()

@@ -16,6 +16,11 @@ Supported commands:
     set_max_delay <v> -datapath_only -from <clocks|objects> -to <…>
     set_case_analysis <0|1|zero|one|rising|falling> [get_ports <port>]
 
+A ``set_*_delay`` target may also be ``remove_from_collection`` /
+``add_to_collection`` over port collections (rtl-buddy-cdc#382). Any
+other command used as a collection is not evaluated: the operand naming
+it is dropped with a warning (:func:`_drop_unrecognised_operands`).
+
 A clock defined on a port that already carries one replaces it unless
 ``-add`` is given; with ``-add`` the port carries both
 (:attr:`ClockSpec.multi_clock_ports`, rtl-buddy-cdc#330).
@@ -90,9 +95,10 @@ import functools
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, TypedDict
@@ -108,7 +114,11 @@ from rtl_buddy_cdc.tcl_tokenizer import _extract_names, _tokenize
 # (see this module's docstring for why). That module imports
 # ``tkinter`` lazily inside its own ``main()``, so naming it here costs
 # nothing and, critically, does not pull ``_tkinter`` into this process.
-from rtl_buddy_cdc.tcl_worker import WORKER_MODULE, _strip_collection_wrappers
+from rtl_buddy_cdc.tcl_worker import (
+    COLLECTION_OPERATORS,
+    WORKER_MODULE,
+    _strip_collection_wrappers,
+)
 
 if TYPE_CHECKING:
     from rtl_buddy_cdc.netlist import Module
@@ -176,12 +186,28 @@ class PortDelay:
     no netlist, so :func:`rtl_buddy_cdc.sdc_objects.resolve_port_delays`
     resolves them against the top-level ports and rewrites
     :attr:`ClockSpec.port_clock`. File order is application order.
+
+    ``excludes`` (rtl-buddy-cdc#382) holds, per target, the patterns a
+    ``remove_from_collection`` took out of it, as written; empty when the
+    statement removed nothing. ``[remove_from_collection [all_inputs]
+    [get_ports clk]]`` is the target ``*`` with the exclude ``clk``,
+    and ``[add_to_collection [remove_from_collection A B] C]`` the
+    targets ``A`` (excluding ``B``) and ``C``. :meth:`terms` pairs them.
+
+    ``line`` is diagnostic (Tcl backend only), so it takes no part in
+    equality: the two backends produce equal records.
     """
 
     command: str  # "set_input_delay" | "set_output_delay"
     clock: str
     targets: tuple[str, ...]
-    line: int | None = None
+    line: int | None = field(default=None, compare=False)
+    excludes: tuple[tuple[str, ...], ...] = ()
+
+    def terms(self) -> Iterator[tuple[str, tuple[str, ...]]]:
+        """Each target with the patterns removed from it."""
+        for i, target in enumerate(self.targets):
+            yield target, self.excludes[i] if i < len(self.excludes) else ()
 
 
 @dataclass(frozen=True)
@@ -824,19 +850,21 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             if cmd.isdigit():
                 # ``[get_ports sel[3]]`` with an unbraced bus index is
                 # Tcl command substitution of ``[3]``: the Tcl reader
-                # runs a command named ``3`` and the target silently
-                # becomes the whole bus ``sel``. No real SDC command is
-                # a number, so say what most likely happened.
+                # runs a command named ``3``. Its ``unknown`` hands the
+                # call back verbatim, so the target still reads
+                # ``sel[3]`` (rtl-buddy-cdc#382), but a real Tcl
+                # interpreter fails on it — say so.
                 spec.partial_warnings.append(
                     f"command {cmd!r}{_at_line(command.line)} looks like an "
                     f"unbraced bus index evaluated as Tcl command substitution "
-                    f"— brace the indexed name, e.g. {{p[{cmd}]}}, or the target "
-                    f"names the whole bus"
+                    f"— brace the indexed name, e.g. {{p[{cmd}]}}; a Tcl "
+                    f"interpreter without this reader's fallback rejects it"
                 )
             continue
         if any("$" in w for w in words):
             note_tokenizer_skip(f"{cmd}: kept a literal $-word unevaluated")
         parsed = dataclasses.replace(_slice(args, spec_for_cmd), line=command.line)
+        parsed = _drop_unrecognised_operands(cmd, parsed, spec.partial_warnings)
         _DISPATCH[cmd](spec, parsed)
     spec.multi_clock_ports = _index_multi_clock_ports(spec.clocks)
     spec.partial_warnings.extend(_undeclared_delay_clocks(spec))
@@ -1436,6 +1464,13 @@ _UNSUPPORTED_COMMANDS: dict[str, str] = {
     "socket": "network access is not supported and was not executed",
     "file": "filesystem access is not supported and was not executed",
     "load": "loading Tcl extensions is not supported and was not executed",
+    # A collection loop is not evaluated (the reader resolves nothing
+    # against the design, so it has no objects to iterate over): the
+    # constraints in its body never reach the parser (rtl-buddy-cdc#382).
+    "foreach_in_collection": (
+        "collection loops are not evaluated, so the constraints in the loop "
+        "body are ignored; write them on the collection directly"
+    ),
 }
 
 # ---- Layer 2: per-command argument specs ------------------------------------
@@ -1557,6 +1592,125 @@ def _slice(words: list[str], spec: ArgSpec) -> Parsed:
             tail.append(w)
             i += 1
     return Parsed(flags=flags, tail=tail)
+
+
+# ---- unrecognised collection commands (rtl-buddy-cdc#382) ------------------
+
+#: Bracketed command heads every handler can read: the ``get_*`` /
+#: ``all_*`` collections, and ``expr`` — the tokenizer leaves a delay
+#: value such as ``[expr {$p * 0.4}]`` unevaluated, and the handlers
+#: already skip it as a number.
+_RECOGNISED_HEADS: frozenset[str] = frozenset(
+    {
+        "get_clocks",
+        "get_ports",
+        "get_pins",
+        "get_cells",
+        "get_nets",
+        "all_inputs",
+        "all_outputs",
+        "all_clocks",
+        "all_registers",
+        "expr",
+    }
+)
+
+#: Commands whose *tail* may also hold the collection operators
+#: (``remove_from_collection`` / ``add_to_collection``), which
+#: :func:`_port_terms` evaluates. Anywhere else they are unrecognised.
+_OPERATOR_TAIL_COMMANDS: frozenset[str] = frozenset(
+    {"set_input_delay", "set_output_delay"}
+)
+
+# A bracket that is a bus index, not a command: ``d[3]``, ``d[*]``,
+# ``d[7:0]``, ``d[$i]`` (an unevaluated variable, tokenizer only).
+_INDEX_HEAD = re.compile(r"[0-9*?:,-]*|\$[A-Za-z0-9_:]+")
+
+
+def _bracket_heads(text: str) -> list[str]:
+    """The command name after every ``[`` in ``text`` (bus indices too)."""
+    heads: list[str] = []
+    for i, ch in enumerate(text):
+        if ch != "[":
+            continue
+        j = i + 1
+        while j < len(text) and text[j].isspace():
+            j += 1
+        k = j
+        while k < len(text) and not text[k].isspace() and text[k] not in "[]{}":
+            k += 1
+        heads.append(text[j:k])
+    return heads
+
+
+def _unrecognised_head(item: str, operators: bool) -> str | None:
+    """The first command in ``item`` no handler can evaluate, or ``None``.
+
+    With ``operators``, an item that *is* a collection operator call is
+    accepted and its operands are checked in turn; an operator nested
+    anywhere else (inside a ``get_*``) is unrecognised, because the Tcl
+    worker flattens the operands of a ``get_*`` call.
+    """
+    text = item.strip()
+    if operators and text.startswith("[") and _closing_bracket(text) == len(text) - 1:
+        parts = _endpoint_items(text[1:-1])
+        if parts and parts[0] in COLLECTION_OPERATORS:
+            for operand in parts[1:]:
+                for sub in _endpoint_items(operand):
+                    bad = _unrecognised_head(sub, operators)
+                    if bad is not None:
+                        return bad
+            return None
+    for head in _bracket_heads(text):
+        if head in _RECOGNISED_HEADS or _INDEX_HEAD.fullmatch(head):
+            continue
+        return head
+    return None
+
+
+def _drop_unrecognised_operands(cmd: str, p: Parsed, warnings: list[str]) -> Parsed:
+    """Replace every operand naming a command no handler evaluates.
+
+    The Tcl worker hands an unrecognised command back as its own call
+    (``[filter_collection [all_inputs] {…}]``) and the tokenizer keeps it
+    as the same opaque word, so this one pass covers both backends. Each
+    such item is dropped — an operand that was nothing but it becomes
+    ``""``, which every handler reads as naming nothing — with one
+    ``partial_warnings`` entry. A constraint is never applied to an
+    argument of a command the reader does not understand (before
+    rtl-buddy-cdc#382 the Tcl backend resolved such a call to its last
+    argument, so ``[remove_from_collection [all_inputs] [get_ports clk]]``
+    typed ``clk``).
+    """
+    where = f"{cmd}{_at_line(p.line)}"
+
+    def clean(word: str, operators: bool) -> str:
+        if "[" not in word:
+            return word
+        items = _endpoint_items(word)
+        kept: list[str] = []
+        for item in items:
+            head = _unrecognised_head(item, operators)
+            if head is None:
+                kept.append(item)
+                continue
+            warnings.append(
+                f"{where}: [{head} …] is not a collection command this reader "
+                f"evaluates here; the operand {item} is ignored"
+            )
+        return word if len(kept) == len(items) else " ".join(kept)
+
+    def clean_value(value: Any) -> Any:
+        if isinstance(value, str):
+            return clean(value, False)
+        if isinstance(value, list):
+            return [clean(w, False) for w in value]
+        return value
+
+    flags = {f: [clean_value(v) for v in vs] for f, vs in p.flags.items()}
+    operators = cmd in _OPERATOR_TAIL_COMMANDS
+    tail = [clean(w, operators) for w in p.tail]
+    return dataclasses.replace(p, flags=flags, tail=tail)
 
 
 # Shared spec for set_input_delay / set_output_delay — same flag table,
@@ -2020,10 +2174,12 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
     that looks like a collection and ignore the rest.
     """
     clock_word = p.first("-clock")
-    clock = _strip_get_clocks(clock_word) if clock_word is not None else None
+    # An operand dropped as unrecognised reads as "" (see
+    # ``_drop_unrecognised_operands``): no anchor at all.
+    clock = _strip_get_clocks(clock_word) if clock_word else None
 
-    ports: list[str] = []
-    saw_filter = False
+    terms: list[tuple[str, tuple[str, ...]]] = []
+    flags = _TermFlags()
     for word in p.tail:
         # The tail mixes the numeric delay value with the port
         # collection. Collection *shapes* (``[get_ports …]``, ``{a b}``)
@@ -2036,41 +2192,19 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
             or "get_ports" in word
             or not _looks_numeric(word)
         ):
-            # ``_split_collection`` keeps a bus index on its name
-            # (``{d[3]}`` → ``d[3]``, where ``_extract_names`` split it
-            # into ``d`` and ``3``); ``sdc_objects.resolve_port_delays``
-            # resolves indices and globs against the netlist (#357).
-            kind, names, sf = _split_collection(word)
-            if kind in _ALL_PORTS_DIRECTION:
-                # ``[all_inputs]`` / ``[all_outputs]`` (rtl-buddy-cdc#378)
-                # select every port of one direction: recorded as the
-                # glob ``*``, which ``resolve_port_delays`` narrows to the
-                # command's direction and to non-clock ports, as it does
-                # for ``[get_ports *]``. The other direction's collection
-                # selects nothing this command can type.
-                if _ALL_PORTS_DIRECTION[kind] == command:
-                    ports.append("*")
-                else:
-                    spec.partial_warnings.append(
-                        f"{command} [{kind}]: {kind} selects no port "
-                        f"{command} can constrain; the target is ignored"
-                    )
-                continue
-            if kind not in (None, "port"):
-                # ``[expr {$p * 0.4}]`` left unevaluated by the tokenizer
-                # is the delay value, not a target (its ``*`` would glob
-                # every port), and a pin / cell collection names no
-                # top-level port.
-                continue
-            ports.extend(n for n in names if not _looks_numeric(n))
-            saw_filter = saw_filter or sf
+            for item in _endpoint_items(word):
+                got = _port_terms(_unbrace(item), command, flags, nested=False)
+                if got is not None:
+                    terms.extend(got)
 
-    if saw_filter:
+    if flags.saw_filter:
         spec.partial_warnings.append("set_*_delay: ignored unsupported -filter clause")
-    if not ports:
+    spec.partial_warnings.extend(flags.warnings)
+    if not terms:
         # No port target — delay-only constraint or defaults-applies-
         # to-all-ports usage. Nothing actionable for CDC; stay silent.
         return
+    ports = [target for target, _excl in terms]
     if clock is None:
         # Port target named but no -clock anchor. set_input_delay /
         # set_output_delay are intrinsically clock-relative (the delay
@@ -2085,11 +2219,179 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
             "set_input_transition / set_load for slew or load defaults."
         )
         return
+    excludes = tuple(excl for _t, excl in terms)
     spec.port_delays.append(
-        PortDelay(command=command, clock=clock, targets=tuple(ports), line=p.line)
+        PortDelay(
+            command=command,
+            clock=clock,
+            targets=tuple(ports),
+            line=p.line,
+            excludes=excludes if any(excludes) else (),
+        )
     )
-    for port in ports:
-        spec.port_clock[port] = clock
+    # Exact names are typed now; a pattern (glob, bus index, ``*`` for
+    # ``[all_inputs]``) keys ``port_clock`` as written until
+    # ``sdc_objects.resolve_port_delays`` expands it against the netlist.
+    # A removal is applied here only where it is decidable without the
+    # netlist — the removed pattern matches the target's text.
+    for target, excl in terms:
+        if not any(_name_matches(pattern, target) for pattern in excl):
+            spec.port_clock[target] = clock
+
+
+@dataclass
+class _TermFlags:
+    """Diagnostics :func:`_port_terms` accumulates for one statement."""
+
+    saw_filter: bool = False
+    warnings: list[str] = field(default_factory=list)
+
+
+#: Port-set term: an included pattern and the patterns removed from it.
+_Term = tuple[str, tuple[str, ...]]
+
+
+def _port_terms(
+    word: str, command: str, flags: _TermFlags, *, nested: bool
+) -> list[_Term] | None:
+    """Evaluate one ``set_*_delay`` target operand to port-set terms.
+
+    Returns ``None`` when ``word`` is not a port target at all — the
+    tokenizer's unevaluated ``[expr …]`` delay value, a pin / cell
+    collection at the top level — or when it is one this reader cannot
+    evaluate (then with a warning on ``flags``).
+
+    Handles ``[get_ports …]``, bare / braced names, ``[all_inputs]`` /
+    ``[all_outputs]`` and, recursively, ``remove_from_collection`` /
+    ``add_to_collection`` (rtl-buddy-cdc#382). Both backends hand the
+    operators over as the same word: the tokenizer keeps ``[…]`` opaque
+    and the Tcl worker re-wraps the call with its operands intact.
+    """
+    text = word.strip()
+    if text.startswith("[") and _closing_bracket(text) == len(text) - 1:
+        parts = _endpoint_items(text[1:-1])
+        if parts and parts[0] in COLLECTION_OPERATORS:
+            return _operator_terms(parts[0], parts[1:], command, flags)
+        if parts and parts[0] in _ALL_PORTS_DIRECTION:
+            # ``[all_inputs]`` / ``[all_outputs]`` (rtl-buddy-cdc#378)
+            # select every port of one direction: recorded as the glob
+            # ``*``, which ``resolve_port_delays`` narrows to the
+            # command's direction and to non-clock ports, as it does for
+            # ``[get_ports *]``. The other direction's collection selects
+            # nothing this command can type.
+            head = parts[0]
+            if _ALL_PORTS_DIRECTION[head] == command:
+                return [("*", ())]
+            flags.warnings.append(
+                f"{command} [{head}]: {head} selects no port "
+                f"{command} can constrain; the target is ignored"
+            )
+            return [] if nested else None
+    # ``_split_collection`` keeps a bus index on its name (``{d[3]}`` →
+    # ``d[3]``, where ``_extract_names`` split it into ``d`` and ``3``);
+    # ``sdc_objects.resolve_port_delays`` resolves indices and globs
+    # against the netlist (#357).
+    kind, names, sf = _split_collection(text)
+    if kind not in (None, "port"):
+        if nested:
+            flags.warnings.append(
+                f"{command}: collection operand {text!r} is not a port "
+                f"collection; the target is ignored"
+            )
+        # At the top level, ``[expr {$p * 0.4}]`` left unevaluated by the
+        # tokenizer is the delay value, not a target (its ``*`` would glob
+        # every port), and a pin / cell collection names no top-level
+        # port.
+        return None
+    flags.saw_filter = flags.saw_filter or sf
+    return [(n, ()) for n in names if not _looks_numeric(n)]
+
+
+def _operator_terms(
+    op: str, operands: list[str], command: str, flags: _TermFlags
+) -> list[_Term] | None:
+    """``remove_from_collection`` / ``add_to_collection`` over port sets.
+
+    ``remove_from_collection <base> <removed>`` is every port of
+    ``<base>`` not in ``<removed>``; ``add_to_collection <base> <added>``
+    is their union (``-unique`` changes nothing for a set). The removed
+    operand must itself be a plain collection — a removal inside it
+    (``A − (B − C)``) is reported and ignored, as is ``-intersect``.
+    """
+    where = f"{command} [{op} …]"
+    values: list[str] = []
+    for operand in operands:
+        if operand.startswith("-"):
+            if op == "add_to_collection" and operand == "-unique":
+                continue
+            flags.warnings.append(
+                f"{where}: unsupported flag {operand}; the target is ignored"
+            )
+            return None
+        values.append(operand)
+    if len(values) != 2:
+        flags.warnings.append(
+            f"{where}: expected two operands (a collection and the objects to "
+            f"{'remove' if op == 'remove_from_collection' else 'add'}), got "
+            f"{len(values)}; the target is ignored"
+        )
+        return None
+    sides: list[list[_Term]] = []
+    for value in values:
+        terms: list[_Term] = []
+        for item in _endpoint_items(value) or [value]:
+            got = _port_terms(_unbrace(item), command, flags, nested=True)
+            if got is None:
+                return None
+            terms.extend(got)
+        sides.append(terms)
+    base, other = sides
+    if op == "add_to_collection":
+        return base + other
+    if any(excl for _t, excl in other):
+        flags.warnings.append(
+            f"{where}: a removal inside the removed collection is not "
+            f"supported; the target is ignored"
+        )
+        return None
+    removed = tuple(t for t, _excl in other)
+    return [(t, excl + removed) for t, excl in base]
+
+
+def _unbrace(item: str) -> str:
+    """``{x}`` → ``x`` when one brace pair encloses the whole item."""
+    if item.startswith("{") and _closing_brace(item) == len(item) - 1:
+        return item[1:-1].strip()
+    return item
+
+
+def _closing_bracket(text: str) -> int:
+    """Index of the bracket closing ``text[0] == '['``, or -1."""
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _name_matches(pattern: str, name: str) -> bool:
+    """Does the SDC name ``pattern`` (``*`` / ``?`` globs) select ``name``?
+
+    Textual only — the parser has no netlist — so it decides just the
+    cases spelled the same way; ``sdc_objects`` re-resolves everything.
+    """
+    if pattern == name:
+        return True
+    if not any(ch in "*?" for ch in pattern):
+        return False
+    body = "".join(
+        ".*" if ch == "*" else "." if ch == "?" else re.escape(ch) for ch in pattern
+    )
+    return re.fullmatch(body, name) is not None
 
 
 def _handle_set_max_delay(spec: ClockSpec, p: Parsed) -> None:

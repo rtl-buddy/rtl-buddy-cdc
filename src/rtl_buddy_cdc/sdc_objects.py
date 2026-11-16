@@ -596,9 +596,15 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
       *]`` is not meant to re-type the clock pins.
     - A target that matches nothing is warned about and kept as written,
       which, as before, types nothing.
+    - Patterns a ``remove_from_collection`` took out of a target
+      (:attr:`~rtl_buddy_cdc.sdc.PortDelay.excludes`, rtl-buddy-cdc#382)
+      are resolved the same way, without the direction / clock filter,
+      and their bits are removed from the target's; a port left with no
+      bit is not typed. A removed pattern that matches no port is warned
+      about.
     """
-    targets = [(d, t) for d in spec.port_delays for t in d.targets]
-    if all(t in module.ports for _d, t in targets):
+    targets = [(d, t, excl) for d in spec.port_delays for t, excl in d.terms()]
+    if all(t in module.ports and not excl for _d, t, excl in targets):
         return []
     index = NameIndex(module)
     clock_ports = {p for clk in spec.clocks.values() for p in clk.ports}
@@ -607,8 +613,8 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
     # Port → the (clock, target) assignments still in force on its bits:
     # a whole-port typing replaces them all, a bit-select adds one.
     in_force: dict[str, list[tuple[str, str]]] = {}
-    for d, target in targets:
-        if target in module.ports:
+    for d, target, excl in targets:
+        if target in module.ports and not excl:
             rebuilt[target] = d.clock
             in_force[target] = [(d.clock, target)]
             continue
@@ -622,6 +628,10 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
                 for name, bits in hits.items()
                 if module.ports[name].direction in allowed and name not in clock_ports
             }
+        if excl and hits:
+            hits = _remove_ports(index, hits, excl, where, warnings)
+            if not hits:
+                continue  # every port it selected was removed
         if not hits:
             what = (
                 f"no {'input' if d.command == 'set_input_delay' else 'output'} "
@@ -643,7 +653,7 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
                 in_force[name] = [(d.clock, target)]
     # Entries that did not come from a recorded delay statement (a spec
     # built by hand) are kept.
-    written = {t for _d, t in targets}
+    written = {t for _d, t, _excl in targets}
     for name, clock in spec.port_clock.items():
         if name not in written:
             rebuilt.setdefault(name, clock)
@@ -659,6 +669,31 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
     spec.port_clock.clear()
     spec.port_clock.update(rebuilt)
     return warnings
+
+
+def _remove_ports(
+    index: NameIndex,
+    hits: dict[str, set[int]],
+    removed: tuple[str, ...],
+    where: str,
+    warnings: list[str],
+) -> dict[str, set[int]]:
+    """``hits`` less every port bit a removed pattern selects (#382)."""
+    left = {name: set(bits) for name, bits in hits.items()}
+    for pattern in removed:
+        gone = index.ports(pattern)
+        if not gone:
+            warning = (
+                f"{where}: remove_from_collection pattern {pattern!r} matches "
+                f"no top-level port, so it removes nothing — constraint typo?"
+            )
+            if warning not in warnings:
+                warnings.append(warning)
+            continue
+        for name, bits in gone.items():
+            if name in left:
+                left[name] -= bits
+    return {name: bits for name, bits in left.items() if bits}
 
 
 def _no_match(where: str, obj: SdcObject, role: str) -> str:

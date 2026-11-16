@@ -192,13 +192,16 @@ def test_bit_select_types_the_whole_port(tmp_path: Path, target: str) -> None:
 
 def test_bare_bit_select(tmp_path: Path, sdc_backend: str) -> None:
     """Unbraced ``d[3]`` is Tcl command substitution: the Tcl reader
-    runs a command ``3`` (and warns about it) and is left with ``d``;
-    the tokenizer keeps ``d[3]``. Both type port ``d``."""
+    runs a command ``3`` (and warns about it), whose ``unknown`` hands
+    the call back, so both backends keep ``d[3]`` (rtl-buddy-cdc#382)
+    and type port ``d``."""
     spec, warnings = _resolve(tmp_path, "set_input_delay -clock clk_b 1 d[3]\n")
     assert warnings == []
     assert spec.port_clock == {"d": "clk_b"}
     unbraced = [w for w in spec.partial_warnings if "unbraced bus index" in w]
     assert len(unbraced) == (1 if sdc_backend == "tcl" else 0)
+    (delay,) = spec.port_delays
+    assert delay.targets == ("d[3]",)
 
 
 def test_out_of_range_bit_select_matches_nothing(tmp_path: Path) -> None:

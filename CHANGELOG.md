@@ -380,6 +380,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets first (warnings on `spec.partial_warnings`), once per spec and
   netlist, so both paths type the same ports. CLI output is unchanged.
 
+- **SDC: a constraint applied to the port it meant to remove**
+  (rtl-buddy-cdc#382). On the Tcl backend the reader's `unknown` handler
+  returned the *last argument* of any command the safe interpreter does
+  not define, so `set_input_delay … [remove_from_collection [all_inputs]
+  [get_ports clk]]` typed `clk` — and only `clk` — while the tokenizer
+  backend typed nothing. `remove_from_collection` and `add_to_collection`
+  (`-unique`, nested in each other) are now evaluated over port
+  collections in `set_input_delay` / `set_output_delay` targets on both
+  backends: the removed patterns are recorded on `PortDelay.excludes` and
+  subtracted when the targets are resolved against the netlist (a removed
+  pattern matching no port is a warning). Any other command used as a
+  collection — `filter_collection`, `sort_collection`, `get_object_name`,
+  an undefined vendor command, a collection operator outside a delay
+  target — now resolves to nothing with a warning, in every command and
+  on both backends, instead of to one of its arguments. Related changes
+  from the same audit: `foreach_in_collection` (whose body is never
+  evaluated) is reported instead of being dropped silently; on the Tcl
+  backend an unbraced bus index `[get_ports p[3]]` now reads `p[3]`, as
+  on the tokenizer backend, instead of the whole bus `p` (the warning
+  stays); `-clock` naming an unrecognised command is a missing anchor;
+  and a Tcl `list` of collections in a delay target is read item by item.
+  `PortDelay.line` no longer takes part in equality, like
+  `DatapathOnlyDelay.line`. No committed fixture or integration verdict
+  changes.
+
 - **Crossings behind more than 4 combinational cells were dropped
   silently** (rtl-buddy-cdc#347). `find_crossings` stopped its walk at
   `max_hops=4` and the CLI never changed it, so a deeper path from one
