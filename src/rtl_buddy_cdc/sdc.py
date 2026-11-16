@@ -1668,6 +1668,39 @@ _ENDPOINT_FLAGS: frozenset[str] = frozenset(
     {"-from", "-to", "-rise_from", "-fall_from", "-rise_to", "-fall_to"}
 )
 
+#: Tcl list builders. The Tcl backend evaluates them before a handler
+#: sees the result (``[list [get_ports a] b]`` → ``{[get_ports a]} b``);
+#: the tokenizer keeps the call opaque, and :func:`_collection_items`
+#: expands it to the same items (rtl-buddy-cdc#390). Accepted wherever a
+#: collection is (:data:`_LIST_FLAGS`, :data:`_LIST_TAIL_COMMANDS`, and
+#: every operator position).
+_LIST_BUILDERS: frozenset[str] = frozenset({"list", "concat"})
+
+#: Commands whose tail is a collection position (a list builder there is
+#: expanded). ``set_max_delay``'s tail is its value.
+_LIST_TAIL_COMMANDS: frozenset[str] = frozenset(
+    {
+        "create_clock",
+        "create_generated_clock",
+        "set_case_analysis",
+        "set_input_delay",
+        "set_output_delay",
+    }
+)
+
+_THROUGH_FLAGS: frozenset[str] = frozenset(
+    {"-through", "-rise_through", "-fall_through"}
+)
+
+#: Per command, the collection-valued flags where a list builder is
+#: accepted beyond the operator positions of :data:`_OPERATOR_FLAGS`.
+_LIST_FLAGS: dict[str, frozenset[str]] = {
+    "create_generated_clock": frozenset({"-source", "-master_clock"}),
+    "set_false_path": _THROUGH_FLAGS,
+    "set_input_delay": frozenset({"-clock"}),
+    "set_output_delay": frozenset({"-clock"}),
+}
+
 #: Per command, the flags whose operands may hold the collection
 #: operators — the clock-collection positions :func:`_clock_terms`
 #: evaluates (rtl-buddy-cdc#390). Anywhere not listed here or in
@@ -1701,21 +1734,26 @@ def _bracket_heads(text: str) -> list[str]:
     return heads
 
 
-def _unrecognised_head(item: str, operators: bool) -> str | None:
+def _unrecognised_head(item: str, structural: frozenset[str]) -> str | None:
     """The first command in ``item`` no handler can evaluate, or ``None``.
 
-    With ``operators``, an item that *is* a collection operator call is
-    accepted and its operands are checked in turn; an operator nested
-    anywhere else (inside a ``get_*``) is unrecognised, because the Tcl
-    worker flattens the operands of a ``get_*`` call.
+    ``structural`` holds the commands that build a collection out of
+    others and are accepted in this position: the collection operators
+    (:data:`COLLECTION_OPERATORS`) and the list builders
+    (:data:`_LIST_BUILDERS`). An item that *is* such a call is accepted
+    and its operands are checked in turn; one nested anywhere else
+    (inside a ``get_*``) is unrecognised, because the Tcl worker flattens
+    the operands of a ``get_*`` call. (Where list builders are accepted,
+    the caller has already split a braced Tcl list element such as
+    ``{[get_ports a]}`` into its content, :func:`_collection_items`.)
     """
     text = item.strip()
-    if operators and text.startswith("[") and _closing_bracket(text) == len(text) - 1:
+    if text.startswith("[") and _closing_bracket(text) == len(text) - 1:
         parts = _endpoint_items(text[1:-1])
-        if parts and parts[0] in COLLECTION_OPERATORS:
+        if parts and parts[0] in structural:
             for operand in parts[1:]:
                 for sub in _endpoint_items(operand):
-                    bad = _unrecognised_head(sub, operators)
+                    bad = _unrecognised_head(sub, structural)
                     if bad is not None:
                         return bad
             return None
@@ -1742,13 +1780,21 @@ def _drop_unrecognised_operands(cmd: str, p: Parsed, warnings: list[str]) -> Par
     """
     where = f"{cmd}{_at_line(p.line)}"
 
-    def clean(word: str, operators: bool) -> str:
+    def clean(word: str, structural: frozenset[str]) -> str:
         if "[" not in word:
             return word
-        items = _endpoint_items(word)
+        # Where a list builder is accepted, check its elements one by one:
+        # the Tcl backend has already split ``[list a [foo b]]`` into the
+        # elements ``a`` and ``{[foo b]}``, so the tokenizer's opaque call
+        # must lose just the unreadable element too.
+        items = (
+            _collection_items(word)
+            if structural & _LIST_BUILDERS
+            else _endpoint_items(word)
+        )
         kept: list[str] = []
         for item in items:
-            head = _unrecognised_head(item, operators)
+            head = _unrecognised_head(item, structural)
             if head is None:
                 kept.append(item)
                 continue
@@ -1758,20 +1804,28 @@ def _drop_unrecognised_operands(cmd: str, p: Parsed, warnings: list[str]) -> Par
             )
         return word if len(kept) == len(items) else " ".join(kept)
 
-    def clean_value(value: Any, operators: bool) -> Any:
+    def clean_value(value: Any, structural: frozenset[str]) -> Any:
         if isinstance(value, str):
-            return clean(value, operators)
+            return clean(value, structural)
         if isinstance(value, list):
-            return [clean(w, operators) for w in value]
+            return [clean(w, structural) for w in value]
         return value
 
+    def structural(operators: bool, lists: bool) -> frozenset[str]:
+        return (COLLECTION_OPERATORS if operators else frozenset()) | (
+            _LIST_BUILDERS if lists else frozenset()
+        )
+
     operator_flags = _OPERATOR_FLAGS.get(cmd, frozenset())
+    list_flags = _LIST_FLAGS.get(cmd, frozenset()) | operator_flags
     flags = {
-        f: [clean_value(v, f in operator_flags) for v in vs]
+        f: [
+            clean_value(v, structural(f in operator_flags, f in list_flags)) for v in vs
+        ]
         for f, vs in p.flags.items()
     }
-    operators = cmd in _OPERATOR_TAIL_COMMANDS
-    tail = [clean(w, operators) for w in p.tail]
+    tail_heads = structural(cmd in _OPERATOR_TAIL_COMMANDS, cmd in _LIST_TAIL_COMMANDS)
+    tail = [clean(w, tail_heads) for w in p.tail]
     return dataclasses.replace(p, flags=flags, tail=tail)
 
 
@@ -1898,12 +1952,9 @@ def _handle_create_clock(spec: ClockSpec, p: Parsed) -> None:
     except ValueError:
         return
 
-    ports: list[str] = []
-    saw_filter = False
-    for word in p.tail:
-        names, sf = _extract_names(word)
-        ports.extend(names)
-        saw_filter = saw_filter or sf
+    where = f"create_clock{f' {name}' if name else ''}{_at_line(p.line)}"
+    targets, saw_filter = _clock_targets(p.tail, where, spec.partial_warnings)
+    ports = [n for _kind, n in targets]
 
     if name is None and ports:
         name = ports[0]
@@ -1924,6 +1975,53 @@ def _handle_create_clock(spec: ClockSpec, p: Parsed) -> None:
         )
     _claim_ports(spec, "create_clock", name, ports, add=p.present("-add"))
     spec.clocks[name] = Clock(name=name, period=period, ports=tuple(ports))
+
+
+# A trailing bus index on a clock target: ``clk[0]``, ``u/div_q[3]``.
+_TRAILING_INDEX = re.compile(r"(.+?)\[[^\[\]]*\]")
+
+
+def _clock_targets(
+    words: list[str], where: str, warnings: list[str] | None
+) -> tuple[list[tuple[str, str]], bool]:
+    """The source objects of a ``create_clock`` / ``create_generated_clock``.
+
+    Returns ``([(kind, name), …], saw_filter)`` with ``kind`` ``"pin"``
+    for a ``[get_pins …]`` item and ``"port"`` for a ``[get_ports …]`` or
+    bare / braced name. Items come from :func:`_collection_items`, so a
+    ``list`` / ``concat``-built collection is read item by item
+    (rtl-buddy-cdc#390). A collection that names no port or pin
+    (``[get_cells …]``, ``[all_inputs]``, ``[get_clocks …]``) selects
+    nothing. A clock lives on a whole port or net — the tracer names a
+    clock root by its port, a pin clock by its net — so a trailing bus
+    index is dropped (``_extract_names`` used to split ``clk[0]`` into the
+    ports ``clk`` and ``0``). Each of these is reported on ``warnings``
+    unless it is ``None`` (``-source``, recorded for diagnostics only).
+    """
+    out: list[tuple[str, str]] = []
+    saw_filter = False
+    for item in (i for word in words for i in _collection_items(word)):
+        kind, names, sf = _split_collection(item)
+        saw_filter = saw_filter or sf
+        if kind not in (None, "port", "pin"):
+            if warnings is not None:
+                warnings.append(
+                    f"{where}: {item} is not a port or pin collection; the "
+                    f"target is ignored"
+                )
+            continue
+        for name in names:
+            whole = _TRAILING_INDEX.fullmatch(name)
+            if whole is not None:
+                if warnings is not None:
+                    warnings.append(
+                        f"{where}: target {name!r} selects one bit, but a clock "
+                        f"is declared on a whole port or net — the whole port "
+                        f"'{whole[1]}' carries it"
+                    )
+                name = whole[1]
+            out.append(("pin" if kind == "pin" else "port", name))
+    return out, saw_filter
 
 
 def _claim_ports(
@@ -1986,13 +2084,10 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
     divide_by = _safe_int(p.first("-divide_by"), default=1)
     multiply_by = _safe_int(p.first("-multiply_by"), default=1)
 
-    targets: list[str] = []
-    saw_filter = False
-    target_is_pin = any("get_pins" in w for w in p.tail)
-    for word in p.tail:
-        names, sf = _extract_names(word)
-        targets.extend(names)
-        saw_filter = saw_filter or sf
+    objects, saw_filter = _clock_targets(p.tail, where, spec.partial_warnings)
+    targets = [n for _kind, n in objects]
+    pin_targets = [n for kind, n in objects if kind == "pin"]
+    port_targets = [n for kind, n in objects if kind == "port"]
 
     if name is None and targets:
         name = targets[0]
@@ -2020,10 +2115,9 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
     # top-level port names so ``clock_for_port`` can do a clean port→
     # clock lookup. Pin targets land in ``spec.pin_clocks`` instead,
     # consumed by the clock-trace pass.
-    if target_is_pin:
-        clock_ports: tuple[str, ...] = ()
+    if pin_targets:
         add = p.present("-add")
-        for t in targets:
+        for t in pin_targets:
             prev = spec.pin_clocks.get(t)
             if prev is not None and prev != name:
                 # rtl-buddy-cdc#330: replace-vs-add on an internal pin.
@@ -2044,11 +2138,10 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
                     f"clock '{prev}' on pin '{t}' (use -add to keep both)"
                 )
             spec.pin_clocks[t] = name
-    else:
-        clock_ports = tuple(targets)
-        _claim_ports(
-            spec, "create_generated_clock", name, targets, add=p.present("-add")
-        )
+    clock_ports = tuple(port_targets)
+    _claim_ports(
+        spec, "create_generated_clock", name, port_targets, add=p.present("-add")
+    )
 
     if name in spec.clocks:
         # G-11 duplicate-name check, mirroring create_clock's surface.
@@ -2057,7 +2150,11 @@ def _handle_create_generated_clock(spec: ClockSpec, p: Parsed) -> None:
             f"silently overrides the first"
         )
     source_word = p.first("-source")
-    source = tuple(_extract_names(source_word)[0]) if source_word is not None else ()
+    source = (
+        tuple(n for _kind, n in _clock_targets([source_word], where, None)[0])
+        if source_word is not None
+        else ()
+    )
     spec.clocks[name] = Clock(
         name=name,
         period=period,
@@ -2176,7 +2273,7 @@ def _handle_set_false_path(spec: ClockSpec, p: Parsed) -> None:
                 qualifiers.append(flag)
             group: list[SdcObject] = []
             for word in slurped:
-                for item in _endpoint_items(word):
+                for item in _collection_items(word):
                     kind, names, sf, hier = _split_endpoint_item(item)
                     saw_filter = saw_filter or sf
                     if kind is None:
@@ -2293,8 +2390,8 @@ def _handle_set_delay(spec: ClockSpec, p: Parsed, command: str) -> None:
             or "get_ports" in word
             or not _looks_numeric(word)
         ):
-            for item in _endpoint_items(word):
-                got = _port_terms(_unbrace(item), command, flags, nested=False)
+            for item in _collection_items(word):
+                got = _port_terms(item, command, flags, nested=False)
                 if got is not None:
                     terms.extend(got)
 
@@ -2475,8 +2572,8 @@ def _operator_terms(
     sides: list[list[_Term]] = []
     for value in values:
         terms: list[_Term] = []
-        for item in _endpoint_items(value) or [value]:
-            got = _collection_terms(_unbrace(item), label, leaf, flags, nested=True)
+        for item in _collection_items(value) or [value]:
+            got = _collection_terms(item, label, leaf, flags, nested=True)
             if got is None:
                 return None
             terms.extend(got)
@@ -2655,8 +2752,8 @@ def _handle_set_case_analysis(spec: ClockSpec, p: Parsed) -> None:
         spec.partial_warnings.append(f"set_case_analysis {raw}: missing target")
         return
     ports: list[str] = []
-    for word in targets:
-        kind, names, saw_filter = _split_collection(word)
+    for item in (i for word in targets for i in _collection_items(word)):
+        kind, names, saw_filter = _split_collection(item)
         if saw_filter:
             spec.partial_warnings.append(
                 "set_case_analysis: ignored unsupported -filter clause"
@@ -2826,10 +2923,8 @@ def _read_clocks(
     """The clock names a clock-only operand (``-group``, ``-clock``) selects."""
     terms: list[_Term] = []
     for word in words:
-        for item in _endpoint_items(word):
-            got = _clock_terms(
-                _unbrace(item), where, flags, ports_are_clocks=ports_are_clocks
-            )
+        for item in _collection_items(word):
+            got = _clock_terms(item, where, flags, ports_are_clocks=ports_are_clocks)
             if got:
                 terms.extend(got)
     return _resolve_clock_terms(terms, where, spec, flags.warnings)
@@ -2849,8 +2944,7 @@ def _read_endpoints(
     clocks: list[_Term] = []
     objects: list[SdcObject] = []
     for word in words:
-        for item in _endpoint_items(word):
-            text = _unbrace(item)
+        for text in _collection_items(word):
             kind, names, saw_filter, hier = _split_endpoint_item(text)
             if kind in _OBJECT_KINDS and not _is_operator_call(text):
                 assert kind is not None
@@ -2975,6 +3069,35 @@ def _endpoint_items(word: str) -> list[str]:
     if cur:
         items.append("".join(cur))
     return items
+
+
+def _collection_items(word: str) -> list[str]:
+    """The collection items one operand word holds, flattened (#390).
+
+    :func:`_endpoint_items`, plus: each braced item is unbraced and split
+    again (a Tcl list element ``{[get_ports a]}``, a nested ``{c d}``),
+    and a ``[list …]`` / ``[concat …]`` call is replaced by the items of
+    its operands — what the Tcl backend has already done by evaluating
+    it, so both backends hand the readers the same items. Every reader of
+    a collection operand goes through here; ``_extract_names`` (which
+    strips every bracket and brace and only a *leading* ``get_*`` head)
+    turned ``{[get_ports a]} {[get_ports b]}`` into the ports ``a``,
+    ``get_ports`` and ``b``.
+    """
+    out: list[str] = []
+    for item in _endpoint_items(word):
+        inner = _unbrace(item)
+        if inner != item:
+            out.extend(_collection_items(inner))
+            continue
+        if item.startswith("[") and _closing_bracket(item) == len(item) - 1:
+            parts = _endpoint_items(item[1:-1])
+            if parts and parts[0] in _LIST_BUILDERS:
+                for operand in parts[1:]:
+                    out.extend(_collection_items(operand))
+                continue
+        out.append(item)
+    return out
 
 
 def _closing_brace(text: str) -> int:

@@ -435,6 +435,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     clock but `x`. Unsupported forms (`-intersect`, a removal inside the
     removed operand, an operator over design objects) still select
     nothing, with a warning.
+  - `list` / `concat`-built collections are read item by item in every
+    command that takes a collection. On the Tcl backend `[list [get_ports
+    a] [get_ports b]]` evaluates to `{[get_ports a]} {[get_ports b]}`, and
+    `create_clock`, `create_generated_clock` (targets and `-source`),
+    `set_false_path -through`, `set_case_analysis` and the
+    `set_max_delay -datapath_only` endpoints split that into the ports
+    `a`, `get_ports` and `b`; the tokenizer, which does not evaluate
+    `list`, dropped the operand with a warning and now expands `list` /
+    `concat` the same way, so both backends agree. A `create_clock` /
+    `create_generated_clock` target naming no port or pin (`[get_cells
+    u]` was the ports `get_cells` and `u`) selects nothing, with a
+    warning; a bus-bit target `{clk[0]}` (the ports `clk` and `0`) is the
+    whole port `clk`, with a warning; and on the tokenizer a nested
+    `[get_pins [get_cells u]/C]` clock target is the pin `u/C`, as on the
+    Tcl backend, instead of two bogus names. Mixed pin and port targets
+    of one `create_generated_clock` are each recorded as what they are
+    (all of them were pins as soon as one was).
 
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a

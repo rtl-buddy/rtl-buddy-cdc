@@ -546,3 +546,189 @@ def test_operator_group_reaches_the_rules_like_the_explicit_group(
     expected = _violations(tmp_path, original)
     assert any("→ clk_c" in message for _rule, message in expected)
     assert _violations(tmp_path, idiom) == expected
+
+
+# --- 2. list / concat-built collections in every command ----------------------
+#
+# The Tcl backend evaluates ``[list [get_ports a] [get_ports b]]`` to the
+# Tcl list ``{[get_ports a]} {[get_ports b]}`` and ``concat`` to
+# ``[get_ports a] [get_ports b]``; ``_extract_names`` stripped every bracket
+# and brace and dropped only a *leading* ``get_ports``, so the second
+# collection's head became a port called ``get_ports``. The tokenizer keeps
+# ``[list …]`` opaque and used to drop it as an unrecognised command; it now
+# expands ``list`` / ``concat`` the way the Tcl backend does, so both read
+# the same.
+
+BUILDERS = pytest.mark.parametrize("builder", ["list", "concat"])
+
+
+def _built(builder: str, *items: str) -> str:
+    return f"[{builder} {' '.join(items)}]"
+
+
+@BUILDERS
+def test_create_clock_built_target(builder: str) -> None:
+    spec = parse(
+        "create_clock -name c -period 10 "
+        f"{_built(builder, '[get_ports a]', '{b}', 'c')}\n"
+    )
+    assert spec.clocks["c"].ports == ("a", "b", "c")
+    assert spec.partial_warnings == []
+
+
+@BUILDERS
+def test_create_clock_built_target_names_an_unnamed_clock(builder: str) -> None:
+    spec = parse(
+        f"create_clock -period 10 {_built(builder, '[get_ports a]', '[get_ports b]')}\n"
+    )
+    assert list(spec.clocks) == ["a"]
+    assert spec.clocks["a"].ports == ("a", "b")
+
+
+@BUILDERS
+def test_create_generated_clock_built_target_and_source(builder: str) -> None:
+    spec = parse(
+        _CLOCKS + "create_generated_clock -name clk_h "
+        f"-source {_built(builder, '[get_ports clk_b]')} -master_clock clk_b "
+        f"-divide_by 2 {_built(builder, '[get_pins u_h/q]', '[get_pins u_i/q]')}\n"
+    )
+    assert spec.pin_clocks["u_h/q"] == "clk_h" and spec.pin_clocks["u_i/q"] == "clk_h"
+    assert "get_pins" not in spec.pin_clocks
+    assert spec.clocks["clk_h"].source == ("clk_b",)
+    assert spec.partial_warnings == []
+
+
+@BUILDERS
+def test_clock_group_built_from_collections(builder: str) -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group vclk "
+        f"-group {_built(builder, '[get_clocks clk_a]', '[get_clocks clk_b]')}\n"
+    )
+    assert spec.async_groups == [[{"vclk"}, {"clk_a", "clk_b"}]]
+    assert spec.partial_warnings == []
+
+
+@BUILDERS
+def test_false_path_built_endpoints(builder: str) -> None:
+    spec = parse(
+        _CLOCKS
+        + f"set_false_path -from {_built(builder, '[get_clocks clk_a]', 'clk_g')} "
+        f"-to {_built(builder, '[get_clocks clk_b]')}\n"
+    )
+    assert spec.false_path_pairs == {
+        frozenset({"clk_a", "clk_b"}),
+        frozenset({"clk_g", "clk_b"}),
+    }
+    assert spec.partial_warnings == []
+
+
+@BUILDERS
+def test_false_path_built_through(builder: str) -> None:
+    spec = parse(
+        _CLOCKS + "set_false_path -from [get_cells u/a_reg] "
+        f"-through {_built(builder, '[get_pins u/x]', '[get_pins u/y]')}\n"
+    )
+    (exc,) = spec.false_path_exceptions
+    assert exc.through == ((SdcObject("pin", "u/x"), SdcObject("pin", "u/y")),)
+    assert spec.partial_warnings == []
+
+
+@BUILDERS
+def test_datapath_only_built_endpoints(builder: str) -> None:
+    spec = parse(
+        _CLOCKS + "set_max_delay 2 -datapath_only "
+        f"-from {_built(builder, '[get_cells u/a_reg]', '[get_cells u/b_reg]')} "
+        f"-to {_built(builder, '[get_clocks clk_b]')}\n"
+    )
+    (record,) = spec.datapath_only_delays
+    assert record.from_objects == (("cell", "u/a_reg"), ("cell", "u/b_reg"))
+    assert record.to_clocks == ("clk_b",)
+
+
+@BUILDERS
+def test_case_analysis_built_targets(builder: str) -> None:
+    spec = parse(
+        f"set_case_analysis 1 {_built(builder, '[get_ports m0]', '{m1}', 'm2')}\n"
+    )
+    assert spec.case_analysis == {"m0": "1", "m1": "1", "m2": "1"}
+    assert spec.partial_warnings == []
+
+
+@BUILDERS
+def test_delay_built_targets_and_clock(builder: str) -> None:
+    spec = parse(
+        _CLOCKS + f"set_input_delay 1 -clock {_built(builder, '[get_clocks clk_a]')} "
+        f"{_built(builder, '[get_ports a]', '{b}', 'c')}\n"
+    )
+    assert spec.port_clock == {"a": "clk_a", "b": "clk_a", "c": "clk_a"}
+    assert spec.partial_warnings == []
+
+
+@BUILDERS
+def test_built_collection_inside_an_operator(builder: str) -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group clk_a -group "
+        f"[remove_from_collection [all_clocks] {_built(builder, 'clk_a', '{vclk}')}]\n"
+        + "set_input_delay 1 -clock clk_a "
+        f"[remove_from_collection [all_inputs] {_built(builder, 'clk_a', 'clk_b')}]\n"
+    )
+    assert spec.async_groups == [[{"clk_a"}, {"clk_b", "clk_g"}]]
+    (delay,) = spec.port_delays
+    assert list(delay.terms()) == [("*", ("clk_a", "clk_b"))]
+
+
+def test_nested_lists_flatten() -> None:
+    spec = parse(
+        "create_clock -name c -period 10 [list [list a [get_ports b]] {c d}]\n"
+    )
+    assert spec.clocks["c"].ports == ("a", "b", "c", "d")
+
+
+def test_unrecognised_command_inside_a_list_is_dropped() -> None:
+    spec = parse("create_clock -name c -period 10 [list a [foo b]]\n")
+    assert spec.clocks["c"].ports == ("a",)
+    assert any("not a collection command" in w for w in spec.partial_warnings)
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["[get_clocks clk_a]", "[get_cells u/q_reg]", "[all_inputs]"],
+    ids=["get_clocks", "get_cells", "all_inputs"],
+)
+def test_create_clock_non_port_target_is_ignored(target: str) -> None:
+    """``_extract_names`` read ``[get_cells u]`` as the ports ``get_cells``
+    and ``u``; a target that names no port or pin now selects nothing."""
+    spec = parse(f"create_clock -name c -period 10 {target}\n")
+    assert spec.clocks["c"].ports == ()
+    assert any("is not a port or pin collection" in w for w in spec.partial_warnings)
+
+
+@pytest.mark.parametrize(
+    "target", ["[get_ports {clk[0]}]", "{clk[0]}"], ids=["bracket", "brace"]
+)
+def test_create_clock_on_a_bus_bit_is_the_whole_port_with_a_warning(
+    target: str,
+) -> None:
+    """``_extract_names`` split ``clk[0]`` into the ports ``clk`` and ``0``.
+    A clock is per port (the tracer names a clock root by its port), so a
+    bit target is the whole port — said, not silent."""
+    spec = parse(f"create_clock -name c -period 10 {target}\n")
+    assert spec.clocks["c"].ports == ("clk",)
+    (warning,) = _no_line(spec.partial_warnings)
+    assert "'clk[0]'" in warning and "whole port" in warning
+
+
+@needs_tcl
+def test_both_backends_read_built_collections_identically() -> None:
+    text = (
+        "create_clock -name c -period 10 [list [get_ports a] [get_ports b]]\n"
+        "create_clock -name d -period 10 [concat [get_ports e] {f g}]\n"
+        "set_clock_groups -asynchronous -group [list c] -group [concat [get_clocks d]]\n"
+        "set_case_analysis 0 [list [get_ports m] n]\n"
+    )
+    tcl = parse(text, backend="tcl")
+    tok = parse(text, backend="tokenizer")
+    assert tcl.clocks == tok.clocks
+    assert tcl.async_groups == tok.async_groups == [[{"c"}, {"d"}]]
+    assert tcl.case_analysis == tok.case_analysis == {"m": "0", "n": "0"}
+    assert tcl.partial_warnings == tok.partial_warnings == []

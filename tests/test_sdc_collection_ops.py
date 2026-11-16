@@ -383,9 +383,19 @@ def test_unrecognised_clock_group(sdc_backend: str) -> None:
     assert len(_unrecognised(spec)) == 1
 
 
-def test_unevaluated_tcl_builtin_is_reported_by_the_tokenizer() -> None:
-    """The tokenizer does not evaluate ``list``; the Tcl backend does."""
+def test_list_builder_is_expanded_by_the_tokenizer() -> None:
+    """The Tcl backend evaluates ``list``; since rtl-buddy-cdc#390 the
+    tokenizer expands it to the same items (it used to report it as an
+    unrecognised command and type nothing)."""
     text = _CLOCKS + "set_input_delay 1 -clock clk_a [list a b]\n"
+    tok = parse(text, backend="tokenizer")
+    assert tok.port_clock == {"a": "clk_a", "b": "clk_a"}
+    assert _unrecognised(tok) == []
+
+
+def test_unevaluated_tcl_builtin_is_reported_by_the_tokenizer() -> None:
+    """Any other Tcl builtin the tokenizer does not evaluate is reported."""
+    text = _CLOCKS + "set_input_delay 1 -clock clk_a [lsort {b a}]\n"
     tok = parse(text, backend="tokenizer")
     assert tok.port_clock == {}
     assert len(_unrecognised(tok)) == 1
