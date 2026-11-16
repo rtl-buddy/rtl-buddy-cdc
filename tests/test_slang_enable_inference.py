@@ -93,9 +93,11 @@ def test_simple_if_enable_emits_mux(tmp_path: Path) -> None:
     assert len(s_bits) == 1, f"$mux S width = {len(s_bits)}, expected 1"
 
 
-def test_nested_if_anded_enables(tmp_path: Path) -> None:
-    """``if (a) if (b) q <= d;`` — nested enables AND together. The
-    leaf mux's S must depend on both ``a`` and ``b``."""
+def test_nested_if_nests_the_muxes(tmp_path: Path) -> None:
+    """``if (a) if (b) q <= d;`` — the outer condition's hold mux is
+    outermost and the inner one sits on its ``B`` leg: ``D = mux(a, Q,
+    mux(b, Q, d))``, as Yosys ``proc`` builds it (rtl-buddy-cdc#394; the
+    conditions used to be ANDed into one select)."""
     src = """
     module m (input logic clk, rst_n, a, b, d, output logic q);
         always_ff @(posedge clk or negedge rst_n) begin
@@ -108,19 +110,21 @@ def test_nested_if_anded_enables(tmp_path: Path) -> None:
     mod = _elaborate(tmp_path, src)
     flops = [c for c in mod.cells.values() if c.type.startswith("$adff")]
     assert len(flops) == 1
+    q = flops[0].connections["Q"]
     drv = _flop_d_driver(mod, flops[0].name)
     assert drv is not None
-    drv_cell = mod.cells[drv[0]]
-    assert drv_cell.type == "$mux", f"expected $mux driving D; got {drv_cell.type}"
-    # The mux S should connect (transitively) to BOTH a and b. The
-    # simplest way to express that: the mux's S fanin (one level back)
-    # should land on an $and cell whose inputs reach the two port bits.
-    s_drv = _build_drivers(mod).get(drv_cell.connections["S"][0])
-    assert s_drv is not None, "mux S has no driver"
-    s_cell = mod.cells[s_drv[0]]
-    assert s_cell.type == "$and", (
-        f"nested if must AND its conditions; got driver type {s_cell.type}"
-    )
+    outer = mod.cells[drv[0]]
+    assert outer.type == "$mux", f"expected $mux driving D; got {outer.type}"
+    assert outer.connections["S"] == mod.ports["a"].bits
+    assert outer.connections["A"] == q
+    inner_drv = _build_drivers(mod).get(outer.connections["B"][0])
+    assert inner_drv is not None, "the outer mux's B leg has no driver"
+    inner = mod.cells[inner_drv[0]]
+    assert inner.type == "$mux"
+    assert inner.connections["S"] == mod.ports["b"].bits
+    assert inner.connections["A"] == q
+    assert inner.connections["B"] == mod.ports["d"].bits
+    assert not [c for c in mod.cells.values() if c.type == "$and"]
 
 
 # If/else with both arms writing the same LHS needs deferred-emission

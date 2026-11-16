@@ -210,10 +210,13 @@ What is NOT yet implemented (next slices)
 
 from __future__ import annotations
 
+import functools
 import importlib.metadata
 import logging
+import math
 import re
 from dataclasses import replace
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -553,6 +556,37 @@ class _Assign:
         self.sourceRange = getattr(node, "sourceRange", None)
 
 
+class _ProcCase:
+    """One arm of a clocked block's decision tree, the shape Yosys keeps a
+    process in before ``proc_mux`` (an RTLIL ``CaseRule``), in walk order:
+    writes ``(variable, start, value bits)`` and nested :class:`_ProcSwitch`
+    es (rtl-buddy-cdc#394)."""
+
+    __slots__ = ("items", "by_sym")
+
+    def __init__(self) -> None:
+        self.items: list[tuple[Any, int, tuple[Bit, ...]] | _ProcSwitch] = []
+        # ``items`` that write each variable, in order (filled by
+        # :meth:`_ModuleBuilder._index_proc_tree`).
+        self.by_sym: dict[
+            Any, list[tuple[Any, int, tuple[Bit, ...]] | _ProcSwitch]
+        ] = {}
+
+
+class _ProcSwitch:
+    """An ``if`` / ``case`` of a clocked block: its arms in priority order,
+    each ``(select bit, arm)``; a ``None`` select is the ``else`` /
+    ``default`` arm, last. ``writes`` (filled by
+    :meth:`_ModuleBuilder._index_proc_tree`) is the bit ranges each
+    variable is written in anywhere below it."""
+
+    __slots__ = ("arms", "writes")
+
+    def __init__(self, arms: list[tuple[Bit | None, _ProcCase]]) -> None:
+        self.arms = arms
+        self.writes: dict[Any, list[tuple[int, int]]] = {}
+
+
 class _ModuleBuilder:
     """Translate a pyslang elaborated :class:`InstanceSymbol` into a
     :class:`netlist.Module`.
@@ -606,6 +640,10 @@ class _ModuleBuilder:
         self._ports: dict[str, Port] = {}
         self._cells: dict[str, Cell] = {}
         self._netnames: dict[str, Netname] = {}
+        # Element netnames of each unpacked array, by its ``MEMID``
+        # spelling: dropped again for an array that turns out to be a
+        # memory (see :meth:`build`).
+        self._array_netnames: dict[str, list[str]] = {}
         self._cell_counters: dict[str, int] = {}
         # Stack of dotted hierarchy prefixes used by ``_fresh_cell_name``
         # so cells emitted while walking a child instance carry the
@@ -618,31 +656,27 @@ class _ModuleBuilder:
         # selects like ``chain[i]`` fold to the per-iteration bit while
         # the for-loop body is being walked. See ``_emit_for_loop``.
         self._loop_bindings: dict[Any, int] = {}
-        # Stack of single-bit enable signals active in the current
-        # always_ff walk. Pushed when entering a ``ConditionalStatement``
-        # arm: ``cond`` for ifTrue, ``$not(cond)`` for ifFalse. Combined
-        # via ``$and`` into a per-write enable when an assignment is
-        # accumulated; the rule pack's ``_is_gated_bus_crossing`` then
-        # recognises the resulting hold-feedback mux as a handshake-
-        # gated bus crossing. See issue #64.
-        self._enable_stack: list[Bit] = []
-        # Per-procedural-block write accumulator: maps each written
-        # variable to ``(register bits, writes)``, each write a ``(start,
-        # enable, rhs bits)`` in walk order. ``_emit_assignment_expression``
-        # appends instead of emitting cells; ``_drain_proc_writes`` (called
-        # at the end of ``_emit_procedural_block``) builds one flop per
-        # contiguous run of written bits with a mux tree from the
-        # accumulated writes. So ``if (cond) q <= a; else q <= b;``
-        # collapses to one ``$adff`` whose D is ``mux(cond, b, a)`` — not
-        # two flops with the same Q — and so does ``q <= 0; if (c) q[1] <=
-        # b;`` (rtl-buddy-cdc#377). Initialised fresh on each block entry.
-        self._proc_writes: dict[
-            Any,
-            tuple[
-                tuple[Bit, ...],
-                list[tuple[int, Bit | None, tuple[Bit, ...]]],
-            ],
-        ] = {}
+        # The conditions an always_ff walk is under, one per enclosing
+        # ``if`` / ``case`` arm, each built on first use (``$not`` of the
+        # condition for an ``else`` arm, ...). Only a memory write port
+        # reads them, as its ``EN`` (:meth:`_emit_memory_write`); register
+        # writes go into the decision tree below.
+        self._enable_stack: list[Callable[[], Bit]] = []
+        # Per-procedural-block write accumulator (rtl-buddy-cdc#377 /
+        # #394): the register bits of each written variable, and the
+        # block's decision tree (:class:`_ProcCase`), the writes in walk
+        # order with every ``if`` / ``case`` a :class:`_ProcSwitch` of its
+        # arms. ``_emit_assignment_expression`` adds to the arm being
+        # walked (``_proc_case``) instead of emitting cells;
+        # ``_drain_proc_writes`` (called at the end of the block) builds
+        # one flop per contiguous run of written bits, its ``D`` the mux
+        # tree Yosys ``proc_mux`` builds from the same tree: the first arm
+        # of each ``if`` / ``case`` outermost. So ``if (cond) q <= a; else
+        # q <= b;`` is one flop whose D is ``mux(cond, b, a)``, and so is
+        # ``q <= 0; if (c) q[1] <= b;``. Initialised fresh on each block.
+        self._proc_regs: dict[Any, tuple[Bit, ...]] = {}
+        self._proc_root = _ProcCase()
+        self._proc_case = self._proc_root
         # Per-procedural-block async-reset value accumulator: maps each
         # LHS bit tuple to the integer constant written in the reset
         # arm (``if (!rst_n) q <= 4'd5;`` → 5). Populated by
@@ -692,6 +726,12 @@ class _ModuleBuilder:
         # same flat namespace, hierarchically prefixed (``u_b0.q``).
         self._walk_instance(self.top, hier_prefix="", bound_internals=frozenset())
         self._apply_forward_renames()
+        # An array written through a memory write port is a memory, which
+        # Yosys keeps as such, with no netname (rtl-buddy-cdc#394).
+        for cell in self._cells.values():
+            if cell.type == "$memwr_v2":
+                for name in self._array_netnames.get(cell.parameters["MEMID"], ()):
+                    self._netnames.pop(name, None)
         return Module(
             name=self.top.name,
             ports=self._ports,
@@ -951,10 +991,80 @@ class _ModuleBuilder:
         # netname attributes via the bits→netname reverse-lookup, so
         # the name is only consulted for debug / source-location use.
         full_name = f"{hier_prefix}{member.name}"
-        offset, upto = self._declared_range(member)
-        self._netnames[full_name] = Netname(
-            name=full_name, bits=bits, attributes=attrs, offset=offset, upto=upto
+        elements = self._unpacked_elements(member)
+        if elements is None:
+            offset, upto = self._declared_range(member)
+            self._netnames[full_name] = Netname(
+                name=full_name, bits=bits, attributes=attrs, offset=offset, upto=upto
+            )
+            return
+        # An unpacked array is one netname per element, as Yosys
+        # ``mem2reg`` names them (rtl-buddy-cdc#394: one netname over the
+        # whole array, so ``get_nets a[1]`` named bit 1 of it, and a
+        # report named the array where Yosys names the element). Each
+        # element carries the declaration's attributes.
+        offset, upto = elements[0]
+        names: list[str] = []
+        for label, lo, width in elements[1]:
+            name = f"{full_name}[{label}]"
+            names.append(name)
+            self._netnames[name] = Netname(
+                name=name,
+                bits=bits[lo : lo + width],
+                attributes=dict(attrs),
+                offset=offset,
+                upto=upto,
+            )
+        self._array_netnames[f"\\{full_name}"] = names
+
+    def _unpacked_elements(
+        self, member: Any
+    ) -> tuple[tuple[int, bool], list[tuple[int, int, int]]] | None:
+        """The element netnames of an unpacked-array declaration, as Yosys
+        ``mem2reg`` emits them: ``((offset, upto) of the element type,
+        [(name index, first bit, width)])``; ``None`` for anything else.
+
+        A one-dimensional array names each element by its declared index
+        (``a[4]`` / ``a[5]`` of ``a [5:4]``). A multi-dimensional one is
+        flattened, row-major, each dimension counted from its left bound:
+        ``m[1][0]`` of ``m [1:0][2:0]`` is ``m[0]``, ``m[0][2]`` is
+        ``m[5]``. This frontend stores every unpacked dimension lowest
+        index first (:meth:`_select_position`)."""
+        t = getattr(member, "type", None)
+        t = getattr(t, "canonicalType", None) or t
+        dims: list[tuple[int, int]] = []
+        while getattr(t, "isUnpackedArray", False):
+            rng = getattr(t, "range", None)
+            left = getattr(rng, "left", None)
+            right = getattr(rng, "right", None)
+            if left is None or right is None:
+                return None
+            dims.append((int(left), int(right)))
+            t = getattr(t, "elementType", None)
+            t = getattr(t, "canonicalType", None) or t
+        if not dims or t is None:
+            return None
+        width = int(
+            getattr(t, "selectableWidth", None) or getattr(t, "bitWidth", None) or 0
         )
+        if width <= 0:
+            return None
+        sizes = [abs(left - right) + 1 for left, right in dims]
+        elements: list[tuple[int, int, int]] = []
+        for flat in range(math.prod(sizes)):
+            # ``flat``: the element's Yosys address (positions from the
+            # left bound); ``pos``: its place in this frontend's storage.
+            pos, rest = 0, flat
+            index = 0
+            for d in reversed(range(len(dims))):
+                step = rest % sizes[d]
+                rest //= sizes[d]
+                left, right = dims[d]
+                index = left - step if left > right else left + step
+                pos += (index - min(left, right)) * math.prod(sizes[d + 1 :])
+            label = index if len(dims) == 1 else flat
+            elements.append((label, pos * width, width))
+        return self._type_range(t), elements
 
     @staticmethod
     def _declared_range(member: Any) -> tuple[int, bool]:
@@ -965,7 +1075,11 @@ class _ModuleBuilder:
         one-dimensional packed range and whether it is ascending. Yosys
         flattens anything else (a multi-dimensional packed array, an
         ``integer``, a struct) to ``[N-1:0]``."""
-        t = getattr(member, "type", None)
+        return _ModuleBuilder._type_range(getattr(member, "type", None))
+
+    @staticmethod
+    def _type_range(t: Any) -> tuple[int, bool]:
+        """:meth:`_declared_range` of a type."""
         t = getattr(t, "canonicalType", None) or t
         if not getattr(t, "isPackedArray", False):
             return 0, False
@@ -1453,7 +1567,7 @@ class _ModuleBuilder:
         # Fresh write accumulator per procedural block. Drained at the
         # end so one flop emits per LHS even when multiple arms write
         # the same target (the if/else both-arms case).
-        self._proc_writes = {}
+        self._reset_proc_tree()
         self._proc_resets = {}
         prev_blocking = self._blocking_nets
         self._blocking_nets = {}
@@ -1541,7 +1655,7 @@ class _ModuleBuilder:
             # Outside the block a blocking-written variable is its register.
             self._var_bits.update(self._blocking_nets)
             self._blocking_nets = prev_blocking
-            self._proc_writes = {}
+            self._reset_proc_tree()
             self._proc_resets = {}
             self._clk_negedge = prev_clk_negedge
 
@@ -1614,7 +1728,7 @@ class _ModuleBuilder:
         clk_sym, clk_negedge = clocks[0]
         prev_clk_negedge = getattr(self, "_clk_negedge", False)
         self._clk_negedge = clk_negedge
-        self._proc_writes = {}
+        self._reset_proc_tree()
         self._proc_resets = {}
         prev_blocking = self._blocking_nets
         self._blocking_nets = {}
@@ -1634,7 +1748,7 @@ class _ModuleBuilder:
         finally:
             self._var_bits.update(self._blocking_nets)
             self._blocking_nets = prev_blocking
-            self._proc_writes = {}
+            self._reset_proc_tree()
             self._proc_resets = {}
             self._clk_negedge = prev_clk_negedge
 
@@ -1914,7 +2028,7 @@ class _ModuleBuilder:
         block's write accumulator, so a register only that arm writes is
         drained into a flop too (rtl-buddy-cdc#390: it got none)."""
         for sym, _start, _width in targets:
-            self._proc_writes.setdefault(sym, (self._alloc_bits(sym), []))
+            self._proc_regs.setdefault(sym, self._alloc_bits(sym))
 
     @staticmethod
     def _int_bits(value: int, width: int) -> tuple[Bit, ...]:
@@ -2169,20 +2283,17 @@ class _ModuleBuilder:
                     )
                 return
 
-            # Dynamic condition: push the bit onto the enable stack
-            # while walking each arm so ``_emit_assignment_expression``
-            # accumulates writes with the right enable.
-            # ``_drain_proc_writes`` then collapses all writes to one
-            # flop per LHS with a mux tree:
-            #
-            # - ifTrue arm: push ``cond`` (positive polarity).
-            # - ifFalse arm: push ``$not(cond)`` (negate via a $not
-            #   cell) — symmetric with the ifTrue case, so an if/else
-            #   that writes the same LHS in both arms produces a
-            #   single flop whose D is ``mux(not_cond, mux(cond, Q, a), b)``
-            #   (equivalent to ``mux(cond, b, a)`` after ``opt_clean``,
-            #   but with the explicit hold-feedback shape the rule
-            #   pack's ``_is_gated_bus_crossing`` matches).
+            # Dynamic condition: a switch of two arms, each walked into
+            # its own branch of the decision tree, ``cond`` selecting the
+            # first. ``_drain_proc_writes`` builds ``mux(S=cond, A=else
+            # value, B=then value)`` per register from it, the value
+            # before the ``if`` standing in for an arm that does not write
+            # the register (the hold-feedback ``mux(cond, Q, a)`` the rule
+            # pack's ``_is_gated_bus_crossing`` matches), and an ``else
+            # if`` nested in the ``else`` leg, so the first condition's
+            # mux is outermost, as Yosys ``proc`` orders it
+            # (rtl-buddy-cdc#394: ``if (c1) .. else if (c2) ..`` put the
+            # ``~c1 & c2`` mux outermost).
             #
             # A condition that does not lower becomes an opaque select
             # (reported), never an unconditional walk of both arms.
@@ -2194,11 +2305,18 @@ class _ModuleBuilder:
                 )
 
             base = self._blocking_values()
-            true_state = self._clocked_arm(cond_bit, statement.ifTrue, walk, base)
+            true_state, true_case = self._clocked_arm(
+                lambda: cond_bit, statement.ifTrue, walk, base
+            )
+            arms: list[tuple[Bit | None, _ProcCase]] = [(cond_bit, true_case)]
             false_state = base
             if statement.ifFalse is not None:
-                not_cond = self._lower_not(cond_bit)
-                false_state = self._clocked_arm(not_cond, statement.ifFalse, walk, base)
+                not_cond = self._lazy_bit(lambda: self._lower_not(cond_bit))
+                false_state, false_case = self._clocked_arm(
+                    not_cond, statement.ifFalse, walk, base
+                )
+                arms.append((None, false_case))
+            self._proc_case.items.append(_ProcSwitch(arms))
             self._merge_blocking(base, [(cond_bit, true_state)], false_state)
             return
         if kind == "CaseStatement":
@@ -2227,9 +2345,9 @@ class _ModuleBuilder:
         reset_active_low: bool,
         src_node: Any,
     ) -> None:
-        """Walk a ``case`` body, emitting per-arm enables onto the
-        enable stack so the deferred-emission drain can build a mux
-        tree gated by each arm's ``case_expr == match`` equality.
+        """Walk a ``case`` body into a switch of the block's decision tree,
+        one arm per item selected by its ``case_expr == match`` equality,
+        so the deferred-emission drain can build the mux tree.
 
         Three paths, in order of decreasing precision:
 
@@ -2242,14 +2360,11 @@ class _ModuleBuilder:
         - **Dynamic case-expr we can lower (#85).** Emit a ``$eq``
           per match expression with the case-expr bits on ``A`` and
           the match constant on ``B``. Items with multiple matches
-          OR the per-match equalities together; when two items can match
-          the same value, an item's enable also ANDs in "no earlier item
-          matched", so the first match wins (rtl-buddy-cdc#384). The
-          default arm's enable is ``$not($or(all explicit-match
-          equalities))``.
-          Each arm walks with its enable pushed onto
-          ``_enable_stack``; the drain builds the corresponding
-          ``$mux`` tree.
+          OR the per-match equalities together. The drain chains the
+          items' muxes first item outermost, as Yosys ``proc`` orders
+          them, so the first matching item wins (IEEE 1800-2017 12.5;
+          rtl-buddy-cdc#384 / #394), with the ``default`` arm (else the
+          value before the ``case``) innermost.
         - **Bail.** If the case-expr can't be lowered (kind we don't
           model on the RHS yet), walk every arm with no enable —
           same conservative policy as the pre-PR behaviour, so flops
@@ -2297,14 +2412,12 @@ class _ModuleBuilder:
         base = self._blocking_values()
         explicit_match_bits: list[Bit] = []
         arm_states: list[tuple[Bit, dict[Any, tuple[Bit, ...]]]] = []
-        # The first matching item wins (IEEE 1800-2017 12.5). The drain lets
-        # a later write override an earlier one, so when two items can match
-        # the same value, each item's enable also carries "no earlier item
-        # matched" (rtl-buddy-cdc#384: overlapping labels resolved
-        # last-match-wins). Distinct constant labels cannot overlap and keep
-        # the plain per-item match.
+        arms: list[tuple[Bit | None, _ProcCase]] = []
+        # A memory write port's enable (``_enable_stack``) is no priority
+        # chain: when two items can match the same value, an item's enable
+        # also carries "no earlier item matched" (rtl-buddy-cdc#384).
         overlap = self._case_labels_may_overlap(statement, items)
-        earlier: Bit | None = None
+        earlier: list[Bit] = []
         for item in items:
             item_match_bits = [
                 self._case_label_match(case_expr_bits, match_expr, statement)
@@ -2315,27 +2428,40 @@ class _ModuleBuilder:
             item_stmt = getattr(item, "stmt", None)
             if own_match is None:
                 continue  # an item with no labels never matches
-            item_enable = own_match
-            if overlap and earlier is not None:
-                item_enable = self._and_bit(own_match, self._lower_not(earlier))
-            earlier = (
-                own_match if earlier is None else self._or_bits([earlier, own_match])
+            item_enable = self._lazy_bit(
+                functools.partial(
+                    self._first_match, own_match, list(earlier) if overlap else []
+                )
             )
-            arm_states.append(
-                (item_enable, self._clocked_arm(item_enable, item_stmt, walk, base))
-            )
+            earlier.append(own_match)
+            state, case = self._clocked_arm(item_enable, item_stmt, walk, base)
+            arm_states.append((own_match, state))
+            arms.append((own_match, case))
 
         default_state = base
         if default_arm is not None:
-            no_match = self._or_bits(explicit_match_bits)
-            if no_match is None:
+            if not explicit_match_bits:
                 walk(default_arm)
                 default_state = self._blocking_values()
             else:
-                default_state = self._clocked_arm(
-                    self._lower_not(no_match), default_arm, walk, base
+                default_state, default_case = self._clocked_arm(
+                    self._lazy_bit(
+                        functools.partial(self._first_match, "1", explicit_match_bits)
+                    ),
+                    default_arm,
+                    walk,
+                    base,
                 )
+                arms.append((None, default_case))
+        if arms:
+            self._proc_case.items.append(_ProcSwitch(arms))
         self._merge_blocking(base, arm_states, default_state)
+
+    def _first_match(self, match: Bit, earlier: list[Bit]) -> Bit:
+        """``match`` and none of ``earlier``: a ``case`` item's condition
+        for a memory write port's enable."""
+        prior = self._or_bits(earlier)
+        return match if prior is None else self._and_bit(match, self._lower_not(prior))
 
     def _case_labels_may_overlap(self, stmt: Any, items: list[Any]) -> bool:
         """Whether two items of ``case`` statement ``stmt`` can match the
@@ -2606,7 +2732,7 @@ class _ModuleBuilder:
         reset_active_low: bool,
         src_node: Any = None,
     ) -> None:
-        """Accumulate one nonblocking write into ``_proc_writes``.
+        """Add one write to the block's decision tree (``_proc_case``).
 
         Doesn't emit a flop cell — emission happens in
         ``_drain_proc_writes`` after the entire body has been walked,
@@ -2649,17 +2775,13 @@ class _ModuleBuilder:
         # pack treats the D input as opaque (no upstream flops trace
         # through it). Read before the write: ``n = n + 1`` reads ``n``.
         rhs_bits = self._rhs_bits(rhs, total)
-        # The enable stack combined into one bit (chained $and cells);
-        # None when the write is unconditional here.
-        enable = self._combine_enable_stack()
         blocking = not getattr(expr, "isNonBlocking", False)
         for sym, start, bits in self._group_parts(
             targets, self._split_rhs(rhs_bits, targets)
         ):
             net = self._blocking_nets.get(sym) or self._alloc_bits(sym)
-            self._proc_writes.setdefault(sym, (net, []))[1].append(
-                (start, enable, bits)
-            )
+            self._proc_regs.setdefault(sym, net)
+            self._proc_case.items.append((sym, start, bits))
             if blocking:
                 self._forward_blocking_write(sym, net, start, bits)
 
@@ -2692,25 +2814,50 @@ class _ModuleBuilder:
 
     def _clocked_arm(
         self,
-        enable: Bit,
+        enable: Callable[[], Bit],
         stmt: Any,
         walk: Any,
         base: dict[Any, tuple[Bit, ...]],
-    ) -> dict[Any, tuple[Bit, ...]]:
-        """Walk one arm of a clocked ``if`` / ``case`` with ``enable`` on the
-        enable stack; return the blocking-written values it leaves and
-        restore the values from before it. Inside the arm a blocking write
-        is seen as written, as Yosys ``proc`` evaluates the arm's
-        statements; :meth:`_merge_blocking` muxes the arms afterwards."""
+    ) -> tuple[dict[Any, tuple[Bit, ...]], _ProcCase]:
+        """Walk one arm of a clocked ``if`` / ``case`` into a fresh branch
+        of the decision tree, with ``enable`` (the arm's condition, for a
+        memory write port) on the enable stack. Return the blocking-written
+        values it leaves and the branch, and restore the values from
+        before it. Inside the arm a blocking write is seen as written, as
+        Yosys ``proc`` evaluates the arm's statements;
+        :meth:`_merge_blocking` muxes the arms afterwards."""
+        case = _ProcCase()
+        parent = self._proc_case
+        self._proc_case = case
         self._enable_stack.append(enable)
         try:
             walk(stmt)
         finally:
             self._enable_stack.pop()
+            self._proc_case = parent
         state = self._blocking_values()
         for sym, net in self._blocking_nets.items():
             self._var_bits[sym] = base.get(sym, net)
-        return state
+        return state, case
+
+    @staticmethod
+    def _lazy_bit(build: Callable[[], Bit]) -> Callable[[], Bit]:
+        """``build``, run once on the first call: an arm condition only a
+        memory write port reads, so its cells are emitted only then."""
+        memo: list[Bit] = []
+
+        def get() -> Bit:
+            if not memo:
+                memo.append(build())
+            return memo[0]
+
+        return get
+
+    def _reset_proc_tree(self) -> None:
+        """Start a clocked block with no writes."""
+        self._proc_regs = {}
+        self._proc_root = _ProcCase()
+        self._proc_case = self._proc_root
 
     def _merge_blocking(
         self,
@@ -2732,10 +2879,8 @@ class _ModuleBuilder:
 
     def _lower_not(self, bit: Bit) -> Bit:
         """Allocate a ``$not`` cell over ``bit`` and return the output
-        bit. Used by ``ConditionalStatement`` to push the negation of
-        a condition onto ``_enable_stack`` when entering an ifFalse
-        arm — keeps the mux-tree drain symmetric across both arms.
-        """
+        bit (an ``else`` arm's condition on ``_enable_stack``, a latch
+        enable, ...)."""
         y = self._alloc_anon_bits(1)
         name = self._fresh_cell_name("$not")
         self._cells[name] = Cell(
@@ -2777,16 +2922,15 @@ class _ModuleBuilder:
         return result
 
     def _combine_enable_stack(self) -> Bit | None:
-        """AND every entry on ``_enable_stack`` into a single bit, or
-        return ``None`` if the stack is empty. Chains ``$and`` cells
-        for multi-entry stacks; for a single-entry stack returns the
-        bit directly with no cell emission."""
+        """AND every entry on ``_enable_stack`` (building each) into a
+        single bit, or return ``None`` if the stack is empty. Chains
+        ``$and`` cells for multi-entry stacks; for a single-entry stack
+        returns the bit directly with no cell emission."""
         if not self._enable_stack:
             return None
-        if len(self._enable_stack) == 1:
-            return self._enable_stack[0]
-        select_bit: Bit = self._enable_stack[0]
-        for next_bit in self._enable_stack[1:]:
+        enables = [enable() for enable in self._enable_stack]
+        select_bit: Bit = enables[0]
+        for next_bit in enables[1:]:
             and_y = self._alloc_anon_bits(1)
             cell_name = self._fresh_cell_name("$and")
             self._cells[cell_name] = Cell(
@@ -2823,22 +2967,24 @@ class _ModuleBuilder:
         flops where Yosys has one 2-bit flop; ``r[3]`` and ``r[1:0]`` stay
         two).
 
-        For each run, walks the writes that touch it in source order to
-        build the flop's D input:
+        Each run's ``D`` is built from the block's decision tree as Yosys
+        ``proc_mux`` builds it (rtl-buddy-cdc#394), one mux tree per
+        *snippet* of the run (the bits no write splits, ``proc``'s
+        ``SigSnippets``; :meth:`_proc_value`):
 
-        - The initial "hold" value is the run's own Q bits — when no
-          enable in any later write fires, D = Q (the flop holds).
-        - An unconditional write (``enable is None``) replaces its slice
-          of the current D; later muxes apply on top.
-        - A conditional write wraps its slice of D in a hold-feedback mux
-          ``mux(S=enable, A=prev_D, B=rhs)`` so the rule pack's
-          gated-bus detector can see the select signal.
+        - the value entering the block is the snippet's own ``Q`` bits —
+          a register no taken arm writes holds;
+        - a write replaces its slice of the current value;
+        - an ``if`` / ``case`` (a :class:`_ProcSwitch`) that writes the
+          snippet becomes a chain of ``mux(S=arm select, A=rest, B=arm
+          value)``, the first arm outermost and the ``else`` / ``default``
+          arm (else the value before the statement) innermost, each arm's
+          value built from the value before the statement.
 
-        ``if (cond) q <= a; else q <= b;`` accumulates as
-        ``[(cond, a), (not_cond, b)]`` and drains to
-        ``D = mux(not_cond, mux(cond, Q, a), b)`` — equivalent to a
-        Yosys ``$mux(cond, b, a)`` after ``opt_clean`` but with the
-        explicit hold-feedback shape the detector recognises.
+        ``if (cond) q <= a; else q <= b;`` drains to ``D = mux(cond, b,
+        a)``, ``if (c1) q <= a; else if (c2) q <= b;`` to ``mux(c1,
+        mux(c2, Q, b), a)``: the hold-feedback mux the rule pack's
+        gated-bus detector reads the select of.
 
         ``reset_kind`` (``"async"`` / ``"sync"`` / ``None``) controls
         whether ``_emit_flop_cell`` materialises ``$adff``, ``$sdff``,
@@ -2865,15 +3011,14 @@ class _ModuleBuilder:
         for _bits, _low, control_values in async_controls or ():
             for key in control_values:
                 reset_written.update(key)
-        for sym, (net, writes) in self._proc_writes.items():
+        tree_writes = self._index_proc_tree(self._proc_root)
+        for sym, net in self._proc_regs.items():
+            writes = tree_writes.get(sym, [])
             written = sorted(
-                {
-                    pos
-                    for start, _en, bits in writes
-                    for pos in range(start, start + len(bits))
-                }
+                {pos for start, end in writes for pos in range(start, end)}
                 | {pos for pos, bit in enumerate(net) if bit in reset_written}
             )
+            cuts = {pos for span in writes for pos in span}
             # The elements of an unpacked array are separate registers
             # (Yosys ``mem2reg``): a run never spans two of them.
             element = self._unpacked_element_width(sym)
@@ -2885,17 +3030,10 @@ class _ModuleBuilder:
                     runs.append((pos, pos + 1))
             for lo, hi in runs:
                 q_bits = net[lo:hi]
-                d: list[Bit] = list(q_bits)  # initial Q-feedback
-                for start, enable, rhs in writes:
-                    a, b = max(lo, start), min(hi, start + len(rhs))
-                    if a >= b:
-                        continue
-                    piece = rhs[a - start : b - start]
-                    if enable is not None:
-                        piece = self._build_hold_mux(
-                            enable, hold=tuple(d[a - lo : b - lo]), fire=piece
-                        )
-                    d[a - lo : b - lo] = piece
+                d: list[Bit] = []
+                bounds = sorted({lo, hi} | {c for c in cuts if lo < c < hi})
+                for a, b in zip(bounds, bounds[1:]):
+                    d.extend(self._proc_value(self._proc_root, sym, a, b, net[a:b]))
                 if async_controls is not None:
                     self._emit_multi_async_flop(
                         clk_sym, q_bits, tuple(d), async_controls, src_node
@@ -2946,6 +3084,56 @@ class _ModuleBuilder:
                     reset_kind=reset_kind,
                     clock_enable=clock_enable,
                 )
+
+    def _index_proc_tree(self, case: _ProcCase) -> dict[Any, list[tuple[int, int]]]:
+        """The ``(start, end)`` bit ranges each variable is written in under
+        ``case``; fills each switch's :attr:`_ProcSwitch.writes` on the
+        way."""
+        out: dict[Any, list[tuple[int, int]]] = {}
+        case.by_sym = {}
+        for item in case.items:
+            if isinstance(item, _ProcSwitch):
+                item.writes = {}
+                for _select, arm in item.arms:
+                    for sym, spans in self._index_proc_tree(arm).items():
+                        item.writes.setdefault(sym, []).extend(spans)
+                for sym, spans in item.writes.items():
+                    out.setdefault(sym, []).extend(spans)
+                    case.by_sym.setdefault(sym, []).append(item)
+            else:
+                sym, start, bits = item
+                out.setdefault(sym, []).append((start, start + len(bits)))
+                case.by_sym.setdefault(sym, []).append(item)
+        return out
+
+    def _proc_value(
+        self, case: _ProcCase, sym: Any, a: int, b: int, value: tuple[Bit, ...]
+    ) -> tuple[Bit, ...]:
+        """Bits ``[a, b)`` of ``sym`` after the decision-tree arm ``case``,
+        ``value`` before it: ``proc_mux``'s ``signal_to_mux_tree``
+        (see :meth:`_drain_proc_writes`)."""
+        for item in case.by_sym.get(sym, ()):
+            if isinstance(item, _ProcSwitch):
+                if not any(s < b and a < e for s, e in item.writes.get(sym, ())):
+                    continue
+                result = value
+                for select, arm in reversed(item.arms):
+                    arm_value = self._proc_value(arm, sym, a, b, value)
+                    if select is None:
+                        result = arm_value
+                    elif arm_value != result:
+                        result = self._build_hold_mux(
+                            select, hold=result, fire=arm_value
+                        )
+                value = result
+                continue
+            _sym, start, bits = item
+            lo, hi = max(a, start), min(b, start + len(bits))
+            if lo < hi:
+                value = (
+                    value[: lo - a] + bits[lo - start : hi - start] + value[hi - a :]
+                )
+        return value
 
     @staticmethod
     def _sync_reset_folds(

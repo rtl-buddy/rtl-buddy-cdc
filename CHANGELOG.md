@@ -406,6 +406,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: clocked `if` / `else if` muxes in `proc` order**
+  (rtl-buddy-cdc#394, item 6). The clocked walker ANDed each write's
+  enclosing conditions into one enable and chained the writes' hold muxes
+  in source order, so `if (c1) q <= a; else if (c2) q <= b;` drove `D`
+  with `mux(~c1 & c2, mux(c1, Q, a), b)` where Yosys `proc` builds
+  `mux(c1, mux(c2, Q, b), a)`. Under an async reset with a foreign sync
+  reset over a synchronised enable, the gated-bus test then read the
+  wrong select and gave CDC-004 on slang, CDC-012 on Yosys. A clocked
+  block is now walked into a decision tree (each `if` / `case` a switch
+  of its arms) and every register's `D` built from it as `proc_mux` does:
+  the first arm of each `if` / `case` outermost, the `else` / `default`
+  arm (or the value before the statement) innermost, one mux tree per run
+  of bits no write splits — nested `if`s, `case` items, partial writes
+  and holds included. The case is back in
+  `tests/test_slang_parity_390.py`'s enable-form parity matrix; no
+  committed fixture or integration golden changes verdict.
+
+- **slang frontend: unpacked-array elements are netnames of their own**
+  (rtl-buddy-cdc#394, item 7). `logic [7:4] a [0:1]` was one 8-bit
+  netname `a`, so `get_nets a[1]` / `get_cells a_reg[1]` named bit 1 of
+  it and reports named the array; Yosys (`mem2reg`) has `a[0]` and `a[1]`,
+  4 bits each with offset 4. The slang frontend now emits the same
+  element netnames: by declared index for one dimension, by row-major
+  position counted from each dimension's left bound for several
+  (`m[1][0]` of `m [1:0][2:0]` is `m[0]`), each with its element's
+  `offset` / `upto` and the declaration's attributes; an array written at
+  a run-time address (a memory, no netname on Yosys) gets none.
+
 - **SDC clock collections are evaluated, not read as names**
   (rtl-buddy-cdc#390). No committed fixture or integration golden changes
   verdict.
