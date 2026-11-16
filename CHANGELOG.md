@@ -368,6 +368,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: overlapping `case` labels in a clocked block resolve
+  first-match** (rtl-buddy-cdc#384). Each item's enable was its own label
+  match, and a later write overrides an earlier one, so a value matching
+  two items (`casez` wildcards, a repeated label) took the last item
+  instead of the first (IEEE 1800-2017 12.5). An item's enable now also
+  carries "no earlier item matched" whenever two items can match the same
+  value; distinct constant labels are lowered as before.
+
 - **slang frontend: wires get a netname** (rtl-buddy-cdc#384). Only
   variables were named on the slang path, so a waiver, an SDC `get_nets`
   or a declaration attribute naming a `wire` (or a port declared as one)

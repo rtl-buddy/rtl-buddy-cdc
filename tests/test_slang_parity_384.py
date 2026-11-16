@@ -132,6 +132,111 @@ def _driver(module: Module, bit: Bit) -> Cell | None:
     return None
 
 
+def _int(vals: list[int]) -> int:
+    return sum(v << i for i, v in enumerate(vals))
+
+
+def _comb_value(cell: Cell, get) -> list[int]:
+    """Output bits of one combinational cell (unsigned, ``x`` read as 0)."""
+    conn = cell.connections
+    width = len(conn["Y"])
+    a = [get(b) for b in conn.get("A", ())]
+    b = [get(x) for x in conn.get("B", ())]
+    t = cell.type
+    mask = (1 << width) - 1
+    if t == "$mux":
+        return b if get(conn["S"][0]) else a
+    if t == "$pmux":
+        s = [get(x) for x in conn["S"]]
+        for i, on in enumerate(s):
+            if on:
+                return b[i * width : (i + 1) * width]
+        return a
+    av, bv = _int(a), _int(b)
+    if t == "$not":
+        r = ~av
+    elif t in ("$and", "$or", "$xor", "$xnor"):
+        r = {
+            "$and": av & bv,
+            "$or": av | bv,
+            "$xor": av ^ bv,
+            "$xnor": ~(av ^ bv),
+        }[t]
+    elif t in ("$reduce_or", "$reduce_bool"):
+        r = int(av != 0)
+    elif t == "$reduce_and":
+        r = int(av == (1 << len(a)) - 1)
+    elif t == "$reduce_xor":
+        r = bin(av).count("1") & 1
+    elif t == "$logic_not":
+        r = int(av == 0)
+    elif t == "$logic_and":
+        r = int(av != 0 and bv != 0)
+    elif t == "$logic_or":
+        r = int(av != 0 or bv != 0)
+    elif t in ("$eq", "$ne", "$lt", "$le", "$gt", "$ge"):
+        r = {
+            "$eq": av == bv,
+            "$ne": av != bv,
+            "$lt": av < bv,
+            "$le": av <= bv,
+            "$gt": av > bv,
+            "$ge": av >= bv,
+        }[t]
+    elif t in ("$add", "$sub", "$mul"):
+        r = {"$add": av + bv, "$sub": av - bv, "$mul": av * bv}[t]
+    elif t == "$shiftx":
+        r = av >> bv if bv < len(a) else 0
+    else:
+        raise AssertionError(f"evaluator does not model {t}")
+    r &= mask
+    return [(r >> i) & 1 for i in range(width)]
+
+
+def _evaluator(module: Module, values: dict[str, int]):
+    """``bits -> int`` over ``module``'s combinational logic, with the
+    named ports / registers in ``values`` (by netname or port name) as its
+    inputs. Flop outputs not named are 0."""
+    env: dict[Bit, int] = {}
+    for name, value in values.items():
+        bits = (
+            module.ports[name].bits
+            if name in module.ports
+            else module.netnames[name].bits
+        )
+        for i, bit in enumerate(bits):
+            env[bit] = (value >> i) & 1
+    comb: dict[Bit, tuple[Cell, int]] = {}
+    for c in module.cells.values():
+        if "Y" in c.connections and "Q" not in c.connections:
+            for i, bit in enumerate(c.connections["Y"]):
+                comb[bit] = (c, i)
+    memo: dict[str, list[int]] = {}
+
+    def get(bit: Bit) -> int:
+        if isinstance(bit, str):
+            return 1 if bit == "1" else 0
+        if bit in env:
+            return env[bit]
+        if bit not in comb:
+            return 0
+        cell, i = comb[bit]
+        if cell.name not in memo:
+            memo[cell.name] = _comb_value(cell, get)
+        return memo[cell.name][i]
+
+    return lambda bits: _int([get(b) for b in bits])
+
+
+def _flop_of(module: Module, q_name: str) -> Cell:
+    """The flop whose ``Q`` is netname ``q_name``."""
+    bits = set(module.netnames[q_name].bits)
+    for c in module.cells.values():
+        if "Q" in c.connections and set(c.connections["Q"]) & bits:
+            return c
+    raise AssertionError(f"no flop drives {q_name}")
+
+
 # --- 1. wires get a netname --------------------------------------------------
 
 _WIRES = """module sub (input wire ca, input wire cb, input wire d, output reg q);
@@ -209,3 +314,72 @@ endmodule
 """
     module = _slang(tmp_path, src)
     assert module.netnames["tapped"].attributes.get("keep_me") is not None
+
+
+# --- 2. overlapping case labels in a clocked block: first match wins --------
+
+_OVERLAP = """module m (input clk_a, input clk_b, input d, input e, input f,
+          input [1:0] sel, output reg q, output reg r);
+    always @(posedge clk_a) begin
+        casez (sel)
+            2'b1?:   q <= d;
+            2'b?1:   q <= e;
+            default: q <= f;
+        endcase
+        case (sel)
+            2'd1, 2'd2: r <= d;
+            2'd2:       r <= e;
+        endcase
+    end
+endmodule
+"""
+
+
+def _next_state(module: Module, reg: str, values: dict[str, int]) -> int:
+    flop = _flop_of(module, reg)
+    return _evaluator(module, values)(flop.connections["D"])
+
+
+@pytest.mark.parametrize("sel", range(4))
+@pytest.mark.parametrize("data", range(8))
+def test_clocked_case_first_matching_label_wins(
+    tmp_path: Path, sel: int, data: int
+) -> None:
+    """``sel == 2'b11`` matches both ``casez`` items and ``sel == 2`` both
+    ``case`` items: the first one in source order wins (IEEE 1800-2017
+    12.5). The clocked lowering used to let the last write win."""
+    d, e, f = data & 1, (data >> 1) & 1, (data >> 2) & 1
+    values = {"sel": sel, "d": d, "e": e, "f": f, "q": 0, "r": 0}
+    module = _slang(tmp_path, _OVERLAP)
+    want_q = d if sel & 2 else e if sel & 1 else f
+    want_r = d if sel in (1, 2) else 0  # r holds (0) otherwise
+    assert _next_state(module, "q", values) == want_q
+    assert _next_state(module, "r", values) == want_r
+    if _HAVE_YOSYS and sel == 3 and data == 0b011:
+        y_mod = _yosys(tmp_path, _OVERLAP)
+        for reg in ("q", "r"):
+            for s in range(4):
+                for v in range(8):
+                    vals = {**values, "sel": s, "d": v & 1, "e": (v >> 1) & 1}
+                    vals["f"] = (v >> 2) & 1
+                    assert _next_state(module, reg, vals) == _next_state(
+                        y_mod, reg, vals
+                    ), (reg, s, v)
+
+
+def test_distinct_constant_labels_add_no_priority_logic(tmp_path: Path) -> None:
+    """Labels that are distinct constants cannot overlap, so their arms
+    need no "no earlier label matched" term: the netlist is as before."""
+    src = """module m (input clk_a, input d, input e, input [1:0] sel,
+          output reg q);
+    always @(posedge clk_a)
+        case (sel)
+            2'd0: q <= d;
+            2'd1: q <= e;
+            2'd2: q <= 1'b0;
+        endcase
+endmodule
+"""
+    module = _slang(tmp_path, src)
+    assert not _cells(module, "$and")
+    assert len(_cells(module, "$not")) == 0

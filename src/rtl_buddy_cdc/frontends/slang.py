@@ -1965,8 +1965,11 @@ class _ModuleBuilder:
         - **Dynamic case-expr we can lower (#85).** Emit a ``$eq``
           per match expression with the case-expr bits on ``A`` and
           the match constant on ``B``. Items with multiple matches
-          OR the per-match equalities together. The default arm's
-          enable is ``$not($or(all explicit-match equalities))``.
+          OR the per-match equalities together; when two items can match
+          the same value, an item's enable also ANDs in "no earlier item
+          matched", so the first match wins (rtl-buddy-cdc#384). The
+          default arm's enable is ``$not($or(all explicit-match
+          equalities))``.
           Each arm walks with its enable pushed onto
           ``_enable_stack``; the drain builds the corresponding
           ``$mux`` tree.
@@ -2017,16 +2020,30 @@ class _ModuleBuilder:
         base = self._blocking_values()
         explicit_match_bits: list[Bit] = []
         arm_states: list[tuple[Bit, dict[Any, tuple[Bit, ...]]]] = []
+        # The first matching item wins (IEEE 1800-2017 12.5). The drain lets
+        # a later write override an earlier one, so when two items can match
+        # the same value, each item's enable also carries "no earlier item
+        # matched" (rtl-buddy-cdc#384: overlapping labels resolved
+        # last-match-wins). Distinct constant labels cannot overlap and keep
+        # the plain per-item match.
+        overlap = self._case_labels_may_overlap(statement, items)
+        earlier: Bit | None = None
         for item in items:
             item_match_bits = [
                 self._case_label_match(case_expr_bits, match_expr, statement)
                 for match_expr in getattr(item, "expressions", []) or []
             ]
             explicit_match_bits.extend(item_match_bits)
-            item_enable = self._or_bits(item_match_bits)
+            own_match = self._or_bits(item_match_bits)
             item_stmt = getattr(item, "stmt", None)
-            if item_enable is None:
+            if own_match is None:
                 continue  # an item with no labels never matches
+            item_enable = own_match
+            if overlap and earlier is not None:
+                item_enable = self._and_bit(own_match, self._lower_not(earlier))
+            earlier = (
+                own_match if earlier is None else self._or_bits([earlier, own_match])
+            )
             arm_states.append(
                 (item_enable, self._clocked_arm(item_enable, item_stmt, walk, base))
             )
@@ -2042,6 +2059,37 @@ class _ModuleBuilder:
                     self._lower_not(no_match), default_arm, walk, base
                 )
         self._merge_blocking(base, arm_states, default_state)
+
+    def _case_labels_may_overlap(self, stmt: Any, items: list[Any]) -> bool:
+        """Whether two items of ``case`` statement ``stmt`` can match the
+        same value: ``False`` only for a plain ``case`` whose labels are
+        all distinct, fully known (no ``x`` / ``z``) constants."""
+        condition = str(getattr(stmt, "condition", "")).rsplit(".", 1)[-1]
+        if condition not in {"Normal", ""}:
+            return True
+        seen: set[tuple[Bit, ...]] = set()
+        for item in items:
+            for label in getattr(item, "expressions", []) or []:
+                if label is None or self._kind_name(label) == "RangeExpression":
+                    return True
+                bits = self._constant_label_bits(label)
+                if bits is None or bits in seen:
+                    return True
+                seen.add(bits)
+        return False
+
+    def _constant_label_bits(self, label: Any) -> tuple[Bit, ...] | None:
+        """A ``case`` label's value as ``0`` / ``1`` bits with the leading
+        zeros stripped, or ``None`` when it is not a fully known constant."""
+        value = self._const_int(label)
+        if value is None or value < 0:
+            return None
+        bits = self._constant_bits(label)
+        if bits is not None and any(b not in ("0", "1") for b in bits):
+            return None
+        return tuple(
+            "1" if (value >> i) & 1 else "0" for i in range(value.bit_length())
+        )
 
     def _case_expr_bits(self, stmt: Any) -> tuple[Bit, ...]:
         """The bits of a ``case`` statement's expression, or a reported
