@@ -771,7 +771,9 @@ def test_sync_reset_under_enable_is_an_sdffce(tmp_path: Path, caplog) -> None:
             assert ev(r.connections["EN"]) == en & go
     if _HAVE_YOSYS:
         # Only ``q``: for ``if (!srst_n)`` this frontend keeps its ``$sdff``
-        # convention (``SRST`` = ``srst_n``, active low) where opt_dff,
-        # without opt_expr, leaves ``SRST`` on proc's ``$logic_not``.
+        # convention (``SRST`` = ``srst_n``, active low). Yosys 0.64's
+        # ``proc`` folds the ``$logic_not`` into the mux legs, so opt_dff
+        # gives the same pin; ``test_slang_parity_390`` compares the
+        # active-low form through any inverter (rtl-buddy-cdc#390).
         y_mod = _yosys(tmp_path, _SRST_CE, extra="opt_dff")
         assert _sdff_view(module)["q[0]"] == _sdff_view(y_mod)["q[0]"]

@@ -34,8 +34,12 @@ swappable so the rule pack doesn't depend on a specific toolchain.
   frontend (Yosys or slang) for source-to-analysis convenience.
 - Not a timing tool. SDC is parsed for **clock topology and async
   partitioning only**; numeric delays and slack are ignored.
-- Not a Tcl interpreter. The SDC parser is a deliberate `shlex`-based
-  pattern matcher, not a real Tcl host (see [§6](#6-sdc-parsing)).
+- Not a Tcl host for arbitrary scripts. The SDC is evaluated in a
+  sandboxed, resource-limited Tcl safe interpreter running out of
+  process (or, without `_tkinter`, read by a word tokenizer), and only
+  the CDC-relevant commands are interpreted; collections are recorded
+  as patterns, never resolved by Tcl against the design (see
+  [§6](#6-sdc-parsing)).
 - Not (yet) a fully hierarchical analyzer. The netlist is still
   analysed as one flattened top, but since the #253 CDC-scaling work it
   may carry **blackbox boundary** siblings: single-clock subtrees are
@@ -1474,26 +1478,59 @@ taxonomy needs to land in both.
 
 ## 6. SDC parsing
 
-`sdc.py` is intentionally **not a Tcl interpreter**. SDC is Tcl
-syntactically, but the CDC-relevant subset is small enough that a
-hand-rolled Tcl-aware tokenizer plus a per-command arg-spec table is
-the right tool: real Tcl interpreters (`tkinter.Tcl()`) execute user
-code, complicate deployment, and add a non-Python dependency to the
-wheel. The trade-off and the conditions under which we'd revisit it
-are recorded on rtl-buddy-cdc#144.
+SDC is Tcl. `sdc.py` reads it with one of **two interchangeable
+Layer-1 backends** and hands both results to the same Layer-2 slicer,
+handlers and `ClockSpec`, so every consumer is backend-agnostic
+(rtl-buddy-cdc#298; the original single-tokenizer design and the
+conditions for revisiting it are on rtl-buddy-cdc#144 — the `$var`
+trigger recorded there fired through rtl-buddy#641):
 
-The implementation has two layers, introduced together in the #144
-rewrite (after the pointwise fixes for #140 and #142 made clear the
-old shlex-based shape was generating bugs of the same class):
+- **`tcl`** (preferred, used whenever the worker probe succeeds) — a
+  real Tcl evaluation: `tkinter.Tcl()` → `interp create -safe` → an
+  `unknown` handler aliased back into Python that records each SDC
+  command and re-wraps each `get_*` / `all_*` collection and collection
+  operator as the bracketed word the tokenizer would have seen. `set`,
+  `expr`, `foreach`, `proc`, `\` continuation and nested `[…]`
+  substitution work. The safe child has no `exec` / `open` / `file` /
+  `socket` / `load` / `source`, so a constraints file cannot run or
+  touch anything, and it carries `interp limit` command / wall-clock
+  budgets armed before any eval, so `while 1 {}` ends in a read error
+  instead of a hang. **The interp runs out of process**, in
+  `tcl_worker.py` (`python -m rtl_buddy_cdc.tcl_worker`, one JSON
+  request / response per SDC file); `sdc.py` never imports `_tkinter`,
+  because Tcl's notifier thread can wedge a later `subprocess`
+  fork+exec on macOS, and rb-cdc spawns yosys / slang right after the
+  parse. A Tcl error or a blown budget re-reads the whole file with
+  the tokenizer, with a warning.
+- **`tokenizer`** (fallback, when the worker has no `_tkinter`) — the
+  hand-written Tcl-aware word splitter in `tcl_tokenizer.py`
+  (stdlib-only, vendored verbatim by rtl-buddy). It evaluates nothing:
+  `$var`, `expr` and command substitution stay as written, and the
+  first construct it has to drop raises one `sdc.tokenizer_skipped`
+  warning per file.
 
-1. **Layer 1 — Tcl word tokenizer** (`_tokenize`). Consumes the SDC
-   source and emits a list of word lists, one per logical command
-   line. ``{...}`` braces and ``[...]`` brackets are single tokens
-   with nesting respected, ``\<newline>`` collapses line continuation
-   to a space, ``"..."`` strips quoting (backslash escapes the next
-   character inside), ``#`` at a word boundary comments to
-   end-of-line. The single-token form ``{ck_a}`` / ``[ck_a]`` —
-   ground zero for #142 — comes through as one word, not two.
+`sdc.backend()` reports the choice; `RB_CDC_SDC_BACKEND` /
+`parse(..., backend=...)` override it, and the tests parametrise over
+both through the `sdc_backend` fixture. Neither backend resolves a
+collection against the design: the reader has no netlist, so it records
+patterns, and netlist resolution lives in `sdc_objects.py`. Handlers
+must therefore not key on a collection's *shape* without a
+backend-agnostic fallback — the Tcl backend evaluates `{d_in}` down to
+a bare `d_in`.
+
+The slicer and handlers are the two-layer shape of the #144 rewrite
+(after the pointwise fixes for #140 and #142 made clear the old
+shlex-based shape was generating bugs of the same class):
+
+1. **Layer 1 — reader** (either backend above). Emits one word list
+   per SDC command. The tokenizer keeps ``{...}`` braces and ``[...]``
+   brackets as single tokens with nesting respected, collapses
+   ``\<newline>`` continuation to a space, strips ``"..."`` quoting
+   and comments ``#`` to end-of-line; the single-token form ``{ck_a}``
+   / ``[ck_a]`` — ground zero for #142 — comes through as one word,
+   not two. The Tcl backend produces the same word for every
+   collection (`[get_ports clk]`, `[remove_from_collection [all_inputs]
+   [get_ports clk]]`) and the evaluated text for everything else.
 
 2. **Layer 2 — Per-command arg-spec table** (`ARG_SPECS`). Each
    supported command declares its flags with arity:
@@ -1524,8 +1561,14 @@ typed `clk`, the port meant to be removed.) After slicing,
 command heads are not all ones a handler evaluates — `get_clocks` /
 `get_ports` / `get_pins` / `get_cells` / `get_nets`, `all_inputs` /
 `all_outputs` / `all_clocks` / `all_registers`, `expr` (a tokenizer delay
-value), a bus index (`p[3]`, `p[*]`), and, in a `set_*_delay` target
-only, the collection operators — with one `partial_warnings` entry each.
+value), a bus index (`p[3]`, `p[*]`), the collection operators where a
+handler evaluates them (a `set_*_delay` target, `-group`, the
+`set_false_path` / `set_max_delay` `-from` / `-to` family; table
+`_OPERATOR_FLAGS`), and the list builders `list` / `concat` in every
+collection position (`_LIST_FLAGS`, `_LIST_TAIL_COMMANDS`; each element
+is checked on its own, so `[list a [foo b]]` loses only `[foo b]`, as it
+does once the Tcl backend has evaluated the list) — with one
+`partial_warnings` entry each.
 An operand that was nothing but such a call becomes `""`, which every
 handler reads as naming nothing. One pass, after the reader, so both
 backends and every command behave the same. A side effect: an unbraced
@@ -1618,12 +1661,67 @@ warnings and changes nothing:
   only where the text decides it (`{a b c}` minus `b`); the resolver
   resolves each removed pattern with the same matcher, without the
   direction / clock filter, subtracts its bits, and drops a port left
-  with none (removing some bits of a bus leaves the port typed — typing
-  is per port). A removed pattern that matches nothing is warned about.
+  with none. Removing some bits of a bus leaves the whole port typed,
+  removed bits included, because typing is per port; that is warned about
+  with the port, the removed pattern and the clock (rtl-buddy-cdc#390 —
+  per-bit typing would change every `port_clock` consumer). A removed
+  pattern that matches nothing is warned about.
   Not supported, and reported with the target ignored: `-intersect`, a
   removal inside the removed operand (`A − (B − C)`), a pin / cell
-  operand. Elsewhere (clock lists, endpoints, case analysis) the
-  operators are unrecognised commands, dropped as above.
+  operand. The evaluator itself (`_collection_terms` / `_operator_terms`)
+  is kind-agnostic: it hands every plain item to a per-kind leaf, the
+  port leaf here and the clock leaf in clock positions (below). In a
+  single-clock option, `-through` and `set_case_analysis` the operators
+  are unrecognised commands, dropped as above.
+
+**Collection items** (rtl-buddy-cdc#390). Every reader of a collection
+operand takes its items from `_collection_items`: the operand's
+top-level items, braced elements unbraced and split again, and a
+`[list …]` / `[concat …]` call replaced by its operands' items. The Tcl
+backend has already evaluated `[list [get_ports a] [get_ports b]]` to
+the Tcl list `{[get_ports a]} {[get_ports b]}`; the tokenizer keeps the
+call opaque; both reach the handlers as the items `[get_ports a]`,
+`[get_ports b]`. (`_extract_names`, which strips every bracket and brace
+and only a *leading* `get_*` head, read both as the ports `a`,
+`get_ports`, `b`; it is still exported for rtl-buddy's vendored copy and
+the fuzz mutator, but no handler uses it.) `create_clock` /
+`create_generated_clock` targets go through `_clock_targets`: a port or
+pin collection or bare name; anything else selects nothing with a
+warning; a trailing bus index is dropped with a warning, because a clock
+lives on a whole port (the tracer names a clock root by its port) or net
+(`pin_clocks` is looked up by netname).
+
+**Clock collections** (rtl-buddy-cdc#390). A clock position —
+`set_clock_groups -group`, the clock endpoints of `set_false_path` and
+`set_max_delay -datapath_only`, `-clock`, `-master_clock` — evaluates its
+operand to terms with the clock leaf (`_clock_leaf`): `[get_clocks …]`
+and bare / braced names are clock patterns, `[all_clocks]` is the glob
+`*`, and (in `-group` and the single-clock options only, the pre-#390
+reading) `[get_ports p]` / `[get_pins p]` name the clock `p`, as a
+`create_clock` without `-name` is named after its port. Every other
+collection — `all_registers`, `all_inputs`, `all_outputs`, `get_cells`,
+`get_nets` — names no clock and selects nothing, with a warning (before
+#390 `_extract_names` read `[all_clocks]` as a clock called `all_clocks`).
+In `-from` / `-to`, design-object collections are split off first as
+`SdcObject` patterns (§6.4), unless the item is an operator call.
+`_resolve_clock_terms` turns terms into names. An exact name is kept
+whether or not it is declared, as clock references always were. A glob
+expands against `ClockSpec._clock_universe`: every clock the *whole
+file* leaves declared, from a first pass over `create_clock` /
+`create_generated_clock` alone (`_declared_clock_names`). SDC runs in
+file order, and a timer's `all_clocks` sees only the clocks created
+above it; but every other clock reference here (a `-group` name, a
+`-clock` that `_undeclared_delay_clocks` checks after the whole file)
+already counts a clock declared further down, and an `[all_clocks]` that
+silently left such a clock out would make two spellings of one group
+disagree — so the expansion uses the whole file and warns when it picks
+up a clock declared below the statement. A glob matching nothing and a
+removed pattern matching no clock are warned about. A single-clock
+option takes a collection only when it resolves to exactly one clock;
+several (`{a b}`, `[all_clocks]` with more than one clock) ignore the
+option with a warning rather than taking the first. A `set_false_path`
+side whose operands all select nothing ignores the statement, so an
+unreadable side never widens an object-scoped exception to "any object".
 
 At the end of parsing, each delay whose `-clock` names no declared
 clock (`create_clock`, virtual or not, or `create_generated_clock`) gets
@@ -1661,12 +1759,16 @@ dropped at the `logging.DEBUG` level. This is by design:
 users should be able to point the tool at their existing constraint
 file without curating a CDC-only subset.
 
-The parser is also deliberately *not* a Tcl interpreter (see this
-section's intro). Constructs not supported: command substitution
-beyond `[get_clocks …]` / `[get_ports …]` / `[get_pins …]`, `set`
-variables, `expr`, and `-filter` clauses inside collection commands. If any of these become real requirements, the right move is
-to switch to `tkinter.Tcl()` (the rejected alternative recorded on
-#144), not to grow them onto this tokenizer.
+Neither backend resolves collections against the design or evaluates
+collection-*query* commands (see this section's intro): `-filter`
+clauses, `filter_collection` / `sort_collection` / `index_collection`
+/ `get_object_name`, `foreach_in_collection` bodies and `-intersect`
+are reported and ignored. On the tokenizer backend `set` variables,
+`expr` and command substitution other than the collections and
+collection operators the handlers read are not evaluated either (one
+`sdc.tokenizer_skipped` warning per file); the Tcl backend evaluates
+them. New Tcl-level features belong in the Tcl backend; the tokenizer
+is the fallback and stays the documented subset.
 
 ### 6.3 Diagnostics policy
 
