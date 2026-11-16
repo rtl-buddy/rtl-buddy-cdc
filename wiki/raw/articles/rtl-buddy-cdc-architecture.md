@@ -1316,8 +1316,8 @@ deep clock tree — a long divider / buffer / ICG chain — can exceed
 without a code change. The change is monotone: a larger budget can
 only resolve **more** flops, never fewer, so the default leaves every
 result identical to a fixed-16 walk. The crossing walk's own
-`max_hops` data-fanout budget (§7) is a separate concern and is not
-affected. See issue #263.
+data-fanout cap (`--crossing-depth`, none by default, §7.1) is a
+separate concern and is not affected. See issue #263.
 
 `--clock-trace-depth` threads to **every** clock-root trace on a run,
 not only the crossing walk. The boundary-abstraction decision
@@ -1680,8 +1680,9 @@ side when every clock the side's domain stands for
 statement with `-through` must cover alone, and only when **every** path
 from source to destination passes each `-through` group: the crossing
 walk is re-run from the source (same cells, lane-precise edges, same
-4-hop budget) with the through bits as cut points, and the destination's
-`D` must become unreachable. A partial cover counts for nothing.
+`--crossing-depth` cap, none by default) with the through bits as cut
+points, and the destination's `D` and capture-control pins (§7.3) must
+become unreachable. A partial cover counts for nothing.
 False-path and datapath-only statements are evaluated separately.
 
 **Effect on findings.** A covered crossing is *acknowledged* only by a
@@ -1758,16 +1759,39 @@ For each source flop with a known clock:
 
 1. Start the BFS frontier at every bit on its `Q` pins, hop count 0.
 2. For each `(bit, hops)` on the frontier:
-   - If `bit` is connected to any flop's `D` pin in a *different*
-     clock domain, record the crossing (or update the existing record
-     for that `(src_flop, dst_flop)` pair).
+   - If `bit` is connected to any flop's `D` pin — or to one of its
+     capture-control pins (§7.3) — in a *different* clock domain,
+     record the crossing (or update the existing record for that
+     `(src_flop, dst_flop)` pair).
    - Else, push `bit` through every consumer cell that isn't a flop,
      emitting that cell's outputs at `hops + 1`. Flops are skipped as
-     transit nodes — landing on a `D` pin is the only way the BFS
+     transit nodes — landing on a capture pin is the only way the BFS
      terminates productively.
-3. Hop budget is `max_hops = 4` by default. Beyond that, signals are
-   treated as no longer "directly connecting" the two flops; the rule
-   pack can't reason about the synchronizer shape past that depth.
+3. No hop budget by default: the walk follows the source's whole
+   combinational cone (rtl-buddy-cdc#347). It used to stop at
+   `max_hops = 4`, on the theory that a deeper path no longer "directly
+   connects" the two flops; but a foreign-domain signal behind five
+   cells of select / ready logic is still sampled unsynchronised, and on
+   a gate-level netlist one coarse cell is several gates, so the old
+   budget silently dropped real crossings (a bridge block reported 7
+   crossings and no finding at 4, 45 crossings and 10 CDC-001 at 16).
+   Each walk keeps a per-source visited set and only expands bits from
+   which a capture pin of another domain is reachable at all (§13), so
+   the whole-cone walk costs one visit per bit of the cross-domain part
+   of each source's fanout.
+4. `--crossing-depth N` (`find_crossings(max_hops=N)`) caps the walk for
+   run time. A cap is never silent: wherever it stops a bit from which a
+   capture pin of another domain is still reachable (the backward
+   distances say so), the walk records a `DepthCut(src, src_clock,
+   dst_clock)` through its `on_depth_cut` callback. The CLI keeps the
+   cuts whose clock pair is asynchronous (`filter_async_cuts`, the
+   `filter_async` predicate), lifts the ones inside analysed boundary
+   modules (§7.4), and reports them as `summary.crossing_depth_cut`, a
+   sampled `crossing_depth_cuts` list and a text-report warning, next to
+   `summary.crossing_depth` (the cap, `null` uncapped). A cut means "a
+   path was not followed", not "a crossing is missing": the same
+   destination may also be reached by a shorter path. The `-through`
+   coverage walk (§6.4) takes the same cap.
 
 ### 7.2 Grouping
 
@@ -1801,18 +1825,37 @@ records with `width = 1`.
   no port-sourced crossings for untyped ports at all.
 - **CLK pins as transit bits.** `_build_bit_consumers` filters out
   clock connections so the data BFS doesn't follow them.
-- **Reset and control pins as crossing *sinks*.** `flop_by_d_bit` is
-  built from `Flop.d`, so the only pin the BFS can terminate on is
-  `D`. A signal arriving on `SRST` / `ARST` / `EN` / a clock-mux `S`
-  never produces a `Crossing`, no matter which domain it came from.
-  This is a real scope boundary, not an oversight — the rules that
-  consume crossings (sync-chain depth, gray coding, bus width,
-  reconvergence) all reason about a *data* path, and a reset pin is
-  not one. Rules that care about those pins walk them directly
-  instead: RDC-001 / RDC-003 from `ARST` / `SRST`, CDC-010 from
-  clock-network control pins, and CDC-011 from `SRST` (§8.18). When
-  adding a rule about a non-`D` pin, walk the pin — do not widen the
+- **Asynchronous reset and clock-network pins as crossing *sinks*.**
+  A signal arriving on `ARST` / `CLR` / `ALOAD` (gate-level `R` / `L`
+  of an async family) or on a clock-mux `S` never produces a
+  `Crossing`, no matter which domain it came from. Those pins are not
+  sampled by the flop's clock, so the rules that consume crossings
+  (sync-chain depth, gray coding, bus width, reconvergence) have
+  nothing to say about them. Rules that care walk them directly:
+  RDC-001 from `ARST`, CDC-010 from clock-network control pins. When
+  adding a rule about such a pin, walk the pin — do not widen the
   crossing model.
+
+  The **clock enable** and the **synchronous reset** are different:
+  they are capture inputs (rtl-buddy-cdc#375). After `proc` both are
+  muxes on `D` (a hold mux, a constant-leg reset mux), so a foreign
+  signal on either is in the `D` cone and its crossing is found;
+  `opt_dff` folds the same muxes into `$dffe` `EN` / `$sdff` `SRST`
+  (`E` / `R` on `$_DFFE_*` / `$_SDFF*`), and a walk that ended on `D`
+  only lost the crossing on every optimised or gate-level netlist.
+  `domain.capture_control_pins` names those pins per flop with the
+  number of folded muxes between each and `D` (1; 2 for the lower-
+  priority pin of `$sdffe` — enable — and `$sdffce` — reset), and the
+  walk lands on them at that depth, reaching every `D` bit (the folded
+  select fanned out to all lanes). The crossing model is therefore the
+  `proc` form's: the same `(src, dst)` pairs, `min_hops` and `width`
+  before and after `opt_dff`, which
+  `tests/test_gate_level_corpus.py::test_crossings_invariant_under_opt_dff`
+  holds over every fixture. RDC-003 still walks `SRST` directly, so a
+  foreign sync reset on a `$sdff` reports both RDC-003 (the reset view)
+  and CDC-001 on the crossing, where the `proc` form reports CDC-001;
+  CDC-011 unions its `SRST` walk with the crossings (§8.18), so it stays
+  one finding either way.
 - **Same-domain crossings.** Filtered out at record-creation time —
   if `dst_clock == src_clock`, no record is created.
 - **The storage path of a memory.** Memory *ports* are walked (§7.5),
@@ -2772,8 +2815,9 @@ legacy-id alias in `waivers.py`.
 ### 8.18 CDC-011 — the `SRST` supplement (issue #272)
 
 CDC-011 is defined over *ports*, but it was implemented over
-*crossings*, and crossings only sink on `D` pins (§7.3). That mismatch
-made one finding depend on a synthesis-pass detail.
+*crossings*, and crossings only sank on `D` pins (§7.3; the sync-reset
+pin is a capture input since rtl-buddy-cdc#375). That mismatch made one
+finding depend on a synthesis-pass detail.
 
 Take an untyped input used as a synchronous reset. If the consumer
 flop also has a real data input, `proc` leaves a `$dff` whose `D` is a
@@ -3610,11 +3654,19 @@ blocks**, not full-SoC scale. On the alu_accel design (~90 flops, ~545
 cells, post-flatten) a full lint run is well under one second. The
 current bottlenecks if scaled up:
 
-- `find_crossings` is `O(F · max_hops · avg_fanout)` in the worst
-  case, where F is flop count. A backward pass per clock domain
-  (`_make_fanout_filter`) first finds which bits can reach a
-  foreign-domain flop within the hop budget; the forward walk expands
-  only those, so same-domain logic costs one check per source bit.
+- `find_crossings` first runs one unbounded, level-ordered backward
+  walk per clock domain from that domain's capture pins
+  (`_capture_distances`): each bit is expanded once per domain whose
+  capture cone it is in, usually one. The forward walk from each
+  source then expands only bits that reach a capture pin of *another*
+  domain (within the cap, if one is set), with a per-source visited set,
+  so same-domain logic costs one check per source bit and the
+  cross-domain cone is visited once per source. Removing the old 4-cell
+  budget (rtl-buddy-cdc#347) measured, on a synthetic gate-level design
+  of 176k cells with three clocks and deep adder trees between them,
+  0.83 s at the old budget, 1.19 s at 16 and 2.34 s uncapped for the
+  walk, with peak memory 766 → 883 MB; every committed fixture and the
+  open-source integration corpus are unchanged.
 - CDC-004 / CDC-020 / the domain-map verdict find a multi-bit
   synchroniser's next stage through `_RuleContext.flops_by_d`, an index
   of flops by their `D` bit tuple, rather than rescanning every cell

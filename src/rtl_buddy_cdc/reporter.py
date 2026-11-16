@@ -20,7 +20,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import IO
 
-from rtl_buddy_cdc.domain import Crossing, FlopDomain, InferredClockCandidate
+from rtl_buddy_cdc.domain import (
+    Crossing,
+    DepthCut,
+    FlopDomain,
+    InferredClockCandidate,
+)
 from rtl_buddy_cdc.netlist import Module
 from rtl_buddy_cdc.rules import Violation
 from rtl_buddy_cdc.sdc import ClockSpec
@@ -57,6 +62,9 @@ JSON_CONTRACT: dict[str, type] = {
 # carries the full count. Kept bounded so a pathologically
 # under-resolved netlist can't bloat the JSON report.
 _DOMAIN_UNKNOWN_SAMPLE_CAP = 20
+# Same bound for the sample of paths a ``--crossing-depth`` cap stopped
+# (``crossing_depth_cuts``); ``summary.crossing_depth_cut`` is the count.
+_DEPTH_CUT_SAMPLE_CAP = 20
 
 # Short-form descriptions per rule. Keep this terse — the long-form
 # message is already attached to each result.
@@ -132,6 +140,12 @@ class AnalysisResult:
     # flag is off — which is what keeps the suppression visible rather
     # than silent.
     scan_mode_suppressed: int = 0
+    # The crossing walk's hop cap (``--crossing-depth``; ``None`` = whole
+    # cone) and the asynchronous paths it stopped (rtl-buddy-cdc#347).
+    # Report-only, like ``domain_unknown``: a non-empty list means
+    # crossings behind those paths may be missing from this report.
+    crossing_depth: int | None = None
+    depth_cuts: list[DepthCut] = field(default_factory=list)
 
 
 # --- text -------------------------------------------------------------------
@@ -277,6 +291,23 @@ def _render_design_summary(
             f"flops have unresolved clock domain — excluded from CDC "
             f"analysis{s.reset}\n"
         )
+
+    # Crossing-walk cap (rtl-buddy-cdc#347): paths a --crossing-depth cap
+    # stopped short of a flop in an asynchronous domain. Never silent.
+    if result.depth_cuts:
+        n_cut = len(result.depth_cuts)
+        out.write(
+            f"  {s.yellow}{s.bold}⚠ --crossing-depth {result.crossing_depth} cut "
+            f"{n_cut} path{'s' if n_cut != 1 else ''} into an asynchronous "
+            f"domain — crossings behind {'them' if n_cut != 1 else 'it'} may be "
+            f"missing; raise or drop the cap{s.reset}\n"
+        )
+        for cut in result.depth_cuts[:_DEPTH_CUT_SAMPLE_CAP]:
+            out.write(
+                f"    {s.dim}{cut.src} ({cut.src_clock}) → {cut.dst_clock}{s.reset}\n"
+            )
+        if n_cut > _DEPTH_CUT_SAMPLE_CAP:
+            out.write(f"    {s.dim}…{s.reset}\n")
 
     # Inferred-clock advisory (issue #263, P3): internal nets that fan
     # out to many flop CLK pins but carry no declared clock identity —
@@ -516,11 +547,23 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
             # cover the whole design. Report-only — never changes a
             # classification.
             "domain_unknown": len(unknown_flops),
+            # Coverage diagnostic (rtl-buddy-cdc#347): the crossing
+            # walk's hop cap (null = whole cone, the default) and how many
+            # (source, asynchronous destination clock) paths it stopped.
+            # Non-zero means crossings may be missing from this report.
+            "crossing_depth": result.crossing_depth,
+            "crossing_depth_cut": len(result.depth_cuts),
         },
         # Bounded sample of unresolved-flop cell names to aid debugging
         # (which subtrees under-resolved). Full count lives in
         # ``summary.domain_unknown``; this list is capped.
         "domain_unknown_flops": unknown_flops[:_DOMAIN_UNKNOWN_SAMPLE_CAP],
+        # Bounded sample of the cut paths; the full count is
+        # ``summary.crossing_depth_cut``.
+        "crossing_depth_cuts": [
+            {"src": c.src, "src_clock": c.src_clock, "dst_clock": c.dst_clock}
+            for c in result.depth_cuts[:_DEPTH_CUT_SAMPLE_CAP]
+        ],
         # Advisory (issue #263, P3): undeclared internal nets used as a
         # clock by many flops — likely a forgotten
         # ``create_generated_clock``. Report-only; never reflects a domain

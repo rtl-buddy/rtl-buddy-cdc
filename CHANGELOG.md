@@ -342,6 +342,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Crossings behind more than 4 combinational cells were dropped
+  silently** (rtl-buddy-cdc#347). `find_crossings` stopped its walk at
+  `max_hops=4` and the CLI never changed it, so a deeper path from one
+  domain into a flop of another was no crossing at all — no finding, no
+  count, no warning (a bridge block reported 7 crossings and no finding;
+  45 crossings and 10 real CDC-001 at depth 16). Gate-level netlists,
+  where one coarse cell is several gates, lost most of their crossings.
+  - The walk now follows the whole combinational cone by default. Work
+    stays bounded by a per-source visited set and by the backward
+    distance pass, now unbounded, that lets the walk expand only bits
+    which reach a flop of another domain at all. Measured on a synthetic
+    176k-cell gate-level design with deep adder trees between three
+    clocks: 0.83 s (old 4-cell budget) → 2.34 s for the walk, peak
+    memory 766 → 883 MB.
+  - New `--crossing-depth N` on `analyze` and `lint` caps the walk to
+    bound run time. A cap is never silent: every path it stops that
+    still reaches a flop in an asynchronous domain is counted in the new
+    `summary.crossing_depth_cut` (sampled in `crossing_depth_cuts`, with
+    `summary.crossing_depth` the cap, `null` uncapped) and warned about
+    in the text report, including paths inside analysed boundary
+    modules. The `set_false_path -through` coverage walk takes the same
+    cap.
+  - No committed fixture or integration-corpus verdict changes. New
+    fixture `bad_deep_comb_crossing` (a port- and a flop-sourced path
+    six cells deep, RTL / gate-level / greybox netlists).
+
+- **A crossing through a flop's enable or sync-reset pin was not found
+  after `opt_dff`** (rtl-buddy-cdc#375). `find_crossings` ended its walk
+  on flop `D` pins only. After `proc` a flop's enable is a hold mux and
+  its synchronous reset a constant-leg mux on `D`, so a foreign-domain
+  signal on either was found; `opt_dff` folds both into the flop
+  (`$dffe` `EN`, `$sdff` / `$sdffe` / `$sdffce` `SRST`, gate-level
+  `$_DFFE_*` / `$_SDFF*` `E` / `R`) and the crossing silently vanished
+  from optimised and gate-level netlists — e.g.
+  `always_ff @(posedge clk_b) if (en_a) q <= d_b;` with an
+  unsynchronised `clk_a` enable reported CDC-001 before `opt_dff` and
+  nothing after.
+  - The walk now lands on those pins too (`domain.capture_control_pins`),
+    at the depth of the mux they were folded from and reaching every
+    `D` bit, so `min_hops` and `width` match the `proc` form. The
+    port-, boundary- and `set_false_path -through` walks do the same.
+    Asynchronous reset / load pins are still not capture inputs.
+  - Verdict changes on committed fixtures: `bad_rdc_003_sync_reset_crossing`
+    (a `$sdff`) now reports CDC-001 on its unsynchronised sync-reset
+    crossing alongside RDC-003, as its `proc` form reports CDC-001;
+    `bad_untyped_sync_reset_srst` gains the `srst` port crossing (1 → 2
+    crossings, CDC-011 unchanged: it already unions its `SRST` walk with
+    the crossings).
+  - New fixture `bad_enable_pin_crossing` (the issue's reproducer in the
+    `proc`, `opt_dff` and gate-level forms) and a gate-level corpus check,
+    `test_crossings_invariant_under_opt_dff`, that every fixture keeps
+    the same register-to-register crossings after `opt_dff`.
+
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,
   a_q};` (a packed-shift synchroniser) lowered to no flops and no

@@ -62,7 +62,12 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from rtl_buddy_cdc.domain import Crossing, _build_bit_consumers, _lane_targets
+from rtl_buddy_cdc.domain import (
+    Crossing,
+    _build_bit_consumers,
+    _lane_targets,
+    capture_control_pins,
+)
 from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, Module
 from rtl_buddy_cdc.reporter import _instance_path
@@ -103,11 +108,6 @@ ACKNOWLEDGED_RULES: frozenset[str] = frozenset(
 _CROSSING_RULES: frozenset[str] = frozenset(
     {"CDC-001", "CDC-002", "CDC-003", "CDC-004"}
 )
-
-# The crossing walk's data-fanout hop budget (``domain.find_crossings``'s
-# ``max_hops`` default, which the CLI uses). The ``-through`` test walks
-# the same paths, so it must use the same budget.
-_CROSSING_MAX_HOPS = 4
 
 _FLATTEN_PREFIX = "$flatten\\"
 _GLOB_CHARS = frozenset("*?")
@@ -772,6 +772,8 @@ def coverage(
     crossings: Sequence[Crossing],
     resolution: Resolution,
     spec: ClockSpec,
+    *,
+    max_hops: int | None = None,
 ) -> dict[CrossingKey, CrossingCoverage]:
     """Which object-scoped constraints fully cover each crossing.
 
@@ -783,15 +785,18 @@ def coverage(
     (:meth:`ClockSpec.colocated_clocks`) is listed; an absent flag
     covers anything. A statement with ``-through`` must cover the
     crossing on its own, and only when *every* path from source to
-    destination within the crossing walk's hop budget passes through
-    each ``-through`` group. Partial covers count for nothing.
+    destination passes through each ``-through`` group. ``max_hops`` is
+    the crossing walk's cap (``find_crossings``'s, the CLI's
+    ``--crossing-depth``; ``None`` walks the whole cone): the ``-through``
+    test walks the same paths, so it takes the same cap. Partial covers
+    count for nothing.
 
     Datapath-only and false-path statements are evaluated separately —
     a crossing half covered by each is covered by neither.
     """
     if not resolution.constraints:
         return {}
-    walker = _ThroughWalker(module)
+    walker = _ThroughWalker(module, max_hops)
     by_src: dict[tuple[str, str], list[ResolvedConstraint]] = defaultdict(list)
     for rc in resolution.constraints:
         if rc.src.unconstrained:
@@ -932,17 +937,18 @@ class _ThroughWalker:
 
     Re-walks a crossing's source fanout the way
     :func:`rtl_buddy_cdc.domain.find_crossings` does — same cells, same
-    lane-precise edges, same hop budget — but treats the ``-through``
+    lane-precise edges, same hop cap — but treats the ``-through``
     bits as cut points. If the destination's ``D`` is still reachable,
     some path avoids the group and the crossing is not covered. One
     walk per (source, statement, group), cached; the consumer map is
     built once.
     """
 
-    def __init__(self, module: Module) -> None:
+    def __init__(self, module: Module, max_hops: int | None = None) -> None:
         self.module = module
+        self.max_hops = max_hops
         self._consumers: dict[Bit, list[tuple[str, str, int]]] | None = None
-        self._cache: dict[tuple[str, str, int, int], frozenset[Bit]] = {}
+        self._cache: dict[tuple[str, str, int, int], dict[Bit, int]] = {}
 
     def _source_bits(
         self, c: Crossing
@@ -959,17 +965,32 @@ class _ThroughWalker:
             return False
         (kind, name), bits = src
         dst_bits = {b for b in c.dst_flop.d if isinstance(b, int)}
+        # The destination's capture-control pins (rtl-buddy-cdc#375)
+        # capture too, at the depth of the mux opt_dff folded into them.
+        dst_cell = c.dst_flop.cell
+        ctrl = [
+            (b, depth)
+            for pin, depth in capture_control_pins(dst_cell)
+            for b in dst_cell.connections.get(pin, ())
+            if isinstance(b, int)
+        ]
         for gi, group in enumerate(rc.through):
             key = (kind, name, rc.index, gi)
             reached = self._cache.get(key)
             if reached is None:
                 reached = self._walk(bits, group)
                 self._cache[key] = reached
-            if reached & dst_bits:
+            if not dst_bits.isdisjoint(reached):
                 return False
+            for b, depth in ctrl:
+                hops = reached.get(b)
+                if hops is not None and (
+                    self.max_hops is None or hops + depth <= self.max_hops
+                ):
+                    return False
         return True
 
-    def _walk(self, start: Iterable[Bit], cut: frozenset[Bit]) -> frozenset[Bit]:
+    def _walk(self, start: Iterable[Bit], cut: frozenset[Bit]) -> dict[Bit, int]:
         if self._consumers is None:
             self._consumers = _build_bit_consumers(self.module)
         consumers = self._consumers
@@ -983,7 +1004,7 @@ class _ThroughWalker:
         while frontier:
             nxt: list[tuple[Bit, int]] = []
             for bit, hops in frontier:
-                if hops >= _CROSSING_MAX_HOPS:
+                if self.max_hops is not None and hops >= self.max_hops:
                     continue
                 for cell_name, cport, idx in consumers.get(bit, ()):
                     cell = cells[cell_name]
@@ -997,7 +1018,7 @@ class _ThroughWalker:
                             seen[ob] = hops + 1
                             nxt.append((ob, hops + 1))
             frontier = nxt
-        return frozenset(seen)
+        return seen
 
 
 # --- effect on findings --------------------------------------------------------

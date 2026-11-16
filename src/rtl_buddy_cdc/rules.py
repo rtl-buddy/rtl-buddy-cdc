@@ -4430,15 +4430,16 @@ def _unconstrained_srst_captures(
 ) -> dict[str, set[tuple[str, str]]]:
     """Untyped input ports that reach a flop's **synchronous reset** pin.
 
-    The crossing model is D-pin-scoped: :func:`find_crossings` seeds
-    and terminates its walk on flop ``D`` pins only, so a port that
-    lands on a dedicated ``SRST`` pin produces no ``Crossing`` at all.
-    Whether a sync reset lowers into a ``$dff`` D-cone (a reset mux,
-    reached by the port walk) or into a ``$sdff`` ``SRST`` pin (not
-    reached) is a synthesis-pass / coding-style detail — see issue
-    rtl-buddy-cdc#272. This helper closes that gap by walking the
-    ``SRST`` pins directly so CDC-011 reports the same finding either
-    way.
+    The crossing model was D-pin-scoped: :func:`find_crossings` seeded
+    and terminated its walk on flop ``D`` pins only, so a port that
+    landed on a dedicated ``SRST`` pin produced no ``Crossing`` at all.
+    Whether a sync reset lowers into a ``$dff`` D-cone (a reset mux) or
+    into a ``$sdff`` ``SRST`` pin is a synthesis-pass / coding-style
+    detail — see issue rtl-buddy-cdc#272. This helper closed that gap by
+    walking the ``SRST`` pins directly so CDC-011 reports the same
+    finding either way. The crossing walk lands on ``SRST`` too since
+    rtl-buddy-cdc#375; the union in :func:`check_cdc_011` makes the two
+    sources one finding.
 
     Returns ``{port_name: {(dst_clock, dst_flop_cell_name), ...}}`` for
     every top-level input port carrying :data:`UNCONSTRAINED_SENTINEL`
@@ -4497,8 +4498,9 @@ def check_cdc_011(
     such port; :func:`find_crossings` then walks them and emits
     port-sourced crossings whose ``src_clock`` carries the sentinel.
     The ``SRST`` case is picked up by
-    :func:`_unconstrained_srst_captures`, because crossings only ever
-    sink on ``D`` pins (issue rtl-buddy-cdc#272); both sets of
+    :func:`_unconstrained_srst_captures` (issue rtl-buddy-cdc#272; the
+    crossing walk itself also lands on ``SRST`` since
+    rtl-buddy-cdc#375); both sets of
     destinations are merged per port before severity is decided, so a
     port captured on a ``D`` pin in one domain and an ``SRST`` pin in
     another still collapses to one finding.
@@ -4524,7 +4526,7 @@ def check_cdc_011(
     """
     # {port: {(dst_clock, dst_flop_cell_name), ...}} — the union of the
     # D-pin destinations the crossing walk found and the SRST-pin
-    # destinations it structurally cannot see (#272).
+    # destinations of the direct SRST walk (#272), deduplicated.
     by_port: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for c in crossings:
         if c.src_port is None:

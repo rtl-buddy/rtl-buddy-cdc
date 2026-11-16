@@ -23,10 +23,12 @@ from rtl_buddy_cdc import (
 from rtl_buddy_cdc.abstract import instance_clock_pins
 from rtl_buddy_cdc.domain import (
     Crossing,
+    DepthCut,
     _bit_drivers,
     assign_domains,
     case_analysis_warnings,
     filter_async as domain_filter_async,
+    filter_async_cuts,
     find_crossings,
     find_inferred_clock_candidates,
 )
@@ -132,6 +134,18 @@ _CLOCK_TRACE_DEPTH_OPT = typer.Option(
     "(see the `domain_unknown` count); raise it (e.g. 40) to resolve "
     "them. Raising only ever resolves MORE flops — it never drops a "
     "crossing — so the default leaves results identical. See issue #263.",
+)
+_CROSSING_DEPTH_OPT = typer.Option(
+    None,
+    "--crossing-depth",
+    min=1,
+    help="Cap the crossing walk at N combinational cells between a source "
+    "and a destination flop. Default: no cap, the whole combinational "
+    "cone is walked (rtl-buddy-cdc#347). A cap only bounds run time on a "
+    "very large netlist, and is never silent: every path it stops that "
+    "still reaches a flop in an asynchronous domain is counted in "
+    "`summary.crossing_depth_cut` (and warned about in the text report), "
+    "since crossings behind it may be missing.",
 )
 _IGNORE_SCAN_MODE_OPT = typer.Option(
     False,
@@ -340,6 +354,7 @@ def analyze(
     sync_depth: int = _SYNC_DEPTH_OPT,
     sync_primitive: list[str] = _SYNC_PRIMITIVE_OPT,
     clock_trace_depth: int = _CLOCK_TRACE_DEPTH_OPT,
+    crossing_depth: int | None = _CROSSING_DEPTH_OPT,
     ignore_scan_mode: bool = _IGNORE_SCAN_MODE_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
@@ -382,6 +397,7 @@ def analyze(
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
         clock_trace_depth=clock_trace_depth,
+        crossing_depth=crossing_depth,
         sync_primitives=frozenset(sync_primitive),
         ignore_scan_mode=ignore_scan_mode,
     )
@@ -499,6 +515,7 @@ def lint(
     sync_depth: int = _SYNC_DEPTH_OPT,
     sync_primitive: list[str] = _SYNC_PRIMITIVE_OPT,
     clock_trace_depth: int = _CLOCK_TRACE_DEPTH_OPT,
+    crossing_depth: int | None = _CROSSING_DEPTH_OPT,
     ignore_scan_mode: bool = _IGNORE_SCAN_MODE_OPT,
     verbose: bool = _VERBOSE_OPT,
     color: bool | None = _COLOR_OPT,
@@ -606,6 +623,7 @@ def lint(
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
         clock_trace_depth=clock_trace_depth,
+        crossing_depth=crossing_depth,
         blackboxes=blackboxes or None,
         sync_primitives=frozenset(sync_primitive),
         ignore_scan_mode=ignore_scan_mode,
@@ -776,6 +794,7 @@ def _analyze_and_report(
     cdc_010_no_heuristic: bool = False,
     cdc_018_depth_threshold: int = 4,
     clock_trace_depth: int = 16,
+    crossing_depth: int | None = None,
     sync_primitives: frozenset[str] = frozenset(),
     ignore_scan_mode: bool = False,
 ) -> int:
@@ -799,6 +818,7 @@ def _analyze_and_report(
         cdc_010_no_heuristic=cdc_010_no_heuristic,
         cdc_018_depth_threshold=cdc_018_depth_threshold,
         clock_trace_depth=clock_trace_depth,
+        crossing_depth=crossing_depth,
         blackboxes=blackboxes,
         sync_primitives=sync_primitives,
         ignore_scan_mode=ignore_scan_mode,
@@ -824,6 +844,7 @@ def _analyze_module_and_report(
     cdc_010_no_heuristic: bool = False,
     cdc_018_depth_threshold: int = 4,
     clock_trace_depth: int = 16,
+    crossing_depth: int | None = None,
     blackboxes: dict[str, netlist.Module] | None = None,
     sync_primitives: frozenset[str] = frozenset(),
     ignore_scan_mode: bool = False,
@@ -879,6 +900,9 @@ def _analyze_module_and_report(
     # ``--no-findings``) — the domain map says "not checked" otherwise.
     rules_ran = False
     rule_ctx_kwargs: dict[str, Any] = {"max_depth": clock_trace_depth}
+    # Paths a --crossing-depth cap stopped short of a capture pin
+    # (rtl-buddy-cdc#347): reported, never silent. Always empty uncapped.
+    depth_cuts: list[DepthCut] = []
     # Crossings an object-scoped SDC constraint fully covers (#328).
     # Empty for every SDC without one, which leaves every report as it was.
     sdc_coverage: dict[sdc_objects.CrossingKey, sdc_objects.CrossingCoverage] = {}
@@ -933,6 +957,7 @@ def _analyze_module_and_report(
             max_depth=clock_trace_depth,
             required_depth=sync_depth,
             sync_primitives=sync_primitives,
+            crossing_depth=crossing_depth,
         )
         # DFT scan structures in the clock network (#45). Computed off
         # the same clock-root walk that assigned the domains above, and
@@ -945,12 +970,15 @@ def _analyze_module_and_report(
                 module, max_depth=clock_trace_depth, **spec.clock_root_inputs()
             )
         )
+        flat_cuts: list[DepthCut] = []
         crossings = find_crossings(
             module,
+            crossing_depth,
             port_clock=spec.port_clock,
             boundaries=boundaries,
             max_depth=clock_trace_depth,
             scan_mode_flops=scan_mode_flops,
+            on_depth_cut=flat_cuts.append,
             **spec.clock_root_inputs(),
         )
         # FIX 3 (reconvergence gate): a single-clock block that IS
@@ -998,12 +1026,15 @@ def _analyze_module_and_report(
                 comp_stats,
                 boundary_modules=frozenset(module.cells[k].type for k in boundaries),
             )
+            flat_cuts = []
             crossings = find_crossings(
                 module,
+                crossing_depth,
                 port_clock=spec.port_clock,
                 boundaries=boundaries,
                 max_depth=clock_trace_depth,
                 scan_mode_flops=scan_mode_flops,
+                on_depth_cut=flat_cuts.append,
                 **spec.clock_root_inputs(),
             )
         # FIX 2 (now an error): every declined/opaque blackbox (multi-clock /
@@ -1125,7 +1156,17 @@ def _analyze_module_and_report(
                 if pb.user_synchronised:
                     boundary_user_syncs.add(sink)
         async_crossings = _filter_async(crossings, spec)
-        sdc_coverage = sdc_objects.coverage(module, crossings, sdc_resolution, spec)
+        # Only a cut into an asynchronous domain can hide a CDC finding.
+        # Cuts inside an analysed boundary module are lifted with it,
+        # named by module.
+        depth_cuts = filter_async_cuts(flat_cuts, spec) + [
+            dataclasses.replace(cut, src=f"{entry.analysis.module}: {cut.src}")
+            for entry in comp_stats.lifted
+            for cut in entry.analysis.depth_cuts
+        ]
+        sdc_coverage = sdc_objects.coverage(
+            module, crossings, sdc_resolution, spec, max_hops=crossing_depth
+        )
         # The tally the reporter prints. Counted on the SAME list the
         # rule pack is about to filter, so "N suppressed" and "N fewer
         # crossings checked" are the same N by construction.
@@ -1171,7 +1212,14 @@ def _analyze_module_and_report(
             violations = bb_violations + violations
     else:
         domains = assign_domains(module, max_depth=clock_trace_depth)
-        crossings = find_crossings(module, max_depth=clock_trace_depth)
+        # Without an SDC no pair of clocks is known to be asynchronous, so
+        # every cut is reported.
+        crossings = find_crossings(
+            module,
+            crossing_depth,
+            max_depth=clock_trace_depth,
+            on_depth_cut=depth_cuts.append,
+        )
 
     # Resolve each violation's hierarchical instance path from its
     # ``cell_name``. Done here, at the CLI boundary, so the rule pack
@@ -1268,6 +1316,8 @@ def _analyze_module_and_report(
         baseline_carryover=list(baseline_carryover),
         inferred_clock_candidates=inferred_clock_candidates,
         scan_mode_suppressed=scan_mode_suppressed,
+        crossing_depth=crossing_depth,
+        depth_cuts=depth_cuts,
     )
 
     # Domain-map emission runs *before* the normal report so a write

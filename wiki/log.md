@@ -113,3 +113,7 @@
 
 ## [2026-11-13] update | multi-bit simulation oracle for CDC-004 / CDC-005 (rtl-buddy-cdc#331)
 - `concepts/cdc-testing-strategy.md` — new "Simulation Oracle" section: the four `tests/sim/` test files and the rules they pair with, the one-source analyzer + simulation check of `test_multibit_oracle.py` (committed netlists built with `meta_flop_synth.sv`), the `tb_bus_crossing.sv` coherent-sample property, the full-period injection aperture and why the multi-bit runs keep src_clk slower than dst_clk, and the strict-xfail policy for disagreements.
+
+## [2026-11-15] update | crossing walk: capture-control pins and no hop budget (rtl-buddy-cdc#375, rtl-buddy-cdc#347)
+- `raw/articles/rtl-buddy-cdc-architecture.md` §7.1 / §7.3 / §8.18 / §6.4 / §13 — the walk lands on a flop's enable and sync-reset pins at the depth of the mux `opt_dff` folded (`capture_control_pins`), walks the whole cone by default, and reports every path a `--crossing-depth` cap stops (`DepthCut`, `summary.crossing_depth_cut`).
+- `concepts/crossing-detection.md`, `entities/rtl-buddy-cdc.md` — the same, and the complexity notes without `max_hops`.

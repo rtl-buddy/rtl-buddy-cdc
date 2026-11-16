@@ -7,9 +7,12 @@ destination-domain flop's ``SRST`` (synchronous reset) pin, no 2FF
 sync chain. The sync reset is sampled on the destination clock and
 the cross-domain source can be metastable on the sample cycle.
 
-RDC-003 must fire once on the consumer flop; no other RDC or CDC
-rule should fire (no flop→flop data crossing, no comb-on-D, no
-polarity mismatch — RDC-002 explicitly skips sync-reset consumers).
+RDC-003 must fire once on the consumer flop. The sync-reset pin is
+also a capture input of the crossing walk (rtl-buddy-cdc#375), so the
+unsynchronised ``src_rst`` → ``q_dst`` crossing reports CDC-001, as it
+does on the ``proc`` form of the same RTL (reset mux on ``D``). No other
+rule fires (no comb-on-D, no polarity mismatch — RDC-002 explicitly
+skips sync-reset consumers).
 """
 
 from __future__ import annotations
@@ -69,9 +72,22 @@ def test_rdc_003_fires_once(context) -> None:
 def test_no_other_rules_fire(context) -> None:
     """RDC-002 explicitly skips sync-reset consumers, so even though
     the producer's ARST_VALUE differs from the consumer's
-    SRST_POLARITY, RDC-002 stays silent. The only finding here should
-    be RDC-003."""
+    SRST_POLARITY, RDC-002 stays silent. Besides RDC-003, only the
+    crossing's own CDC-001 fires (once)."""
     module, async_crossings, spec = context
     violations = run_all_rules(module, async_crossings, spec)
-    rule_ids = {v.rule_id for v in violations}
-    assert rule_ids == {"RDC-003"}, f"unexpected rules fired: {rule_ids}"
+    rule_ids = sorted(v.rule_id for v in violations)
+    assert rule_ids == ["CDC-001", "RDC-003"], f"unexpected rules fired: {rule_ids}"
+
+
+def test_sync_reset_pin_is_a_crossing(context) -> None:
+    """``src_rst`` reaches ``q_dst`` only on its ``SRST`` pin; the walk
+    counts the folded reset mux as the one cell on the path."""
+    _module, async_crossings, _spec = context
+    (c,) = async_crossings
+    assert (c.src_clock, c.dst_clock, c.min_hops, c.width) == (
+        "src_clk",
+        "dst_clk",
+        1,
+        1,
+    )
