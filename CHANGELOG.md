@@ -406,6 +406,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: a register the reset arm leaves alone holds under
+  the reset** (rtl-buddy-cdc#390, item 10). A register, or some bits of
+  one, written in the data branch of a reset block but not in its reset
+  arm got reset value 0. Yosys `proc_dff` holds it, and so does the slang
+  path now: a plain `$dff` behind a hold mux selected by the reset when
+  the reset writes none of it, an `$aldff` loading its own `Q` for the
+  left-alone bits of an async-reset register, and for a sync reset the
+  `proc` form (a `$dff` whose `D` is the reset mux, `Q` on the reset leg
+  of a held bit) instead of an `$sdff` whose `SRST_VALUE` claimed a 0.
+  A held register behind a foreign async reset is no longer an RDC-001
+  destination; its hold mux's select is the CDC-001 crossing Yosys
+  reports. A `for` loop in a reset arm is unrolled like the data
+  branch's; a run-time `if` / `case` there stays reported, each bit it
+  writes taking the one constant every write loads, else 0.
+
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
   design (reset and enable muxes on `D`, a set / clear flop's `CLR` and

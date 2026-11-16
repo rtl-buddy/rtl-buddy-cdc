@@ -220,9 +220,9 @@ endmodule
 def test_reset_arm_non_assignment_statement_is_skipped(tmp_path: Path) -> None:
     """A non-assignment statement in the reset arm (a ``$display``
     system task) is not an :class:`AssignmentExpression`, so the
-    reset-value walker bails and ``ARST_VALUE`` defaults to ``"0"`` —
-    while the flop itself still emits with the data-arm semantics
-    intact."""
+    reset-value walker writes nothing: ``q`` is left alone by the reset
+    and holds under it (rtl-buddy-cdc#390), a plain ``$dff`` behind
+    ``proc_dff``'s hold mux, with the data-arm semantics intact."""
     src = """module m (
     input  logic clk, rst_n, d,
     output logic q
@@ -233,11 +233,16 @@ def test_reset_arm_non_assignment_statement_is_skipped(tmp_path: Path) -> None:
 endmodule
 """
     module = _elaborate_full(tmp_path, src)
-    adff = next(c for c in module.cells.values() if c.type == "$adff")
-    assert adff.parameters["ARST_VALUE"] == "0", adff.parameters
-    # The data arm still wires d → D.
-    d_bits = module.netnames["d"].bits
-    assert adff.connections["D"] == tuple(d_bits), adff.connections
+    assert not [c for c in module.cells.values() if c.type == "$adff"]
+    dff = next(c for c in module.cells.values() if c.type == "$dff")
+    mux = next(
+        c for c in module.cells.values()
+        if c.type == "$mux" and c.connections["Y"] == dff.connections["D"]
+    )  # fmt: skip
+    # Active low: the reset (``S`` low) selects ``Q``, else ``d``.
+    assert mux.connections["S"] == module.ports["rst_n"].bits
+    assert mux.connections["A"] == dff.connections["Q"]
+    assert mux.connections["B"] == tuple(module.netnames["d"].bits)
 
 
 # --- procedural-block dispatch guards (lines 743-759) ----------------------

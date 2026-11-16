@@ -1778,6 +1778,19 @@ class _ModuleBuilder:
             return
         if kind == "VariableDeclStatement":
             return
+        if kind == "ForLoopStatement":
+            # Unrolled like the data branch: ``for (i) q[i] <= 0``.
+            self._unroll_for(
+                stmt, lambda body: self._collect_reset_assignments(body, into)
+            )
+            return
+        if kind in {"ConditionalStatement", "CaseStatement"}:
+            # A run-time choice inside the arm is not modelled (reported);
+            # each bit it writes takes the one constant every write in it
+            # loads, else 0.
+            self._other_statement(stmt, "reset / async-load arm")
+            self._approximate_reset_writes(stmt, into)
+            return
         if kind != "ExpressionStatement":
             self._other_statement(stmt, "reset / async-load arm")
             return
@@ -1812,6 +1825,55 @@ class _ModuleBuilder:
             into[q_bits] = self._rhs_bits(expr.right, len(q_bits))
         else:
             into[q_bits] = self._int_bits(val, len(q_bits))
+
+    def _approximate_reset_writes(
+        self, stmt: Any, into: dict[tuple[Bit, ...], tuple[Bit, ...]]
+    ) -> None:
+        """The value of each bit an unmodelled reset-arm statement
+        (:meth:`_collect_reset_assignments`) writes: the constant every
+        write to it loads when they agree, else 0."""
+        seen: dict[Bit, set[Bit]] = {}
+
+        def visit(node: Any) -> None:
+            if node is None:
+                return
+            kind = self._kind_name(node)
+            if kind == "BlockStatement":
+                visit(node.body)
+            elif kind in {"StatementList", "ListStatement"}:
+                for sub in getattr(node, "list", []) or []:
+                    visit(sub)
+            elif kind == "ConditionalStatement":
+                visit(node.ifTrue)
+                visit(node.ifFalse)
+            elif kind == "CaseStatement":
+                for item in getattr(node, "items", []) or []:
+                    visit(getattr(item, "stmt", None))
+                visit(getattr(node, "defaultCase", None))
+            elif kind == "ExpressionStatement":
+                expr = node.expr
+                if type(expr).__name__ != "AssignmentExpression":
+                    return
+                targets = self._lvalue_targets(expr.left)
+                if targets is None:
+                    return
+                val = self._const_int(expr.right)
+                total = sum(width for _sym, _start, width in targets)
+                value = (
+                    self._int_bits(val, total) if val is not None else ("x",) * total
+                )
+                for (sym, start, width), piece in zip(
+                    targets, self._split_rhs(value, targets)
+                ):
+                    for bit, v in zip(
+                        self._alloc_bits(sym)[start : start + width], piece
+                    ):
+                        seen.setdefault(bit, set()).add(v)
+
+        visit(stmt)
+        for bit, vals in seen.items():
+            agreed = next(iter(vals)) if len(vals) == 1 else "0"
+            into[(bit,)] = (agreed if agreed in ("0", "1") else "0",)
 
     @staticmethod
     def _int_bits(value: int, width: int) -> tuple[Bit, ...]:
@@ -2791,10 +2853,32 @@ class _ModuleBuilder:
                         clk_sym, q_bits, tuple(d), async_controls, src_node
                     )
                     continue
-                # A bit the reset arm does not write resets to 0 (the
-                # long-standing default; Yosys holds it instead).
-                values = tuple(reset_bit.get(bit, "0") for bit in q_bits)
-                if reset_sym is not None and reset_kind != "sync":
+                # A bit the reset arm does not write keeps its value while
+                # the reset is asserted: its reset value is its own ``Q``,
+                # as Yosys ``proc_dff`` reads it (rtl-buddy-cdc#390: it
+                # reset to 0).
+                values = tuple(reset_bit.get(bit, bit) for bit in q_bits)
+                if reset_sym is not None and reset_kind == "sync":
+                    if not self._sync_reset_folds(q_bits, d, values):
+                        self._emit_sync_reset_muxes(
+                            clk_sym, reset_sym, reset_active_low, q_bits,
+                            d, values, src_node, clock_enable,
+                        )  # fmt: skip
+                        continue
+                elif reset_sym is not None:
+                    if values == q_bits:
+                        # Nothing is reset: a plain flop holding under
+                        # the reset (``proc_dff``'s mux on ``D``).
+                        held = self._async_priority_mux(
+                            self._signal_bits(reset_sym)[0],
+                            reset_active_low,
+                            rest=tuple(d),
+                            asserted=q_bits,
+                        )
+                        self._emit_flop_cell(
+                            clk_sym, None, False, q_bits, held, src_node
+                        )
+                        continue
                     if any(isinstance(v, int) for v in values):
                         # A non-constant async value: an async load.
                         self._emit_aldff(
@@ -2814,6 +2898,62 @@ class _ModuleBuilder:
                     reset_kind=reset_kind,
                     clock_enable=clock_enable,
                 )
+
+    @staticmethod
+    def _sync_reset_folds(
+        q_bits: tuple[Bit, ...], d_bits: list[Bit], values: tuple[Bit, ...]
+    ) -> bool:
+        """Can a sync-reset register be an ``$sdff`` that reads the same as
+        the ``proc`` form the ``lint`` recipe leaves (a constant-leg mux on
+        ``D``)? Only when the reset arm loads a constant into every bit and
+        the data branch writes every bit: a bit the reset leaves alone holds
+        under it, and a bit only the reset writes has its own ``Q`` on the
+        mux's other leg, which reads as an enable, not a reset
+        (rtl-buddy-cdc#390)."""
+        return all(isinstance(v, str) for v in values) and all(
+            d != q for d, q in zip(d_bits, q_bits)
+        )
+
+    def _emit_sync_reset_muxes(
+        self,
+        clk_sym: Any,
+        reset_sym: Any,
+        reset_active_low: bool,
+        q_bits: tuple[Bit, ...],
+        d_bits: list[Bit],
+        values: tuple[Bit, ...],
+        src_node: Any,
+        clock_enable: Bit | None,
+    ) -> None:
+        """A sync-reset register :meth:`_sync_reset_folds` rejects, as Yosys
+        ``proc`` builds it: a plain ``$dff`` whose ``D`` is the reset mux
+        (the reset value, or ``Q`` for a bit the reset leaves alone, while
+        the reset is asserted, else the data), one mux per run of bits the
+        same arms write, behind the load mux of a ``clock_enable``."""
+        reset_bit = self._signal_bits(reset_sym)[0]
+
+        def kind(i: int) -> tuple[bool, bool]:
+            return isinstance(values[i], str), d_bits[i] != q_bits[i]
+
+        out: list[Bit] = []
+        lo = 0
+        while lo < len(q_bits):
+            hi = lo + 1
+            while hi < len(q_bits) and kind(hi) == kind(lo):
+                hi += 1
+            out.extend(
+                self._async_priority_mux(
+                    reset_bit,
+                    reset_active_low,
+                    rest=tuple(d_bits[lo:hi]),
+                    asserted=values[lo:hi],
+                )
+            )
+            lo = hi
+        d = tuple(out)
+        if clock_enable is not None:
+            d = self._build_hold_mux(clock_enable, hold=q_bits, fire=d)
+        self._emit_flop_cell(clk_sym, None, False, q_bits, d, src_node)
 
     @staticmethod
     def _unpacked_element_width(sym: Any) -> int | None:
