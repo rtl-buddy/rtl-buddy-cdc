@@ -718,3 +718,100 @@ def test_enable_is_a_hold_mux_not_an_en_pin(tmp_path: Path) -> None:
     if _HAVE_YOSYS:
         y_mod = _yosys(tmp_path, _enable_design("en_over_srst", "r2", "srst_p", False))
         assert not [c for c in y_mod.cells.values() if "EN" in c.connections]
+
+
+# --- 14. an active-low sync reset keeps its own net and polarity ----------
+#
+# The ``lint`` recipe leaves a sync reset as ``proc``'s constant-leg mux;
+# for ``if (!srst_n)`` Yosys 0.64 selects it with ``srst_n`` itself (the
+# ``$logic_not`` is folded into the mux legs by ``proc``'s ``opt_expr``),
+# and ``opt_dff`` on that makes ``SRST = srst_n``, active low: the slang
+# ``$sdff``. The rules read the mux and the pin alike (RDC-003 walks the
+# reset's fan-in either way; RDC-002 / RDC-004 are async-only), so the
+# polarity convention changes no finding.
+
+_SRST_FORMS = {
+    "not": "if (!rst_x) q <= 2'b01; else q <= d;",
+    "tilde": "if (~rst_x) q <= 2'b01; else q <= d;",
+    "high": "if (rst_x) q <= 2'b01; else q <= d;",
+    "en": "if (!rst_x) q <= 2'b01; else if (go) q <= d;",
+}
+
+
+def _srst_design(form: str, source: str, declared: str) -> str:
+    return f"""module m (input clk_a, input clk_b, input go,
+          (* reset_polarity = "{declared}" *) input srst_n,
+          input [1:0] d, output reg [1:0] q);
+    reg f_n;
+    always_ff @(posedge clk_a) f_n <= go;
+    wire rst_x = {source};
+    always_ff @(posedge clk_b) {_SRST_FORMS[form]}
+endmodule
+"""
+
+
+@pytest.mark.parametrize("form", sorted(_SRST_FORMS))
+@pytest.mark.parametrize("source", ["srst_n", "f_n", "f_n & srst_n"])
+@pytest.mark.parametrize("declared", ["low", "high"])
+def test_sync_reset_polarity_gives_the_same_findings(
+    tmp_path: Path, form: str, source: str, declared: str
+) -> None:
+    """An active-low (``!`` / ``~``) or active-high sync reset, with or
+    without an enable, driven by a port (with a matching or contradicting
+    ``reset_polarity`` declaration), by a register of the other domain
+    (RDC-003) or by logic of both: the same findings on both frontends."""
+    sdc = _SDC + (
+        "set_input_delay -clock clk_a 1 [get_ports go]\n"
+        "set_input_delay -clock clk_b 1 [get_ports {srst_n d}]\n"
+    )
+    _crossings, live, _ = _same_verdict(
+        tmp_path, _srst_design(form, source, declared), sdc=sdc
+    )
+    assert ("RDC-003" in live) == (source != "srst_n")
+    assert "RDC-002" not in live
+
+
+_INVERTERS = frozenset({"$not", "$logic_not", "$_NOT_"})
+
+
+def _effective_reset(module: Module, q_name: str) -> tuple[str, str, str]:
+    """``(reset net, polarity, kind)`` of ``q_name``'s flop, seen through
+    inverters on its reset pin, as ``reset_domain`` reports it."""
+    from rtl_buddy_cdc.reset_domain import assign_reset_domains
+
+    flops = [c for c, _hit in _flops_of(module, q_name)]
+    assert len(flops) == 1
+    rd = assign_reset_domains(module)[flops[0].name]
+    assert rd.reset is not None
+    name, polarity = rd.reset.name, rd.reset.polarity
+    drivers = {
+        b: c
+        for c in module.cells.values()
+        if c.type in _INVERTERS
+        for b in c.connections["Y"]
+    }
+    pin = next(p for p in ("SRST", "ARST") if p in flops[0].connections)
+    bit = flops[0].connections[pin][0]
+    while bit in drivers:
+        bit = drivers[bit].connections["A"][0]
+        polarity = "low" if polarity == "high" else "high"
+    names = {b: p for p, port in module.ports.items() for b in port.bits}
+    return names.get(bit, name), polarity, rd.reset.type
+
+
+def test_active_low_sync_reset_reads_as_opt_dff_folds_it(tmp_path: Path) -> None:
+    """``if (!srst_n)`` gives ``SRST = srst_n`` active low on slang; the
+    reset domain model reads it as the same net and polarity as the
+    ``$sdff`` / ``$sdffe`` Yosys ``opt_dff`` folds ``proc``'s mux into (an
+    inverter in front of the pin, if any, flips the polarity back)."""
+    for form in ("not", "tilde", "en", "high"):
+        (tmp_path / form).mkdir()
+        src = _srst_design(form, "srst_n", "low")
+        module = _slang(tmp_path / form, src)
+        flop = _flops_of(module, "q")[0][0]
+        assert flop.connections["SRST"] == module.ports["srst_n"].bits
+        want_pol = "high" if form == "high" else "low"
+        assert _effective_reset(module, "q") == ("srst_n", want_pol, "sync")
+        if _HAVE_YOSYS:
+            y_mod = _yosys(tmp_path / form, src, extra="opt_dff")
+            assert _effective_reset(y_mod, "q") == ("srst_n", want_pol, "sync")

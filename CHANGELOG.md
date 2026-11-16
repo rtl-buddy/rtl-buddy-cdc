@@ -1295,6 +1295,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   later arm's mux outermost, selected by `~c1 & c2`), not because of the
   enable lowering.
 
+- **slang active-low sync resets keep `SRST = srst_n`** (rtl-buddy-cdc#390,
+  item 14) — *test-only, no output change.* On Yosys 0.64 `proc`'s
+  trailing `opt_expr` folds the `$logic_not` of `if (!srst_n)` into the
+  reset mux's legs, so the lint flow selects the mux with `srst_n` itself
+  and `opt_dff` makes `SRST = srst_n`, active low: the slang `$sdff`.
+  RDC-003 walks the reset's fan-in in either form and RDC-002 / RDC-004
+  read async pins only, so the convention changes no finding. Tests pin
+  identical findings for `!` / `~` / active-high sync resets, with and
+  without an enable, driven by a port (with a matching or contradicting
+  `reset_polarity` declaration), a foreign register or logic of both, and
+  the reset net and polarity the reset-domain model reads against
+  `opt_dff`'s, seen through any inverter.
+
 - **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —
   *no output change.* `_unconstrained_srst_captures` (rtl-buddy-cdc#272)
   found untyped ports on sync-reset pins because the crossing walk ended
