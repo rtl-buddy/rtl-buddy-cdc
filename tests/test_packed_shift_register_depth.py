@@ -140,17 +140,20 @@ def test_mux_output_with_extra_reader_rejected() -> None:
     assert _depth_through(head, {7: 1, 8: 2, 10: 1, 11: 0}, mux) is None
 
 
-def test_mux_output_not_exactly_the_d_vector_rejected() -> None:
-    """Only a mux whose ``Y`` *is* the flop's ``D``, lane for lane, is
-    looked through; a partial / reordered overlap is not."""
+def test_mux_wider_than_the_d_vector_is_read_lane_by_lane() -> None:
+    """``opt_dff`` folds a reset lane by lane (rtl-buddy-cdc#390): each
+    ``D`` bit driven by a constant-leg mux lane read only there is a reset
+    lane, whatever the rest of the mux drives, so the shift behind it is
+    seen. (Until #390 only a mux whose ``Y`` was exactly ``D`` counted.)"""
     head = _flop(d=(7, 8), q=(10, 11))
     mux = _mux(a=(5, 10, 6), b=("0", "0", "0"), y=(7, 8, 30))
-    assert _depth_through(head, {7: 1, 8: 1, 30: 1, 10: 1, 11: 0}, mux) is None
+    assert _depth_through(head, {7: 1, 8: 1, 30: 1, 10: 1, 11: 0}, mux) == 2
 
 
 def test_chained_reset_then_enable_mux_rejected() -> None:
-    """Only one mux level is looked through: a reset mux feeding an
-    enable mux is out of scope and still reads as depth 1."""
+    """An enable mux in front of the reset mux (a leg that is the flop's
+    own ``Q``) ends the look-through, as it ends ``opt_dff``'s sync-reset
+    fold (rtl-buddy-cdc#390): still depth 1."""
     head = _flop(d=(7, 8), q=(10, 11))
     enable = Cell(
         name="en_mux",

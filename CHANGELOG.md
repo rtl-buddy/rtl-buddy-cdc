@@ -406,6 +406,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A sync reset is looked through where `opt_dff` folds it**
+  (rtl-buddy-cdc#390). The rules step over a flop's own sync-reset mux
+  (synchroniser chain walks, packed shift registers, CDC-003, multi-bit
+  synchronisers, gated captures) but read only one mux covering the
+  whole `D` vector, where Yosys `opt_dff` folds lane by lane and through
+  chained reset muxes of the same value. Two resets on one stage
+  (`if (!rst_n) q <= 0; else if (flush) q <= 0;`) or a reset on one lane
+  of a packed shift therefore reported CDC-001 / CDC-004 / CDC-003 in
+  the `proc` form and nothing after `opt_dff`. The look-through now
+  follows `opt_dff` (Yosys 0.64): per lane, every constant-leg mux whose
+  constant matches the lane's first; not an `x` leg (which `opt_dff`
+  leaves on `D`, and which used to count) nor a leg that is the flop's
+  own `Q` (an enable). Whole-register tests require every lane reset by
+  the same selects, the case `opt_dff` keeps as one cell. New fixture
+  `good_sync_reset_mux_folds` (`proc` and `opt_dff` forms). No committed
+  fixture changes verdict.
+
 - **`find_reset_crossings` and the reset-domain map read every reset
   pin** (rtl-buddy-cdc#390). They read only `ResetDomain.reset` (one pin
   per flop, `CLR` on a set / clear flop), so a `SET` driven from another

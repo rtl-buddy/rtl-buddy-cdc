@@ -19,6 +19,10 @@ leading comment reasons out:
   (``.json`` / ``.synth.json``): every async pin counts (``SET`` too), a
   foreign ``CLR`` / ``SET`` is RDC-001, and the cells Yosys builds around
   the pins are not reset logic.
+- ``good_sync_reset_mux_folds`` (``.json`` / ``.optdff.json``): a sync
+  reset is looked through the way ``opt_dff`` folds it — lane by lane,
+  through every constant-leg mux of the lane's reset value
+  (rtl-buddy-cdc#390).
 - ``bad_sync_chain_foreign_set`` (``.json`` / ``.synth.json``): CDC-015
   reads every async pin of a synchroniser stage, ``SET`` and ``ALOAD``
   too (rtl-buddy-cdc#390).
@@ -49,6 +53,7 @@ from rtl_buddy_cdc.reset_domain import (
 from rtl_buddy_cdc.rules import (
     _bit_drivers,  # noqa: PLC2701
     _bit_reader_count,  # noqa: PLC2701
+    _constant_leg_reset_mux_data_bits,  # noqa: PLC2701
     _folded_srst_selects,  # noqa: PLC2701
 )
 
@@ -95,6 +100,11 @@ EXPECTED: dict[str, tuple[tuple[str, ...], set[tuple[str, str]], list[Finding]]]
         ],
     ),
     "good_set_clear_priority": (("json", "synth.json"), set(), []),
+    "good_sync_reset_mux_folds": (
+        ("json", "optdff.json"),
+        {("a_q", "a1"), ("b_q", "bs"), ("gray", "g1")},
+        [],
+    ),
     "bad_sync_chain_foreign_set": (
         ("json", "synth.json"),
         {("src_q", "l1"), ("src_q", "s1")},
@@ -178,6 +188,13 @@ def test_fixture_forms_carry_the_shapes_under_test() -> None:
         assert proc["$mux"] and not any(t.startswith("$sdff") for t in proc)
         assert any(t.startswith("$sdff") for t in optdff)
     assert _types("bad_bus_foreign_sync_reset", "optdff.json")["$sdffe"] == 1
+    # Chained reset muxes (a1, a2, g2) and a one-lane reset mux (bs);
+    # opt_dff merges each chain into one SRST and slices bs.
+    proc = _types("good_sync_reset_mux_folds", "json")
+    optdff = _types("good_sync_reset_mux_folds", "optdff.json")
+    assert proc["$mux"] == 9 and not any(t.startswith("$sdff") for t in proc)
+    assert optdff["$sdff"] == 4 and optdff["$reduce_or"] == 3
+    assert not optdff["$mux"]
     for name in ("bad_set_clear_foreign_controls", "good_set_clear_priority"):
         assert _types(name, "json")["$dffsr"] == 3
         synth = _types(name, "synth.json")
@@ -474,3 +491,98 @@ def test_folded_srst_selects_mux_output_read_twice() -> None:
     flop = _flop()
     reader = Cell(name="tap", type="$not", connections={"A": (40,), "Y": (60,)})
     assert _selects(flop, _mux("rst", 1, "0", 7, 40), reader) == ()
+
+
+# --- _constant_leg_reset_mux_data_bits: what opt_dff folds (rtl-buddy-cdc#390) ---
+#
+# Yosys 0.64 ``opt_dff`` folds a sync reset lane by lane: from ``D`` it
+# steps through 2:1 muxes (1-bit select, output read once) with one leg the
+# constant 0 / 1, every such constant on a lane equal to that lane's first
+# (``if (r1) q <= 0; else if (r2) q <= 0;`` merges into SRST = r1 | r2;
+# ``... else if (r2) q <= 1;`` keeps the second mux on D), and stops at a
+# mux whose other leg is the flop's own Q (an enable), at an ``x`` leg, at
+# two constant legs and at a mux whose output has another reader. Lanes
+# with a reset become an ``$sdff`` slice, the rest stay as they were.
+
+
+def _flop_w(width: int) -> Flop:
+    d = tuple(40 + i for i in range(width))
+    q = tuple(50 + i for i in range(width))
+    cell = Cell(name="q", type="$dff", connections={"CLK": (90,), "D": d, "Q": q})
+    return Flop(cell=cell, clk=90, d=d, q=q)
+
+
+def _vmux(name: str, a: tuple, b: tuple, s: Bit, y: tuple, ctype: str = "$mux"):
+    return Cell(name=name, type=ctype, connections={"A": a, "B": b, "S": (s,), "Y": y})
+
+
+def _data_leg(flop: Flop, *cells: Cell) -> tuple[Bit, ...] | None:
+    module = Module(
+        name="m",
+        ports={"o": Port(name="o", direction="output", bits=tuple(flop.q))},
+        cells={flop.cell.name: flop.cell, **{c.name: c for c in cells}},
+        netnames={},
+    )
+    return _constant_leg_reset_mux_data_bits(
+        flop, module, _bit_drivers(module), _bit_reader_count(module)
+    )
+
+
+def test_data_leg_chained_resets_of_one_value() -> None:
+    """``if (!rst_n) q <= 0; else if (flush) q <= 0; else q <= d;``"""
+    got = _data_leg(_flop(), _mux("r1", "0", 41, 7, 40), _mux("r2", 1, "0", 8, 41))
+    assert got == (1,)
+
+
+def test_data_leg_chain_stops_at_another_reset_value() -> None:
+    got = _data_leg(_flop(), _mux("r1", 41, "0", 7, 40), _mux("r2", 1, "1", 8, 41))
+    assert got == (41,)
+
+
+def test_data_leg_lane_by_lane() -> None:
+    """``q <= r ? {d[1], 1'b1} : d``: lane 0 is reset, lane 1 is data."""
+    got = _data_leg(_flop_w(2), _vmux("r", (1, 2), ("1", 3), 7, (40, 41)))
+    assert got == (1, 41)
+
+
+def test_data_leg_lane_by_lane_through_a_chain() -> None:
+    """``if (r1) q <= 0; else if (r2) q <= 2'b01; else q <= d;`` — lane 1's
+    second constant matches its first, lane 0's does not."""
+    got = _data_leg(
+        _flop_w(2),
+        _vmux("r1", (60, 61), ("0", "0"), 7, (40, 41)),
+        _vmux("r2", (1, 2), ("1", "0"), 8, (60, 61)),
+    )
+    assert got == (60, 2)
+
+
+def test_data_leg_gate_level_mux() -> None:
+    got = _data_leg(
+        _flop(),
+        _mux("r1", 41, "1", 7, 40, "$_MUX_"),
+        _mux("r2", 1, "1", 8, 41, "$_MUX_"),
+    )
+    assert got == (1,)
+
+
+@pytest.mark.parametrize(
+    "cells",
+    [
+        # An x leg is not folded: the mux stays on D.
+        (_mux("x", 1, "x", 7, 40),),
+        # The other leg is the flop's own Q: an enable (``if (c) q <= 0;``).
+        (_mux("hold", 50, "0", 7, 40),),
+        # Both legs constant.
+        (_mux("both", "0", "1", 7, 40),),
+        # A data mux in front of the reset mux: opt_dff never reaches it.
+        (_mux("data", 41, 2, 8, 40), _mux("r", 1, "0", 7, 41)),
+    ],
+    ids=["x-leg", "own-q-leg", "two-constants", "data-mux-first"],
+)
+def test_data_leg_rejects_what_opt_dff_leaves(cells: tuple[Cell, ...]) -> None:
+    assert _data_leg(_flop(), *cells) is None
+
+
+def test_data_leg_mux_output_read_twice() -> None:
+    tap = Cell(name="tap", type="$not", connections={"A": (40,), "Y": (60,)})
+    assert _data_leg(_flop(), _mux("r", 1, "0", 7, 40), tap) is None
