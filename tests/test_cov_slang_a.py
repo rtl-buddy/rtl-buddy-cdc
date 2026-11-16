@@ -288,11 +288,11 @@ endmodule
     assert set(latch.connections) == {"EN", "D", "Q"}
 
 
-def test_always_ff_without_else_emits_no_flop(tmp_path: Path) -> None:
-    """A reset-style ``if (!rst_n) q <= 0;`` with *no* ``else`` data
-    arm has no data assignment to model, so the block drains to
-    nothing — no flop is emitted. Pins the ``data_branch is None``
-    early-return."""
+def test_always_ff_without_else_still_emits_its_flop(tmp_path: Path) -> None:
+    """A reset-style ``if (!rst_n) q <= 0;`` with *no* ``else`` data arm
+    still models ``q``: an ``$adff`` that holds between resets (``D`` =
+    ``Q``), as Yosys ``proc_dff`` builds it (rtl-buddy-cdc#390: the block
+    drained to nothing)."""
     src = """module m (
     input  logic clk, rst_n,
     output logic q
@@ -302,8 +302,7 @@ def test_always_ff_without_else_emits_no_flop(tmp_path: Path) -> None:
 endmodule
 """
     cells = _elaborate_inline(tmp_path, src)
-    assert "$adff" not in cells.values(), cells
-    assert "$dff" not in cells.values(), cells
+    assert list(cells.values()) == ["$adff"], cells
 
 
 # --- child-instance port collection (lines 662-707) ------------------------

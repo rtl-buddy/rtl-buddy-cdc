@@ -1454,21 +1454,21 @@ class _ModuleBuilder:
                 # walker below so both arms drain into one flop per
                 # LHS, not silently dropped.
                 block_reset_sym, block_reset_kind, block_reset_active_low = reset_check
-                data_branch = inner.ifFalse
-                if data_branch is None:
-                    return  # no else → no data assignment to model
                 # Capture reset-arm literal RHS values before walking
                 # the data arm — drain time looks these up to populate
                 # ``$adff``'s ``ARST_VALUE`` / ``$sdff``'s ``SRST_VALUE``
-                # parameter (issues #40 / #86).
+                # parameter (issues #40 / #86). With no ``else`` the
+                # registers the reset arm writes hold between resets
+                # (rtl-buddy-cdc#390: the block was skipped).
                 self._collect_reset_assignments(inner.ifTrue)
-                self._emit_assignments_in(
-                    data_branch,
-                    clk_sym,
-                    block_reset_sym,
-                    block_reset_active_low,
-                    src_node,
-                )
+                if inner.ifFalse is not None:
+                    self._emit_assignments_in(
+                        inner.ifFalse,
+                        clk_sym,
+                        block_reset_sym,
+                        block_reset_active_low,
+                        src_node,
+                    )
             elif (
                 reset_sym is None
                 and (srst_ce := self._sync_reset_under_enable(inner)) is not None
@@ -1787,7 +1787,7 @@ class _ModuleBuilder:
         if kind in {"ConditionalStatement", "CaseStatement"}:
             # A run-time choice inside the arm is not modelled (reported);
             # each bit it writes takes the one constant every write in it
-            # loads, else 0.
+            # loads, else 0, so its register still gets a flop.
             self._other_statement(stmt, "reset / async-load arm")
             self._approximate_reset_writes(stmt, into)
             return
@@ -1807,6 +1807,7 @@ class _ModuleBuilder:
             if targets is None:
                 self._warn_lvalue_dropped(expr, expr.left)
                 return
+            self._note_reset_written(targets)
             if val is None:
                 for q_part, bits in self._concat_writes(expr.left, expr.right) or []:
                     into[q_part] = bits
@@ -1821,6 +1822,7 @@ class _ModuleBuilder:
         if q_bits is None:
             self._warn_lvalue_dropped(expr, expr.left)
             return
+        self._note_reset_written(self._lvalue_targets(expr.left) or [])
         if val is None:
             into[q_bits] = self._rhs_bits(expr.right, len(q_bits))
         else:
@@ -1833,6 +1835,7 @@ class _ModuleBuilder:
         (:meth:`_collect_reset_assignments`) writes: the constant every
         write to it loads when they agree, else 0."""
         seen: dict[Bit, set[Bit]] = {}
+        order: list[tuple[Any, int, int]] = []
 
         def visit(node: Any) -> None:
             if node is None:
@@ -1865,15 +1868,24 @@ class _ModuleBuilder:
                 for (sym, start, width), piece in zip(
                     targets, self._split_rhs(value, targets)
                 ):
+                    order.append((sym, start, width))
                     for bit, v in zip(
                         self._alloc_bits(sym)[start : start + width], piece
                     ):
                         seen.setdefault(bit, set()).add(v)
 
         visit(stmt)
+        self._note_reset_written(order)
         for bit, vals in seen.items():
             agreed = next(iter(vals)) if len(vals) == 1 else "0"
             into[(bit,)] = (agreed if agreed in ("0", "1") else "0",)
+
+    def _note_reset_written(self, targets: list[tuple[Any, int, int]]) -> None:
+        """Register the variables a reset / async-load arm writes with the
+        block's write accumulator, so a register only that arm writes is
+        drained into a flop too (rtl-buddy-cdc#390: it got none)."""
+        for sym, _start, _width in targets:
+            self._proc_writes.setdefault(sym, (self._alloc_bits(sym), []))
 
     @staticmethod
     def _int_bits(value: int, width: int) -> tuple[Bit, ...]:
@@ -2818,6 +2830,12 @@ class _ModuleBuilder:
         for key, value in self._proc_resets.items():
             for bit, v in zip(key, value):
                 reset_bit[bit] = v
+        # Bits a reset / async-load arm writes are register bits too, in
+        # the same runs as the data writes (rtl-buddy-cdc#390).
+        reset_written = set(reset_bit)
+        for _bits, _low, control_values in async_controls or ():
+            for key in control_values:
+                reset_written.update(key)
         for sym, (net, writes) in self._proc_writes.items():
             written = sorted(
                 {
@@ -2825,6 +2843,7 @@ class _ModuleBuilder:
                     for start, _en, bits in writes
                     for pos in range(start, start + len(bits))
                 }
+                | {pos for pos, bit in enumerate(net) if bit in reset_written}
             )
             # The elements of an unpacked array are separate registers
             # (Yosys ``mem2reg``): a run never spans two of them.

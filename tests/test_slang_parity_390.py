@@ -374,3 +374,105 @@ def test_held_register_verdict_matches_yosys(tmp_path: Path) -> None:
     crossings, live, _ = _same_verdict(tmp_path, _HELD_CROSSING, sdc=sdc)
     assert crossings == 1
     assert live == {"CDC-001": 1, "RDC-001": 1}
+
+
+# --- 11. a register only a reset arm writes still gets its flop -----------
+
+_RESET_ONLY = """module m (input clk_a, input rst_n, input rst, input srst, input srst_n,
+          input set_n, input d, output reg q, output reg z, output reg zn,
+          output reg [1:0] zp, output reg q3, output reg zs, output reg zs2,
+          output reg [1:0] zq, output reg k, output reg k2, output reg k3);
+    // Async: z is written by the reset arm only.
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) begin q <= 1'b0; z <= 1'b1; end
+        else q <= d;
+    // Async, no data branch at all.
+    always_ff @(posedge clk_a or posedge rst)
+        if (rst) zn <= 1'b1;
+    // Async: the reset writes zp[0], the data branch zp[1].
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) zp[0] <= 1'b1;
+        else        zp[1] <= d;
+    // Sync active-low: zs is written by the reset arm only.
+    always_ff @(posedge clk_a)
+        if (!srst_n) zs <= 1'b1;
+        else         q3 <= d;
+    // Sync, no data branch at all.
+    always_ff @(posedge clk_a)
+        if (srst) zs2 <= 1'b0;
+    // Sync: the reset writes both bits, the data branch zq[0] only.
+    always_ff @(posedge clk_a)
+        if (srst) zq <= 2'b10;
+        else      zq[0] <= d;
+    // Several async controls: k / k2 written by one control arm only.
+    always_ff @(posedge clk_a or negedge rst_n or negedge set_n)
+        if (!rst_n)      k <= 1'b0;
+        else if (!set_n) k2 <= 1'b1;
+        else             k3 <= d;
+endmodule
+"""
+
+_RESET_ONLY_REGS = ("q", "z", "zn", "zp", "q3", "zs", "zs2", "zq", "k", "k2", "k3")
+_RESET_ONLY_INPUTS = ("rst_n", "rst", "srst", "srst_n", "set_n", "d")
+
+
+def test_register_written_only_in_a_reset_arm_gets_a_flop(
+    tmp_path: Path, caplog
+) -> None:
+    """A register (or bit) only a reset arm writes is still a register, as
+    Yosys ``proc_dff`` builds it: an ``$adff`` holding its value (``D`` =
+    ``Q``) for an async reset, the reset-arm bits of a register the data
+    branch also writes in the same flop (an ``$aldff`` loading its own
+    ``Q`` for the other bits), a plain ``$dff`` behind the ``proc`` reset
+    mux for a sync reset, and a ``$dffsr`` for one of several async
+    controls. It used to get no flop at all, and a block with no ``else``
+    was skipped whole."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _RESET_ONLY)
+    assert not _warnings(caplog)
+    types = _flop_types(module, _RESET_ONLY_REGS)
+    assert types == {
+        "q": ["$adff"],
+        "z": ["$adff"],
+        "zn": ["$adff"],
+        "zp": ["$aldff", "$aldff"],
+        "q3": ["$dff"],
+        "zs": ["$dff"],
+        "zs2": ["$dff"],
+        "zq": ["$dff", "$dff"],
+        "k": ["$dffsr"],
+        "k2": ["$dffsr"],
+        "k3": ["$dff"],
+    }
+    z = _pin_values(module, "z", {"z": 0, "rst_n": 1})
+    assert z == {"ARST[0]": 1, "D[0]": 0}
+    for srst_n, zs in itertools.product((0, 1), repeat=2):
+        got = _pin_values(module, "zs", {"srst_n": srst_n, "zs": zs})
+        assert got == {"D[0]": zs if srst_n else 1}
+    if _HAVE_YOSYS:
+        y_mod = _yosys(tmp_path, _RESET_ONLY)
+        assert _flop_types(y_mod, _RESET_ONLY_REGS) == types
+        _compare_next_state(module, _RESET_ONLY_REGS, _RESET_ONLY_INPUTS, y_mod)
+
+
+_RESET_ONLY_CROSSING = """module m (input clk_a, input clk_b, input rst_n, input d,
+          output reg q, output reg flag);
+    reg rst_q;
+    always_ff @(posedge clk_b) rst_q <= d;
+    // flag is set by the foreign-domain reset only and read out.
+    always_ff @(posedge clk_a or negedge rst_q)
+        if (!rst_q) flag <= 1'b1;
+    always_ff @(posedge clk_a or negedge rst_n)
+        if (!rst_n) q <= 1'b0;
+        else        q <= flag;
+endmodule
+"""
+
+
+def test_reset_only_register_verdict_matches_yosys(tmp_path: Path) -> None:
+    """``flag`` exists only through its reset arm; its foreign-domain
+    reset is an unsynchronised reset crossing on both frontends (slang had
+    no flop, so no finding)."""
+    sdc = _SDC + "set_input_delay -clock clk_b 1 [get_ports d]\n"
+    _crossings, live, _ = _same_verdict(tmp_path, _RESET_ONLY_CROSSING, sdc=sdc)
+    assert live.get("RDC-001") == 1

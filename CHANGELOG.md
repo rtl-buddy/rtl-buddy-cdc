@@ -421,6 +421,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   branch's; a run-time `if` / `case` there stays reported, each bit it
   writes taking the one constant every write loads, else 0.
 
+- **slang frontend: a register only a reset arm writes gets its flop**
+  (rtl-buddy-cdc#390, item 11). A register written in a reset (or
+  async-control) arm but never in the data branch got no flop, and a reset
+  block with no `else` was skipped whole, so a flag set by a foreign reset
+  produced no RDC-001. Such bits are now register bits in the same runs as
+  the data writes, as Yosys groups them: an `$adff` holding its value
+  (`D` = `Q`), the reset bits of a register the data branch also writes in
+  that register's `$aldff`, the `proc` reset mux on a `$dff` for a sync
+  reset, a `$dffsr` for one of several async controls.
+
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
   design (reset and enable muxes on `D`, a set / clear flop's `CLR` and
