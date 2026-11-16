@@ -363,10 +363,21 @@ def test_unrecognised_false_path_endpoint(sdc_backend: str) -> None:
     assert len(_unrecognised(spec)) == 1
 
 
-def test_unrecognised_clock_group(sdc_backend: str) -> None:
+def test_clock_group_operator_is_evaluated(sdc_backend: str) -> None:
+    """Dropped with a warning before rtl-buddy-cdc#390; now evaluated over
+    clocks (``tests/test_sdc_clock_collections.py`` has the rest)."""
     spec = parse(
         _CLOCKS + "set_clock_groups -asynchronous -group [get_clocks clk_a] "
         "-group [remove_from_collection [all_clocks] [get_clocks clk_a]]\n"
+    )
+    assert spec.async_groups == [[{"clk_a"}, {"clk_b"}]]
+    assert spec.partial_warnings == []
+
+
+def test_unrecognised_clock_group(sdc_backend: str) -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group [get_clocks clk_a] "
+        "-group [filter_collection [all_clocks] {name != clk_a}]\n"
     )
     assert spec.async_groups == []
     assert len(_unrecognised(spec)) == 1

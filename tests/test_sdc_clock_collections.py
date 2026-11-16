@@ -29,11 +29,16 @@ is written in the bracket / brace / bare forms.
 
 from __future__ import annotations
 
+import json
 import re
+from collections import Counter
+from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from rtl_buddy_cdc import sdc as sdc_mod
+from rtl_buddy_cdc.cli import app
 from rtl_buddy_cdc.sdc import ClockSpec, SdcObject, parse
 
 needs_tcl = pytest.mark.skipif(
@@ -317,3 +322,227 @@ def test_object_endpoints_are_unchanged_beside_all_clocks() -> None:
     (exc,) = spec.false_path_exceptions
     assert exc.from_objects == (SdcObject("cell", "u/q_reg"),)
     assert set(exc.to_clocks) == _ALL
+
+
+# --- 1. remove_from_collection / add_to_collection over clocks ----------------
+
+
+@FORMS
+def test_all_clocks_minus_one_group(form: str) -> None:
+    """The idiom the issue names: the other group is every clock but one."""
+    spec = parse(
+        _CLOCKS + f"set_clock_groups -asynchronous -group {_form(form, 'clk_a')} "
+        f"-group [remove_from_collection [all_clocks] {_form(form, 'clk_a')}]\n"
+    )
+    assert spec.async_groups == [[{"clk_a"}, {"clk_b", "clk_g", "vclk"}]]
+    assert spec.partial_warnings == []
+    assert spec.are_async("clk_a", "clk_b")
+    assert spec.are_async("clk_a", "vclk")
+
+
+@FORMS
+def test_add_to_collection_group(form: str) -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -logically_exclusive -group vclk "
+        f"-group [add_to_collection [get_clocks clk_a] {_form(form, 'clk_b')}]\n"
+    )
+    assert spec.exclusive_groups == [[{"vclk"}, {"clk_a", "clk_b"}]]
+    assert spec.partial_warnings == []
+
+
+def test_add_to_collection_unique_flag_over_clocks() -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group vclk "
+        "-group [add_to_collection -unique [get_clocks clk_a] [get_clocks clk_a]]\n"
+    )
+    assert spec.async_groups == [[{"vclk"}, {"clk_a"}]]
+    assert spec.partial_warnings == []
+
+
+def test_nested_clock_operators() -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group clk_b -group "
+        "[remove_from_collection [add_to_collection [get_clocks clk_a] "
+        "[get_clocks {clk_g vclk}]] [get_clocks clk_g]]\n"
+    )
+    assert spec.async_groups == [[{"clk_b"}, {"clk_a", "vclk"}]]
+
+
+def test_removed_glob_over_clocks() -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group [get_clocks clk_*] "
+        "-group [remove_from_collection [all_clocks] {clk_*}]\n"
+    )
+    assert spec.async_groups == [[{"clk_a", "clk_b", "clk_g"}, {"vclk"}]]
+
+
+def test_removing_an_undeclared_clock_warns() -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group clk_a "
+        "-group [remove_from_collection [all_clocks] [get_clocks clk_aa]]\n"
+    )
+    assert spec.async_groups == [[{"clk_a"}, _ALL]]
+    (warning,) = _no_line(spec.partial_warnings)
+    assert "'clk_aa' matches no declared clock" in warning
+    assert "removes nothing" in warning
+
+
+def test_group_left_empty_by_a_removal_is_ignored() -> None:
+    spec = parse(
+        _CLOCKS + "set_clock_groups -asynchronous -group clk_a -group clk_b "
+        "-group [remove_from_collection [get_clocks vclk] vclk]\n"
+    )
+    assert spec.async_groups == [[{"clk_a"}, {"clk_b"}]]
+    assert any("selects no clock" in w for w in spec.partial_warnings)
+
+
+@FORMS
+def test_false_path_from_every_other_clock(form: str) -> None:
+    spec = parse(
+        _CLOCKS + "set_false_path -from [remove_from_collection [all_clocks] "
+        f"{_form(form, 'clk_b')}] -to {_form(form, 'clk_b')}\n"
+    )
+    assert spec.false_path_pairs == {
+        frozenset({"clk_a", "clk_b"}),
+        frozenset({"clk_g", "clk_b"}),
+        frozenset({"vclk", "clk_b"}),
+    }
+    assert spec.partial_warnings == []
+
+
+@FORMS
+def test_datapath_only_to_every_other_clock(form: str) -> None:
+    spec = parse(
+        _CLOCKS + f"set_max_delay 2 -datapath_only -from {_form(form, 'clk_a')} "
+        f"-to [remove_from_collection [all_clocks] {_form(form, 'clk_a')}]\n"
+    )
+    (record,) = spec.datapath_only_delays
+    assert record.value == 2.0
+    assert record.to_clocks == ("clk_b", "clk_g", "vclk")
+    assert spec.partial_warnings == []
+
+
+def test_object_operator_in_a_false_path_ignores_the_statement() -> None:
+    """An operator over design objects is not evaluated (an object endpoint
+    has no exclusion model): the side selects nothing and the statement is
+    dropped, never widened."""
+    spec = parse(
+        _CLOCKS + "set_false_path -from [get_cells u/a_reg] "
+        "-to [remove_from_collection [get_cells u/*] [get_cells u/b_reg]]\n"
+    )
+    assert spec.false_path_exceptions == [] and spec.false_path_pairs == set()
+    assert any("is not a clock collection" in w for w in spec.partial_warnings)
+    assert any("-to selects nothing" in w for w in spec.partial_warnings)
+
+
+@pytest.mark.parametrize(
+    ("operator", "why"),
+    [
+        ("remove_from_collection -intersect [all_clocks] clk_a", "-intersect"),
+        ("remove_from_collection [all_clocks]", "two operands"),
+        (
+            "remove_from_collection [all_clocks] "
+            "[remove_from_collection [all_clocks] clk_a]",
+            "removal inside the removed",
+        ),
+        ("remove_from_collection [all_clocks] [all_registers]", "not a clock"),
+    ],
+    ids=["intersect", "arity", "nested-removal", "registers-operand"],
+)
+def test_unsupported_clock_operator_forms_select_nothing(
+    operator: str, why: str
+) -> None:
+    spec = parse(
+        _CLOCKS + f"set_clock_groups -asynchronous -group clk_a -group [{operator}]\n"
+    )
+    assert spec.async_groups == []
+    assert any(why in w for w in spec.partial_warnings), spec.partial_warnings
+
+
+def test_operator_in_a_single_clock_option_is_not_evaluated() -> None:
+    spec = parse(
+        _CLOCKS + "set_input_delay 1 -clock "
+        "[remove_from_collection [all_clocks] {clk_b clk_g vclk}] d\n"
+    )
+    assert spec.port_clock == {}
+    assert any("not a collection command" in w for w in spec.partial_warnings)
+
+
+@needs_tcl
+def test_both_backends_read_clock_operators_identically() -> None:
+    text = (
+        _CLOCKS + "set_clock_groups -asynchronous -group [get_clocks clk_a] "
+        "-group [remove_from_collection [all_clocks] [get_clocks {clk_a vclk}]]\n"
+        + "set_false_path -from [add_to_collection clk_b {vclk}] -to clk_g\n"
+        + "set_max_delay 1 -datapath_only -from vclk "
+        "-to [remove_from_collection [all_clocks] [get_clocks nope]]\n"
+    )
+    tcl = parse(text, backend="tcl")
+    tok = parse(text, backend="tokenizer")
+    assert tcl.async_groups == tok.async_groups
+    assert tcl.false_path_pairs == tok.false_path_pairs
+    assert tcl.datapath_only_delays == tok.datapath_only_delays
+    assert _no_line(tcl.partial_warnings) == tok.partial_warnings
+    assert len(tok.partial_warnings) == 1
+
+
+@needs_tcl
+def test_clock_operator_through_a_tcl_variable() -> None:
+    spec = parse(
+        _CLOCKS
+        + "set others [remove_from_collection [all_clocks] [get_clocks clk_a]]\n"
+        + "set_clock_groups -asynchronous -group clk_a -group $others\n",
+        backend="tcl",
+    )
+    assert spec.async_groups == [[{"clk_a"}, {"clk_b", "clk_g", "vclk"}]]
+
+
+# --- end to end ----------------------------------------------------------------
+
+_FOUR = Path(__file__).parent / "fixtures" / "bad_four_clock_mixed"
+
+
+def _violations(tmp_path: Path, sdc_text: str) -> Counter[tuple[str, str]]:
+    sdc = tmp_path / "x.sdc"
+    sdc.write_text(sdc_text)
+    result = CliRunner().invoke(
+        app,
+        [
+            "analyze",
+            "-n",
+            str(_FOUR / "bad_four_clock_mixed.json"),
+            "-s",
+            str(sdc),
+            "-f",
+            "json",
+        ],
+    )
+    assert result.exit_code in (0, 1), result.output
+    return Counter(
+        (v["rule_id"], v["message"]) for v in json.loads(result.stdout)["violations"]
+    )
+
+
+@pytest.mark.parametrize(
+    "rest",
+    [
+        "[remove_from_collection [all_clocks] [get_clocks {clk_a clk_a2x clk_b}]]",
+        "[remove_from_collection [all_clocks] {clk_a clk_a2x clk_b}]",
+        "[remove_from_collection [get_clocks *] {clk_a* clk_b}]",
+    ],
+    ids=["bracket", "brace", "glob"],
+)
+def test_operator_group_reaches_the_rules_like_the_explicit_group(
+    tmp_path: Path, rest: str
+) -> None:
+    """``bad_four_clock_mixed`` with its third group written as "every
+    other clock" reports exactly what the explicit ``{clk_c}`` does."""
+    original = (_FOUR / "bad_four_clock_mixed.sdc").read_text()
+    explicit = "-group {clk_a clk_a2x} -group {clk_b} -group {clk_c}"
+    assert explicit in original
+    idiom = original.replace(
+        explicit, "-group {clk_a clk_a2x} -group {clk_b} -group " + rest
+    )
+    expected = _violations(tmp_path, original)
+    assert any("→ clk_c" in message for _rule, message in expected)
+    assert _violations(tmp_path, idiom) == expected

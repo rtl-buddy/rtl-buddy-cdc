@@ -426,6 +426,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     several clocks (`{a b}`) took the first silently; that is now ignored
     and reported, as is a `-filter` in a `-group` or single-clock option
     (a filtered `-master_clock` used to become the raw word itself).
+  - `remove_from_collection` / `add_to_collection` are evaluated over
+    clocks in `set_clock_groups -group` and the `set_false_path` /
+    `set_max_delay -datapath_only` clock endpoints, with the evaluator the
+    `set_*_delay` targets got in rtl-buddy-cdc#382. `-group
+    [remove_from_collection [all_clocks] [get_clocks x]]` was dropped
+    with a warning (and silently mis-read before #382); it is now every
+    clock but `x`. Unsupported forms (`-intersect`, a removal inside the
+    removed operand, an operator over design objects) still select
+    nothing, with a warning.
 
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a

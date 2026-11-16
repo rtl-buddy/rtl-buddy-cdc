@@ -1659,10 +1659,26 @@ _RECOGNISED_HEADS: frozenset[str] = frozenset(
 
 #: Commands whose *tail* may also hold the collection operators
 #: (``remove_from_collection`` / ``add_to_collection``), which
-#: :func:`_port_terms` evaluates. Anywhere else they are unrecognised.
+#: :func:`_port_terms` evaluates.
 _OPERATOR_TAIL_COMMANDS: frozenset[str] = frozenset(
     {"set_input_delay", "set_output_delay"}
 )
+
+_ENDPOINT_FLAGS: frozenset[str] = frozenset(
+    {"-from", "-to", "-rise_from", "-fall_from", "-rise_to", "-fall_to"}
+)
+
+#: Per command, the flags whose operands may hold the collection
+#: operators — the clock-collection positions :func:`_clock_terms`
+#: evaluates (rtl-buddy-cdc#390). Anywhere not listed here or in
+#: :data:`_OPERATOR_TAIL_COMMANDS` the operators are unrecognised: a
+#: single-clock option (``-clock``, ``-master_clock``), ``-through`` and
+#: ``set_case_analysis`` have no use for a set difference.
+_OPERATOR_FLAGS: dict[str, frozenset[str]] = {
+    "set_clock_groups": frozenset({"-group"}),
+    "set_false_path": _ENDPOINT_FLAGS,
+    "set_max_delay": _ENDPOINT_FLAGS,
+}
 
 # A bracket that is a bus index, not a command: ``d[3]``, ``d[*]``,
 # ``d[7:0]``, ``d[$i]`` (an unevaluated variable, tokenizer only).
@@ -1742,14 +1758,18 @@ def _drop_unrecognised_operands(cmd: str, p: Parsed, warnings: list[str]) -> Par
             )
         return word if len(kept) == len(items) else " ".join(kept)
 
-    def clean_value(value: Any) -> Any:
+    def clean_value(value: Any, operators: bool) -> Any:
         if isinstance(value, str):
-            return clean(value, False)
+            return clean(value, operators)
         if isinstance(value, list):
-            return [clean(w, False) for w in value]
+            return [clean(w, operators) for w in value]
         return value
 
-    flags = {f: [clean_value(v) for v in vs] for f, vs in p.flags.items()}
+    operator_flags = _OPERATOR_FLAGS.get(cmd, frozenset())
+    flags = {
+        f: [clean_value(v, f in operator_flags) for v in vs]
+        for f, vs in p.flags.items()
+    }
     operators = cmd in _OPERATOR_TAIL_COMMANDS
     tail = [clean(w, operators) for w in p.tail]
     return dataclasses.replace(p, flags=flags, tail=tail)
@@ -2334,8 +2354,36 @@ class _TermFlags:
     warnings: list[str] = field(default_factory=list)
 
 
-#: Port-set term: an included pattern and the patterns removed from it.
+#: Set term: an included pattern and the patterns removed from it. A
+#: port target and a clock collection both evaluate to a union of terms.
 _Term = tuple[str, tuple[str, ...]]
+
+#: Evaluates one plain (non-operator) collection item to terms:
+#: ``leaf(text, nested)``. ``None`` means "not readable here" — the
+#: caller drops the whole operand (with whatever warning the leaf left).
+_Leaf = Callable[[str, bool], "list[_Term] | None"]
+
+
+def _collection_terms(
+    word: str, label: str, leaf: _Leaf, flags: _TermFlags, *, nested: bool
+) -> list[_Term] | None:
+    """Evaluate one collection operand to set terms.
+
+    ``remove_from_collection`` / ``add_to_collection`` are evaluated here,
+    recursively (:func:`_operator_terms`), the same for every object kind
+    (rtl-buddy-cdc#382 for port targets, #390 for clock collections);
+    every other item goes to ``leaf``, which knows the kind — port
+    targets (:func:`_port_terms`) or clocks (:func:`_clock_leaf`). Both
+    backends hand the operators over as the same word: the tokenizer keeps
+    ``[…]`` opaque and the Tcl worker re-wraps the call with its operands
+    intact. ``label`` prefixes the operator diagnostics.
+    """
+    text = word.strip()
+    if text.startswith("[") and _closing_bracket(text) == len(text) - 1:
+        parts = _endpoint_items(text[1:-1])
+        if parts and parts[0] in COLLECTION_OPERATORS:
+            return _operator_terms(parts[0], parts[1:], label, leaf, flags)
+    return leaf(text, nested)
 
 
 def _port_terms(
@@ -2349,63 +2397,64 @@ def _port_terms(
     evaluate (then with a warning on ``flags``).
 
     Handles ``[get_ports …]``, bare / braced names, ``[all_inputs]`` /
-    ``[all_outputs]`` and, recursively, ``remove_from_collection`` /
-    ``add_to_collection`` (rtl-buddy-cdc#382). Both backends hand the
-    operators over as the same word: the tokenizer keeps ``[…]`` opaque
-    and the Tcl worker re-wraps the call with its operands intact.
+    ``[all_outputs]`` and, through :func:`_collection_terms`,
+    ``remove_from_collection`` / ``add_to_collection`` (rtl-buddy-cdc#382).
     """
-    text = word.strip()
-    if text.startswith("[") and _closing_bracket(text) == len(text) - 1:
-        parts = _endpoint_items(text[1:-1])
-        if parts and parts[0] in COLLECTION_OPERATORS:
-            return _operator_terms(parts[0], parts[1:], command, flags)
-        if parts and parts[0] in _ALL_PORTS_DIRECTION:
-            # ``[all_inputs]`` / ``[all_outputs]`` (rtl-buddy-cdc#378)
-            # select every port of one direction: recorded as the glob
-            # ``*``, which ``resolve_port_delays`` narrows to the
-            # command's direction and to non-clock ports, as it does for
-            # ``[get_ports *]``. The other direction's collection selects
-            # nothing this command can type.
-            head = parts[0]
-            if _ALL_PORTS_DIRECTION[head] == command:
-                return [("*", ())]
-            flags.warnings.append(
-                f"{command} [{head}]: {head} selects no port "
-                f"{command} can constrain; the target is ignored"
-            )
-            return [] if nested else None
-    # ``_split_collection`` keeps a bus index on its name (``{d[3]}`` →
-    # ``d[3]``, where ``_extract_names`` split it into ``d`` and ``3``);
-    # ``sdc_objects.resolve_port_delays`` resolves indices and globs
-    # against the netlist (#357).
-    kind, names, sf = _split_collection(text)
-    if kind not in (None, "port"):
-        if nested:
-            flags.warnings.append(
-                f"{command}: collection operand {text!r} is not a port "
-                f"collection; the target is ignored"
-            )
-        # At the top level, ``[expr {$p * 0.4}]`` left unevaluated by the
-        # tokenizer is the delay value, not a target (its ``*`` would glob
-        # every port), and a pin / cell collection names no top-level
-        # port.
-        return None
-    flags.saw_filter = flags.saw_filter or sf
-    return [(n, ()) for n in names if not _looks_numeric(n)]
+
+    def leaf(text: str, nested: bool) -> list[_Term] | None:
+        if text.startswith("[") and _closing_bracket(text) == len(text) - 1:
+            parts = _endpoint_items(text[1:-1])
+            if parts and parts[0] in _ALL_PORTS_DIRECTION:
+                # ``[all_inputs]`` / ``[all_outputs]`` (rtl-buddy-cdc#378)
+                # select every port of one direction: recorded as the glob
+                # ``*``, which ``resolve_port_delays`` narrows to the
+                # command's direction and to non-clock ports, as it does
+                # for ``[get_ports *]``. The other direction's collection
+                # selects nothing this command can type.
+                head = parts[0]
+                if _ALL_PORTS_DIRECTION[head] == command:
+                    return [("*", ())]
+                flags.warnings.append(
+                    f"{command} [{head}]: {head} selects no port "
+                    f"{command} can constrain; the target is ignored"
+                )
+                return [] if nested else None
+        # ``_split_collection`` keeps a bus index on its name (``{d[3]}`` →
+        # ``d[3]``, where ``_extract_names`` split it into ``d`` and ``3``);
+        # ``sdc_objects.resolve_port_delays`` resolves indices and globs
+        # against the netlist (#357).
+        kind, names, sf = _split_collection(text)
+        if kind not in (None, "port"):
+            if nested:
+                flags.warnings.append(
+                    f"{command}: collection operand {text!r} is not a port "
+                    f"collection; the target is ignored"
+                )
+            # At the top level, ``[expr {$p * 0.4}]`` left unevaluated by
+            # the tokenizer is the delay value, not a target (its ``*``
+            # would glob every port), and a pin / cell collection names no
+            # top-level port.
+            return None
+        flags.saw_filter = flags.saw_filter or sf
+        return [(n, ()) for n in names if not _looks_numeric(n)]
+
+    return _collection_terms(word, command, leaf, flags, nested=nested)
 
 
 def _operator_terms(
-    op: str, operands: list[str], command: str, flags: _TermFlags
+    op: str, operands: list[str], label: str, leaf: _Leaf, flags: _TermFlags
 ) -> list[_Term] | None:
-    """``remove_from_collection`` / ``add_to_collection`` over port sets.
+    """``remove_from_collection`` / ``add_to_collection`` over object sets.
 
-    ``remove_from_collection <base> <removed>`` is every port of
+    ``remove_from_collection <base> <removed>`` is every object of
     ``<base>`` not in ``<removed>``; ``add_to_collection <base> <added>``
     is their union (``-unique`` changes nothing for a set). The removed
     operand must itself be a plain collection — a removal inside it
     (``A − (B − C)``) is reported and ignored, as is ``-intersect``.
+    Operands are evaluated with the caller's ``leaf``, so a port
+    operator takes port collections and a clock operator clock ones.
     """
-    where = f"{command} [{op} …]"
+    where = f"{label} [{op} …]"
     values: list[str] = []
     for operand in operands:
         if operand.startswith("-"):
@@ -2427,7 +2476,7 @@ def _operator_terms(
     for value in values:
         terms: list[_Term] = []
         for item in _endpoint_items(value) or [value]:
-            got = _port_terms(_unbrace(item), command, flags, nested=True)
+            got = _collection_terms(_unbrace(item), label, leaf, flags, nested=True)
             if got is None:
                 return None
             terms.extend(got)
@@ -2682,6 +2731,32 @@ def _clock_leaf(
     return None
 
 
+def _clock_terms(
+    text: str, where: str, flags: _TermFlags, *, ports_are_clocks: bool
+) -> list[_Term] | None:
+    """One clock-position item → set terms, collection operators included.
+
+    ``[remove_from_collection [all_clocks] [get_clocks x]]`` is the term
+    ``*`` excluding ``x``; ``add_to_collection`` a union — the same
+    evaluator the port targets use (:func:`_collection_terms`), with
+    :func:`_clock_leaf` reading the operands (rtl-buddy-cdc#390).
+    """
+
+    def leaf(item: str, _nested: bool) -> list[_Term] | None:
+        return _clock_leaf(item, where, flags, ports_are_clocks=ports_are_clocks)
+
+    return _collection_terms(text, where, leaf, flags, nested=False)
+
+
+def _is_operator_call(text: str) -> bool:
+    """True when ``text`` is a whole ``[remove_from_collection …]`` /
+    ``[add_to_collection …]`` call."""
+    if not (text.startswith("[") and _closing_bracket(text) == len(text) - 1):
+        return False
+    parts = _endpoint_items(text[1:-1])
+    return bool(parts) and parts[0] in COLLECTION_OPERATORS
+
+
 def _clock_universe(spec: ClockSpec) -> tuple[str, ...]:
     """The clock names a clock pattern resolves against (see
     :attr:`ClockSpec._clock_universe`)."""
@@ -2752,7 +2827,7 @@ def _read_clocks(
     terms: list[_Term] = []
     for word in words:
         for item in _endpoint_items(word):
-            got = _clock_leaf(
+            got = _clock_terms(
                 _unbrace(item), where, flags, ports_are_clocks=ports_are_clocks
             )
             if got:
@@ -2777,13 +2852,13 @@ def _read_endpoints(
         for item in _endpoint_items(word):
             text = _unbrace(item)
             kind, names, saw_filter, hier = _split_endpoint_item(text)
-            if kind in _OBJECT_KINDS:
+            if kind in _OBJECT_KINDS and not _is_operator_call(text):
                 assert kind is not None
                 flags.saw_object = True
                 flags.saw_filter = flags.saw_filter or saw_filter
                 objects.extend(SdcObject(kind, n, hier) for n in names)
                 continue
-            got = _clock_leaf(text, where, flags, ports_are_clocks=False)
+            got = _clock_terms(text, where, flags, ports_are_clocks=False)
             if got:
                 clocks.extend(got)
     return _resolve_clock_terms(clocks, where, spec, flags.warnings), objects
