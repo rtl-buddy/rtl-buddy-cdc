@@ -17,9 +17,14 @@ Supported commands:
     set_case_analysis <0|1|zero|one|rising|falling> [get_ports <port>]
 
 A ``set_*_delay`` target may also be ``remove_from_collection`` /
-``add_to_collection`` over port collections (rtl-buddy-cdc#382). Any
-other command used as a collection is not evaluated: the operand naming
-it is dropped with a warning (:func:`_drop_unrecognised_operands`).
+``add_to_collection`` over port collections (rtl-buddy-cdc#382), and so
+may a ``-group`` or a ``set_false_path`` / ``set_max_delay`` clock
+endpoint over clock collections, where ``[all_clocks]`` and
+``[get_clocks <glob>]`` expand against the file's declared clocks
+(rtl-buddy-cdc#390). ``list`` / ``concat`` build a collection anywhere
+one is accepted (:func:`_collection_items`). Any other command used as a
+collection is not evaluated: the operand naming it is dropped with a
+warning (:func:`_drop_unrecognised_operands`).
 
 A clock defined on a port that already carries one replaces it unless
 ``-add`` is given; with ``-add`` the port carries both
