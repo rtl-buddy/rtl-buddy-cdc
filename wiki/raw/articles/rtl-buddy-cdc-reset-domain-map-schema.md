@@ -47,7 +47,9 @@ envelope so a consumer joining the two artefacts can rely on
 ## `reset_sources`
 
 One entry per distinct upstream reset observed across the design,
-keyed by `(name, source)`. Sorted by `(source, name)`.
+keyed by `(name, source)`, over every reset pin: each flop's reset and
+every asynchronous control (a set / clear flop's `SET` too, since
+rtl-buddy-cdc#390). Sorted by `(source, name)`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -96,8 +98,12 @@ inventory). Sorted by `instance_path`.
 
 ## `reset_crossings`
 
-Structural reset crossings the RDC rule pack would flag. Sorted by
-`(instance_path, kind)`.
+Structural reset crossings the RDC rule pack would flag, one per reset
+pin: a set / clear flop whose `CLR` and `SET` both cross has two
+entries (rtl-buddy-cdc#390). Each kind reads the pins its rule reads:
+`async-deassert` and `comb-driven` every asynchronous control,
+`sync-crossing` the `SRST` pin, `polarity-mismatch` the flop's reset
+(`flop_resets[].reset`). Sorted by `(instance_path, kind, pin)`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -108,6 +114,7 @@ Structural reset crossings the RDC rule pack would flag. Sorted by
 | `reset_kind` | enum | `source` of that reset. |
 | `polarity` | enum | The flop's inferred reset-pin polarity. |
 | `type` | enum | `"sync"` or `"async"`. |
+| `pin` | string | The flop pin the reset arrives on, by its coarse name: `"ARST"`, `"ALOAD"`, `"CLR"`, `"SET"` or `"SRST"` (gate-level `R` / `L` / `S` read as the pin they stand for). Added in rtl-buddy-cdc#390 (additive). |
 | `location` | object (optional) | Flop's source location. |
 
 Rule `severity`, waiver suppression, and the user-facing message

@@ -406,6 +406,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`find_reset_crossings` and the reset-domain map read every reset
+  pin** (rtl-buddy-cdc#390). They read only `ResetDomain.reset` (one pin
+  per flop, `CLR` on a set / clear flop), so a `SET` driven from another
+  domain's register or from combinational logic was in no
+  `reset_crossings` record although RDC-001 / RDC-004 report it. Each
+  kind now reads its rule's pins — `async-deassert` and `comb-driven`
+  every asynchronous control, `sync-crossing` `SRST`, `polarity-mismatch`
+  the flop's reset — and each record names its pin:
+  `ResetCrossing.pin` and the additive `reset_crossings[].pin` field
+  (`"ARST"` / `"ALOAD"` / `"CLR"` / `"SET"` / `"SRST"`); entries sort by
+  `(instance_path, kind, pin)`. `reset_sources` also lists a source seen
+  only on such a pin. Schema stays 1.0 (additive); the
+  `bad_marked_reset_polarity` golden gains `"pin": "ARST"`. No rule
+  verdict changes.
+
 - **CDC-015 reads every asynchronous control pin** (rtl-buddy-cdc#390).
   It read only `ARST`, so a synchroniser stage set, cleared or
   async-loaded by another domain's register (`$dffsr` `SET` / `CLR`,

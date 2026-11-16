@@ -3446,7 +3446,8 @@ these cells stepped through by `effective_control_bit`:
 RDC-004, -005 and -006 test every asynchronous pin on that signal (one
 finding per flop), and RDC-001 walks every asynchronous pin's cone, so a
 `CLR`, `SET` or `ALOAD` driven from another domain's register is a reset
-crossing as an `ARST` is. CDC-015 walks the same pins of every
+crossing as an `ARST` is; `find_reset_crossings` (and so the
+reset-domain map) reports each such pin as well. CDC-015 walks the same pins of every
 synchroniser stage, on the same signals (rtl-buddy-cdc#390): a chain set
 or async-loaded from another domain is as broken as one reset from it. `ResetDomain.reset` (the one pin RDC-002,
 RDC-007, RDC-008 and the reset-domain map read) is classified on the same
@@ -3707,7 +3708,9 @@ backward-compatible evolution) but a different payload: distinct
 upstream reset sources (port / inferred / constant), the recognised
 reset-synchroniser stages, per-flop reset assignments, and structural
 reset crossings (kinds `async-deassert`, `polarity-mismatch`,
-`sync-crossing`, `comb-driven`). The two maps are intentionally
+`sync-crossing`, `comb-driven`; one per reset pin, named by `pin`, so
+a set / clear flop's `SET` is read as well as its `CLR`,
+rtl-buddy-cdc#390). The two maps are intentionally
 separate artefacts — clock and reset analyses evolve on different
 schedules, and consumers enable each overlay independently. Both
 flags compose in a single run; the shared `design.top` /

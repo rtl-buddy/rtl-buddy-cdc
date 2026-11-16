@@ -678,12 +678,38 @@ class ResetCrossing:
       when the flop's clock isn't traceable.
     * ``kind`` — what about the crossing is worth flagging; see
       :data:`ResetCrossingKind`.
+    * ``pin`` — the flop pin the reset arrives on, by its coarse name:
+      ``"ARST"``, ``"ALOAD"``, ``"CLR"``, ``"SET"`` or ``"SRST"`` (gate
+      level ``R`` / ``L`` / ``S`` read as the pin they stand for). A set /
+      clear flop can have one record per pin (rtl-buddy-cdc#390).
+      ``None`` only on a record built by hand without it.
     """
 
     flop: str
     reset: ResetSource
     flop_clock: str | None
     kind: ResetCrossingKind
+    pin: str | None = None
+
+
+#: Coarse name of each reset role, for :attr:`ResetCrossing.pin`.
+PIN_LABELS: dict[str, str] = {
+    "arst": "ARST",
+    "aload": "ALOAD",
+    "clr": "CLR",
+    "set": "SET",
+    "srst": "SRST",
+}
+
+
+def _reset_arrivals(rd: ResetDomain) -> list[tuple[str, ResetSource]]:
+    """Every reset pin of ``rd``'s flop with the source on it: each
+    asynchronous control (``ResetDomain.controls``, in priority order),
+    then a synchronous reset (``ResetDomain.reset`` when it is ``SRST``)."""
+    out = [(PIN_LABELS[c.pin.role], c.source) for c in rd.controls]
+    if rd.reset is not None and rd.reset.type == "sync":
+        out.append((PIN_LABELS["srst"], rd.reset))
+    return out
 
 
 def find_reset_crossings(
@@ -697,8 +723,13 @@ def find_reset_crossings(
     """Unified view of every reset arrival worth flagging in ``module``.
 
     Iterates :func:`assign_reset_domains` and emits one
-    :class:`ResetCrossing` per flop whose reset would draw a rule
-    finding. The kinds produced parallel the RDC rule family:
+    :class:`ResetCrossing` per reset pin whose source would draw a rule
+    finding, naming the pin (:attr:`ResetCrossing.pin`). Each kind reads
+    the pins its rule reads: ``async-deassert`` and ``comb-driven`` every
+    asynchronous control (``ResetDomain.controls`` — a set / clear flop's
+    ``SET`` as well as its ``CLR``, rtl-buddy-cdc#390), ``sync-crossing``
+    the ``SRST`` pin, ``polarity-mismatch`` ``ResetDomain.reset`` (the one
+    pin RDC-002 reads). The kinds produced parallel the RDC rule family:
 
     * ``"async-deassert"`` — an async reset whose source domain differs
       from the consumer flop's clock domain and no reset-synchroniser
@@ -742,63 +773,66 @@ def find_reset_crossings(
     for name, rd in domains.items():
         if name in syncs:
             continue
-        if rd.reset is None:
-            continue
         flop_clock = clock_domains.get(name)
-        rsrc = rd.reset
-
-        # comb-driven: structural reset shape is combinational; clock
-        # domain comparison is moot here — the issue is upstream of
-        # any crossing question.
-        if rsrc.source == "comb":
-            out.append(
-                ResetCrossing(
-                    flop=name,
-                    reset=rsrc,
-                    flop_clock=flop_clock,
-                    kind="comb-driven",
-                )
-            )
-            continue
-
-        # Domain-crossing kinds. A source flop in a different clock
-        # domain (inferred reset source) is the shape that drives
-        # RDC-001 (async) and RDC-003 (sync).
-        if rsrc.source == "inferred":
-            src_clock = clock_domains.get(rsrc.name)
-            if (
-                flop_clock is not None
-                and src_clock is not None
-                and flop_clock != src_clock
-            ):
-                kind: ResetCrossingKind = (
-                    "async-deassert" if rsrc.type == "async" else "sync-crossing"
-                )
+        for pin, rsrc in _reset_arrivals(rd):
+            # comb-driven: structural reset shape is combinational; clock
+            # domain comparison is moot here — the issue is upstream of
+            # any crossing question.
+            if rsrc.source == "comb":
                 out.append(
                     ResetCrossing(
                         flop=name,
                         reset=rsrc,
                         flop_clock=flop_clock,
-                        kind=kind,
+                        kind="comb-driven",
+                        pin=pin,
                     )
                 )
+                continue
+
+            # Domain-crossing kinds. A source flop in a different clock
+            # domain (inferred reset source) is the shape that drives
+            # RDC-001 (async) and RDC-003 (sync).
+            if rsrc.source == "inferred":
+                src_clock = clock_domains.get(rsrc.name)
+                if (
+                    flop_clock is not None
+                    and src_clock is not None
+                    and flop_clock != src_clock
+                ):
+                    kind: ResetCrossingKind = (
+                        "async-deassert" if rsrc.type == "async" else "sync-crossing"
+                    )
+                    out.append(
+                        ResetCrossing(
+                            flop=name,
+                            reset=rsrc,
+                            flop_clock=flop_clock,
+                            kind=kind,
+                            pin=pin,
+                        )
+                    )
 
         # Port-declared polarity override disagrees with the flop's
         # inferred polarity. Emitted independently of any
         # crossing-kind above; a single flop can be both an
-        # async-deassert and a polarity-mismatch crossing.
+        # async-deassert and a polarity-mismatch crossing. RDC-002's
+        # pin: ``ResetDomain.reset`` only.
+        rsrc_main = rd.reset
         if (
             polarity_overrides
-            and rsrc.source == "port"
-            and rsrc.name in polarity_overrides
-            and polarity_overrides[rsrc.name] != rsrc.polarity
+            and rsrc_main is not None
+            and rsrc_main.source == "port"
+            and rsrc_main.name in polarity_overrides
+            and polarity_overrides[rsrc_main.name] != rsrc_main.polarity
         ):
             out.append(
                 ResetCrossing(
                     flop=name,
-                    reset=rsrc,
+                    reset=rsrc_main,
                     flop_clock=flop_clock,
                     kind="polarity-mismatch",
+                    pin=_reset_arrivals(rd)[0][0],
                 )
             )
 

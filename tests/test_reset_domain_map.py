@@ -241,3 +241,29 @@ def test_builds_for_every_rdc_fixture(name: str) -> None:
     # Each collection is a JSON array.
     for k in ("reset_sources", "reset_synchronizers", "flop_resets", "reset_crossings"):
         assert isinstance(payload[k], list)
+
+
+def test_set_pin_crossing_and_source_are_in_the_map() -> None:
+    """A set / clear flop's foreign ``SET`` is a ``reset_crossings`` record
+    with ``pin: "SET"``, and its source is in ``reset_sources`` although no
+    flop's ``reset`` (its ``CLR``) names it (rtl-buddy-cdc#390)."""
+    payload = _build_for_fixture("bad_set_clear_foreign_controls")
+    by_pin = {(c["kind"], c["pin"]) for c in payload["reset_crossings"]}
+    assert by_pin == {
+        ("async-deassert", "SET"),
+        ("async-deassert", "CLR"),
+        ("comb-driven", "SET"),
+    }
+    set_src = next(
+        c["reset"]
+        for c in payload["reset_crossings"]
+        if (c["kind"], c["pin"]) == ("async-deassert", "SET")
+    )
+    assert set_src not in {fr["reset"] for fr in payload["flop_resets"]}
+    assert (set_src, "inferred") in {
+        (s["name"], s["source"]) for s in payload["reset_sources"]
+    }
+    keys = [
+        (c["instance_path"], c["kind"], c["pin"]) for c in payload["reset_crossings"]
+    ]
+    assert keys == sorted(keys)
