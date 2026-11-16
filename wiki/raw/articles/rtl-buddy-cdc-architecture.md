@@ -428,7 +428,7 @@ class Crossing:
     dst_flop: Flop
     dst_clock: str
     min_hops: int                # # comb cells on shortest path
-    width: int                   # # distinct dst-D bits reachable from src
+    width: int                   # # distinct dst-D bits reachable from src (1 if from one src bit)
     src_flop: Flop | None = None # set for register-to-register
     src_port: str | None = None  # set for typed-port-to-register
     src_boundary: tuple[str, str] | None = None  # (instance, port): abstracted-subtree output
@@ -442,7 +442,14 @@ Three design choices matter here:
 1. **One record per (src, dst) pair**, not per bit. A multi-bit bus
    crossing collapses to a single `Crossing` with `width = N`. This
    is how rules like CDC-004 ("multi-bit bus crossing") get a width
-   directly without re-walking.
+   directly without re-walking. A destination reached from exactly
+   one source bit is `width = 1` however many of its lanes that bit
+   reaches (rtl-buddy-cdc#390): a reset, enable or mux select shared
+   by the lanes, or a bit replicated onto them, gives every lane the
+   same bit, so there is no inter-bit skew to be incoherent and the fix
+   is a synchroniser on the bit (CDC-001), not a gray code or a
+   handshake (CDC-004 / CDC-012). Which source bits reach a destination
+   does not depend on the netlist form, so neither does the width.
 2. **`min_hops` is the shortest path length in *combinational cells*
    crossed.** `min_hops == 0` means a direct flop-to-flop (or
    port-to-flop) wire — the classic sync first stage. `min_hops >= 1`
@@ -1866,6 +1873,14 @@ same pair widen `width` and lower `min_hops`. This is what makes
 multi-bit buses produce one record with `width = N` instead of N
 records with `width = 1`.
 
+After the walk, a record with `width > 1` whose source is wider than
+one bit (flop `Q`, port, boundary port) is re-walked from each source
+bit alone, with the same edges, cap and pruning, until two bits are
+seen to reach its destination; if only one does, `width` becomes 1
+(rtl-buddy-cdc#390, §4.4). A one-bit source needs no re-walk. A real
+bus stops after two walks; the cost is only paid in full by a wide
+register whose bits each reach a different destination.
+
 ### 7.3 What's intentionally excluded
 
 - **Flop→port crossings.** When a flop drives a top-level *output*
@@ -1911,7 +1926,9 @@ records with `width = 1`.
   number of folded muxes between each and `D` (1; 2 for the lower-
   priority pin of `$sdffe` — enable — and `$sdffce` — reset), and the
   walk lands on them at that depth, reaching every `D` bit (the folded
-  select fanned out to all lanes). The crossing model is therefore the
+  select fanned out to all lanes) — from one source bit, so the crossing
+  is single-bit (§4.4, rtl-buddy-cdc#390; it was `width` = the
+  register's, a bus). The crossing model is therefore the
   `proc` form's: the same `(src, dst)` pairs, `min_hops` and `width`
   before and after `opt_dff`, which
   `tests/test_gate_level_corpus.py::test_crossings_invariant_under_opt_dff`

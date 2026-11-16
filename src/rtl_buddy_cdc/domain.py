@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, TypedDict
 
@@ -167,7 +167,15 @@ class Crossing:
 
     ``width`` is the number of distinct destination ``D`` bits
     reachable from the source on this crossing (>1 means a bus
-    crossing). Port-sourced crossings are width 1.
+    crossing) — except that a destination reached from exactly *one*
+    source bit (of the source flop's ``Q``, the port, the boundary port)
+    is width 1 however many lanes that bit reaches (rtl-buddy-cdc#390).
+    A reset, enable or mux select shared by a register's lanes, or a bit
+    replicated onto them, gives every lane the same bit: there is no
+    inter-bit skew to be incoherent, and the fix is a synchroniser on
+    that one bit, not a gray code or a handshake. The source bits that
+    reach a destination are the same in the ``proc``, ``opt_dff`` and
+    gate-level forms of a design, so the width is too.
 
     ``src_boundary`` / ``dst_boundary`` (P0/#254) name a
     ``(instance, port)`` endpoint on an auto-abstracted blackbox
@@ -2027,6 +2035,66 @@ def find_crossings(
             if c != src_clock and d > budget:
                 cuts.add(DepthCut(src=src, src_clock=src_clock, dst_clock=c))
 
+    def _reached(bit: Bit, src_clock: str, lane_aware: bool) -> set[str]:
+        """Flop cells another clock than ``src_clock`` whose capture pins
+        the walk from ``bit`` alone lands on (rtl-buddy-cdc#390): the same
+        edges, cap and pruning as the crossing walks, no grouping."""
+        seen: dict[Bit, int] = {bit: 0}
+        frontier: list[tuple[Bit, int]] = [(bit, 0)]
+        out: set[str] = set()
+        while frontier:
+            nxt: list[tuple[Bit, int]] = []
+            for b, hops in frontier:
+                for f in flop_by_d_bit.get(b, ()):
+                    out.add(f.cell.name)
+                for f, depth in flop_by_ctrl_bit.get(b, ()):
+                    if hops + depth <= cap:
+                        out.add(f.cell.name)
+                if hops >= cap or not useful(b, hops, src_clock):
+                    continue
+                for cell_name, cport, idx in consumers.get(b, ()):
+                    cell = module.cells[cell_name]
+                    if cell.type == "$scopeinfo" or is_ff_cell(cell.type):
+                        continue
+                    outs = (
+                        _lane_targets(cell, cport, idx)
+                        if lane_aware
+                        else _cell_outputs(cell)
+                    )
+                    for ob in outs:
+                        if isinstance(ob, int) and seen.get(ob, hops + 2) > hops + 1:
+                            seen[ob] = hops + 1
+                            nxt.append((ob, hops + 1))
+            frontier = nxt
+        return out
+
+    def _one_source_bit(
+        src_bits: Sequence[Bit],
+        dst_bits: dict[str, set[Bit]],
+        src_clock: str,
+        *,
+        lane_aware: bool = True,
+    ) -> set[str]:
+        """The destinations in ``dst_bits`` (flop cell -> the ``D`` bits a
+        source reaches) that the source reaches on more than one ``D`` bit
+        but from exactly one of its ``src_bits`` (rtl-buddy-cdc#390): a
+        single bit fanned out to several lanes — a reset, enable or select
+        shared by the lanes, or a replicated bit — not a bus."""
+        cand = {d for d, bits in dst_bits.items() if len(bits) > 1}
+        ints = list(dict.fromkeys(b for b in src_bits if isinstance(b, int)))
+        if not cand or not ints:
+            return set()
+        if len(ints) == 1:
+            return cand
+        count: dict[str, int] = {}
+        for b in ints:
+            live = {d for d in cand if count.get(d, 0) < 2}
+            if not live:
+                break
+            for d in _reached(b, src_clock, lane_aware) & live:
+                count[d] = count.get(d, 0) + 1
+        return {d for d in cand if count.get(d, 0) == 1}
+
     for src_fd in domains.values():
         if src_fd.clock is None:
             continue
@@ -2094,6 +2162,17 @@ def find_crossings(
                             next_frontier.append((ob, new_hops))
             frontier = next_frontier
 
+    # A destination reached from one source bit only is a single-bit
+    # crossing however many of its lanes that bit reaches
+    # (rtl-buddy-cdc#390): see :attr:`Crossing.width`.
+    single: set[tuple[str, str]] = set()
+    by_src: dict[str, dict[str, set[Bit]]] = defaultdict(dict)
+    for (src_name, dst_name), g in grouped.items():
+        by_src[src_name][dst_name] = g["bits"]
+    for src_name, dsts in by_src.items():
+        g0 = grouped[(src_name, next(iter(dsts)))]
+        for d in _one_source_bit(g0["src_flop"].q, dsts, g0["src_clock"]):
+            single.add((src_name, d))
     out_crossings: list[Crossing] = [
         Crossing(
             src_flop=g["src_flop"],
@@ -2101,11 +2180,11 @@ def find_crossings(
             dst_flop=g["dst_flop"],
             dst_clock=g["dst_clock"],
             min_hops=g["min_hops"],
-            width=len(g["bits"]),
+            width=1 if key in single else len(g["bits"]),
             dst_boundary=_dst_boundary_of(g["dst_flop"]),
             scan_mode=g["dst_flop"].cell.name in scan_mode_flops,
         )
-        for g in grouped.values()
+        for key, g in grouped.items()
     ]
 
     # Port-sourced crossings: walk forward from each typed input port
@@ -2167,14 +2246,21 @@ def find_crossings(
                                 next_frontier.append((ob, new_hops))
                 frontier = next_frontier
 
-        for pg in port_grouped.values():
+        port_single: set[tuple[str, str]] = set()
+        port_dsts: dict[str, dict[str, set[Bit]]] = defaultdict(dict)
+        for (pname, dname), pg in port_grouped.items():
+            port_dsts[pname][dname] = pg["bits"]
+        for pname, dsts in port_dsts.items():
+            for d in _one_source_bit(module.ports[pname].bits, dsts, port_clock[pname]):
+                port_single.add((pname, d))
+        for pkey, pg in port_grouped.items():
             out_crossings.append(
                 Crossing(
                     src_clock=pg["src_clock"],
                     dst_flop=pg["dst_flop"],
                     dst_clock=pg["dst_clock"],
                     min_hops=pg["min_hops"],
-                    width=len(pg["bits"]),
+                    width=1 if pkey in port_single else len(pg["bits"]),
                     src_port=pg["port"],
                     dst_boundary=_dst_boundary_of(pg["dst_flop"]),
                     scan_mode=pg["dst_flop"].cell.name in scan_mode_flops,
@@ -2262,14 +2348,24 @@ def find_crossings(
                                     bnd_next.append((ob, new_hops))
                     bnd_frontier = bnd_next
 
-        for bg in bnd_grouped.values():
+        bnd_single: set[tuple[str, str, str]] = set()
+        bnd_dsts: dict[tuple[str, str], dict[str, set[Bit]]] = defaultdict(dict)
+        for (iname, bport, dname), bg in bnd_grouped.items():
+            bnd_dsts[(iname, bport)][dname] = bg["bits"]
+        for (iname, bport), dsts in bnd_dsts.items():
+            bconn = module.cells[iname].connections.get(bport, ())
+            bclk = bnd_grouped[(iname, bport, next(iter(dsts)))]["src_clock"]
+            # The boundary walk is not lane-aware (``_cell_outputs``).
+            for d in _one_source_bit(bconn, dsts, bclk, lane_aware=False):
+                bnd_single.add((iname, bport, d))
+        for bkey, bg in bnd_grouped.items():
             out_crossings.append(
                 Crossing(
                     src_clock=bg["src_clock"],
                     dst_flop=bg["dst_flop"],
                     dst_clock=bg["dst_clock"],
                     min_hops=bg["min_hops"],
-                    width=len(bg["bits"]),
+                    width=1 if bkey in bnd_single else len(bg["bits"]),
                     src_boundary=(bg["instance"], bg["boundary_port"]),
                     dst_boundary=_dst_boundary_of(bg["dst_flop"]),
                     scan_mode=bg["dst_flop"].cell.name in scan_mode_flops,

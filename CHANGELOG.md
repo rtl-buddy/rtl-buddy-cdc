@@ -406,6 +406,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One control bit on every lane of a register is a single-bit
+  crossing, not a bus** (rtl-buddy-cdc#390). A 1-bit foreign reset,
+  enable or mux select shared by a W-bit register's lanes was a W-bit
+  crossing (CDC-004, or CDC-012 behind a synchronised enable), the same
+  in every netlist form: the walk reaches every `D` lane through the
+  select, or through the `SRST` / `EN` pin it is folded into. Every lane
+  sees the same bit, so there is nothing to be incoherent; the fix is a
+  synchroniser on that bit. A crossing whose destination is reached from
+  exactly one source bit (flop `Q`, port or boundary port bit) now has
+  `width` 1 however many lanes it reaches, so CDC-001 judges it (plus
+  RDC-003 for a sync reset); a bit replicated onto several lanes is read
+  the same way. Source bits are the same in the `proc`, `opt_dff` and
+  gate-level forms, so the forms still agree (and the slang frontend).
+  Verdict changes, all a single bit on a register's reset or enable:
+  - `bad_bus_foreign_sync_reset` (both forms): `r` → `gq` CDC-004 →
+    CDC-001, `r` → `cap` CDC-012 → CDC-001 (RDC-003 and the payload's
+    CDC-012 unchanged).
+  - `bad_flop_variety_handshake`: `src_load_q` → `cap_b` (the request on
+    the enable) CDC-004 → CDC-001; `srst_q` → `cap_c` (the sync reset)
+    CDC-012 → CDC-001.
+  - New fixture `bad_control_bit_fanout` (`proc`, `opt_dff`, gate level).
+  - `test_liveness`'s exposed `ip_cdc_handshake` loop-counter register
+    (its 32 lanes reset by the one unconstrained `rst_n` bit): CDC-011
+    only, no longer also CDC-004.
+  A waiver written for CDC-004 / CDC-012 on such a crossing needs to name
+  CDC-001 instead.
+
 - **A sync reset is looked through where `opt_dff` folds it**
   (rtl-buddy-cdc#390). The rules step over a flop's own sync-reset mux
   (synchroniser chain walks, packed shift registers, CDC-003, multi-bit

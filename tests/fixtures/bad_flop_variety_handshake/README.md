@@ -8,12 +8,12 @@ good_flop_variety_handshake with four bugs, each on one of its flop families (ne
 
 ```text
   ack_sync  $aldff   one-stage ack synchroniser          CDC-001
-  cap_b     $aldffe  loads on the unsynchronised req     CDC-004 x2
-  cap_c     $sdffce  sync reset from a src_clk register  RDC-003, CDC-012
+  cap_b     $aldffe  loads on the unsynchronised req     CDC-004, CDC-001
+  cap_c     $sdffce  sync reset from a src_clk register  RDC-003, CDC-001
   cap_a     $dffsre  async clear from a src_clk register RDC-001
 ```
 
-cap_b's two CDC-004s are the payload bus and the 1-bit request, which fans out to all eight enable lanes. cap_c's reset register is loaded under the synchronised enable, but nothing holds it stable: CDC-012 reports from the data side what RDC-003 reports from the reset side. req_s1 / req_s2 (`$dffsr`) are still a correct request synchroniser.
+cap_b: CDC-004 on the payload bus, CDC-001 on the 1-bit request on all eight enable lanes (one bit, not a bus: rtl-buddy-cdc#390). cap_c's reset register is loaded under the synchronised enable, but nothing holds it stable: CDC-001 from the data side, RDC-003 from the reset. req_s1 / req_s2 (`$dffsr`) are still a correct request synchroniser.
 
 cap_a's CLR is the mux `clr_q ? 1 : 0` that proc builds on a set / clear flop: a buffer of the register, not combinational logic, so RDC-001 reports the foreign clear and RDC-004 stays silent (rtl-buddy-cdc#383). The gate-level legs (rtl-buddy-cdc#386) and the slang frontend (rtl-buddy-cdc#384) agree with this netlist's verdict.
 
@@ -62,9 +62,9 @@ flowchart LR
   f_d64f381f -. "⚠ async · 8b" .-> f_c2c8ef22
   f_d48fa09a -. "⚠ async · 8b" .-> f_85ba594c
   f_71d0315f -. "⚠ async · 8b" .-> f_81765a7e
-  f_4b1076c5 -. "⚠ async · 8b" .-> f_c2c8ef22
+  f_4b1076c5 -. "⚠ async · 1b" .-> f_c2c8ef22
   f_4b1076c5 -. "⚠ async · 1b" .-> f_cbd34485
-  f_675e384a -. "⚠ async · 8b" .-> f_81765a7e
+  f_675e384a -. "⚠ async · 1b" .-> f_81765a7e
   f_17cb8d1a -. "⚠ async · 1b" .-> f_53121305
   subgraph rb_legend["Legend"]
     direction LR

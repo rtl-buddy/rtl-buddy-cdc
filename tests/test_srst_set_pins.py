@@ -23,6 +23,10 @@ leading comment reasons out:
   reset is looked through the way ``opt_dff`` folds it — lane by lane,
   through every constant-leg mux of the lane's reset value
   (rtl-buddy-cdc#390).
+- ``bad_control_bit_fanout`` (``.json`` / ``.optdff.json`` /
+  ``.synth.json``): one foreign bit on every lane's reset or enable is a
+  single-bit crossing, CDC-001 (+ RDC-003 for the reset), not a bus
+  (rtl-buddy-cdc#390).
 - ``bad_sync_chain_foreign_set`` (``.json`` / ``.synth.json``): CDC-015
   reads every async pin of a synchroniser stage, ``SET`` and ``ALOAD``
   too (rtl-buddy-cdc#390).
@@ -84,9 +88,11 @@ EXPECTED: dict[str, tuple[tuple[str, ...], set[tuple[str, str]], list[Finding]]]
             ("req", "en_s1"),
         },
         [
-            ("CDC-004", "r", "gq"),
+            # r is one bit on every lane's reset: single-bit crossings
+            # (rtl-buddy-cdc#390), not 4-bit buses.
+            ("CDC-001", "r", "gq"),
+            ("CDC-001", "r", "cap"),
             ("CDC-012", "pay", "cap"),
-            ("CDC-012", "r", "cap"),
             ("RDC-003", None, "gq"),
         ],
     ),
@@ -104,6 +110,16 @@ EXPECTED: dict[str, tuple[tuple[str, ...], set[tuple[str, str]], list[Finding]]]
         ("json", "optdff.json"),
         {("a_q", "a1"), ("b_q", "bs"), ("gray", "g1")},
         [],
+    ),
+    "bad_control_bit_fanout": (
+        ("json", "optdff.json", "synth.json"),
+        {("ctl", "q_c"), ("en", "q_e"), ("r", "q_r")},
+        [
+            ("CDC-001", "ctl", "q_c"),
+            ("CDC-001", "en", "q_e"),
+            ("CDC-001", "r", "q_r"),
+            ("RDC-003", None, "q_r"),
+        ],
     ),
     "bad_sync_chain_foreign_set": (
         ("json", "synth.json"),
@@ -147,6 +163,12 @@ def _register_names(path: Path, top: str) -> dict[str, str]:
     return out
 
 
+def _name(names: dict[str, str], cell: str) -> str:
+    """A regrouped gate-level register (rtl-buddy-cdc#337) is reported
+    under its register name, which is no cell of the JSON."""
+    return names.get(cell, cell)
+
+
 def _analyze(name: str, form: str) -> tuple[set[tuple[str, str]], Counter[Finding]]:
     fix = FIX_ROOT / name
     path = fix / f"{name}.{form}"
@@ -157,15 +179,17 @@ def _analyze(name: str, form: str) -> tuple[set[tuple[str, str]], Counter[Findin
     report = json.loads(res.stdout)
     names = _register_names(path, name)
     crossings = {
-        (names[c["src_flop"]], names[c["dst_flop"]]) for c in report["crossings"]
+        (_name(names, c["src_flop"]), _name(names, c["dst_flop"]))
+        for c in report["crossings"]
     }
     findings: Counter[Finding] = Counter()
     for v in report["violations"]:
         c = v.get("crossing")
         if c is None:
-            findings[(v["rule_id"], None, names[v["cell_name"]])] += 1
+            findings[(v["rule_id"], None, _name(names, v["cell_name"]))] += 1
         else:
-            findings[(v["rule_id"], names[c["src_flop"]], names[c["dst_flop"]])] += 1
+            src, dst = _name(names, c["src_flop"]), _name(names, c["dst_flop"])
+            findings[(v["rule_id"], src, dst)] += 1
     return crossings, findings
 
 

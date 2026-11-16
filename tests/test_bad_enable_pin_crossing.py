@@ -150,8 +150,9 @@ def test_crossing_through_control_pin(ctype: str, pin: str, hops: int) -> None:
     conns[pin] = (4,)
     (c,) = find_crossings(_module(_ff("b", ctype, 3, **conns)))
     assert (c.src_flop.name, c.dst_flop.name) == ("a", "b")
-    # Every D lane is reached through the pin, like the mux select was.
-    assert (c.min_hops, c.width) == (hops, 2)
+    # Every D lane is reached through the pin, like the mux select was,
+    # but from one source bit: a single-bit crossing (rtl-buddy-cdc#390).
+    assert (c.min_hops, c.width) == (hops, 1)
 
 
 def test_control_pin_counts_cells_in_front_of_it() -> None:
@@ -176,6 +177,66 @@ def test_same_domain_enable_is_not_a_crossing() -> None:
 def test_constant_d_reports_width_one() -> None:
     dst = _ff("b", "$dffe", 3, D=("1",), Q=(6,), EN=(4,))
     (c,) = find_crossings(_module(dst))
+    assert c.width == 1
+
+
+# --- one source bit fanned out to several lanes (rtl-buddy-cdc#390) -------
+
+
+def _wide_src(*extra: Cell, dst: Cell, ports: tuple[Port, ...] = ()) -> Module:
+    """``_module`` with ``a`` two bits wide: ``Q = (4, 15)``."""
+    module = _module(dst, *extra, ports=ports)
+    module.cells["a"] = _ff("a", "$dff", 2, D=(10, 16), Q=(4, 15))
+    return module
+
+
+def test_one_bit_of_a_wide_source_on_an_enable_is_single_bit() -> None:
+    dst = _ff("b", "$dffe", 3, D=(5, 13), Q=(6, 14), EN=(4,))
+    (c,) = find_crossings(_wide_src(dst=dst))
+    assert c.width == 1
+
+
+def test_two_bits_of_a_source_are_a_bus() -> None:
+    """Bit 4 on the enable, bit 15 on a ``D`` lane: two source bits."""
+    dst = _ff("b", "$dffe", 3, D=(15, 13), Q=(6, 14), EN=(4,))
+    (c,) = find_crossings(_wide_src(dst=dst))
+    assert c.width == 2
+
+
+def test_lane_aligned_bus_keeps_its_width() -> None:
+    dst = _ff("b", "$dff", 3, D=(4, 15), Q=(6, 14))
+    (c,) = find_crossings(_wide_src(dst=dst))
+    assert c.width == 2
+
+
+def test_one_bit_replicated_on_every_lane_is_single_bit() -> None:
+    """``b <= {~a, ~a}`` through two inverters: two ``D`` bits, one source
+    bit."""
+    dst = _ff("b", "$dff", 3, D=(7, 19), Q=(6, 14))
+    inv = Cell(name="inv2", type="$not", connections={"A": (4,), "Y": (19,)})
+    (c,) = find_crossings(_module(dst, inv))
+    assert (c.width, c.min_hops) == (1, 1)
+
+
+def test_one_bit_of_a_wide_port_on_an_enable_is_single_bit() -> None:
+    dst = _ff("b", "$dffe", 3, D=(5, 13), Q=(6, 14), EN=(8,))
+    p = Port(name="p", direction="input", bits=(8, 17))
+    (c,) = find_crossings(_module(dst, ports=(p,)), port_clock={"p": "clk_a"})
+    assert (c.src_port, c.width) == ("p", 1)
+
+
+def test_one_bit_of_a_wide_boundary_port_on_an_enable_is_single_bit() -> None:
+    dst = _ff("b", "$dffe", 3, D=(5, 13), Q=(6, 14), EN=(9,))
+    inst = Cell(name="u", type="sub", connections={"o": (9, 18)})
+    summary = BoundarySummary(
+        module="sub",
+        clock="clk_a",
+        ports={
+            "o": PortBoundary(port="o", src_clock="clk_a", synchronised=False, width=2)
+        },
+    )
+    crossings = find_crossings(_module(dst, inst), boundaries={"u": summary})
+    (c,) = [c for c in crossings if c.src_boundary is not None]
     assert c.width == 1
 
 
