@@ -27,6 +27,7 @@ from rtl_buddy_cdc.cells import MUX2_TYPES, MUX_PINS, parse_gate_storage_cell
 from rtl_buddy_cdc.flops import (
     Flop,
     find_flops,
+    flop_async_controls,
     flop_clk_polarity,
     flop_enable_pin,
     flop_reset,
@@ -50,7 +51,7 @@ from rtl_buddy_cdc.reset_hints import ResetHints
 from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
 
 if TYPE_CHECKING:
-    from rtl_buddy_cdc.reset_domain import ResetDomain, ResetSyncChain
+    from rtl_buddy_cdc.reset_domain import AsyncControl, ResetDomain, ResetSyncChain
 
 
 @dataclass(frozen=True)
@@ -2099,9 +2100,9 @@ def _gated_capture_fanin(
     (constant other leg), samples on every edge and is not a gate. The
     flop's own synchronous reset may sit in front of that hold mux
     (``if (rst) q <= 0; else if (en) q <= d;`` after ``proc``) when it
-    is the shape :func:`_constant_leg_reset_mux_data_bits` accepts and
-    its select is local (:func:`_srst_select_is_local`). The ``EN``
-    form is a hold by construction and is unchanged.
+    is the shape :func:`_constant_leg_reset_mux_data_bits` accepts
+    (:func:`_own_srst_data_leg`). The ``EN`` form is a hold by
+    construction and is unchanged.
     """
     dst_clock = crossing.dst_clock
     dst_flop = crossing.dst_flop
@@ -2415,10 +2416,10 @@ def _is_multibit_sync_first_stage(
     the single-bit chain walk already steps over
     (:func:`_constant_leg_reset_mux_data_bits`: one ``$mux`` whose ``Y``
     is exactly the next flop's ``D``, the other leg all-constant, ``Y``
-    read by nothing else) *and* its select is local to the destination
-    (:func:`_srst_select_is_local`). After ``opt_dff`` the reset is
-    folded into an ``$sdff`` whose ``D`` is ``Q`` directly, which the
-    plain lane test already accepts.
+    read by nothing else), whatever drives its select: after ``opt_dff``
+    the reset is folded into an ``$sdff`` whose ``D`` is ``Q`` directly,
+    which the plain lane test accepts, and a reset from another domain is
+    a crossing of its own, reported on its own (rtl-buddy-cdc#383).
 
     ``flops_by_d`` is the rule context's :attr:`_RuleContext.flops_by_d`
     index. Rule callers must pass it, and ``ctx`` for the reset-mux
@@ -2445,13 +2446,6 @@ def _is_multibit_sync_first_stage(
         nxt is not None
         and nxt.cell.name != dst_flop.cell.name
         and domains.get(nxt.cell.name) == dst_clock
-        and _srst_select_is_local(
-            module,
-            nxt,
-            dst_clock,
-            domains,
-            ctx.bit_drivers if ctx is not None else _bit_drivers(module),
-        )
     )
 
 
@@ -2501,31 +2495,6 @@ def _srst_mux_next_stage(
     return None
 
 
-def _srst_select_is_local(
-    module: Module,
-    stage: Flop,
-    dst_clock: str,
-    domains: dict[str, str | None],
-    bit_drivers: dict[Bit, tuple[str, str, int]],
-) -> bool:
-    """The select of the synchronous-reset ``$mux`` on ``stage``'s ``D``
-    is a reset of the destination domain: every flop in its fanin is
-    clocked by ``dst_clock`` (a synchronised local reset), or it has no
-    flop fanin at all (a primary reset port or a constant).
-
-    A select driven from another domain makes the mux part of a second
-    crossing, not a reset of this synchroniser, so the chain is not seen
-    through it. (That crossing into ``stage`` is reported on its own.)
-    """
-    first = stage.d[0] if stage.d else None
-    drv = bit_drivers.get(first) if isinstance(first, int) else None
-    if drv is None:
-        return False
-    s_bits = tuple(module.cells[drv[0]].connections.get("S", ()))
-    fanin = _backward_flop_fanin(module, s_bits, bit_drivers)
-    return all(domains.get(name) == dst_clock for name in fanin)
-
-
 def _own_srst_data_leg(
     module: Module,
     flop: Flop,
@@ -2535,7 +2504,7 @@ def _own_srst_data_leg(
     reader_counts: dict[Bit, int],
 ) -> tuple[Bit, ...] | None:
     """The data leg behind ``flop``'s own synchronous reset, or ``None``
-    when ``flop``'s ``D`` is not one (rtl-buddy-cdc#376).
+    when ``flop``'s ``D`` is not one (rtl-buddy-cdc#376, #383).
 
     ``if (rst) q <= '0; else q <= x;`` lowers, after ``proc``, to a
     constant-leg ``$mux`` in front of ``D``; ``opt_dff`` (and the slang
@@ -2546,19 +2515,22 @@ def _own_srst_data_leg(
 
     The mux qualifies when it is the shape
     :func:`_constant_leg_reset_mux_data_bits` accepts (one ``$mux`` whose
-    ``Y`` is exactly ``D`` and read by nothing else, one leg all-constant)
-    *and* its select is local to ``clock``
-    (:func:`_srst_select_is_local`): a select from another domain makes
-    the mux part of a second crossing, not this flop's reset.
+    ``Y`` is exactly ``D`` and read by nothing else, one leg all-constant),
+    whatever drives its select. ``opt_dff`` folds it into ``SRST`` on that
+    shape alone, so a select from another domain is looked through too
+    (rtl-buddy-cdc#383): the crossing it carries is found through the
+    select (or the ``SRST`` pin) and reported on its own, CDC-001 /
+    RDC-003 …, in both forms. Requiring a local select made the two forms
+    disagree — a gated bus behind a foreign sync reset was CDC-004 in the
+    ``proc`` form and a gated (CDC-012) capture in the ``$sdffe`` form.
+
+    ``clock`` and ``domains`` are kept for the callers' convenience; a
+    flop with no traceable clock (``clock is None``) is not looked
+    through.
     """
     if clock is None:
         return None
-    leg = _constant_leg_reset_mux_data_bits(flop, module, bit_drivers, reader_counts)
-    if leg is None or not _srst_select_is_local(
-        module, flop, clock, domains, bit_drivers
-    ):
-        return None
-    return leg
+    return _constant_leg_reset_mux_data_bits(flop, module, bit_drivers, reader_counts)
 
 
 def check_cdc_004(
@@ -3542,6 +3514,17 @@ def _deasserting_reset_sync_members(ctx: _RuleContext) -> frozenset[str]:
     return frozenset(good & ctx.reset_synchronizers)
 
 
+# Coarse pin name per :data:`~rtl_buddy_cdc.flops.ResetRole`, for messages
+# (gate-level ``R`` / ``S`` / ``L`` read as the pin they implement).
+_ASYNC_PIN_LABEL: dict[str, str] = {
+    "arst": "ARST",
+    "clr": "CLR",
+    "set": "SET",
+    "aload": "ALOAD",
+    "srst": "SRST",
+}
+
+
 def check_rdc_001(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -3568,6 +3551,11 @@ def check_rdc_001(
     Reset signals coming from top-level ports are intentionally
     accepted (they're the user's responsibility to drive correctly,
     e.g. the reset synchronizer's ARST input).
+
+    Every asynchronous control pin counts, not only ``ARST``
+    (rtl-buddy-cdc#383): the ``CLR`` and ``SET`` of a set / clear flop
+    and the ``ALOAD`` of an async-load flop (``R`` / ``S`` / ``L`` at gate
+    level) release asynchronously to the flop's clock just the same.
 
     The flops of a reset synchroniser are exempt (rtl-buddy-cdc#367):
     taking a foreign-domain reset on their own async pin is exactly what
@@ -3604,25 +3592,29 @@ def check_rdc_001(
     # lists every destination — matches how a real reset distribution
     # tree is reviewed.
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    edge_pins: dict[tuple[str, str, str], set[str]] = defaultdict(set)
     for f in ctx.flops:
-        arst_bits = flop_reset_bits(f.cell, "arst")
-        if not arst_bits:
+        controls = flop_async_controls(f.cell)
+        if not controls:
             continue
         if f.cell.name in exempt:
             continue  # reset-synchroniser stage: synchronising this reset (#367)
         my_clk = ctx.domains.get(f.cell.name)
         if my_clk is None:
             continue
-        fanin_flops = _backward_flop_fanin(module, arst_bits, ctx.bit_drivers)
-        for src_name in fanin_flops:
-            src_clk = ctx.domains.get(src_name)
-            if src_clk is None or src_clk == my_clk:
-                continue
-            if not _async(my_clk, src_clk):
-                continue
-            edges[(src_name, src_clk, my_clk)].append(f.cell.name)
+        for pin in controls:
+            fanin_flops = _backward_flop_fanin(module, pin.bits, ctx.bit_drivers)
+            for src_name in fanin_flops:
+                src_clk = ctx.domains.get(src_name)
+                if src_clk is None or src_clk == my_clk:
+                    continue
+                if not _async(my_clk, src_clk):
+                    continue
+                edges[(src_name, src_clk, my_clk)].append(f.cell.name)
+                edge_pins[(src_name, src_clk, my_clk)].add(_ASYNC_PIN_LABEL[pin.role])
 
     for (src_name, src_clk, dst_clk), dst_flops in edges.items():
+        pins = "/".join(sorted(edge_pins[(src_name, src_clk, dst_clk)]))
         dsts = sorted(set(dst_flops))
         # Choose representative cell for source-location reporting:
         # the first destination (alphabetically) — the source flop's
@@ -3643,7 +3635,7 @@ def check_rdc_001(
                 severity="error",
                 message=(
                     f"async reset crossing: flop(s) in clk={dst_clk} "
-                    f"have ARST driven by flop {src_name} from a "
+                    f"have {pins} driven by flop {src_name} from a "
                     f"different domain (clk={src_clk}); add a reset "
                     f"synchronizer in the {dst_clk} domain. {dst_desc}"
                 ),
@@ -3651,6 +3643,73 @@ def check_rdc_001(
             )
         )
     return violations
+
+
+def _folded_srst_selects(
+    flop: Flop,
+    module: Module,
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int],
+) -> tuple[Bit, ...]:
+    """The selects of the reset muxes on ``flop``'s ``D`` that ``opt_dff``
+    folds into a synchronous-reset pin (rtl-buddy-cdc#383).
+
+    ``if (r) q <= 0; else q <= d;`` is, after ``proc``, a ``$mux`` on
+    ``D`` with one constant leg; ``opt_dff`` turns it into an ``$sdff``
+    with ``SRST = r``, whatever ``r`` is. This reads the ``proc`` form the
+    way ``opt_dff`` does, lane by lane, so a rule keyed on the reset pin
+    (RDC-003) gives both forms the same verdict:
+
+    - each lane walks back from ``D`` through 2:1 muxes (``$mux`` /
+      ``$_MUX_``) with a 1-bit select whose output lane has no reader but
+      the next step;
+    - a mux with one leg the lane's own ``Q`` is an enable (``opt_dff``
+      makes it ``EN``) and is stepped through, unless a reset was already
+      collected in front of it: a reset over an enable and a second one
+      under it cannot share one pin;
+    - a mux with exactly one leg the constant ``0`` or ``1`` is a reset:
+      its select is collected and the walk continues on the other leg;
+    - anything else ends the lane.
+
+    Empty for a flop with an asynchronous control: there is no Yosys flop
+    cell with both, so ``opt_dff`` leaves the mux on ``D``.
+    """
+    if flop_async_controls(flop.cell):
+        return ()
+    q = tuple(flop.q)
+    d = tuple(flop.d)
+    if len(q) != len(d):
+        return ()
+    selects: dict[Bit, None] = {}
+    for d_bit, q_bit in zip(d, q, strict=True):
+        bit = d_bit
+        took_reset = False
+        for _ in range(8):
+            drv = bit_drivers.get(bit) if isinstance(bit, int) else None
+            if drv is None or drv[1] != "Y" or reader_counts.get(bit, 0) != 1:
+                break
+            cell = module.cells.get(drv[0])
+            if cell is None or cell.type not in MUX2_TYPES:
+                break
+            sel = cell.connections.get("S", ())
+            a_bits = cell.connections.get("A", ())
+            b_bits = cell.connections.get("B", ())
+            idx = drv[2]
+            if len(sel) != 1 or idx >= len(a_bits) or idx >= len(b_bits):
+                break
+            a, b = a_bits[idx], b_bits[idx]
+            if q_bit in (a, b):
+                if took_reset:
+                    break
+                bit = b if a == q_bit else a
+                continue
+            a_const, b_const = a in ("0", "1"), b in ("0", "1")
+            if a_const == b_const:
+                break
+            selects[sel[0]] = None
+            took_reset = True
+            bit = b if a_const else a
+    return tuple(selects)
 
 
 def check_rdc_003(
@@ -3676,6 +3735,14 @@ def check_rdc_003(
     foreign-domain source feeding many sync-reset consumers becomes
     one finding (mirroring RDC-001's reset-tree grouping).
 
+    The ``proc`` form of the same reset — a constant-leg ``$mux`` on
+    ``D`` — counts as well (rtl-buddy-cdc#383), exactly where ``opt_dff``
+    would fold it into ``SRST`` (:func:`_folded_srst_selects`), so the two
+    netlist forms agree. The crossing that arrives through the reset is
+    also reported by the CDC rules (CDC-001 / CDC-003 / CDC-012 …) as it
+    is on the ``SRST`` pin: RDC-003 names the reset, the CDC rule the
+    crossing.
+
     The classic fix is a 2FF reset synchroniser in the destination
     clock domain between the foreign source and the consumer; that
     breaks the cross-domain path so the immediate ``SRST`` driver is
@@ -3694,24 +3761,38 @@ def check_rdc_003(
         return clock_spec.are_async(a, b)
 
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    via_mux: dict[tuple[str, str, str], bool] = defaultdict(bool)
     for f in ctx.flops:
         srst_bits = flop_reset_bits(f.cell, "srst")
-        if not srst_bits:
+        mux_selects = _folded_srst_selects(
+            f, module, ctx.bit_drivers, ctx.reader_counts
+        )
+        if not srst_bits and not mux_selects:
             continue
         my_clk = ctx.domains.get(f.cell.name)
         if my_clk is None:
             continue
-        fanin_flops = _backward_flop_fanin(module, srst_bits, ctx.bit_drivers)
-        for src_name in fanin_flops:
-            src_clk = ctx.domains.get(src_name)
-            if src_clk is None or src_clk == my_clk:
+        for bits, is_mux in ((srst_bits, False), (mux_selects, True)):
+            if not bits:
                 continue
-            if not _async(my_clk, src_clk):
-                continue
-            edges[(src_name, src_clk, my_clk)].append(f.cell.name)
+            fanin_flops = _backward_flop_fanin(module, bits, ctx.bit_drivers)
+            for src_name in fanin_flops:
+                src_clk = ctx.domains.get(src_name)
+                if src_clk is None or src_clk == my_clk:
+                    continue
+                if not _async(my_clk, src_clk):
+                    continue
+                key = (src_name, src_clk, my_clk)
+                edges[key].append(f.cell.name)
+                via_mux[key] |= is_mux
 
     violations: list[Violation] = []
     for (src_name, src_clk, dst_clk), dst_flops in edges.items():
+        reset_desc = (
+            "a sync reset (reset mux on D, SRST once folded)"
+            if via_mux[(src_name, src_clk, dst_clk)]
+            else "SRST"
+        )
         dsts = sorted(set(dst_flops))
         repr_cell = dsts[0]
         if len(dsts) == 1:
@@ -3728,7 +3809,7 @@ def check_rdc_003(
                 severity="error",
                 message=(
                     f"sync reset crossing: flop(s) in clk={dst_clk} have "
-                    f"SRST driven by flop {src_name} from a different "
+                    f"{reset_desc} driven by flop {src_name} from a different "
                     f"async domain (clk={src_clk}); the sync reset is "
                     f"sampled on the destination clock and the cross-"
                     f"domain source may produce metastability. Add a 2FF "
@@ -3739,6 +3820,38 @@ def check_rdc_003(
             )
         )
     return violations
+
+
+def _comb_async_controls(rd: ResetDomain) -> list[AsyncControl]:
+    """``rd``'s asynchronous control pins whose signal is combinational
+    logic (RDC-004 / -005 / -006's subject), in priority order."""
+    return [c for c in rd.controls if c.source.source == "comb" and c.bits]
+
+
+def _live_mux_driver(
+    module: Module, bit: Bit, drivers: dict[Bit, tuple[str, str, int]]
+) -> Cell | None:
+    """The mux driving ``bit`` if it selects between live signals, else
+    ``None`` (also for a mux whose data legs are all constants: that is
+    logic of its select, rtl-buddy-cdc#354)."""
+    drv = drivers.get(bit) if isinstance(bit, int) else None
+    if drv is None:
+        return None
+    cell = module.cells.get(drv[0])
+    if cell is None or cell.type not in MUX_PINS:
+        return None
+    if _is_constant_leg_mux_bit(cell, drv[2]):
+        return None
+    return cell
+
+
+def _async_pin_phrase(rd: ResetDomain, pins: Sequence[AsyncControl]) -> str:
+    """``"reset pin"`` for a flop with one asynchronous control, else the
+    pins by name (``"SET pin"``, ``"CLR/SET pins"``)."""
+    if len(rd.controls) <= 1:
+        return "reset pin"
+    names = "/".join(_ASYNC_PIN_LABEL[c.pin.role] for c in pins)
+    return f"{names} pin" if len(pins) == 1 else f"{names} pins"
 
 
 def check_rdc_004(
@@ -3772,6 +3885,14 @@ def check_rdc_004(
     Suppressed when the consumer is recognised as a reset-synchroniser
     chain member by :func:`find_reset_synchronizers` (intentional
     comb-on-reset patterns inside a vetted sync stage stay silent).
+
+    Every asynchronous control pin is checked (``ResetDomain.controls``,
+    rtl-buddy-cdc#383), each on the signal it acts on: the buffer mux and
+    the set / clear priority term Yosys builds around a set / clear
+    flop's ``CLR`` and ``SET`` are not logic on the reset
+    (:func:`~rtl_buddy_cdc.reset_domain.effective_control_bit`), so a
+    ``CLR`` that is a buffered register is RDC-001's, not this rule's.
+    One finding per flop.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -3783,15 +3904,15 @@ def check_rdc_004(
         if f.cell.name in recognised_syncs:
             continue
         rd = reset_domains.get(f.cell.name)
-        if rd is None or rd.reset is None:
+        if rd is None:
             continue
-        if rd.reset.type != "async" or rd.reset.source != "comb":
-            continue
-        # Locate the actual reset pin on this cell type.
-        rst_bits = flop_reset_bits(f.cell, "arst", "aload", "clr")
-        if not rst_bits:
-            continue
-        fanin_flops = _backward_flop_fanin(module, rst_bits, ctx.bit_drivers)
+        fanin_flops: set[str] = set()
+        pins: list[AsyncControl] = []
+        for ctl in _comb_async_controls(rd):
+            got = _backward_flop_fanin(module, ctl.bits, ctx.bit_drivers)
+            if got:
+                fanin_flops |= got
+                pins.append(ctl)
         if not fanin_flops:
             # Pure comb-of-ports — the user's responsibility, not a
             # CDC concern. Keeps the noise floor low on designs that
@@ -3805,7 +3926,7 @@ def check_rdc_004(
                 severity="error",
                 message=(
                     f"reset driven by combinational logic: flop "
-                    f"{f.cell.name}'s reset pin is the output of "
+                    f"{f.cell.name}'s {_async_pin_phrase(rd, pins)} is the output of "
                     f"combinational gate(s) fed by flop(s) "
                     f"{flop_desc}. Comb-gate outputs can glitch when "
                     f"inputs transition asynchronously, causing "
@@ -3848,6 +3969,11 @@ def check_rdc_005(
 
     Suppressed when the consumer is recognised as a reset-
     synchroniser chain member.
+
+    Every asynchronous control pin is checked, each on the signal it acts
+    on (see :func:`check_rdc_004`, rtl-buddy-cdc#383): a set / clear
+    flop's ``SET = rst_n & ~set_n`` is the priority encoding of two
+    separate controls, not two resets converging. One finding per flop.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -3859,42 +3985,31 @@ def check_rdc_005(
         if f.cell.name in recognised_syncs:
             continue
         rd = reset_domains.get(f.cell.name)
-        if rd is None or rd.reset is None:
+        if rd is None:
             continue
-        if rd.reset.type != "async" or rd.reset.source != "comb":
-            continue
-        rst_bits = flop_reset_bits(f.cell, "arst", "aload", "clr")
-        if not rst_bits:
-            continue
-        # Immediate-driver exemption: explicit-mux selection of the
-        # reset source is the user telling us they intended the
-        # multi-source pattern. The exemption only checks the cell
-        # whose output IS the reset bit — nested muxes deeper in the
-        # fanin are out of scope for v1.
-        rst_bit = rst_bits[0]
-        if isinstance(rst_bit, int):
-            drv = ctx.bit_drivers.get(rst_bit)
-            if drv is not None:
-                drv_cell_name, _, drv_idx = drv
-                drv_cell = module.cells.get(drv_cell_name)
-                # A constant-leg mux selects no reset source; it is an
-                # inverter / buffer of its select, so it gets no
-                # exemption (rtl-buddy-cdc#354).
-                if (
-                    drv_cell is not None
-                    and drv_cell.type in MUX_PINS
-                    and not _is_constant_leg_mux_bit(drv_cell, drv_idx)
-                ):
-                    continue
-        # RDC-004 already owns the "fanin reaches flops" case.
-        fanin_flops = _backward_flop_fanin(module, rst_bits, ctx.bit_drivers)
-        if fanin_flops:
-            continue
-        fanin_ports = _backward_port_fanin(module, rst_bits, ctx.bit_drivers)
-        # Need 2+ distinct ports for this to be a multi-source
-        # convergence. A single port through a comb cell is just a
-        # polarity flip or a constant fold; not the target shape.
-        if len(fanin_ports) < 2:
+        fanin_ports: set[str] = set()
+        pins: list[AsyncControl] = []
+        for ctl in _comb_async_controls(rd):
+            # Immediate-driver exemption: explicit-mux selection of the
+            # reset source is the user telling us they intended the
+            # multi-source pattern. The exemption only checks the cell
+            # whose output IS the reset bit — nested muxes deeper in the
+            # fanin are out of scope for v1. A constant-leg mux selects
+            # no reset source; it is an inverter / buffer of its select,
+            # so it gets no exemption (rtl-buddy-cdc#354).
+            if _live_mux_driver(module, ctl.bits[0], ctx.bit_drivers) is not None:
+                continue
+            # RDC-004 already owns the "fanin reaches flops" case.
+            if _backward_flop_fanin(module, ctl.bits, ctx.bit_drivers):
+                continue
+            ports = _backward_port_fanin(module, ctl.bits, ctx.bit_drivers)
+            # Need 2+ distinct ports for this to be a multi-source
+            # convergence. A single port through a comb cell is just a
+            # polarity flip or a constant fold; not the target shape.
+            if len(ports) >= 2:
+                fanin_ports |= ports
+                pins.append(ctl)
+        if not pins:
             continue
         port_list = sorted(fanin_ports)
         violations.append(
@@ -3903,7 +4018,7 @@ def check_rdc_005(
                 severity="warning",
                 message=(
                     f"multiple reset sources converging without muxing: "
-                    f"flop {f.cell.name}'s reset pin is the comb-AND/OR "
+                    f"flop {f.cell.name}'s {_async_pin_phrase(rd, pins)} is the comb-AND/OR "
                     f"of {len(fanin_ports)} top-level reset ports "
                     f"({', '.join(port_list[:3])}"
                     + ("..." if len(port_list) > 3 else "")
@@ -4021,6 +4136,13 @@ def check_rdc_006(
     * flops marked with ``(* reset_sync *)`` (the user-annotation
       escape hatch, threaded through
       :attr:`_RuleContext.reset_sync_flop_names`).
+
+    Every asynchronous control pin is checked — ``SET`` as well as
+    ``CLR`` on a set / clear flop (rtl-buddy-cdc#383, #378) — each on the
+    signal it acts on (:func:`check_rdc_004`). The mux ``proc`` builds on
+    ``SET`` to give the clear priority (``SET = rst_n ? ~set_n : 0``) is
+    that encoding, not a choice between resets, and does not fire; a real
+    mux on either pin does. One finding per flop.
     """
     if ctx is None:
         ctx = _build_context(module, clock_spec)
@@ -4032,29 +4154,19 @@ def check_rdc_006(
         if f.cell.name in recognised_syncs:
             continue
         rd = reset_domains.get(f.cell.name)
-        if rd is None or rd.reset is None:
-            continue
-        if rd.reset.type != "async" or rd.reset.source != "comb":
-            continue
-        rst_bits = flop_reset_bits(f.cell, "arst", "aload", "clr")
-        if not rst_bits:
-            continue
-        rst_bit = rst_bits[0]
-        if not isinstance(rst_bit, int):
-            continue
-        drv = ctx.bit_drivers.get(rst_bit)
-        if drv is None:
-            continue
-        drv_cell_name, _, drv_idx = drv
-        drv_cell = module.cells.get(drv_cell_name)
-        if drv_cell is None or drv_cell.type not in MUX_PINS:
+        if rd is None:
             continue
         # A mux whose data legs are all constants is combinational logic
         # of its select — ``rst_n ? 1'b0 : 1'b1`` is an inverter — not a
         # choice between reset sources (rtl-buddy-cdc#354). A comb-driven
         # select is RDC-004's / RDC-005's to report, as it is once a
         # synthesis flow rewrites the mux into the ``$_NOT_`` it is.
-        if _is_constant_leg_mux_bit(drv_cell, drv_idx):
+        drv_cell = None
+        for ctl in _comb_async_controls(rd):
+            drv_cell = _live_mux_driver(module, ctl.bits[0], ctx.bit_drivers)
+            if drv_cell is not None:
+                break
+        if drv_cell is None:
             continue
         # Walk only the mux's *data* legs for the message — the
         # select pin is a control signal, not a reset source, and
@@ -4081,7 +4193,7 @@ def check_rdc_006(
                 severity="warning",
                 message=(
                     f"muxed async reset without local synchroniser: "
-                    f"flop {f.cell.name}'s reset pin is driven by a "
+                    f"flop {f.cell.name}'s {_async_pin_phrase(rd, [ctl])} is driven by a "
                     f"{drv_cell.type} selecting between {sources_phrase}. "
                     f"The mux makes source selection explicit (why "
                     f"RDC-005 stays silent), but the selected reset's "
@@ -4528,64 +4640,6 @@ def check_rdc_008(
     return violations
 
 
-def _unconstrained_srst_captures(
-    module: Module,
-    clock_spec: ClockSpec,
-    ctx: _RuleContext,
-) -> dict[str, set[tuple[str, str]]]:
-    """Untyped input ports that reach a flop's **synchronous reset** pin.
-
-    The crossing model was D-pin-scoped: :func:`find_crossings` seeded
-    and terminated its walk on flop ``D`` pins only, so a port that
-    landed on a dedicated ``SRST`` pin produced no ``Crossing`` at all.
-    Whether a sync reset lowers into a ``$dff`` D-cone (a reset mux) or
-    into a ``$sdff`` ``SRST`` pin is a synthesis-pass / coding-style
-    detail — see issue rtl-buddy-cdc#272. This helper closed that gap by
-    walking the ``SRST`` pins directly so CDC-011 reports the same
-    finding either way. The crossing walk lands on ``SRST`` too since
-    rtl-buddy-cdc#375; the union in :func:`check_cdc_011` makes the two
-    sources one finding.
-
-    Returns ``{port_name: {(dst_clock, dst_flop_cell_name), ...}}`` for
-    every top-level input port carrying :data:`UNCONSTRAINED_SENTINEL`
-    that reaches an ``SRST`` pin, directly or through combinational
-    logic. Empty when
-    :func:`~rtl_buddy_cdc.sdc.synthesize_unconstrained_inputs` hasn't
-    stamped the sentinel. The caller skips this walk entirely when no
-    SDC was supplied — there is no "untyped" verdict to make without
-    one.
-
-    Scoped to **synchronous** resets on purpose. An async reset pin
-    (``ARST`` / ``CLR`` / ``ALOAD``) is legitimately untimed — a
-    ``set_input_delay -clock`` on it would be meaningless advice, and
-    the RDC family (RDC-001 / RDC-006 / RDC-008) already owns the
-    async-reset failure modes. A sync reset, by contrast, is sampled
-    on the destination clock edge exactly like any data input, so the
-    missing SDC typing is the same methodology gap CDC-011 exists to
-    report.
-    """
-    unconstrained = {
-        port
-        for port, clk in clock_spec.port_clock.items()
-        if clk == UNCONSTRAINED_SENTINEL
-    }
-    if not unconstrained:
-        return {}
-
-    out: dict[str, set[tuple[str, str]]] = defaultdict(set)
-    for f in ctx.flops:
-        srst_bits = flop_reset_bits(f.cell, "srst")
-        if not srst_bits:
-            continue
-        dst_clk = ctx.domains.get(f.cell.name)
-        if dst_clk is None:
-            continue
-        for port in _backward_port_fanin(module, srst_bits, ctx.bit_drivers):
-            if port in unconstrained:
-                out[port].add((dst_clk, f.cell.name))
-    return out
-
-
 def check_cdc_011(
     module: Module,
     crossings: list[Crossing],
@@ -4597,18 +4651,16 @@ def check_cdc_011(
 
     Fires on top-level input ports that the SDC didn't type via
     ``set_input_delay -clock <name>`` but that physically reach a
-    flop's ``D`` pin — or its synchronous-reset (``SRST``) pin. For
-    the ``D``-pin case, ``sdc.synthesize_unconstrained_inputs``
-    assigns :data:`UNCONSTRAINED_SENTINEL` as ``port_clock`` for any
-    such port; :func:`find_crossings` then walks them and emits
-    port-sourced crossings whose ``src_clock`` carries the sentinel.
-    The ``SRST`` case is picked up by
-    :func:`_unconstrained_srst_captures` (issue rtl-buddy-cdc#272; the
-    crossing walk itself also lands on ``SRST`` since
-    rtl-buddy-cdc#375); both sets of
-    destinations are merged per port before severity is decided, so a
-    port captured on a ``D`` pin in one domain and an ``SRST`` pin in
-    another still collapses to one finding.
+    flop's ``D`` pin — or its enable or synchronous-reset (``SRST``)
+    pin. ``sdc.synthesize_unconstrained_inputs`` assigns
+    :data:`UNCONSTRAINED_SENTINEL` as ``port_clock`` for any such port;
+    :func:`find_crossings` then walks them and emits port-sourced
+    crossings whose ``src_clock`` carries the sentinel. The walk ends on
+    ``SRST`` as on ``D`` since rtl-buddy-cdc#375, so the separate
+    ``SRST``-pin walk issue rtl-buddy-cdc#272 needed is gone
+    (rtl-buddy-cdc#383). Destinations are merged per port before
+    severity is decided, so a port captured on a ``D`` pin in one domain
+    and an ``SRST`` pin in another still collapses to one finding.
 
     Severity escalation by shape:
 
@@ -4629,9 +4681,8 @@ def check_cdc_011(
     flops in two domains collapses to a single error rather than a
     fixture-per-flop flood.
     """
-    # {port: {(dst_clock, dst_flop_cell_name), ...}} — the union of the
-    # D-pin destinations the crossing walk found and the SRST-pin
-    # destinations of the direct SRST walk (#272), deduplicated.
+    # {port: {(dst_clock, dst_flop_cell_name), ...}}: every capture the
+    # crossing walk found (D, EN and SRST pins alike), deduplicated.
     by_port: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for c in crossings:
         if c.src_port is None:
@@ -4639,12 +4690,6 @@ def check_cdc_011(
         if c.src_clock != UNCONSTRAINED_SENTINEL:
             continue
         by_port[c.src_port].add((c.dst_clock, c.dst_flop.cell.name))
-
-    if clock_spec is not None:
-        if ctx is None:
-            ctx = _build_context(module, clock_spec)
-        for port, dsts in _unconstrained_srst_captures(module, clock_spec, ctx).items():
-            by_port[port] |= dsts
 
     violations: list[Violation] = []
     for port in sorted(by_port):

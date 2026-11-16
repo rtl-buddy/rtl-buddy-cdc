@@ -347,6 +347,11 @@ GOOD_FIXTURES = [
     # under one synchronised request — two gated buses, not a sliced one
     # (CDC-020 silent). Two captures, the request and the acknowledge.
     ("good_gated_bus_double_capture", 4),
+    # --- rtl-buddy-cdc#383: set / clear flops ---
+    # Three $dffsr on reset ports, clear-over-set, set-over-clear and
+    # active high: the muxes proc builds on CLR / SET are the priority
+    # and polarity encoding, not reset muxes. One clock, no crossing.
+    ("good_set_clear_priority", 0),
 ]
 
 
