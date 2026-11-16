@@ -368,6 +368,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: run-time index reads lower to `$shiftx`**
+  (rtl-buddy-cdc#384). `a_q[idx_q]`, `a[i +: W]` and `a[i -: W]` on a
+  packed value were reported and modelled as an opaque driver, so the
+  vector and the index behind them were invisible to the rules
+  (`bad_comb_ops_before_sync` lost two crossings and their CDC-003s,
+  `good_comb_ops_handshake` three crossings). They are now the `$shiftx`
+  Yosys emits, with the index translated through the declared range
+  (`$sub` / `$mul`, signed `B` when the position can be negative). A
+  run-time index into an unpacked array that is not a memory is still
+  reported. The two fixtures' slang `xfail`s are removed.
+
 - **slang frontend: overlapping `case` labels in a clocked block resolve
   first-match** (rtl-buddy-cdc#384). Each item's enable was its own label
   match, and a later write overrides an earlier one, so a value matching

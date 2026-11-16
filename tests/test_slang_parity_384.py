@@ -186,7 +186,9 @@ def _comb_value(cell: Cell, get) -> list[int]:
     elif t in ("$add", "$sub", "$mul"):
         r = {"$add": av + bv, "$sub": av - bv, "$mul": av * bv}[t]
     elif t == "$shiftx":
-        r = av >> bv if bv < len(a) else 0
+        if cell.parameters.get("B_SIGNED", "0")[-1:] == "1" and b and b[-1]:
+            bv -= 1 << len(b)  # a negative position reads below the LSB
+        r = _int([a[k + bv] if 0 <= k + bv < len(a) else 0 for k in range(width)])
     else:
         raise AssertionError(f"evaluator does not model {t}")
     r &= mask
@@ -383,3 +385,115 @@ endmodule
     module = _slang(tmp_path, src)
     assert not _cells(module, "$and")
     assert len(_cells(module, "$not")) == 0
+
+
+# --- 7. run-time index reads lower to $shiftx --------------------------------
+
+_SELECTS = """module m (input [7:0] a, input [8:1] b, input [0:7] c,
+          input [3:0][1:0] p, input [5:-2] n, input [2:0] i,
+          output y0, output y1, output y2, output [1:0] y3,
+          output [2:0] y4, output [2:0] y5, output [2:0] y6, output [2:0] y7,
+          output y8, output [1:0] y9);
+    assign y0 = a[i];
+    assign y1 = b[i];
+    assign y2 = c[i];
+    assign y3 = p[i];
+    assign y4 = a[i +: 3];
+    assign y5 = a[i -: 3];
+    assign y6 = b[i +: 3];
+    assign y7 = c[i +: 3];
+    assign y8 = n[i];
+    assign y9 = n[i -: 2];
+endmodule
+"""
+
+_SELECT_OUTPUTS = ("y0", "y1", "y2", "y3", "y4", "y5", "y6", "y7", "y8", "y9")
+
+
+def _select_reference(a: int, b: int, c: int, p: int, n: int, i: int) -> dict[str, int]:
+    """IEEE 1800 values of :data:`_SELECTS`, an out-of-range bit read as 0
+    (``x``, which the evaluator reads as 0)."""
+
+    def bit(v: int, pos: int) -> int:
+        return (v >> pos) & 1 if 0 <= pos < 8 else 0
+
+    def pick(v: int, positions: list[int]) -> int:
+        return sum(bit(v, pos) << k for k, pos in enumerate(positions))
+
+    return {
+        "y0": bit(a, i),
+        "y1": bit(b, i - 1),  # [8:1]: index i is position i - 1
+        "y2": bit(c, 7 - i),  # [0:7]: index i is position 7 - i
+        "y3": pick(p, [2 * i, 2 * i + 1]) if i < 4 else 0,
+        "y4": pick(a, [i, i + 1, i + 2]),
+        "y5": pick(a, [i - 2, i - 1, i]),
+        "y6": pick(b, [i - 1, i, i + 1]),
+        # c[i +: 3] is c[i], c[i+1], c[i+2]: positions 7-i-2 .. 7-i.
+        "y7": pick(c, [5 - i, 6 - i, 7 - i]),
+        # [5:-2]: index i is position i + 2.
+        "y8": bit(n, i + 2),
+        "y9": pick(n, [i + 1, i + 2]),
+    }
+
+
+def test_run_time_index_reads_lower_to_shiftx(tmp_path: Path, caplog) -> None:
+    """``a[i]``, ``a[i +: W]`` / ``a[i -: W]`` with a run-time ``i`` are
+    ``$shiftx`` cells reading the whole vector and the index, as Yosys
+    lowers them, with the index translated through the declared range.
+    They used to be reported and modelled as opaque drivers."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _SELECTS)
+    assert not _warnings(caplog)
+    assert len(_cells(module, "$shiftx")) == len(_SELECT_OUTPUTS)
+    assert not _cells(module, "$_UNKNOWN_")
+    y_mod = _yosys(tmp_path, _SELECTS) if _HAVE_YOSYS else None
+    vectors = (0b10110010, 0b01101101, 0b11100100)
+    for a, b, c in [vectors, vectors[::-1]]:
+        p = a ^ 0x5A
+        for i in range(8):
+            values = {"a": a, "b": b, "c": c, "p": p, "n": a ^ b, "i": i}
+            got = _evaluator(module, values)
+            want = _select_reference(a, b, c, p, a ^ b, i)
+            for out in _SELECT_OUTPUTS:
+                assert got(module.ports[out].bits) == want[out], (out, i)
+            if y_mod is not None:
+                ref = _evaluator(y_mod, values)
+                for out in _SELECT_OUTPUTS:
+                    assert ref(y_mod.ports[out].bits) == want[out], (out, i)
+
+
+def test_run_time_index_read_feeds_a_crossing(tmp_path: Path) -> None:
+    """The register and the index behind ``a_q[idx_q]`` both reach the
+    synchroniser: two crossings, two CDC-003 (one each), as on Yosys."""
+    src = """module m (input clk_a, input clk_b, input [3:0] d, input [1:0] i,
+          output reg q);
+    reg [3:0] a_q;
+    reg [1:0] idx_q;
+    reg s1;
+    always @(posedge clk_a) begin a_q <= d; idx_q <= i; end
+    always @(posedge clk_b) begin s1 <= a_q[idx_q]; q <= s1; end
+endmodule
+"""
+    sdc = _SDC + "set_input_delay -clock clk_a 1 [get_ports i]\n"
+    crossings, live, _ = _same_verdict(tmp_path, src, sdc=sdc)
+    assert crossings == 2
+    assert live.get("CDC-003") == 2
+
+
+def test_unpacked_two_dimensional_run_time_read_still_warns(
+    tmp_path: Path, caplog
+) -> None:
+    """A run-time index into a 2-D unpacked array is neither a memory port
+    nor a packed vector: still reported and modelled as an opaque driver,
+    never dropped silently."""
+    src = """module m (input clk_a, input [1:0] i, output reg q);
+    logic arr [2][4];
+    always_comb for (int r = 0; r < 2; r++)
+        for (int k = 0; k < 4; k++) arr[r][k] = r[0] ^ k[0];
+    always_ff @(posedge clk_a) q <= arr[i[0]][i];
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, src)
+    assert any("not lowered" in w for w in _warnings(caplog))
+    assert _cells(module, "$_UNKNOWN_")

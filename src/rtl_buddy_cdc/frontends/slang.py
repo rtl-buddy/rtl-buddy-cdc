@@ -162,6 +162,10 @@ What currently works
 - A right-hand side, condition or statement the frontend cannot lower
   is reported with a ``WARNING`` and modelled as an opaque ``$_UNKNOWN_``
   driver or skipped, never dropped silently (rtl-buddy-cdc#377).
+- A run-time index read of a packed value (``a[i]``, ``a[i +: W]``,
+  ``a[i -: W]``) is the ``$shiftx`` Yosys emits, its position translated
+  through the declared range (rtl-buddy-cdc#384); see
+  :meth:`_ModuleBuilder._lower_dynamic_select`.
 - Concatenation (``{a, b, c}``) and replication (``{N{x}}``) on the
   RHS — see :meth:`_lower_concatenation` and
   :meth:`_lower_replication`. Pure bit-tuple aliasing, no Yosys
@@ -3391,11 +3395,15 @@ class _ModuleBuilder:
                 mem_select = self._memory_select(expr)
                 if mem_select is not None:
                     return self._emit_memory_read(*mem_select, expr)
+                return self._lower_dynamic_select(expr)
             return bits
         if kind == "MemberAccessExpression":
             return self._element_select_bits(expr)
         if kind == "RangeSelectExpression":
-            return self._range_select_bits(expr)
+            bits = self._range_select_bits(expr)
+            if bits is None:
+                return self._lower_dynamic_select(expr)
+            return bits
         if kind == "ConcatenationExpression":
             return self._lower_concatenation(expr)
         if kind == "ReplicationExpression":
@@ -3411,6 +3419,79 @@ class _ModuleBuilder:
             return None
         # Anything else slang folded at elaboration time (``$bits(x)``, …).
         return self._constant_bits(expr)
+
+    def _lower_dynamic_select(self, expr: Any) -> tuple[Bit, ...] | None:
+        """A read of a packed vector at a run-time position — ``a[i]``,
+        ``a[i +: W]``, ``a[i -: W]`` (``a`` a packed vector or packed
+        array, or any packed value such as a memory word) — as the
+        ``$shiftx`` Yosys emits: ``A`` the whole vector, ``B`` the LSB-first
+        bit position of the selection's lowest bit, ``Y`` the selection
+        (rtl-buddy-cdc#384: it was an opaque driver, so the vector and the
+        index were invisible to the rules). The position is the index
+        translated through the declared range (``$sub`` / ``$mul`` cells,
+        as Yosys builds them). ``None`` for anything else (an unpacked
+        aggregate that is not a memory, a run-time width)."""
+        value = getattr(expr, "value", None)
+        vtype = getattr(value, "type", None)
+        vtype = getattr(vtype, "canonicalType", None) or vtype
+        if (
+            value is None
+            or vtype is None
+            or getattr(vtype, "isUnpackedArray", False)
+            or not getattr(vtype, "isIntegral", False)
+        ):
+            return None
+        width = self._expr_width(expr)
+        if width < 1:
+            return None
+        # A constant index that did not resolve is out of range: not a
+        # run-time select (it stays an opaque, reported read).
+        if type(expr).__name__ == "ElementSelectExpression":
+            selector = getattr(expr, "selector", None)
+            if self._const_int(selector) is not None:
+                return None
+            idx = self._bits_of_expression(selector)
+            if not idx:
+                return None
+            base = self._bits_of_expression(value)
+            if base is None:
+                return None
+            shift, signed = self._position_bits(vtype, idx, expr)
+        else:
+            sel_kind = str(getattr(expr, "selectionKind", "")).rsplit(".", 1)[-1]
+            count = self._const_int(getattr(expr, "right", None))
+            start = getattr(expr, "left", None)
+            if (
+                sel_kind not in {"IndexedUp", "IndexedDown"}
+                or not count
+                or self._const_int(start) is not None
+            ):
+                return None
+            idx = self._bits_of_expression(start)
+            if not idx:
+                return None
+            base = self._bits_of_expression(value)
+            if base is None:
+                return None
+            shift, signed = self._position_bits(
+                vtype, idx, expr, count=count, down=sel_kind == "IndexedDown"
+            )
+        # With the width / signedness parameters Yosys gives it: a computed
+        # position can be negative (a select reaching below the vector's
+        # LSB), which reads ``x``, not a far-away bit.
+        return self._emit_comb_cell(
+            "$shiftx",
+            {"A": base, "B": shift},
+            output_width=width,
+            src_node=expr,
+            parameters={
+                "A_SIGNED": _param_int32(0),
+                "A_WIDTH": _param_int32(len(base)),
+                "B_SIGNED": _param_int32(1 if signed else 0),
+                "B_WIDTH": _param_int32(len(shift)),
+                "Y_WIDTH": _param_int32(width),
+            },
+        )
 
     # Symbols a NamedValueExpression reads as a constant.
     _CONSTANT_SYMBOLS = frozenset(
@@ -3797,9 +3878,11 @@ class _ModuleBuilder:
         inputs: dict[str, tuple[Bit, ...]],
         output_width: int,
         src_node: Any = None,
+        parameters: dict[str, str] | None = None,
     ) -> tuple[Bit, ...]:
         """Allocate a fresh Y net and emit a ``cell_type`` cell with the
-        given inputs. Returns the Y bits so callers can wire them up.
+        given inputs (and ``parameters``, none by default). Returns the Y
+        bits so callers can wire them up.
 
         Width defensively clamped to at least 1 so we never emit a
         zero-width cell (which would confuse the rule pack's bit walks).
@@ -3821,7 +3904,7 @@ class _ModuleBuilder:
             name=name,
             type=cell_type,
             connections={**inputs, "Y": y_bits},
-            parameters={},
+            parameters=dict(parameters or {}),
             attributes=attrs,
         )
         return y_bits
@@ -4674,40 +4757,72 @@ class _ModuleBuilder:
         cells, as Yosys emits them), times the element width of a packed
         array (rtl-buddy-cdc#377: the raw index was used, so ``v[i] = 1``
         of ``logic [4:1] v`` set bit ``i`` instead of ``i - 1``, and an
-        ascending vector's bits came out reversed)."""
+        ascending vector's bits came out reversed). See
+        :meth:`_position_bits`."""
+        return self._position_bits(base_type, idx_bits, node)[0]
+
+    def _position_bits(
+        self,
+        base_type: Any,
+        idx_bits: tuple[Bit, ...],
+        node: Any,
+        count: int = 1,
+        down: bool = False,
+    ) -> tuple[tuple[Bit, ...], bool]:
+        """``(bits, signed)``: the LSB-first position of the lowest bit of
+        ``v[idx]`` (``count`` 1) or of ``v[idx +: count]`` / ``v[idx -:
+        count]`` (``down``) in a vector of ``base_type``. A descending
+        ``[hi:lo]`` range gives ``idx - lo`` (``-:`` also ``- (count -
+        1)``), an ascending ``[lo:hi]`` one ``hi - idx`` (``+:`` also ``-
+        (count - 1)``); a packed array multiplies by its element width.
+        ``signed`` when the position is computed and so can be negative
+        (Yosys marks such a ``$shiftx`` ``B`` signed)."""
         t = getattr(base_type, "canonicalType", None) or base_type
         rng = getattr(t, "range", None)
         left = getattr(rng, "left", None)
         right = getattr(rng, "right", None)
         pos = idx_bits
+        signed = False
         if left is not None and right is not None:
             left, right = int(left), int(right)
-            width = max(len(idx_bits), max(abs(left), abs(right)).bit_length()) + 1
+            span = max(abs(left), abs(right))
+            if count > 1:
+                span = abs(left) + abs(right) + count
+            width = max(len(idx_bits), span.bit_length()) + 1
             idx = self._resize_bits(idx_bits, width)
 
             def const(v: int) -> tuple[Bit, ...]:
                 return tuple("1" if (v >> i) & 1 else "0" for i in range(width))
 
-            if left >= right and right != 0:
+            if left >= right:
+                offset = right + (count - 1 if down else 0)
+                if offset > 0:
+                    pos = self._emit_comb_cell(
+                        "$sub", {"A": idx, "B": const(offset)}, width, src_node=node
+                    )
+                elif offset < 0:
+                    pos = self._emit_comb_cell(
+                        "$add", {"A": idx, "B": const(-offset)}, width, src_node=node
+                    )
+                signed = offset != 0
+            else:
+                top = right - (0 if down else count - 1)
                 pos = self._emit_comb_cell(
-                    "$sub", {"A": idx, "B": const(right)}, width, src_node=node
+                    "$sub", {"A": const(top), "B": idx}, width, src_node=node
                 )
-            elif left < right:
-                pos = self._emit_comb_cell(
-                    "$sub", {"A": const(right), "B": idx}, width, src_node=node
-                )
+                signed = True
         stride = self._element_stride(t)
         if stride > 1:
             factor: tuple[Bit, ...] = tuple(
                 "1" if (stride >> i) & 1 else "0" for i in range(stride.bit_length())
             )
+            out_width = len(pos) + len(factor)
+            if signed:
+                pos = self._resize_bits(pos, out_width, signed=True)
             pos = self._emit_comb_cell(
-                "$mul",
-                {"A": pos, "B": factor},
-                len(pos) + len(factor),
-                src_node=node,
+                "$mul", {"A": pos, "B": factor}, out_width, src_node=node
             )
-        return pos
+        return pos, signed
 
     # -- continuous assigns ---------------------------------------------
 
