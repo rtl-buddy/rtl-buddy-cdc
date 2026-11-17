@@ -480,12 +480,13 @@ endmodule
     assert live.get("CDC-003") == 2
 
 
-def test_unpacked_two_dimensional_run_time_read_still_warns(
+def test_unpacked_two_dimensional_run_time_read_is_a_mux(
     tmp_path: Path, caplog
 ) -> None:
-    """A run-time index into a 2-D unpacked array is neither a memory port
-    nor a packed vector: still reported and modelled as an opaque driver,
-    never dropped silently."""
+    """A run-time index into a 2-D unpacked register array (written in
+    ``always_comb``, so registers, as Yosys decides) is a ``$pmux`` per
+    dimension over the elements, the shape Yosys builds; it used to be
+    an opaque driver, reported (rtl-buddy-cdc#398)."""
     src = """module m (input clk_a, input [1:0] i, output reg q);
     logic arr [2][4];
     always_comb for (int r = 0; r < 2; r++)
@@ -495,8 +496,9 @@ endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
         module = _slang(tmp_path, src)
-    assert any("not lowered" in w for w in _warnings(caplog))
-    assert _cells(module, "$_UNKNOWN_")
+    assert not _warnings(caplog)
+    assert not _cells(module, "$_UNKNOWN_")
+    assert len(_cells(module, "$pmux")) == 2
 
 
 # --- 4 / 5. an async load of a value; several async controls ------------

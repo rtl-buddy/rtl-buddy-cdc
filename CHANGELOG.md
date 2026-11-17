@@ -1516,6 +1516,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `offset` / `upto` and the declaration's attributes; an array written at
   a run-time address (a memory, no netname on Yosys) gets none.
 
+- **slang frontend: unpacked arrays are memories or registers as Yosys
+  decides, and every read of one is lowered** (rtl-buddy-cdc#398, items
+  1 and 2). The frontend now makes Yosys' `mem2reg` decision per array,
+  checked against Yosys 0.64 case by case: an array is a list of
+  registers when it is a net, when any write to it is outside a process
+  clocked by exactly one edge (`always_comb`, `always_latch`, `always @*`,
+  an `always_ff` with an async reset) or in a continuous assignment, when
+  a process reads it after a blocking write, when the whole array or a
+  slice is written, or when every write uses constant indices (a `for`
+  loop's variable counts as constant); anything else is a memory, also
+  one nothing (or only an `initial` block) writes. Before, an array was a
+  memory only for its run-time-index clocked writes and reads, so:
+  - a register array read at a run-time index (`assign o = rd[i];`) was a
+    `$memrd_v2` of a memory nobody writes, cut off from the element flops,
+    and a crossing through it was missed. It is now the `$pmux` Yosys
+    builds, every element a case, each selected by an index compare; from
+    `assign`, `always_comb` or `always_ff`, whole or part of the element,
+    one `$pmux` per dimension of a multi-dimensional array;
+  - a memory read at a constant index (`assign o = wr[2];`) read the
+    array's undriven placeholder bits. It is now a `$memrd_v2` at that
+    address, as are constant-index writes of a memory (a `$memwr_v2` per
+    write, a sync reset's `for` loop included, enabled by the reset; a bit
+    or part of a word enables only its lanes), and multi-dimensional
+    memory ports address the flattened word as Yosys does;
+  - a run-time-index write to a register array in a clocked block (an
+    async-reset register file, a blocking write read back) was a memory
+    write port; each element now loads through `mux(i == k, Q, d)`, as
+    Yosys `mem2reg` rewrites it;
+  - a constant select of such a read (`rd[i][2:1]`, `mem[i][3:0]`,
+    `regs[i].field`) was an opaque driver; it now slices the read.
+
+  A run-time bit of a word as a write target (`m[i][j] <= b`) and a word
+  inside a concatenation target are still reported, not lowered. No
+  committed fixture or integration golden changes verdict; three unit
+  tests that pinned the old shapes now assert the new ones.
+
 ### Internal
 
 - **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —

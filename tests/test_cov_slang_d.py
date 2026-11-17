@@ -876,10 +876,12 @@ def test_indexed_assign_unlowerable_rhs_is_opaque(tmp_path: Path) -> None:
 # --- range / element select conservative bails ----------------------------
 
 
-def test_rangeselect_on_non_named_base_is_unknown(tmp_path: Path) -> None:
+def test_rangeselect_on_a_memory_word_slices_the_read_port(tmp_path: Path) -> None:
     """``arr[i][3:0]`` — the range-select's inner value is itself a
     select (not a ``NamedValueExpression``), so ``_range_select_bits``
-    declines and the read degrades to an opaque driver."""
+    declines; ``arr`` is a memory (nothing writes it), so the read is the
+    word's ``$memrd_v2`` port, sliced (rtl-buddy-cdc#398: it degraded to
+    an opaque driver)."""
     src = """
     module m (input logic clk, input logic [1:0] i, output logic [3:0] q);
         logic [7:0] arr [2];
@@ -887,7 +889,10 @@ def test_rangeselect_on_non_named_base_is_unknown(tmp_path: Path) -> None:
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$_UNKNOWN_" in _cell_types(mod)
+    assert "$_UNKNOWN_" not in _cell_types(mod)
+    (port,) = [c for c in mod.cells.values() if c.type == "$memrd_v2"]
+    (flop,) = [c for c in mod.cells.values() if c.type == "$dff"]
+    assert flop.connections["D"] == port.connections["DATA"][:4]
 
 
 def test_indexed_part_select_runtime_offset_is_shiftx(tmp_path: Path) -> None:
