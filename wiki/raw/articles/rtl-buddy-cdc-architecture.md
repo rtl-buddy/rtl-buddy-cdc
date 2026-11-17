@@ -2789,20 +2789,26 @@ source classification differs.
 
 **Asymmetric-intent detection.** RDC-008 only fires when:
 
-1. The port has consumers in some clock domain that *already* has
-   a recognised reset-synchroniser chain — proof the user knows
-   the port needs synchronisation, and
-2. The same port drives ≥2 consumer flops in a *different* clock
-   domain *without* a sync chain there.
+1. The port has a recognised reset-synchroniser chain in *some*
+   clock domain — proof the user knows the port needs
+   synchronisation, and
+2. The same port drives ≥2 consumer flops (not chain members) in one
+   clock domain directly.
 
-The second clock domain is where the methodology bug lives. The
-first criterion (chain exists elsewhere for the same port) gates
-out "I just used the raw port everywhere" simplifications common
-in small hand-authored RTL — those are a different concern than
-RDC-008 is calibrated for. The second criterion (≥2 unsynced
-consumers) gates out single-flop shortcut uses, which often reflect
-designer judgement on a specific timing path rather than a
-distribution-pattern bug.
+The first criterion (a chain exists for the port) gates out "I just
+used the raw port everywhere" simplifications common in small
+hand-authored RTL — those are a different concern than RDC-008 is
+calibrated for. The second criterion (≥2 unsynced consumers) gates
+out single-flop shortcut uses, which often reflect designer judgement
+on a specific timing path rather than a distribution-pattern bug.
+
+The consumers' domain may or may not be one with a chain, and the
+message says which (rtl-buddy-cdc#398): with **no chain** there, the
+chain was built in another domain and missed in this one, and the fix
+is a chain here; with **a chain** there, these flops bypass it and
+should take its output — the message names the chain's tail (or, for
+recognised stages that form no structural chain, such as
+`(* reset_sync *)` stages fed from logic, the stages).
 
 This makes RDC-008 narrower than the strictest reading of the rule
 ("every port-sourced ARST needs a chain") but the noise/signal
