@@ -658,20 +658,18 @@ endmodule
 
 
 def _enable_cases() -> list[tuple[str, str, str, bool]]:
-    cases = []
-    for form, enable, reset, arst in itertools.product(
-        sorted(_ENABLE_FORMS), ("r2", "req_a"), ("srst_p", "srst_a"), (False, True)
-    ):
-        # Under an async reset a sync reset cannot fold, and the clocked
-        # walker orders an ``if`` / ``else if`` chain's muxes differently
-        # from ``proc`` (the second condition's mux outermost, selected by
-        # ``~c1 & c2``): with a foreign ``srst_a`` over a synchronised
-        # enable that changes the gated-bus verdict. Not an enable-folding
-        # question; reported separately (rtl-buddy-cdc#390 PR).
-        if arst and form != "plain" and reset == "srst_a" and enable == "r2":
-            continue
-        cases.append((form, enable, reset, arst))
-    return cases
+    # Every combination, including an async reset with a foreign sync reset
+    # (``srst_a``, which cannot fold) over a synchronised enable: there the
+    # gated-bus verdict reads the ``if`` / ``else if`` mux order, which the
+    # slang walker now builds as ``proc`` does (rtl-buddy-cdc#394).
+    return list(
+        itertools.product(
+            sorted(_ENABLE_FORMS),
+            ("r2", "req_a"),
+            ("srst_p", "srst_a"),
+            (False, True),
+        )
+    )
 
 
 @pytest.mark.parametrize(("form", "enable", "reset", "arst"), _enable_cases())
@@ -691,6 +689,10 @@ def test_enable_forms_give_the_same_findings(
     crossings, live, _ = _same_verdict(tmp_path, src, sdc=sdc)
     assert crossings >= 1
     assert live  # the bus crossing is reported in every form
+    if arst and form != "plain" and reset == "srst_a" and enable == "r2":
+        # The synchronised enable gates the bus; the foreign sync reset
+        # reaching it is the finding (it was CDC-004 on slang only).
+        assert "CDC-004" not in live and "CDC-012" in live, live
 
 
 def test_enable_is_a_hold_mux_not_an_en_pin(tmp_path: Path) -> None:

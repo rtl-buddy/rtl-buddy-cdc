@@ -254,11 +254,13 @@ def test_dynamic_case_emits_mux_with_eq_select(tmp_path: Path) -> None:
     )
 
 
-def test_dynamic_case_default_negates_explicit_matches(tmp_path: Path) -> None:
-    """``default`` arm's enable must be the negation of the OR of the
-    explicit-match equalities. Two arms + default, with the default
-    writing a distinct LHS — the default's write should sit under a
-    ``$not`` cell wrapping the OR of the two ``$eq``s."""
+def test_dynamic_case_default_is_the_innermost_leg(tmp_path: Path) -> None:
+    """The ``default`` arm's value is the innermost leg of the item mux
+    chain, the value every item mux passes on when its label does not
+    match (Yosys ``proc``: the ``$pmux`` ``A`` input; rtl-buddy-cdc#394,
+    it used to be a mux selected by the negated OR of the explicit-match
+    equalities). Two empty items + default: ``D = mux(sel == 0, mux(sel
+    == 1, d_def, Q), Q)``, the first item outermost."""
     src = """
     module m (
         input  logic       clk, rst_n,
@@ -280,31 +282,29 @@ def test_dynamic_case_default_negates_explicit_matches(tmp_path: Path) -> None:
     flops = _flops(mod)
     assert len(flops) == 1
     flop = flops[0]
+    q = flop.connections["Q"][0]
     drivers = _build_drivers(mod)
-    drv = drivers.get(flop.connections["D"][0])
-    assert drv is not None, "no driver for q_def flop D"
-    drv_cell = mod.cells[drv[0]]
-    assert drv_cell.type == "$mux", (
-        f"expected $mux driving D for default-only conditional write; "
-        f"got {drv_cell.type}"
-    )
-    # Reachable cells from the mux S should include a $not cell —
-    # that's the negation of the OR of explicit-match equalities.
-    s_bit = drv_cell.connections["S"][0]
-    seen = _reachable_bits(mod, s_bit)
-    cell_types = set()
-    for b in seen:
-        d = drivers.get(b)
-        if d is not None:
-            cell_types.add(mod.cells[d[0]].type)
-    assert "$not" in cell_types, (
-        f"default-arm enable must include a $not (negate the OR of explicit "
-        f"matches); reachable types: {cell_types}"
-    )
-    assert "$eq" in cell_types, (
-        f"explicit-match equalities must be present beneath the $not; "
-        f"reachable types: {cell_types}"
-    )
+
+    def mux_of(bit):
+        drv = drivers.get(bit)
+        assert drv is not None
+        cell = mod.cells[drv[0]]
+        assert cell.type == "$mux", cell.type
+        return cell.connections
+
+    def label(bit) -> tuple:
+        drv = drivers.get(bit)
+        assert drv is not None
+        eq = mod.cells[drv[0]]
+        assert eq.type == "$eq"
+        return eq.connections["B"]
+
+    outer = mux_of(flop.connections["D"][0])
+    assert outer["B"] == (q,) and label(outer["S"][0]) == ("0", "0")
+    inner = mux_of(outer["A"][0])
+    assert inner["B"] == (q,) and label(inner["S"][0]) == ("1", "0")
+    assert inner["A"] == mod.ports["d_def"].bits
+    assert not [c for c in mod.cells.values() if c.type in ("$not", "$or")]
 
 
 def test_dynamic_case_multi_match_item_ors_equalities(tmp_path: Path) -> None:

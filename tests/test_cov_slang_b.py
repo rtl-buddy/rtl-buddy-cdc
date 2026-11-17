@@ -443,8 +443,9 @@ def test_async_event_with_mismatched_if_symbol_is_not_a_reset(tmp_path: Path) ->
     ``if`` gates on a *different* signal (``en``, not ``rst_n``) must
     NOT be classified as a reset check: ``_classify_reset_check``
     returns ``None`` because ``cond_sym is not reset_sym_from_event_list``.
-    The body then walks as an ordinary if/else, building a mux tree
-    (with a ``$not`` for the else arm) — not a clean reset fold."""
+    The body then walks as an ordinary if/else, building a mux selected
+    by ``en`` itself (as Yosys ``proc`` does; rtl-buddy-cdc#394) — not a
+    clean reset fold."""
     src = """
     module m (
         input  logic       clk, rst_n, en,
@@ -461,13 +462,13 @@ def test_async_event_with_mismatched_if_symbol_is_not_a_reset(tmp_path: Path) ->
     types = _cell_types(mod)
     # The async event still gives an $adff binding, but the body's
     # if/else is walked as a mux tree rather than folded into the
-    # reset value — so a $mux and a $not appear.
+    # reset value — so a $mux appears, selected by ``en`` directly.
     assert "$mux" in types, (
         f"mismatched-symbol if/else must build a mux tree (not a reset fold); "
         f"got {sorted(types)}"
     )
-    assert "$not" in types, (
-        f"the else arm pushes $not(en) onto the enable stack; got {sorted(types)}"
+    assert "$not" not in types, (
+        f"the else arm is the mux's A leg, not a $not(en) enable; got {sorted(types)}"
     )
     en_bit = mod.ports["en"].bits[0]
     # The select of the mux must trace back to ``en`` (the gating

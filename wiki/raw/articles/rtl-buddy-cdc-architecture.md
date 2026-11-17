@@ -249,6 +249,21 @@ controls inside the body, an unrecognised clock expression) is
 reported with a `WARNING` naming its source range instead of
 vanishing silently; `initial` / `final` are not modelled.
 
+A clocked block's writes are collected into a decision tree (each
+`if` / `case` a switch of its arms, as RTLIL holds a process before
+`proc_mux`) and each register's `D` is built from it as `proc_mux`
+builds it (#394): one mux tree per run of bits no write splits, the
+first arm of each `if` / `case` outermost, the `else` / `default` arm
+(else the value before the statement, the register's `Q` at the top)
+innermost. `if (c1) q <= a; else if (c2) q <= b;` is `mux(c1, mux(c2,
+Q, b), a)` on both frontends; the gated-bus and hold-mux tests read
+that outermost select. An unpacked array is one netname per element,
+as `mem2reg` names them: `a[i]` by declared index for one dimension,
+the row-major position counted from each dimension's left bound for
+several (`m[1][0]` of `m [1:0][2:0]` is `m[0]`), each with its
+element's `offset` / `upto` and the declaration's attributes; an
+array written at a run-time address is a memory and has none.
+
 Blackbox boundaries (#345): an instance of a module with a truthy
 `(* blackbox *)` attribute, or one named by `lint --blackbox` /
 `--greybox`, is not inlined. It becomes one cell named by its

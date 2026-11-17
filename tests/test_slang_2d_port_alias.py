@@ -74,12 +74,12 @@ def test_nested_element_select_returns_correct_slice(tmp_path: Path) -> None:
     assert len(flops) == 1, f"expected one flop; got {len(flops)}"
     d_bits = flops[0].connections["D"]
     # The D bits should not be a fresh allocation — they should match
-    # the underlying ``arr`` variable's bits for the [1][0] slice.
-    arr_nn = mod.netnames.get("arr")
-    assert arr_nn is not None, "arr netname not allocated"
-    # arr layout: bits 0..3 are [0][0], 4..7 are [0][1], 8..11 are [1][0],
-    # 12..15 are [1][1] (4-bit element, C=2 inner stride, 2 row stride).
-    expected_slice = arr_nn.bits[8:12]
+    # the underlying ``arr`` variable's bits for the [1][0] slice: the
+    # element netname ``arr[2]`` (each element is a netname of its own,
+    # numbered row-major as Yosys ``mem2reg`` does; rtl-buddy-cdc#394).
+    arr_nn = mod.netnames.get("arr[2]")
+    assert arr_nn is not None, "arr[2] netname not allocated"
+    expected_slice = arr_nn.bits
     assert tuple(d_bits) == tuple(expected_slice), (
         f"expected D to be the [1][0] slice {expected_slice}; "
         f"got {d_bits} (suggests nested select wasn't resolved)"
