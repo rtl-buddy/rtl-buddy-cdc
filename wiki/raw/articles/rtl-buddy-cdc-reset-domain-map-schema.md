@@ -82,9 +82,17 @@ backward-compatible v1.x extension if a consumer needs it.
 
 ## `flop_resets`
 
-One entry per flop with a reset pin (plain `$dff` / `$dffe` are
-omitted — this section is the reset inventory, not the flop
-inventory). Sorted by `instance_path`.
+One entry per flop with a reset (flops without one are omitted — this
+section is the reset inventory, not the flop inventory). Sorted by
+`instance_path`. A reset is a reset pin, or, on a flop without one, a
+synchronous reset that the `proc` netlist form leaves as constant-leg
+muxes on `D` where `opt_dff` would fold it into `SRST`, read when every
+lane of the register is reset by the same selects (rtl-buddy-cdc#394;
+several selects classify as `"comb"`, as the `$reduce_or` `opt_dff`
+adds for them does). The `proc` and `opt_dff` forms of one design, and
+the Yosys and slang frontends, then list the same resets. A register
+whose lanes have different resets is sliced by `opt_dff` into cells the
+`proc` form's one cell cannot match; that flop has no entry.
 
 | Field | Type | Description |
 |---|---|---|
@@ -92,7 +100,7 @@ inventory). Sorted by `instance_path`.
 | `clock` | string \| null | Flop's clock domain (matches `domain-map.flop_domains[].clock`). |
 | `reset` | string | Upstream reset's `name` (joins to `reset_sources[].name`). |
 | `reset_kind` | enum | `source` of that reset (`"port"` / `"inferred"` / `"constant"` / `"comb"`). |
-| `polarity` | enum | Flop pin's inferred polarity (`"high"` / `"low"`). |
+| `polarity` | enum | Polarity the reset signal acts with (`"high"` / `"low"`): the flop pin's, except where Yosys's encoding of the pin inverts it — an active-low clear / set of a set / clear flop, written by `proc` as an inverter in front of an active-high `CLR` / `SET` (rtl-buddy-cdc#394). |
 | `type` | enum | `"sync"` or `"async"`. |
 | `location` | object (optional) | Yosys-derived source location: `{file, start_line, start_column, end_line, end_column}` — column/end fields present when Yosys emitted them. |
 
@@ -112,7 +120,7 @@ entries (rtl-buddy-cdc#390). Each kind reads the pins its rule reads:
 | `flop_clock` | string \| null | The flop's clock domain. |
 | `reset` | string | Upstream reset name. |
 | `reset_kind` | enum | `source` of that reset. |
-| `polarity` | enum | The flop's inferred reset-pin polarity. |
+| `polarity` | enum | The polarity the reset acts with on that pin (as `flop_resets[].polarity`). |
 | `type` | enum | `"sync"` or `"async"`. |
 | `pin` | string | The flop pin the reset arrives on, by its coarse name: `"ARST"`, `"ALOAD"`, `"CLR"`, `"SET"` or `"SRST"` (gate-level `R` / `L` / `S` read as the pin they stand for). Added in rtl-buddy-cdc#390 (additive). |
 | `location` | object (optional) | Flop's source location. |
@@ -143,16 +151,20 @@ Consumers cross-referencing the two artefacts can join
 Because every collection is sorted deterministically, the artefact
 can be committed as a golden file and diffed in code review — the
 fixture `tests/fixtures/bad_marked_reset_polarity/` does exactly
-that. To regenerate after an intentional change:
+that. To regenerate after an intentional change, from the repo root:
 
 ```bash
 uv run rtl-buddy-cdc analyze \
     --netlist tests/fixtures/<fix>/<fix>.json \
     --sdc tests/fixtures/<fix>/<fix>.sdc \
+    --project-root . \
     --emit-reset-domain-map tests/fixtures/<fix>/<fix>.reset-domain-map.json \
     --no-findings
 ```
 
+`--project-root .` matters: a relative `--emit-*` path is anchored at
+`--project-root`, else at the SDC's directory (rtl-buddy-cdc#245), so
+without it the file lands under `tests/fixtures/<fix>/tests/...`.
 `--no-findings` skips rule evaluation; combine with one or both
 `--emit-*-map` flags when the map is the sole deliverable of the
 run.
