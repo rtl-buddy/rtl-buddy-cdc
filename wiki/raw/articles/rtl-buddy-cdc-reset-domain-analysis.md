@@ -69,9 +69,27 @@ A flop with no reset pin gets, as `reset`, the synchronous reset its
 `D` carries in the `proc` form where `opt_dff` would fold it into
 `SRST` (`reset_domain.sync_reset_lanes` with `through_enable`, every
 lane reset by the same selects; several selects are `"comb"`, like the
-`$reduce_or` `opt_dff` adds), so the `proc` and `opt_dff` forms of one
-design classify alike (rtl-buddy-cdc#394). A register whose lanes are
-reset differently (sliced by `opt_dff`) keeps `None`.
+cell `opt_dff` adds: `$reduce_and`, active low, when every select is
+active low, else `$reduce_or`, active high), so the `proc` and
+`opt_dff` forms of one design classify alike (rtl-buddy-cdc#394).
+
+A register whose lanes are reset differently is sliced by `opt_dff`
+into one cell per reset. The `proc` form's one cell keeps `reset =
+None` and lists each reset with its lanes in `ResetDomain.lane_resets`
+(`LaneReset(lanes, reset)`, rtl-buddy-cdc#398); `ResetDomain.reset_groups()`
+reads either shape. The reset-domain map and `find_reset_crossings` list
+one entry per lane reset. No rule reads a sync `ResetDomain.reset`:
+RDC-003 reads the reset muxes of every lane itself
+(`rules._folded_srst_selects`), so a foreign reset on some lanes is one
+finding in either form.
+
+An `$sdff*` whose `D` still carries a reset mux `opt_dff` would fold
+into its `SRST` reads as `SRST` plus that mux's select (rtl-buddy-cdc#398):
+the slang frontend folds the first select of `if (a) … else if (b)`
+into `SRST` and leaves the second on `D`, where `opt_dff` folds both.
+Each lane starts from `SRST` and its `SRST_VALUE` bit, so a mux folds
+only where its constant is that lane's reset value; a reset over an
+enable (`$sdffe`) folds nothing, the mux being under the enable.
 
 ## 3. Cell-type → reset-pin map
 
