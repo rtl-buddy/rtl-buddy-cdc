@@ -22,6 +22,7 @@ from rtl_buddy_cdc.domain import (
     find_scan_mode_flops,
     flop_clock_root_resolver,
     flop_domain_resolver,
+    root_port_name,
 )
 from rtl_buddy_cdc.cells import MUX2_TYPES, MUX_PINS, parse_gate_storage_cell
 from rtl_buddy_cdc.flops import (
@@ -936,9 +937,21 @@ def _port_typing(
 
 
 def _sdc_port_word(label: str) -> str:
-    """``d`` → ``d``; ``d[3]`` → ``{d[3]}``: braced, or Tcl would read the
-    index as command substitution."""
-    return f"{{{label}}}" if "[" in label else label
+    """The ``get_ports`` operand naming the bits a port label shows.
+
+    ``d`` → ``d``; ``d[3]`` → ``{d[3]}``; ``d[7:4,2:0]`` →
+    ``{d[7:4] d[2:0]}``. Braced, or Tcl would read an index as command
+    substitution; one name per run of the selection, because the
+    label's comma list (:func:`~rtl_buddy_cdc.netlist.format_bit_select`)
+    is not SDC (rtl-buddy-cdc#398). A ``hi:lo`` run is a bus range, which
+    :mod:`rtl_buddy_cdc.sdc_objects` reads on both SDC backends, so a fix
+    hint fed back to this tool types exactly the bits it names.
+    """
+    if "[" not in label:
+        return label
+    base, _sep, sel = label.rpartition("[")
+    runs = sel.rstrip("]").split(",")
+    return "{" + " ".join(f"{base}[{run}]" for run in runs) + "}"
 
 
 def _reached_port_groups(
@@ -4662,10 +4675,9 @@ def check_rdc_008(
 
     Fires when a flop's async reset is driven *directly* by a top-level
     input port (``ResetDomain.reset.source == "port"``) and the flop
-    is not part of a recognised reset-synchroniser chain in its own
-    clock domain. RDC-001 is the symmetric rule for foreign-domain
-    flop-sourced resets (``source == "inferred"``); RDC-008 fills the
-    port-source gap.
+    is not itself part of a recognised reset-synchroniser chain. RDC-001
+    is the symmetric rule for foreign-domain flop-sourced resets
+    (``source == "inferred"``); RDC-008 fills the port-source gap.
 
     Reset assertion is fine (combinational propagation from the port),
     but the deassertion edge is unsynchronised to the consumer clock —
@@ -4681,13 +4693,24 @@ def check_rdc_008(
     per port per clock domain listing every affected consumer flop.
 
     **Asymmetric detection.** RDC-008 only fires when the user has
-    clearly *built* reset-sync infrastructure for the port in one
-    clock domain but *missed* it in another. That asymmetry signals
-    intent (the user knows the port needs synchronisation) and the
-    miss is a methodology bug rather than a simplification. Designs
-    that use the raw reset port directly in every consumer domain
-    (the common pattern in small unit-test RTL) stay silent — they're
-    a different concern, not what RDC-008 is calibrated for.
+    clearly *built* reset-sync infrastructure for the port somewhere:
+    that signals intent (the user knows the port needs
+    synchronisation), and a flop that still takes the raw port is a
+    methodology bug rather than a simplification. Two shapes fire, and
+    the message says which (rtl-buddy-cdc#398):
+
+    * the consumers' clock domain has **no chain** for the port — the
+      chain was built in another domain and missed in this one; the fix
+      is a chain here;
+    * the consumers' clock domain **has a chain** for the port and these
+      flops bypass it, taking the raw port where they should take the
+      chain's output; the message names the chain's tail, the reset
+      they should use.
+
+    Designs that use the raw reset port directly in every consumer
+    domain, with no synchroniser for it anywhere (the common pattern in
+    small unit-test RTL), stay silent — they're a different concern,
+    not what RDC-008 is calibrated for.
 
     Suppression:
 
@@ -4753,13 +4776,19 @@ def check_rdc_008(
             continue
         synced_clocks_by_port[rd.reset.name].add(sync_clk)
 
+    # Per (port, clock): the reset each chain hands its consumers — the
+    # chain's tail — for the message of a group that bypasses a chain in
+    # its own domain. Built on first use: most designs never get here.
+    sync_outputs: dict[tuple[str, str], tuple[list[str], bool]] | None = None
+
     violations: list[Violation] = []
     for (port_name, consumer_clk), consumers in sorted(unsynced_groups.items()):
         # The asymmetric-intent gate: only fire when the user has built
         # a chain for this port in *some* domain. Without that signal
         # the design likely just uses the raw port as-is in every
         # domain (a simplification we don't flag here).
-        if not synced_clocks_by_port[port_name]:
+        synced_clocks = synced_clocks_by_port[port_name]
+        if not synced_clocks:
             continue
         # ``set_input_delay -clock C`` on the reset port says the
         # integrator times it against ``C``: its deassertion is already
@@ -4790,27 +4819,89 @@ def check_rdc_008(
         clk_phrase = (
             f"in {consumer_clk}" if consumer_clk else "in an untraceable clock domain"
         )
+        hazard = (
+            "Reset assertion is fine, but the deassertion edge is "
+            "unsynchronised to the consumer clock — recovery/removal timing "
+            "violations can leave random subsets of flops in different "
+            "reset states."
+        )
+        if consumer_clk in synced_clocks:
+            # A chain for this port exists in this very domain: these
+            # flops bypass it (rtl-buddy-cdc#398).
+            if sync_outputs is None:
+                sync_outputs = _reset_sync_outputs(ctx, recognised_syncs)
+            outs, structural = sync_outputs.get((port_name, consumer_clk), ([], False))
+            out_desc = ", ".join(f"'{o}'" for o in outs[:3]) + (
+                ", ..." if len(outs) > 3 else ""
+            )
+            if structural:
+                sync_desc = f"reset-synchroniser chain (tail {out_desc})"
+                fix = f"Reset these flops from the chain's tail {out_desc}"
+            else:
+                sync_desc = f"reset synchroniser (stages {out_desc})"
+                fix = "Reset these flops from the synchroniser's output"
+            message = (
+                f"unsynced primary-reset port: top-level reset port "
+                f"'{port_name}' drives {consumer_desc} {clk_phrase} "
+                f"directly, bypassing the {sync_desc} that {consumer_clk} "
+                f"already has for '{port_name}'. {hazard} {fix} instead "
+                f"of the raw port."
+            )
+        else:
+            elsewhere = ", ".join(sorted(synced_clocks))
+            message = (
+                f"unsynced primary-reset port: top-level reset port "
+                f"'{port_name}' drives {consumer_desc} {clk_phrase} "
+                f"directly, with no reset-synchroniser chain in that clock "
+                f"domain (there is one for it in {elsewhere}). {hazard} "
+                f"Add a 2FF reset-synchroniser chain in "
+                f"{consumer_clk or 'the consumer clock domain'} whose "
+                f"ARST is '{port_name}', and route consumers through "
+                f"the chain's tail."
+            )
         violations.append(
             Violation(
                 rule_id="RDC-008",
                 severity="error",
-                message=(
-                    f"unsynced primary-reset port: top-level reset "
-                    f"port '{port_name}' drives {consumer_desc} {clk_phrase} "
-                    f"directly, with no reset-synchroniser chain in that "
-                    f"clock domain. Reset assertion is fine, but the "
-                    f"deassertion edge is unsynchronised to the consumer "
-                    f"clock — recovery/removal timing violations can "
-                    f"leave random subsets of flops in different reset "
-                    f"states. Add a 2FF reset-synchroniser chain in "
-                    f"{consumer_clk or 'the consumer clock domain'} whose "
-                    f"ARST is '{port_name}', and route consumers through "
-                    f"the chain's tail."
-                ),
+                message=message,
                 cell_name=consumer_names[0],
             )
         )
     return violations
+
+
+def _reset_sync_outputs(
+    ctx: _RuleContext, recognised_syncs: frozenset[str]
+) -> dict[tuple[str, str], tuple[list[str], bool]]:
+    """Per ``(reset port, clock)``: the flops whose ``Q`` is the
+    synchronised reset of that port in that clock — each structural
+    chain's tail (:func:`~rtl_buddy_cdc.reset_domain.iter_reset_sync_chains`)
+    — for RDC-008's message (rtl-buddy-cdc#398), with ``True``. A
+    ``(port, clock)`` whose recognised synchroniser flops form no
+    structural chain (user-marked ``(* reset_sync *)`` stages fed from
+    logic) lists those flops instead, with ``False``: which of them is
+    the output is not recoverable."""
+    out: dict[tuple[str, str], list[str]] = defaultdict(list)
+
+    def _key(name: str) -> tuple[str, str] | None:
+        rd = ctx.reset_domains.get(name)
+        clk = ctx.domains.get(name)
+        if rd is None or rd.reset is None or rd.reset.source != "port" or not clk:
+            return None
+        return (rd.reset.name, clk)
+
+    for chain in ctx.reset_sync_chains:
+        key = _key(chain.flops[0])
+        if key is not None:
+            out[key].append(chain.flops[0])
+    marked: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for name in recognised_syncs:
+        key = _key(name)
+        if key is not None and key not in out:
+            marked[key].append(name)
+    result = {k: (sorted(v), True) for k, v in out.items()}
+    result.update({k: (sorted(v), False) for k, v in marked.items()})
+    return result
 
 
 def check_cdc_011(
@@ -6365,8 +6456,11 @@ def check_cdc_021(
         # undeclared clock port is normalised to the ``<unconstrained>``
         # sentinel, which names no port.
         domain = ctx.clock_roots.get(f.cell.name)
-        if domain is None:
+        if domain is None or domain in declared_clock_ports:
             continue
+        # A bit of a port typed bit by bit roots as ``d[3]``
+        # (rtl-buddy-cdc#398); the undeclared clock is still port ``d``.
+        domain = root_port_name(module, domain)
         port = module.ports.get(domain)
         if port is None or port.direction != "input":
             continue  # not a port — e.g. an internal generated clock

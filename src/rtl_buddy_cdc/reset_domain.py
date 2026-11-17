@@ -42,17 +42,18 @@ Out of scope here, by design:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Literal
 
-from rtl_buddy_cdc.cells import MUX2_TYPES
+from rtl_buddy_cdc.cells import MUX2_TYPES, parse_gate_storage_cell
 from rtl_buddy_cdc.flops import (
     Flop,
     ResetPin,
     find_flops,
     flop_async_controls,
+    flop_enable_pin,
     flop_reset,
 )
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
@@ -118,6 +119,20 @@ class AsyncControl:
 
 
 @dataclass(frozen=True)
+class LaneReset:
+    """The synchronous reset of some lanes of a register
+    (rtl-buddy-cdc#398).
+
+    ``lanes`` are indices into the flop's ``D`` / ``Q``, ascending; every
+    one of them is reset by the same selects, so ``opt_dff`` gives them
+    one cell with this reset on ``SRST``.
+    """
+
+    lanes: tuple[int, ...]
+    reset: ResetSource
+
+
+@dataclass(frozen=True)
 class ResetDomain:
     """A flop's reset assignment.
 
@@ -131,11 +146,27 @@ class ResetDomain:
     ``ALOAD``, or ``CLR`` and ``SET`` — in priority order
     (rtl-buddy-cdc#383); empty for a flop with no asynchronous control.
     For an asynchronous reset, ``reset`` is ``controls[0].source``.
+
+    ``lane_resets`` is set only for a register whose lanes have different
+    synchronous resets (rtl-buddy-cdc#398): ``opt_dff`` slices it into one
+    cell per reset, which the one ``reset`` of the ``proc`` form's one
+    cell cannot describe. ``reset`` is then ``None`` and ``lane_resets``
+    has one entry per distinct reset, in order of its first lane; lanes
+    with no reset are in none. Empty otherwise.
+    :meth:`reset_groups` reads both fields.
     """
 
     flop: str
     reset: ResetSource | None
     controls: tuple[AsyncControl, ...] = ()
+    lane_resets: tuple[LaneReset, ...] = ()
+
+    def reset_groups(self) -> tuple[LaneReset, ...]:
+        """Every reset of the flop with the lanes it resets: ``reset`` for
+        the whole register (``lanes == ()``), else ``lane_resets``."""
+        if self.reset is not None:
+            return (LaneReset(lanes=(), reset=self.reset),)
+        return self.lane_resets
 
 
 def assign_reset_domains(
@@ -188,12 +219,18 @@ def assign_reset_domains(
         if rst is None:
             # No reset pin. A synchronous reset may still be on ``D`` as
             # the muxes ``opt_dff`` would fold into ``SRST``
-            # (rtl-buddy-cdc#394).
+            # (rtl-buddy-cdc#394), different on different lanes
+            # (rtl-buddy-cdc#398).
             if readers is None:
                 readers = bit_reader_count(module)
-            reset = _folded_sync_reset(module, f, drivers, lane_drivers, readers)
+            reset, lane_resets = _folded_sync_reset(
+                module, f, drivers, lane_drivers, readers
+            )
             out[f.cell.name] = ResetDomain(
-                flop=f.cell.name, reset=reset, controls=controls
+                flop=f.cell.name,
+                reset=reset,
+                controls=controls,
+                lane_resets=lane_resets,
             )
             continue
         if not rst.bits:
@@ -204,6 +241,21 @@ def assign_reset_domains(
                 flop=f.cell.name, reset=None, controls=controls
             )
             continue
+        if rst.kind == "sync":
+            # An ``$sdff*`` whose ``D`` still carries a reset mux
+            # ``opt_dff`` would fold in with ``SRST`` (rtl-buddy-cdc#398).
+            if readers is None:
+                readers = bit_reader_count(module)
+            folded = _srst_with_d_resets(module, f, rst, drivers, lane_drivers, readers)
+            if folded is not None:
+                reset, lane_resets = folded
+                out[f.cell.name] = ResetDomain(
+                    flop=f.cell.name,
+                    reset=reset,
+                    controls=controls,
+                    lane_resets=lane_resets,
+                )
+                continue
         if controls and controls[0].pin.pin == rst.pin:
             reset = controls[0].source
         else:
@@ -212,41 +264,141 @@ def assign_reset_domains(
     return out
 
 
+_Selects = frozenset[tuple[Bit, bool]]
+
+
 def _folded_sync_reset(
     module: Module,
     flop: Flop,
     drivers: dict[Bit, tuple[str, str]],
     lane_drivers: dict[Bit, tuple[str, str, int]],
     reader_counts: dict[Bit, int],
-) -> ResetSource | None:
+) -> tuple[ResetSource | None, tuple[LaneReset, ...]]:
     """The synchronous reset ``opt_dff`` would fold into ``SRST`` on
     ``flop``, a flop with no reset pin, read off the reset muxes on its
-    ``D`` (rtl-buddy-cdc#394); ``None`` when there is none.
+    ``D`` (rtl-buddy-cdc#394), as ``(reset, lane_resets)`` of
+    :class:`ResetDomain` (:func:`_lane_sync_resets`).
 
     The muxes are the ones :func:`sync_reset_lanes` reads (with
     ``through_enable``, so a reset under an enable, ``$sdffce`` once
-    folded, counts as well as one over it, ``$sdffe``), and only when
-    every lane is reset by the same selects: ``opt_dff`` then keeps the
-    register one cell. Otherwise it slices the register into cells
-    with different resets, which one entry for the ``proc`` form's one
-    cell cannot describe, and the flop keeps ``reset = None``.
-
-    One select is the reset itself, active high when its constant is on
-    the ``B`` leg (``s ? c : d``). Several are combined by a cell
-    ``opt_dff`` adds (``$reduce_or``, active high), which classifies as
-    ``"comb"``.
+    folded, counts as well as one over it, ``$sdffe``).
     """
     lanes = sync_reset_lanes(
         flop, module, lane_drivers, reader_counts, through_enable=True
     )
-    if not lanes:
+    return _lane_sync_resets(module, [r for _, r in lanes], drivers)
+
+
+def _srst_with_d_resets(
+    module: Module,
+    flop: Flop,
+    rst: ResetPin,
+    drivers: dict[Bit, tuple[str, str]],
+    lane_drivers: dict[Bit, tuple[str, str, int]],
+    reader_counts: dict[Bit, int],
+) -> tuple[ResetSource | None, tuple[LaneReset, ...]] | None:
+    """The synchronous reset of ``flop``, a flop with a reset pin ``rst``
+    of kind ``"sync"``, when its ``D`` also carries reset muxes ``opt_dff``
+    would fold into that pin (rtl-buddy-cdc#398); ``None`` when it carries
+    none, and the reset is the pin's.
+
+    ``if (r) q <= 0; else if (r2) q <= 0;`` is one ``$sdff`` with ``SRST =
+    r | r2`` once ``opt_dff`` folds the ``proc`` form; the slang frontend
+    folds ``r`` only and leaves ``r2`` as a reset mux on ``D``. Each lane
+    starts from ``SRST`` and its ``SRST_VALUE`` bit and walks ``D`` as
+    :func:`sync_reset_lanes` does, so a mux folds where its constant is
+    that lane's reset value, as in ``opt_dff``. A reset over an enable
+    (``$sdffe``, gate-level ``$_SDFFE_``) does not: the mux on ``D`` is
+    under the enable, and ``opt_dff`` stops at the enable.
+    """
+    if not rst.bits or _srst_over_enable(flop.cell):
         return None
-    resets = lanes[0][1]
-    if not resets or any(r != resets for _, r in lanes):
+    seed: _Selects = frozenset({(rst.bits[0], rst.polarity == 1)})
+    lanes = [
+        r
+        for _, r in sync_reset_lanes(
+            flop,
+            module,
+            lane_drivers,
+            reader_counts,
+            seed=seed,
+            values=_srst_values(flop, rst),
+        )
+    ]
+    if all(r == seed for r in lanes):
         return None
-    if len(resets) > 1:
-        return ResetSource(name="", polarity="high", type="sync", source="comb")
-    ((sel, active_high),) = resets
+    return _lane_sync_resets(module, lanes, drivers)
+
+
+def _srst_over_enable(cell: Cell) -> bool:
+    """Whether ``cell``'s synchronous reset acts whatever its enable is
+    (``$sdffe``, gate-level ``$_SDFFE_*``), so the data on ``D`` is
+    under the enable and the reset is not."""
+    if flop_enable_pin(cell) is None or cell.type == "$sdffce":
+        return False
+    gate = parse_gate_storage_cell(cell.type)
+    return not (gate is not None and gate.reset_gated_by_enable)
+
+
+def _srst_values(flop: Flop, rst: ResetPin) -> list[str | None]:
+    """Per lane of ``flop``, the bit its synchronous reset loads:
+    ``SRST_VALUE`` lane by lane (Yosys writes it MSB first), or the
+    pin's one value for a gate-level cell."""
+    width = len(flop.d)
+    raw = (flop.cell.parameters or {}).get("SRST_VALUE")
+    if isinstance(raw, str) and len(raw) == width:
+        return [raw[width - 1 - i] for i in range(width)]
+    return [rst.value] * width
+
+
+def _lane_sync_resets(
+    module: Module,
+    lanes: Sequence[_Selects],
+    drivers: dict[Bit, tuple[str, str]],
+) -> tuple[ResetSource | None, tuple[LaneReset, ...]]:
+    """``(reset, lane_resets)`` of :class:`ResetDomain` from the reset
+    selects of each lane of a register.
+
+    Every lane reset by the same selects: ``opt_dff`` keeps the register
+    one cell, and that is ``reset``. Otherwise it slices the register
+    into one cell per set of selects (and one with no reset), which one
+    ``reset`` for the ``proc`` form's one cell cannot describe
+    (rtl-buddy-cdc#398): ``reset`` is ``None`` and ``lane_resets`` lists
+    each set with its lanes. Neither when no lane is reset.
+    """
+    if not lanes or not any(lanes):
+        return None, ()
+    first = lanes[0]
+    if all(r == first for r in lanes):
+        return _sync_reset_of(module, first, drivers), ()
+    groups: dict[_Selects, list[int]] = {}
+    for i, sels in enumerate(lanes):
+        if sels:
+            groups.setdefault(sels, []).append(i)
+    return None, tuple(
+        LaneReset(lanes=tuple(idx), reset=_sync_reset_of(module, sels, drivers))
+        for sels, idx in groups.items()
+    )
+
+
+def _sync_reset_of(
+    module: Module, selects: _Selects, drivers: dict[Bit, tuple[str, str]]
+) -> ResetSource:
+    """The synchronous reset ``opt_dff`` builds from ``selects``, each a
+    ``(select, active-high)`` reset mux of one lane.
+
+    One select is the reset itself. Several are combined by a cell
+    ``opt_dff`` adds, which classifies as ``"comb"``: ``$reduce_and``,
+    active low, when every select is active low; otherwise ``$reduce_or``,
+    active high, with an inverter on each active-low select (observed on
+    Yosys 0.64).
+    """
+    if len(selects) > 1:
+        all_low = not any(high for _, high in selects)
+        return ResetSource(
+            name="", polarity="low" if all_low else "high", type="sync", source="comb"
+        )
+    ((sel, active_high),) = selects
     return _reset_source(module, "sync", 1 if active_high else 0, sel, drivers)
 
 
@@ -560,6 +712,8 @@ def sync_reset_lanes(
     reader_counts: dict[Bit, int],
     *,
     through_enable: bool = False,
+    seed: frozenset[tuple[Bit, bool]] = frozenset(),
+    values: Sequence[str | None] | None = None,
 ) -> list[tuple[Bit, frozenset[tuple[Bit, bool]]]]:
     """``head``'s sync reset read lane by lane the way Yosys ``opt_dff``
     folds it into ``SRST`` (rtl-buddy-cdc#390): per ``D`` lane, the bit
@@ -589,13 +743,18 @@ def sync_reset_lanes(
     returned for a lane walked through an enable is behind the enable,
     so it is not what the flop samples; callers asking that leave the
     flag off.
+
+    ``seed`` / ``values`` start every lane with a reset already collected
+    and, per lane, the constant it loads: an ``$sdff*``'s ``SRST`` and its
+    ``SRST_VALUE`` bits (rtl-buddy-cdc#398), so a mux on ``D`` is collected
+    only where ``opt_dff`` would fold it into that pin.
     """
     out: list[tuple[Bit, frozenset[tuple[Bit, bool]]]] = []
     for i, d_bit in enumerate(head.d):
         q_bit = head.q[i] if i < len(head.q) else None
         bit = d_bit
-        value: str | None = None
-        resets: set[tuple[Bit, bool]] = set()
+        value: str | None = values[i] if values is not None else None
+        resets: set[tuple[Bit, bool]] = set(seed)
         enable_ok = through_enable
         for _ in range(MAX_RESET_MUXES):
             drv = bit_drivers.get(bit) if isinstance(bit, int) else None
@@ -924,6 +1083,10 @@ class ResetCrossing:
       level ``R`` / ``L`` / ``S`` read as the pin they stand for). A set /
       clear flop can have one record per pin (rtl-buddy-cdc#390).
       ``None`` only on a record built by hand without it.
+    * ``lanes`` — the lanes of ``flop`` the reset acts on, for a
+      synchronous reset of some lanes only (:attr:`ResetDomain.lane_resets`,
+      rtl-buddy-cdc#398): such a register has one record per reset.
+      ``()`` for a reset of the whole flop.
     """
 
     flop: str
@@ -931,6 +1094,7 @@ class ResetCrossing:
     flop_clock: str | None
     kind: ResetCrossingKind
     pin: str | None = None
+    lanes: tuple[int, ...] = ()
 
 
 #: Coarse name of each reset role, for :attr:`ResetCrossing.pin`.
@@ -943,13 +1107,21 @@ PIN_LABELS: dict[str, str] = {
 }
 
 
-def _reset_arrivals(rd: ResetDomain) -> list[tuple[str, ResetSource]]:
-    """Every reset pin of ``rd``'s flop with the source on it: each
-    asynchronous control (``ResetDomain.controls``, in priority order),
-    then a synchronous reset (``ResetDomain.reset`` when it is ``SRST``)."""
-    out = [(PIN_LABELS[c.pin.role], c.source) for c in rd.controls]
-    if rd.reset is not None and rd.reset.type == "sync":
-        out.append((PIN_LABELS["srst"], rd.reset))
+def _reset_arrivals(
+    rd: ResetDomain,
+) -> list[tuple[str, ResetSource, tuple[int, ...]]]:
+    """Every reset pin of ``rd``'s flop with the source on it and the
+    lanes it acts on (``()``: all): each asynchronous control
+    (``ResetDomain.controls``, in priority order), then each synchronous
+    reset (:meth:`ResetDomain.reset_groups` of type ``"sync"``: one per
+    distinct lane reset of a register ``opt_dff`` slices,
+    rtl-buddy-cdc#398)."""
+    out: list[tuple[str, ResetSource, tuple[int, ...]]] = [
+        (PIN_LABELS[c.pin.role], c.source, ()) for c in rd.controls
+    ]
+    for g in rd.reset_groups():
+        if g.reset.type == "sync":
+            out.append((PIN_LABELS["srst"], g.reset, g.lanes))
     return out
 
 
@@ -1015,7 +1187,8 @@ def find_reset_crossings(
         if name in syncs:
             continue
         flop_clock = clock_domains.get(name)
-        for pin, rsrc in _reset_arrivals(rd):
+        arrivals = _reset_arrivals(rd)
+        for pin, rsrc, lanes in arrivals:
             # comb-driven: structural reset shape is combinational; clock
             # domain comparison is moot here — the issue is upstream of
             # any crossing question.
@@ -1027,6 +1200,7 @@ def find_reset_crossings(
                         flop_clock=flop_clock,
                         kind="comb-driven",
                         pin=pin,
+                        lanes=lanes,
                     )
                 )
                 continue
@@ -1051,6 +1225,7 @@ def find_reset_crossings(
                             flop_clock=flop_clock,
                             kind=kind,
                             pin=pin,
+                            lanes=lanes,
                         )
                     )
 
@@ -1058,23 +1233,26 @@ def find_reset_crossings(
         # inferred polarity. Emitted independently of any
         # crossing-kind above; a single flop can be both an
         # async-deassert and a polarity-mismatch crossing. RDC-002's
-        # pin: ``ResetDomain.reset`` only.
-        rsrc_main = rd.reset
-        if (
-            polarity_overrides
-            and rsrc_main is not None
-            and rsrc_main.source == "port"
-            and rsrc_main.name in polarity_overrides
-            and polarity_overrides[rsrc_main.name] != rsrc_main.polarity
-        ):
-            out.append(
-                ResetCrossing(
-                    flop=name,
-                    reset=rsrc_main,
-                    flop_clock=flop_clock,
-                    kind="polarity-mismatch",
-                    pin=_reset_arrivals(rd)[0][0],
+        # pin: ``ResetDomain.reset`` only, or each lane reset of a
+        # register ``opt_dff`` slices (rtl-buddy-cdc#398).
+        if not polarity_overrides:
+            continue
+        for g in rd.reset_groups():
+            rsrc_main = g.reset
+            if (
+                rsrc_main.source == "port"
+                and rsrc_main.name in polarity_overrides
+                and polarity_overrides[rsrc_main.name] != rsrc_main.polarity
+            ):
+                out.append(
+                    ResetCrossing(
+                        flop=name,
+                        reset=rsrc_main,
+                        flop_clock=flop_clock,
+                        kind="polarity-mismatch",
+                        pin=arrivals[0][0] if not g.lanes else PIN_LABELS["srst"],
+                        lanes=g.lanes,
+                    )
                 )
-            )
 
     return out

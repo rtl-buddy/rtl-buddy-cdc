@@ -358,6 +358,10 @@ GOOD_FIXTURES = [
     # Sync resets in every shape opt_dff folds, one clock (rtl-buddy-cdc#394;
     # the reset-domain classification is pinned in test_reset_analyzer_394).
     ("good_sync_reset_forms", 0),
+    # Sync resets that differ by lane, and a second select left on D
+    # (rtl-buddy-cdc#398; the reset-domain map is pinned in
+    # test_reset_analyzer_398).
+    ("good_sync_reset_lanes", 0),
 ]
 
 
