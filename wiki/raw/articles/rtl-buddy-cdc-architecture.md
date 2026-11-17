@@ -499,7 +499,7 @@ class ClockSpec:
     async_groups: list[list[set[str]]]             # set_clock_groups -asynchronous
     exclusive_groups: list[list[set[str]]]         # -logically_exclusive / -physically_exclusive
     false_path_pairs: set[frozenset[str]]          # set_false_path -from -to clock pairs
-    port_clock: dict[str, str]                     # set_input_delay / set_output_delay → port→clock
+    port_clock: dict[str, str]                     # set_input_delay / set_output_delay → port (or bit, `d[3]`, #394) → clock
     port_delays: list[PortDelay]                   # those statements, targets as written (#357)
     pin_clocks: dict[str, str]                     # internal-pin target → generated clock name
     datapath_only_delays: list[DatapathOnlyDelay]  # every set_max_delay -datapath_only (#325)
@@ -1615,6 +1615,32 @@ typed *input* is a crossing source in `find_crossings`; a typed
 *output* is an external-capture contract checked by CDC-024 (§8.21); an
 *untyped* output is CDC-025's (§8.22).
 
+**Per-bit reading** (rtl-buddy-cdc#394). A `port_clock` key is a whole
+port (`d`) or one bit of it (`d[3]`, declared index); a bit key
+overrides the whole-port key for its bit, and a port keyed only by bits
+has its other bits untyped. Every consumer reads it through one view,
+`ClockSpec.port_typing(module)` → `PortTyping` (`sdc.port_bit_clocks`
+builds the per-position table; an SDC typing only whole ports costs one
+dict lookup per key and yields an empty table, so the whole-port path is
+unchanged). `ClockSpec.clock_for_port(name)` stays the whole-port answer,
+so a port typed bit by bit has no single `set_*_delay` clock there. The
+consumers: `find_crossings` seeds one walk per (port, clock) from that
+clock's bits and stamps `Crossing.src_port_bits` (declared indices;
+`None` for a whole port), so a bus with bits in two clocks, or some
+bits untyped, gives one crossing per (port, clock, destination);
+CDC-006 and the memory read-domain fallback judge the port bits their
+backward walk reaches; CDC-010's and the clock-network view's
+input-domain walks take the reached bit's clock
+(`PortTyping.clock_of_net_bit`); RDC-008 checks the reset bits its
+consumers use; CDC-011 names the untyped bits (`'d[3]'`); CDC-024 checks
+one contract per (port, clock) over those bits' cone and CDC-025 the
+port's uncontracted bits, and both count typed input bits as launchers
+per clock; object-scoped `set_false_path` / `set_max_delay
+-datapath_only` coverage and the `-through` walk use the crossing's own
+bits; the JSON report and the domain map add `src_port_bits` to such a
+crossing and a `bits` list to each per-clock `port_domains` entry
+(additive: whole-port entries are unchanged, schema version unchanged).
+
 Delay targets are kept as written — a bus index stays on its name
 (`{d[3]}` → `d[3]`) and globs stay unexpanded — in
 `ClockSpec.port_delays` (one `PortDelay` per statement, file order) as
@@ -1634,13 +1660,21 @@ warnings and changes nothing:
 
 - An exact port name is unchanged; an SDC naming only whole ports is
   not touched at all.
-- A **bus index** types the **whole port**. Port typing is per port
-  in every consumer (crossing sources, CDC-006 / -011 / -024 / -025,
-  the domain map), so per-bit typing would be a change to all of them;
-  instead the selection is over-approximated, and a port whose bits
-  end up on *different* clocks (`{d[0]}` on `clk_a`, `{d[1]}` on
-  `clk_b`, or a bit retyped after a whole-port typing) gets a warning
-  naming them and takes the last clock.
+- Typing is **per bit** (rtl-buddy-cdc#394). A **bus index** types that
+  bit only; each statement assigns the bits it selects, in file order,
+  so `{d[0]}` on `clk_a` then `{d[1]}` on `clk_b` leaves the two bits on
+  two clocks, and a bit retyped after a whole-port typing overrides just
+  that bit. The result keys `port_clock` by the whole port (`d`) when
+  every bit of it carries one clock, and by bit otherwise — `d[3]`, in
+  the SDC's declared index (`Module.port_bit_index`, so `logic [8:1]`
+  and `logic [0:7]` ports name the bits the RTL does). A bit no
+  statement types stays unkeyed: an input bit then gets its own
+  `<unconstrained>` key from `synthesize_unconstrained_inputs`, exactly
+  as an untyped scalar input does, and an output bit carries no
+  contract. Keys that did not come from a statement (a hand-built spec,
+  or the sentinels of an earlier `synthesize_unconstrained_inputs`) are
+  kept; on a port a statement types they fill only the bits no statement
+  typed.
 - A **glob** (`*`, `?`) is matched with the object-pattern matcher
   (`NameIndex.ports`, so `*` never crosses a hierarchy level and `d*[3]`
   works) and selects only ports of the command's direction (inputs /
@@ -1660,12 +1694,11 @@ warnings and changes nothing:
   `(A, {B})`, `(C, {})`. The parser applies a removal to `port_clock`
   only where the text decides it (`{a b c}` minus `b`); the resolver
   resolves each removed pattern with the same matcher, without the
-  direction / clock filter, subtracts its bits, and drops a port left
-  with none. Removing some bits of a bus leaves the whole port typed,
-  removed bits included, because typing is per port; that is warned about
-  with the port, the removed pattern and the clock (rtl-buddy-cdc#390 —
-  per-bit typing would change every `port_clock` consumer). A removed
-  pattern that matches nothing is warned about.
+  direction / clock filter, and subtracts its bits: the statement does
+  not type them, so removing some bits of a bus leaves those bits with
+  their earlier typing or none (rtl-buddy-cdc#394; until then the whole
+  port was typed, with a warning). A removed pattern that matches
+  nothing is warned about.
   Not supported, and reported with the target ignored: `-intersect`, a
   removal inside the removed operand (`A − (B − C)`), a pin / cell
   operand. The evaluator itself (`_collection_terms` / `_operator_terms`)

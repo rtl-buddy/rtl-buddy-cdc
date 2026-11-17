@@ -37,7 +37,7 @@ from rtl_buddy_cdc.flops import (
 )
 from rtl_buddy_cdc.gate_eval import cone_tables
 from rtl_buddy_cdc.memory import MemPort, find_memories
-from rtl_buddy_cdc.netlist import Bit, Cell, Module
+from rtl_buddy_cdc.netlist import Bit, Cell, Module, Port
 from rtl_buddy_cdc.primitives import (
     is_sync_primitive,
     is_xpm_primitive,
@@ -53,7 +53,7 @@ from rtl_buddy_cdc.reset_domain import (
     sync_reset_lanes,
 )
 from rtl_buddy_cdc.reset_hints import ResetHints
-from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
+from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec, PortTyping
 
 if TYPE_CHECKING:
     from rtl_buddy_cdc.reset_domain import AsyncControl, ResetDomain, ResetSyncChain
@@ -225,6 +225,12 @@ class _RuleContext:
     # ``id(clock_spec)``; see :func:`_output_launch_index`. Empty until an
     # output rule runs, so a design no output rule cares about pays nothing.
     output_launch_memo: dict[int, _OutputLaunchIndex] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    # Lazily-filled memo of ``ClockSpec.port_typing(module)`` per spec
+    # (rtl-buddy-cdc#394), for the rules that ask a port bit's clock once
+    # per cell; see :func:`_port_typing`.
+    port_typing_memo: dict[int, PortTyping] = field(
         default_factory=dict, compare=False, repr=False
     )
 
@@ -871,13 +877,17 @@ def _backward_fanin(
     start_bits: tuple[Bit, ...],
     drivers: dict[Bit, tuple[str, str, int]],
     max_depth: int = 12,
+    *,
+    port_bits: set[Bit] | None = None,
 ) -> tuple[set[str], set[str]]:
     """Reverse-BFS through combinational cells.
 
     Returns ``(flop_cell_names, input_port_names)`` — every flop ``Q``
     and every top-level *input* port reached. Useful when a rule needs
     to distinguish "the upstream is a registered flop" from "the
-    upstream is an external pin".
+    upstream is an external pin". ``port_bits``, when given, collects the
+    input-port bits reached — what a port typed bit by bit needs
+    (rtl-buddy-cdc#394).
     """
     flops: set[str] = set()
     ports: set[str] = set()
@@ -894,6 +904,8 @@ def _backward_fanin(
                 port = module.port_of_bit(bit)
                 if port is not None and port.direction == "input":
                     ports.add(port.name)
+                    if port_bits is not None:
+                        port_bits.add(bit)
                 continue
             cell_name, port_name, _idx = drv
             cell = module.cells[cell_name]
@@ -910,6 +922,36 @@ def _backward_fanin(
                         nxt.append((b, depth + 1))
         frontier = nxt
     return flops, ports
+
+
+def _port_typing(
+    ctx: _RuleContext, module: Module, clock_spec: ClockSpec
+) -> PortTyping:
+    """``clock_spec.port_typing(module)``, built once per rule context."""
+    typing = ctx.port_typing_memo.get(id(clock_spec))
+    if typing is None or typing.spec is not clock_spec or typing.module is not module:
+        typing = clock_spec.port_typing(module)
+        ctx.port_typing_memo[id(clock_spec)] = typing
+    return typing
+
+
+def _sdc_port_word(label: str) -> str:
+    """``d`` → ``d``; ``d[3]`` → ``{d[3]}``: braced, or Tcl would read the
+    index as command substitution."""
+    return f"{{{label}}}" if "[" in label else label
+
+
+def _reached_port_groups(
+    typing: PortTyping, port: Port, reached: set[Bit]
+) -> list[tuple[str | None, tuple[int, ...] | None]]:
+    """:meth:`PortTyping.groups` of ``port`` restricted to the bits in
+    ``reached`` (rtl-buddy-cdc#394). A port typed whole is one group,
+    positions ``None``, however many of its bits were reached."""
+    if not typing.is_per_bit(port.name):
+        return typing.groups(port.name)
+    return typing.groups(
+        port.name, [i for i, b in enumerate(port.bits) if b in reached]
+    )
 
 
 def _forward_reachable_flops(
@@ -3001,9 +3043,11 @@ def check_cdc_006(
     violations: list[Violation] = []
 
     clock_ports: set[str] = set()
+    typing: PortTyping | None = None
     if clock_spec is not None:
         for clk in clock_spec.clocks.values():
             clock_ports.update(clk.ports)
+        typing = _port_typing(ctx, module, clock_spec)
 
     for f in ctx.flops:
         my_clk = ctx.domains.get(f.cell.name)
@@ -3044,7 +3088,10 @@ def check_cdc_006(
         comb_bits = _comb_driven_bits(module, d_bits, ctx.bit_drivers)
         if not comb_bits:
             continue
-        _, fanin_ports = _backward_fanin(module, comb_bits, ctx.bit_drivers)
+        reached_bits: set[Bit] = set()
+        _, fanin_ports = _backward_fanin(
+            module, comb_bits, ctx.bit_drivers, port_bits=reached_bits
+        )
         # Drop ports that are top-level clocks (clock leakage into
         # data paths is a CDC-008 shape, not CDC-006) and ports that
         # the SDC has explicitly typed into the *same* domain as the
@@ -3056,27 +3103,33 @@ def check_cdc_006(
         for p in sorted(fanin_ports):
             if p in clock_ports:
                 continue
-            port_clk: str | None = None
-            if clock_spec is not None:
-                port_clk = clock_spec.port_clock.get(p)
-            # Unconstrained ports belong to CDC-011, not CDC-006. The
-            # right fix for them is SDC typing, not "register the
-            # source"; firing CDC-006 here would push the wrong
-            # remediation.
-            if port_clk == UNCONSTRAINED_SENTINEL:
-                continue
-            if (
-                port_clk is not None
-                and my_clock_name is not None
-                and clock_spec is not None
-            ):
-                # Both ends typed: only fire when the port's clock
-                # resolves to a different root than the sync's clock.
-                # If they match, the user has asserted same-domain
-                # timing — no CDC issue.
-                if clock_spec.resolve(port_clk) == clock_spec.resolve(my_clock_name):
+            # A port typed bit by bit (rtl-buddy-cdc#394) is judged on the
+            # bits that reach this stage, one clock group at a time.
+            groups: list[tuple[str | None, tuple[int, ...] | None]] = [(None, None)]
+            if typing is not None:
+                groups = _reached_port_groups(typing, module.ports[p], reached_bits)
+            for port_clk, positions in groups:
+                # Unconstrained ports belong to CDC-011, not CDC-006. The
+                # right fix for them is SDC typing, not "register the
+                # source"; firing CDC-006 here would push the wrong
+                # remediation.
+                if port_clk == UNCONSTRAINED_SENTINEL:
                     continue
-            flagged_ports.append((p, port_clk))
+                if (
+                    port_clk is not None
+                    and my_clock_name is not None
+                    and clock_spec is not None
+                ):
+                    # Both ends typed: only fire when the port's clock
+                    # resolves to a different root than the sync's clock.
+                    # If they match, the user has asserted same-domain
+                    # timing — no CDC issue.
+                    if clock_spec.resolve(port_clk) == clock_spec.resolve(
+                        my_clock_name
+                    ):
+                        continue
+                label = p if typing is None else typing.label(p, positions)
+                flagged_ports.append((label, port_clk))
         if not flagged_ports:
             continue
         port_descs = ", ".join(
@@ -3410,6 +3463,9 @@ def _clock_input_domains_for(
     domains: set[str] = set()
     seen: set[Bit] = set()
     frontier: list[tuple[Bit, int]] = []
+    # Built on the first port bit reached: a port typed bit by bit
+    # (rtl-buddy-cdc#394) contributes the clock of the bit reached.
+    typing: PortTyping | None = None
     for port_name, bits in cell.connections.items():
         if port_name in _OUTPUT_PINS or port_name in control_ports:
             continue
@@ -3428,10 +3484,9 @@ def _clock_input_domains_for(
             if drv is None:
                 if clock_spec is None:
                     continue
-                port = module.port_of_bit(bit)
-                if port is None:
-                    continue
-                clk = clock_spec.clock_for_port(port.name)
+                if typing is None:
+                    typing = _port_typing(ctx, module, clock_spec)
+                clk = typing.clock_of_net_bit(bit)
                 if clk is not None:
                     domains.add(clk)
                 continue
@@ -4561,14 +4616,35 @@ def check_rdc_007(
 
 
 def _port_typed_to_clock(
-    port_name: str, clock: str, clock_spec: ClockSpec | None
+    port_name: str,
+    clock: str,
+    clock_spec: ClockSpec | None,
+    typing: PortTyping | None = None,
+    bits: set[Bit] | None = None,
 ) -> bool:
     """``port_name`` carries ``set_input_delay -clock C`` with ``C`` on
     ``clock``'s root (the same comparison CDC-006 makes for a typed
     port): the port is launched synchronously to ``clock``. An
-    unconstrained-sentinel port is not typed."""
+    unconstrained-sentinel port is not typed.
+
+    On a port typed bit by bit (rtl-buddy-cdc#394, ``typing``) every bit
+    in ``bits`` — the port bits actually used, or the whole port when
+    none of them is known — must carry such a clock."""
     if clock_spec is None:
         return False
+    if typing is not None and typing.is_per_bit(port_name):
+        port = typing.module.ports[port_name]
+        positions = [i for i, b in enumerate(port.bits) if bits and b in bits]
+        clocks = {
+            typing.clock_of_bit(port_name, i)
+            for i in (positions or range(len(port.bits)))
+        }
+        return all(
+            c is not None
+            and c != UNCONSTRAINED_SENTINEL
+            and clock_spec.resolve(c) == clock_spec.resolve(clock)
+            for c in clocks
+        )
     port_clk = clock_spec.port_clock.get(port_name)
     if port_clk is None or port_clk == UNCONSTRAINED_SENTINEL:
         return False
@@ -4641,6 +4717,9 @@ def check_rdc_008(
     # First pass: collect every unsynced port-sourced ARST consumer,
     # grouped by (port, consumer_clock).
     unsynced_groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    # The reset-port bits each group's consumers use: a bus port typed bit
+    # by bit is judged on those bits (rtl-buddy-cdc#394).
+    group_bits: dict[tuple[str, str], set[Bit]] = defaultdict(set)
     for f in ctx.flops:
         if f.cell.name in recognised_syncs:
             continue
@@ -4653,6 +4732,9 @@ def check_rdc_008(
         if consumer_clk is None:
             continue
         unsynced_groups[(rd.reset.name, consumer_clk)].append(f.cell.name)
+        if rd.controls:
+            group_bits[(rd.reset.name, consumer_clk)].update(rd.controls[0].bits)
+    typing = _port_typing(ctx, module, clock_spec) if clock_spec is not None else None
 
     # Per-port: which clock domains DO have a recognised reset-sync
     # chain consuming this port? Determined by walking recognised sync
@@ -4682,7 +4764,13 @@ def check_rdc_008(
         # ``set_input_delay -clock C`` on the reset port says the
         # integrator times it against ``C``: its deassertion is already
         # synchronous to consumers clocked by ``C`` (rtl-buddy-cdc#378).
-        if _port_typed_to_clock(port_name, consumer_clk, clock_spec):
+        if _port_typed_to_clock(
+            port_name,
+            consumer_clk,
+            clock_spec,
+            typing,
+            group_bits.get((port_name, consumer_clk)),
+        ):
             continue
         consumer_names = sorted(set(consumers))
         # Single-flop shortcut: one unsynced consumer in a domain that
@@ -4769,16 +4857,21 @@ def check_cdc_011(
     # {port: {(dst_clock, dst_flop_cell_name), ...}}: every capture the
     # crossing walk found (D, EN and SRST pins alike), deduplicated.
     by_port: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    # A port typed bit by bit (rtl-buddy-cdc#394) is reported by its
+    # untyped bits only: ``d[3]``, not ``d``.
+    labels: dict[str, str] = {}
     for c in crossings:
         if c.src_port is None:
             continue
         if c.src_clock != UNCONSTRAINED_SENTINEL:
             continue
         by_port[c.src_port].add((c.dst_clock, c.dst_flop.cell.name))
+        labels.setdefault(c.src_port, c.src_port_label or c.src_port)
 
     violations: list[Violation] = []
-    for port in sorted(by_port):
-        dsts = by_port[port]
+    for port_name in sorted(by_port):
+        dsts = by_port[port_name]
+        port = labels[port_name]
         dst_clocks = sorted({clk for clk, _cell in dsts})
         # Representative cell for source-location reporting: pick the
         # alphabetically-first destination flop so the reporter has
@@ -4811,7 +4904,7 @@ def check_cdc_011(
                         f"set_input_delay -clock typing in the SDC "
                         f"but is captured in domain {dst_clk!r}; add "
                         f"set_input_delay -clock {dst_clk} "
-                        f"[get_ports {port}] (or declare the port's "
+                        f"[get_ports {_sdc_port_word(port)}] (or declare the port's "
                         f"true source clock and add a synchronizer)"
                     ),
                     cell_name=repr_cell,
@@ -6718,22 +6811,51 @@ class _OutputLaunchIndex:
                     if isinstance(b, int):
                         self.input_bit_port.setdefault(b, p.name)
         self.flop_by_name: dict[str, Flop] = {f.cell.name: f for f in ctx.flops}
-        self._cones: dict[str, tuple[set[str], set[str], set[Bit]]] = {}
+        self._cones: dict[
+            tuple[str, tuple[int, ...] | None], tuple[set[str], set[str], set[Bit]]
+        ] = {}
         self._domain_of: dict[str, str | None] = {}
         self._resolve: Callable[[Flop], str | None] | None = None
+        self.typing = _port_typing(ctx, module, clock_spec)
 
-    def cone(self, port_name: str) -> tuple[set[str], set[str], set[Bit]]:
-        """``(q_cells, input_ports, cone_bits)`` of output ``port_name``."""
-        hit = self._cones.get(port_name)
+    def cone(
+        self, port_name: str, positions: tuple[int, ...] | None = None
+    ) -> tuple[set[str], set[str], set[Bit]]:
+        """``(q_cells, input_ports, cone_bits)`` of output ``port_name`` —
+        of its bits at ``positions`` only, when given (a port typed bit by
+        bit, rtl-buddy-cdc#394)."""
+        key = (port_name, positions)
+        hit = self._cones.get(key)
         if hit is None:
+            bits = self.module.ports[port_name].bits
+            if positions is not None:
+                bits = tuple(bits[p] for p in positions)
             hit = _output_cone(
                 self.module,
-                self.module.ports[port_name].bits,
+                bits,
                 self.ctx.bit_drivers,
                 self.input_bit_port,
             )
-            self._cones[port_name] = hit
+            self._cones[key] = hit
         return hit
+
+    def input_launchers(
+        self, in_ports: Iterable[str], cone: set[Bit]
+    ) -> list[tuple[str, str, list[Bit]]]:
+        """``(clock, label, seed bits)`` for each typed input port in
+        ``in_ports`` that feeds ``cone`` — per clock group on a port typed
+        bit by bit (rtl-buddy-cdc#394), restricted to the bits in the cone.
+        Untyped and ``<unconstrained>`` bits launch nothing here."""
+        out: list[tuple[str, str, list[Bit]]] = []
+        for name in sorted(in_ports):
+            port = self.module.ports[name]
+            for typed, positions in _reached_port_groups(self.typing, port, cone):
+                if typed is None or typed == UNCONSTRAINED_SENTINEL:
+                    continue
+                sel = range(len(port.bits)) if positions is None else positions
+                seeds = [port.bits[i] for i in sel if isinstance(port.bits[i], int)]
+                out.append((typed, self.typing.label(name, positions), seeds))
+        return out
 
     def launch_domain(self, f: Flop) -> str | None:
         name = f.cell.name
@@ -6834,14 +6956,18 @@ def check_cdc_024(
     """
     if clock_spec is None:
         return []
-    contracts: list[tuple[str, str]] = []
-    for port_name, capture in sorted(clock_spec.port_clock.items()):
-        port = module.ports.get(port_name)
-        if port is None or port.direction != "output":
+    typing = clock_spec.port_typing(module)
+    # (port, receiving clock, positions): a port typed bit by bit
+    # (rtl-buddy-cdc#394) carries one contract per clock its bits name,
+    # each over those bits only; ``None`` positions = the whole port.
+    contracts: list[tuple[str, str, tuple[int, ...] | None]] = []
+    for port in sorted(module.ports.values(), key=lambda p: p.name):
+        if port.direction != "output":
             continue
-        if capture == UNCONSTRAINED_SENTINEL:
-            continue
-        contracts.append((port_name, capture))
+        for capture, positions in typing.groups(port.name):
+            if capture is None or capture == UNCONSTRAINED_SENTINEL:
+                continue
+            contracts.append((port.name, capture, positions))
     if not contracts:
         return []
     if ctx is None:
@@ -6853,10 +6979,11 @@ def check_cdc_024(
     is_async = idx.is_async
 
     violations: list[Violation] = []
-    for port_name, capture in contracts:
+    for port_name, capture, positions in contracts:
         port = module.ports[port_name]
+        label = typing.label(port_name, positions)
         cap = canonical(capture)
-        q_cells, in_ports, cone = idx.cone(port_name)
+        q_cells, in_ports, cone = idx.cone(port_name, positions)
         by_domain: dict[str, list[str]] = defaultdict(list)
         seeds: list[Bit] = []
         first_flop: str | None = None
@@ -6874,21 +7001,18 @@ def check_cdc_024(
             seeds.extend(b for b in f.q if isinstance(b, int))
             if first_flop is None:
                 first_flop = name
-        for name in sorted(in_ports):
-            typed = clock_spec.port_clock.get(name)
-            if typed is None or typed == UNCONSTRAINED_SENTINEL:
-                continue
+        for typed, in_label, in_seeds in idx.input_launchers(in_ports, cone):
             launch = canonical(typed)
             if not is_async(launch, cap):
                 continue
-            by_domain[launch].append(f"input `{name}`")
-            seeds.extend(b for b in module.ports[name].bits if isinstance(b, int))
+            by_domain[launch].append(f"input `{in_label}`")
+            seeds.extend(in_seeds)
         if not by_domain:
             continue
 
         port_bit_index: dict[Bit, list[int]] = defaultdict(list)
         for i, b in enumerate(port.bits):
-            if isinstance(b, int):
+            if isinstance(b, int) and (positions is None or i in positions):
                 port_bit_index[b].append(i)
         reached = _reached_output_bits(
             module, seeds, cone, ctx.bit_consumers, port_bit_index
@@ -6918,7 +7042,7 @@ def check_cdc_024(
                 rule_id="CDC-024",
                 severity="warning",
                 message=(
-                    f"top-level output `{port_name}`{bits_desc} is launched from "
+                    f"top-level output `{label}`{bits_desc} is launched from "
                     f"{'; '.join(launch_descs)} but its set_output_delay contract "
                     f"names receiving clock {capture}, which the SDC declares "
                     f"asynchronous to {domains}. The capture happens outside this "
@@ -6926,7 +7050,7 @@ def check_cdc_024(
                     f"receiving design must synchronise this output (2FF, "
                     f"handshake or async FIFO), or re-register it in a clock "
                     f"related to {capture}. If the asynchronous output is "
-                    f"intentional, waive CDC-024 for `{port_name}` with a reason "
+                    f"intentional, waive CDC-024 for `{label}` with a reason "
                     f"naming the receiver's synchroniser — the waived finding "
                     f"stays in the report as that obligation. If {capture} is "
                     f"the wrong clock, fix the set_output_delay -clock."
@@ -7024,14 +7148,28 @@ def check_cdc_025(
         key=lambda p: p.name,
     )
 
-    def contracted(name: str) -> bool:
-        clk = clock_spec.port_clock.get(name)
-        return clk is not None and clk != UNCONSTRAINED_SENTINEL
-
-    candidates = [p for p in outputs if not contracted(p.name)]
+    typing = clock_spec.port_typing(module)
+    # (port, uncontracted positions): ``None`` = the whole port. A port
+    # typed bit by bit (rtl-buddy-cdc#394) is checked on its bits that
+    # carry no contract, and counts as an output with contracts.
+    candidates: list[tuple[Port, tuple[int, ...] | None]] = []
+    has_contracts = False
+    for p in outputs:
+        free: list[int] = []
+        whole_free = False
+        for clk, positions in typing.groups(p.name):
+            if clk is not None and clk != UNCONSTRAINED_SENTINEL:
+                has_contracts = True
+            elif positions is None:
+                whole_free = True
+            else:
+                free.extend(positions)
+        if whole_free:
+            candidates.append((p, None))
+        elif free:
+            candidates.append((p, tuple(sorted(free))))
     if not candidates:
         return []
-    has_contracts = len(candidates) < len(outputs)
     if single_domain is None:
         single_domain = has_contracts
     if not single_domain and not (
@@ -7066,10 +7204,14 @@ def check_cdc_025(
         return False
 
     violations: list[Violation] = []
-    for port in candidates:
+    for port, positions in candidates:
         if port.name in clock_ports:
             continue
-        q_cells, in_ports, cone = idx.cone(port.name)
+        label = typing.label(port.name, positions)
+        out_bits = (
+            port.bits if positions is None else tuple(port.bits[i] for i in positions)
+        )
+        q_cells, in_ports, cone = idx.cone(port.name, positions)
         if not q_cells or in_ports & clock_ports:
             continue
         by_domain: dict[str, list[str]] = defaultdict(list)
@@ -7092,16 +7234,11 @@ def check_cdc_025(
             seeds[launch].extend(b for b in f.q if isinstance(b, int))
         if not by_domain:
             continue  # no register with a resolved domain launches it
-        for name in sorted(in_ports):
-            typed = clock_spec.port_clock.get(name)
-            if typed is None or typed == UNCONSTRAINED_SENTINEL:
-                continue
+        for typed, in_label, in_seeds in idx.input_launchers(in_ports, cone):
             launch = idx.canonical(typed)
-            by_domain[launch].append(f"input `{name}`")
-            seeds[launch].extend(
-                b for b in module.ports[name].bits if isinstance(b, int)
-            )
-        if on_clock_network(port.bits):
+            by_domain[launch].append(f"input `{in_label}`")
+            seeds[launch].extend(in_seeds)
+        if on_clock_network(out_bits):
             continue
 
         domains = sorted(by_domain)
@@ -7116,7 +7253,7 @@ def check_cdc_025(
 
         port_bit_index: dict[Bit, list[int]] = defaultdict(list)
         for i, b in enumerate(port.bits):
-            if isinstance(b, int):
+            if isinstance(b, int) and (positions is None or i in positions):
                 port_bit_index[b].append(i)
 
         def reach(dom_seeds: list[Bit]) -> set[int]:
@@ -7159,7 +7296,7 @@ def check_cdc_025(
                     rule_id="CDC-025",
                     severity="error",
                     message=(
-                        f"top-level output `{port.name}`{bits_desc} combinationally "
+                        f"top-level output `{label}`{bits_desc} combinationally "
                         f"merges launches from {launch_desc}, which the SDC "
                         f"declares mutually asynchronous, and has no "
                         f"set_output_delay -clock contract. A boundary signal "
@@ -7168,7 +7305,7 @@ def check_cdc_025(
                         f"either side switches, so no output constraint makes it "
                         f"safe: synchronise every source into one domain and "
                         f"re-register the output there. If the receiver is known "
-                        f"to tolerate it, waive CDC-025 for `{port.name}` with "
+                        f"to tolerate it, waive CDC-025 for `{label}` with "
                         f"that reason."
                     ),
                     cell_name=anchor,
@@ -7180,7 +7317,7 @@ def check_cdc_025(
         if not async_pairs:
             hint = (
                 f"add set_output_delay -clock <receiving clock> "
-                f"[get_ports {port.name}] (typically {' or '.join(domains)}, "
+                f"[get_ports {_sdc_port_word(label)}] (typically {' or '.join(domains)}, "
                 f"or a virtual clock related to it)"
             )
         else:
@@ -7201,12 +7338,12 @@ def check_cdc_025(
                 rule_id="CDC-025",
                 severity="warning",
                 message=(
-                    f"top-level output `{port.name}`{bits_desc} is launched from "
+                    f"top-level output `{label}`{bits_desc} is launched from "
                     f"{launch_desc} but has no set_output_delay -clock contract, "
                     f"so the clock its receiver captures it on is undeclared "
                     f"and CDC-024 cannot check it. {advice}. If it is "
                     f"intentionally unconstrained (a quasi-static status or "
-                    f"debug output), waive CDC-025 for `{port.name}`."
+                    f"debug output), waive CDC-025 for `{label}`."
                 ),
                 cell_name=anchor,
             )
@@ -7324,13 +7461,20 @@ def _memory_read_domains(
     domains = {c for name in captured if (c := flop_clock(name)) is not None}
     if domains:
         return domains
-    flops, ports = _backward_fanin(module, port.control_bits, ctx.bit_drivers)
+    reached: set[Bit] = set()
+    flops, ports = _backward_fanin(
+        module, port.control_bits, ctx.bit_drivers, port_bits=reached
+    )
     domains = {c for name in flops if (c := flop_clock(name)) is not None}
-    typed_ports = clock_spec.port_clock if clock_spec is not None else {}
+    if clock_spec is None:
+        return domains
+    # Per bit on a port typed bit by bit (rtl-buddy-cdc#394): only the
+    # bits that reach the address / enable count.
+    typing = _port_typing(ctx, module, clock_spec)
     for p in ports:
-        typed = typed_ports.get(p)
-        if typed is not None and typed != UNCONSTRAINED_SENTINEL:
-            domains.add(typed)
+        for typed, _positions in _reached_port_groups(typing, module.ports[p], reached):
+            if typed is not None and typed != UNCONSTRAINED_SENTINEL:
+                domains.add(typed)
     return domains
 
 

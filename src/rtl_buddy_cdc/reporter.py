@@ -682,6 +682,10 @@ def _crossing_to_dict(c: Crossing) -> dict:
         out["src_flop"] = c.src_flop.cell.name
     if c.src_port is not None:
         out["src_port"] = c.src_port
+    # Additive (rtl-buddy-cdc#394): only on a crossing from a port the SDC
+    # types bit by bit — the declared indices of its source bits.
+    if c.src_port_bits is not None:
+        out["src_port_bits"] = list(c.src_port_bits)
     if c.src_boundary is not None:
         out["src_boundary"] = {
             "instance": c.src_boundary[0],

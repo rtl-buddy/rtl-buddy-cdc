@@ -43,7 +43,7 @@ from rtl_buddy_cdc.rules import (
     memory_crossings,
     memory_synchronizer,
 )
-from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec
+from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec, split_bit_key
 
 # v1.1 adds the additive optional ``clock_network_crossings`` list
 # (#168). v1.2 adds the per-crossing verdict — ``synchronizer`` and
@@ -388,25 +388,43 @@ def _serialize_port_domains(
     intentionally excluded: they're already listed under
     ``clocks[].ports``. Outputs are included with ``kind: "output"``
     when they carry a ``set_output_delay -clock`` typing.
+
+    A port the SDC types bit by bit (rtl-buddy-cdc#394) gets one entry
+    per clock its bits carry, each with an additive ``bits`` list (the
+    declared indices); its untyped bits are not listed. Every other entry
+    is unchanged and has no ``bits`` key.
     """
     if spec is None:
         return []
+    typing = spec.port_typing(module)
     out: list[dict[str, Any]] = []
-    for port_name, clk in spec.port_clock.items():
-        if clk == UNCONSTRAINED_SENTINEL:
-            continue
+    seen: set[str] = set()
+    for key in spec.port_clock:
+        port_name = key
+        if key not in module.ports:
+            split = split_bit_key(key)
+            if split is None:
+                continue
+            port_name = split[0]
         port = module.ports.get(port_name)
-        if port is None:
+        if port is None or port_name in seen:
             continue
-        out.append(
-            {
+        seen.add(port_name)
+        for clk, positions in typing.groups(port_name):
+            if clk is None or clk == UNCONSTRAINED_SENTINEL:
+                continue
+            entry: dict[str, Any] = {
                 "module": module.name,
                 "port": port_name,
                 "clock": clk,
                 "kind": port.direction,
             }
-        )
-    out.sort(key=lambda e: (str(e["module"]), str(e["port"])))
+            if positions is not None:
+                entry["bits"] = sorted(
+                    module.port_bit_index(port_name, p) for p in positions
+                )
+            out.append(entry)
+    out.sort(key=lambda e: (str(e["module"]), str(e["port"]), e.get("bits", [])[:1]))
     return out
 
 
@@ -450,6 +468,10 @@ def _serialize_crossings(
             )
         if c.src_port is not None:
             entry["src_port"] = c.src_port
+        if c.src_port_bits is not None:
+            # Additive (rtl-buddy-cdc#394): the declared indices of the
+            # source bits, on a crossing from a port typed bit by bit.
+            entry["src_port_bits"] = list(c.src_port_bits)
         via = (async_via or {}).get(key)
         if via is not None:
             # Additive (#330): the co-located clock pair a multi-clock

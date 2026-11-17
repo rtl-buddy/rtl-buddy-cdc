@@ -34,7 +34,7 @@ from rtl_buddy_cdc.rules import (
     _control_pins_for,
     _OUTPUT_PINS,
 )
-from rtl_buddy_cdc.sdc import ClockSpec
+from rtl_buddy_cdc.sdc import ClockSpec, PortTyping
 
 ControlKind = Literal["mux-select", "gate-enable"]
 
@@ -131,6 +131,8 @@ def find_clock_network_crossings(
 
     crossings: list[ClockNetworkCrossing] = []
     seen: set[tuple[str, str, str]] = set()
+    # Per-bit port typing (rtl-buddy-cdc#394), shared by every cell.
+    typing = clock_spec.port_typing(module) if clock_spec is not None else None
 
     for cell_name in sorted(clock_net_cells):
         cell = module.cells[cell_name]
@@ -154,7 +156,7 @@ def find_clock_network_crossings(
                     cell,
                     drivers,
                     domain_by_name,
-                    clock_spec,
+                    typing,
                     control_ports,
                 )
             if not cell_clock_domains:
@@ -265,7 +267,7 @@ def _cell_clock_input_domains(
     cell,
     drivers: dict[Bit, tuple[str, str, int]],
     domain_by_name: dict[str, str | None],
-    clock_spec: ClockSpec | None,
+    typing: PortTyping | None,
     control_ports: frozenset[str],
     max_depth: int = 12,
 ) -> set[str]:
@@ -294,12 +296,10 @@ def _cell_clock_input_domains(
             seen.add(bit)
             drv = drivers.get(bit)
             if drv is None:
-                if clock_spec is None:
+                if typing is None:
                     continue
-                port = module.port_of_bit(bit)
-                if port is None:
-                    continue
-                clk = clock_spec.clock_for_port(port.name)
+                # The reached bit's own clock on a port typed bit by bit.
+                clk = typing.clock_of_net_bit(bit)
                 if clk is not None:
                     domains.add(clk)
                 continue

@@ -12,9 +12,9 @@ Two inputs used to be accepted silently and then have no effect:
    parser keeps them as written (:class:`~rtl_buddy_cdc.sdc.PortDelay`);
    :func:`rtl_buddy_cdc.sdc_objects.resolve_port_delays` resolves them
    against the top-level ports with the object-pattern matcher. A bus
-   index types the whole port (port typing is per port); a glob selects
-   ports of the command's direction that carry no declared clock; a
-   pattern matching nothing is warned about.
+   index types that bit only (typing is per bit, rtl-buddy-cdc#394); a
+   glob selects ports of the command's direction that carry no declared
+   clock; a pattern matching nothing is warned about.
 
 Every form is covered in bracket / brace / bare spelling on both SDC
 backends (the ``sdc_backend`` fixture).
@@ -180,24 +180,37 @@ def _resolve(tmp_path: Path, body: str) -> tuple[ClockSpec, list[str]]:
 
 
 @pytest.mark.parametrize(
-    "target",
-    ["[get_ports {d[3]}]", "{d[3]}", "[get_ports {d[1] d[2]}]"],
-    ids=["bracket", "brace", "two-bits"],
+    ("target", "typed"),
+    [
+        ("[get_ports {d[3]}]", {"d[3]": "clk_b"}),
+        ("{d[3]}", {"d[3]": "clk_b"}),
+        ("[get_ports {d[1] d[2]}]", {"d[1]": "clk_b", "d[2]": "clk_b"}),
+        ("[get_ports {d[0] d[1] d[2] d[3]}]", {"d": "clk_b"}),
+        ("{d[*]}", {"d": "clk_b"}),
+    ],
+    ids=["bracket", "brace", "two-bits", "every-bit", "every-bit-glob"],
 )
-def test_bit_select_types_the_whole_port(tmp_path: Path, target: str) -> None:
+def test_bit_select_types_only_those_bits(
+    tmp_path: Path, target: str, typed: dict[str, str]
+) -> None:
+    """Typing is per bit (rtl-buddy-cdc#394): the selected bits are keyed
+    by bit; a selection of every bit is the whole port again."""
     spec, warnings = _resolve(tmp_path, f"set_input_delay -clock clk_b 1 {target}\n")
     assert warnings == []
-    assert spec.port_clock == {"d": "clk_b"}
+    assert spec.port_clock == typed
 
 
-def test_bare_bit_select(tmp_path: Path, sdc_backend: str) -> None:
+@pytest.mark.parametrize(
+    "target", ["d[3]", "[get_ports d[3]]"], ids=["bare", "unbraced-get-ports"]
+)
+def test_unbraced_bit_select(tmp_path: Path, sdc_backend: str, target: str) -> None:
     """Unbraced ``d[3]`` is Tcl command substitution: the Tcl reader
     runs a command ``3`` (and warns about it), whose ``unknown`` hands
     the call back, so both backends keep ``d[3]`` (rtl-buddy-cdc#382)
-    and type port ``d``."""
-    spec, warnings = _resolve(tmp_path, "set_input_delay -clock clk_b 1 d[3]\n")
+    and type bit 3 of ``d`` only."""
+    spec, warnings = _resolve(tmp_path, f"set_input_delay -clock clk_b 1 {target}\n")
     assert warnings == []
-    assert spec.port_clock == {"d": "clk_b"}
+    assert spec.port_clock == {"d[3]": "clk_b"}
     unbraced = [w for w in spec.partial_warnings if "unbraced bus index" in w]
     assert len(unbraced) == (1 if sdc_backend == "tcl" else 0)
     (delay,) = spec.port_delays
@@ -312,24 +325,41 @@ def test_all_ports_of_the_other_direction_warn(
     assert spec.port_delays == []
 
 
-def test_bits_typed_to_different_clocks_warn(tmp_path: Path) -> None:
+def test_bits_typed_to_different_clocks_keep_their_clocks(tmp_path: Path) -> None:
     spec, warnings = _resolve(
         tmp_path,
         "set_input_delay -clock clk_a 1 {d[0]}\nset_input_delay -clock clk_b 1 {d[1]}\n",
     )
-    (warning,) = warnings
-    assert "bits of port 'd'" in warning
-    assert "d[0] → clk_a" in warning and "d[1] → clk_b" in warning
-    assert spec.port_clock == {"d": "clk_b"}
+    assert warnings == []
+    assert spec.port_clock == {"d[0]": "clk_a", "d[1]": "clk_b"}
 
 
-def test_bit_select_over_a_whole_port_typing_warns(tmp_path: Path) -> None:
+def test_bit_select_over_a_whole_port_typing_overrides_that_bit(
+    tmp_path: Path,
+) -> None:
     """``d`` on clk_a then ``d[2]`` on clk_b leaves bits on two clocks."""
-    _spec, warnings = _resolve(
+    spec, warnings = _resolve(
         tmp_path,
         "set_input_delay -clock clk_a 1 {d}\nset_input_delay -clock clk_b 1 {d[2]}\n",
     )
-    assert len(warnings) == 1 and "different clocks" in warnings[0]
+    assert warnings == []
+    assert spec.port_clock == {
+        "d[0]": "clk_a",
+        "d[1]": "clk_a",
+        "d[2]": "clk_b",
+        "d[3]": "clk_a",
+    }
+
+
+def test_output_bits_are_typed_per_bit(tmp_path: Path) -> None:
+    spec, warnings = _resolve(
+        tmp_path,
+        "set_output_delay -clock clk_a 1 [get_ports {q[1]}]\n"
+        "set_output_delay -clock clk_b 1 [remove_from_collection [all_outputs] "
+        "[get_ports {q[1]}]]\n",
+    )
+    assert warnings == []
+    assert spec.port_clock == {"q[1]": "clk_a", "q[0]": "clk_b", "qq": "clk_b"}
 
 
 def test_whole_port_typing_replaces_earlier_bit_selects(tmp_path: Path) -> None:
@@ -388,24 +418,38 @@ def _fired(result) -> Counter[str]:
 
 @pytest.mark.parametrize(
     "target",
-    ["[get_ports i*]", "{i*}", "i?", "[get_ports {in[3]}]", "{in[3]}", "[all_inputs]"],
-    ids=[
-        "glob-bracket",
-        "glob-brace",
-        "glob-bare",
-        "bit-bracket",
-        "bit-brace",
-        "all-inputs",
-    ],
+    ["[get_ports i*]", "{i*}", "i?", "{in[*]}", "[all_inputs]"],
+    ids=["glob-bracket", "glob-brace", "glob-bare", "bit-glob", "all-inputs"],
 )
 def test_pattern_typing_reaches_the_rules(tmp_path: Path, target: str) -> None:
     """The fixture's bus ``in`` is untyped, so CDC-011 fires. Typed to
-    clk_a through a glob or a bus index, it is a clk_a source instead:
-    CDC-011 goes, and the in → q_b path stays a reported crossing."""
+    clk_a through a glob, it is a clk_a source instead: CDC-011 goes,
+    and the in → q_b path stays a reported crossing."""
     assert _fired(_analyze(tmp_path, ""))["CDC-011"] == 1
     fired = _fired(_analyze(tmp_path, f"set_input_delay -clock clk_a 1 {target}\n"))
     assert fired["CDC-011"] == 0
     assert fired["CDC-004"] >= 1
+
+
+@pytest.mark.parametrize(
+    "target", ["[get_ports {in[3]}]", "{in[3]}"], ids=["bit-bracket", "bit-brace"]
+)
+def test_bit_typing_reaches_the_rules(tmp_path: Path, target: str) -> None:
+    """Typed through one bus index, only ``in[3]`` is a clk_a source
+    (rtl-buddy-cdc#394): the other seven bits stay unconstrained, so
+    CDC-011 still fires — naming them, not the whole bus."""
+    report = json.loads(
+        _analyze(tmp_path, f"set_input_delay -clock clk_a 1 {target}\n").stdout
+    )
+    (cdc_011,) = [v for v in report["violations"] if v["rule_id"] == "CDC-011"]
+    assert "'in[7:4,2:0]'" in cdc_011["message"]
+    port_bits = {
+        (c["src_clock"], tuple(c["src_port_bits"]))
+        for c in report["crossings"]
+        if c.get("src_port") == "in"
+    }
+    assert ("clk_a", (3,)) in port_bits
+    assert ("<unconstrained>", (0, 1, 2, 4, 5, 6, 7)) in port_bits
 
 
 def test_output_glob_reaches_cdc_024(tmp_path: Path) -> None:
