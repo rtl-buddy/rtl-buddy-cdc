@@ -37,6 +37,8 @@ from rtl_buddy_cdc.domain import (
     _build_bit_to_clock,
     _build_case_bits,
     _clock_identity_fn,
+    PortRoot,
+    port_root_fn,
     trace_clock_root,
 )
 from rtl_buddy_cdc.flops import flop_clk_pin, is_ff_cell
@@ -205,6 +207,8 @@ class _BoundaryClockWalk:
     case_bits: dict[Bit, int]
     spec: ClockSpec | None
     clock_identity: Callable[[str], str | None] | None
+    # The flat walk's name for a port bit (rtl-buddy-cdc#398).
+    port_root: PortRoot | None = None
 
     @classmethod
     def build(
@@ -224,6 +228,11 @@ class _BoundaryClockWalk:
                 _clock_identity_fn(
                     spec.declared_clock_for_port, set(bit_to_clock.values())
                 )
+                if spec is not None
+                else None
+            ),
+            port_root=(
+                port_root_fn(parent, spec.clock_for_port, spec.declared_clock_for_port)
                 if spec is not None
                 else None
             ),
@@ -254,6 +263,7 @@ class _BoundaryClockWalk:
             allow_divider=allow_divider,
             case_bits=self.case_bits,
             clock_identity=self.clock_identity,
+            port_root=self.port_root,
         )
         if normalise and root is not None and spec is not None:
             root = spec.clock_for_port(root) or root

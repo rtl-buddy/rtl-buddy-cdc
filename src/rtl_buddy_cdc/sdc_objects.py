@@ -21,8 +21,13 @@ An SDC object name is normalised before lookup: ``\\`` escapes are
 dropped and the ``/`` hierarchy separator becomes ``.`` — the separator
 both frontends use in flattened names (``u_cfg/reg_q`` → ``u_cfg.reg_q``).
 ``*`` and ``?`` are globs that never cross a hierarchy level;
-``get_* -hierarchical`` lets the pattern match at any depth. ``[…]`` is a
-literal bus index.
+``get_* -hierarchical`` lets the pattern match at any depth. A trailing
+``[…]`` selects bus bits by declared index: one index (``d[3]``), a
+range in either order (``d[7:4]``), or a glob (``d[*]``). After an
+unpacked-array element it selects bits of that element, in the
+element's own declared range (``a[1][5]``, ``a_reg[0][7:4]``,
+rtl-buddy-cdc#398) — unless the whole name is itself a netlist name,
+which wins.
 
 **Registers** (``get_cells``, and the owner of a ``get_pins``) are named
 after their ``Q`` net, not their cell: Yosys calls the cell
@@ -35,7 +40,7 @@ not a parent's wire it drives through a port, and not a child
 instance's port it feeds. Each such name is indexed bare and with the
 synthesis ``_reg`` suffix on its leaf (``u_cfg.reg_q_reg``,
 ``u_sync.sync_chain_reg[1]`` for an unpacked element). A trailing
-``[i]`` selects one bit, numbered by the net's declared range. A cell
+``[i]`` selects bits, numbered by the net's declared range. A cell
 whose own name is meaningful (a gate-level netlist read back:
 ``u_cfg.reg_q_reg[3]``) also answers to that name. Two consequences,
 both documented in the architecture article: an output port written
@@ -59,7 +64,7 @@ from __future__ import annotations
 import bisect
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from rtl_buddy_cdc.domain import (
@@ -112,7 +117,12 @@ _CROSSING_RULES: frozenset[str] = frozenset(
 
 _FLATTEN_PREFIX = "$flatten\\"
 _GLOB_CHARS = frozenset("*?")
-_TRAILING_INDEX_RE = re.compile(r"^(?P<base>.*[^\]])\[(?P<idx>[^\[\]]+)\]$")
+# ``name[idx]``: the base is everything before the last ``[`` — a bus
+# (``d``) or an unpacked element that is itself indexed (``a[1]``,
+# rtl-buddy-cdc#398).
+_TRAILING_INDEX_RE = re.compile(r"^(?P<base>.+)\[(?P<idx>[^\[\]]+)\]$")
+# A bit range inside the index: ``7:4`` or ``4:7``, either order.
+_INDEX_RANGE_RE = re.compile(r"^(?P<a>-?\d+):(?P<b>-?\d+)$")
 
 # Identity of a data crossing — the same tuple ``domain_map._crossing_key``
 # builds: (src_clock, dst_clock, dst cell, source kind, source id).
@@ -161,6 +171,20 @@ def _glob_regex(
     if hierarchical:
         body = r"(?:.*\.)?" + body
     return re.compile(body + r"\Z")
+
+
+def _index_matcher(idx_pat: str) -> Callable[[int], bool]:
+    """Which declared indices a ``[…]`` selection names: one index
+    (``3``), a range in either order (``7:4``), or a glob over the
+    index's decimal text (``*``, ``1?``)."""
+    if _has_glob(idx_pat):
+        rx = _glob_regex(idx_pat, hierarchical=False, sep=False)
+        return lambda idx: rx.match(str(idx)) is not None
+    m = _INDEX_RANGE_RE.match(idx_pat)
+    if m is not None:
+        lo, hi = sorted((int(m.group("a")), int(m.group("b"))))
+        return lambda idx: lo <= idx <= hi
+    return lambda idx: str(idx) == idx_pat
 
 
 def _leaf_with_reg(name: str) -> str:
@@ -363,7 +387,15 @@ class NameIndex:
 
         The whole pattern is tried as a name (an unpacked element is
         indexed as ``chain[1]``), and — when it ends in ``[i]`` — the
-        part before the index as a bus, selecting the matching bits.
+        part before the index as a bus, selecting the bits whose declared
+        index ``i`` names: one index, a range ``hi:lo`` (either order),
+        or a glob. The part before the index may itself end in an index
+        — one element of an unpacked array, ``a[1][5]`` selecting bit 5
+        of netname ``a[1]`` in that element's own declared range
+        (rtl-buddy-cdc#398) — and is then read only when the whole
+        pattern names nothing: a netlist whose names really are
+        ``a[1][5]`` (a gate-level netlist read back) keeps its literal
+        reading.
         """
         key = (table, pattern, hierarchical)
         hit = self._cache.get(key)
@@ -376,22 +408,17 @@ class NameIndex:
         }[table]()
         norm = _normalise(pattern)
         out: dict[str, set[object]] = defaultdict(set)
-        for name in tbl.names(norm, hierarchical=hierarchical):
+        literal = tbl.names(norm, hierarchical=hierarchical)
+        for name in literal:
             for owner, elems in tbl.entries[name].items():
                 out[owner].update(elems.values())
         m = _TRAILING_INDEX_RE.match(norm)
-        if m is not None:
-            idx_pat = m.group("idx")
-            idx_rx = (
-                _glob_regex(idx_pat, hierarchical=False, sep=False)
-                if _has_glob(idx_pat)
-                else None
-            )
+        if m is not None and (not literal or not m.group("base").endswith("]")):
+            selected = _index_matcher(m.group("idx"))
             for name in tbl.names(m.group("base"), hierarchical=hierarchical):
                 for owner, elems in tbl.entries[name].items():
                     for idx, elem in elems.items():
-                        text = str(idx)
-                        if idx_rx.match(text) if idx_rx else text == idx_pat:
+                        if selected(idx):
                             out[owner].add(elem)
         result = dict(out)
         self._cache[key] = result

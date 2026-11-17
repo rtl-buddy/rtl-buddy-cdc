@@ -31,7 +31,14 @@ from rtl_buddy_cdc.flops import (
     is_latch_cell,
 )
 from rtl_buddy_cdc.memory import crossing_view, find_memories
-from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, format_bit_select
+from rtl_buddy_cdc.netlist import (
+    Bit,
+    BoundarySummary,
+    Cell,
+    Module,
+    Port,
+    format_bit_select,
+)
 from rtl_buddy_cdc.sdc import port_bit_clocks
 
 if TYPE_CHECKING:
@@ -491,6 +498,67 @@ CombineSink = Callable[[str, str, Bit, frozenset[str]], None]
 ClockControlSink = Callable[[str, str, tuple[Bit, ...]], None]
 
 
+# The name the clock tracer gives a top-level input port bit it stops
+# at (``(port, bit) -> name``): the port name, or for one bit of a port
+# typed bit by bit, that bit's ``d[3]`` key (rtl-buddy-cdc#398). Built
+# by :func:`port_root_fn`.
+PortRoot = Callable[[Port, Bit], str]
+
+
+def port_root_fn(
+    module: Module,
+    clock_for_port: Callable[[str], str | None] | None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
+) -> PortRoot | None:
+    """The :data:`PortRoot` every clock-root walk on a run uses.
+
+    A flop clocked from one bit of a bus is rooted at the bus port, and
+    the domain is that root put through ``clock_for_port``. A port typed
+    bit by bit (``set_input_delay`` per bit, rtl-buddy-cdc#394) has no
+    whole-port typing, so the root ``d`` normalised to nothing and the
+    flop's domain was the raw port name (rtl-buddy-cdc#398). The root of
+    such a bit is therefore its own ``d[3]`` key whenever
+    ``clock_for_port`` knows that key — a bit typed by ``set_*_delay``
+    (or stamped ``<unconstrained>``), or a bit ``create_clock`` names —
+    and the port name otherwise, so an untyped bit roots exactly as an
+    untyped scalar port does. A port carrying a declared clock keeps
+    its port name: the declared clock is its domain, as
+    :meth:`~rtl_buddy_cdc.sdc.ClockSpec.clock_for_port` reads a per-bit
+    typed port. One-bit ports never take a bit key.
+
+    ``None`` (every root is the port name, the pre-#398 reading) when
+    there is no ``clock_for_port``. Memoised per bit.
+    """
+    if clock_for_port is None:
+        return None
+    cache: dict[Bit, str] = {}
+
+    def root(port: Port, bit: Bit) -> str:
+        if len(port.bits) < 2:
+            return port.name
+        hit = cache.get(bit)
+        if hit is not None:
+            return hit
+        name = port.name
+        if declared_clock_for_port is None or declared_clock_for_port(name) is None:
+            key = f"{name}[{module.port_bit_index(name, port.bits.index(bit))}]"
+            if key not in module.ports and clock_for_port(key) is not None:
+                name = key
+        cache[bit] = name
+        return name
+
+    return root
+
+
+def root_port_name(module: Module, root: str) -> str:
+    """The top-level port a raw clock root names: ``d`` for a bit root
+    ``d[3]`` (:func:`port_root_fn`), else ``root`` unchanged."""
+    if root in module.ports or not root.endswith("]"):
+        return root
+    base = root[: root.rfind("[")]
+    return base if base in module.ports else root
+
+
 def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str]]:
     """Map each net bit to the ``(cell_name, output_port)`` that drives it.
 
@@ -689,6 +757,7 @@ def trace_clock_root(
     on_combine: CombineSink | None = None,
     on_clock_control: ClockControlSink | None = None,
     case_bits: Mapping[Bit, int] | None = None,
+    port_root: PortRoot | None = None,
 ) -> str | None:
     """Resolve a CLK net bit to the top-level port that ultimately drives it.
 
@@ -738,6 +807,9 @@ def trace_clock_root(
     ``on_clock_control`` — a constant select steers nothing in that
     mode.
 
+    ``port_root`` (:func:`port_root_fn`) names the top-level input port
+    bit the walk stops at; without it the root is the port name.
+
     Returns ``None`` when no candidate root resolves within
     ``max_depth`` cells; the caller treats that as "domain unknown".
     """
@@ -756,6 +828,7 @@ def trace_clock_root(
         on_combine=on_combine,
         on_clock_control=on_clock_control,
         case_bits=case_bits or {},
+        port_root=port_root,
     )
 
 
@@ -825,6 +898,7 @@ def _trace(
     on_combine: CombineSink | None = None,
     on_clock_control: ClockControlSink | None = None,
     case_bits: Mapping[Bit, int] | None = None,
+    port_root: PortRoot | None = None,
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
@@ -838,7 +912,7 @@ def _trace(
 
     port = module.port_of_bit(bit)
     if port is not None and port.direction == "input":
-        return port.name
+        return port.name if port_root is None else port_root(port, bit)
 
     drv = drivers.get(bit)
     if drv is None:
@@ -860,6 +934,7 @@ def _trace(
             on_combine=on_combine,
             on_clock_control=on_clock_control,
             case_bits=case_bits,
+            port_root=port_root,
         )
 
     def _record(clocks: frozenset[str]) -> None:
@@ -892,6 +967,7 @@ def _trace(
                 on_combine=on_combine,
                 on_clock_control=on_clock_control,
                 case_bits=case_bits,
+                port_root=port_root,
             )
         return None
 
@@ -938,6 +1014,7 @@ def _trace(
                 on_combine=on_combine,
                 on_clock_control=on_clock_control,
                 case_bits=case_bits,
+                port_root=port_root,
             )
 
     # Clock mux — return whichever side resolves. A mux *selects* one of
@@ -984,6 +1061,7 @@ def _trace(
                 on_combine=on_combine,
                 on_clock_control=on_clock_control,
                 case_bits=case_bits,
+                port_root=port_root,
             )
 
     # Clock-path transparent latch — a latch-based ICG (or any clock
@@ -1236,7 +1314,8 @@ def flop_clock_root_resolver(
     Same walk, same leg choice, same pin clocks and case constants — so
     ``clock_for_port(raw) or raw`` is exactly the flop's domain. The raw
     root is the top-level port (or generated clock, or undeclared
-    internal net) the walk stopped at; CDC-021 needs it to name an
+    internal net) the walk stopped at — or, on a port typed bit by bit,
+    the bit's ``d[3]`` key (:func:`port_root_fn`, rtl-buddy-cdc#398); CDC-021 needs it to name an
     undeclared clock port, which normalisation would replace with the
     ``<unconstrained>`` sentinel (rtl-buddy-cdc#358). ``clock_for_port``
     is used here only as the fallback identity source (see
@@ -1250,6 +1329,7 @@ def flop_clock_root_resolver(
         set(bit_to_clock.values()),
     )
     case_bits = _build_case_bits(module, case_analysis)
+    port_root = port_root_fn(module, clock_for_port, declared_clock_for_port)
 
     def resolve(f: Flop) -> str | None:
         return trace_clock_root(
@@ -1260,6 +1340,7 @@ def flop_clock_root_resolver(
             bit_to_clock=bit_to_clock,
             clock_identity=clock_identity,
             case_bits=case_bits,
+            port_root=port_root,
         )
 
     return resolve
@@ -1289,6 +1370,7 @@ def bit_clock_resolver(
         set(bit_to_clock.values()),
     )
     case_bits = _build_case_bits(module, case_analysis)
+    port_root = port_root_fn(module, clock_for_port, declared_clock_for_port)
     cache: dict[Bit, str | None] = {}
 
     def resolve(bit: Bit) -> str | None:
@@ -1302,6 +1384,7 @@ def bit_clock_resolver(
             bit_to_clock=bit_to_clock,
             clock_identity=clock_identity,
             case_bits=case_bits,
+            port_root=port_root,
         )
         if root is not None and clock_for_port is not None:
             root = clock_for_port(root) or root
@@ -1544,6 +1627,7 @@ def find_clock_combines(
 
     drivers = _bit_drivers(module)
     case_bits = _build_case_bits(module, case_analysis)
+    port_root = port_root_fn(module, clock_for_port, declared_clock_for_port)
     clocks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
     sinks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
     types_at: dict[tuple[str, Bit], str] = {}
@@ -1572,6 +1656,7 @@ def find_clock_combines(
             clock_identity=clock_identity,
             on_combine=record,
             case_bits=case_bits,
+            port_root=port_root,
         )
 
     net_names = _bit_net_names(module)
@@ -1643,6 +1728,7 @@ def find_scan_mode_flops(
         set(bit_to_clock.values()),
     )
     case_bits = _build_case_bits(module, case_analysis)
+    port_root = port_root_fn(module, clock_for_port, declared_clock_for_port)
 
     out: set[str] = set()
     for f in find_flops(module):
@@ -1665,6 +1751,7 @@ def find_scan_mode_flops(
             clock_identity=clock_identity,
             on_clock_control=record,
             case_bits=case_bits,
+            port_root=port_root,
         )
         if any(is_scan_control(bits) for bits in hits):
             out.add(f.cell.name)

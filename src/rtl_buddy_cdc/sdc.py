@@ -1009,13 +1009,14 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
             # ``--verbose`` without the report being flooded.
             logger.debug("sdc: ignoring unsupported command %r", cmd)
             note_tokenizer_skip(f"dropped unrecognised command {cmd!r}")
-            if cmd.isdigit():
+            if len(words) == 1 and _BUS_INDEX_COMMAND_RE.match(cmd):
                 # ``[get_ports sel[3]]`` with an unbraced bus index is
                 # Tcl command substitution of ``[3]``: the Tcl reader
-                # runs a command named ``3``. Its ``unknown`` hands the
-                # call back verbatim, so the target still reads
-                # ``sel[3]`` (rtl-buddy-cdc#382), but a real Tcl
-                # interpreter fails on it — say so.
+                # runs a command named ``3`` — or ``*``, ``3:0``, ``-1``
+                # for the other index forms (rtl-buddy-cdc#398). Its
+                # ``unknown`` hands the call back verbatim, so the target
+                # still reads ``sel[3]`` (rtl-buddy-cdc#382), but a real
+                # Tcl interpreter fails on it — say so.
                 spec.partial_warnings.append(
                     f"command {cmd!r}{_at_line(command.line)} looks like an "
                     f"unbraced bus index evaluated as Tcl command substitution "
@@ -1031,6 +1032,15 @@ def parse(text: str, *, backend: str | None = None) -> ClockSpec:
     spec.multi_clock_ports = _index_multi_clock_ports(spec.clocks)
     spec.partial_warnings.extend(_undeclared_delay_clocks(spec))
     return spec
+
+
+#: The command name an unbraced bus index runs on the Tcl backend
+#: (``d[3]`` runs ``3``): an index, a range, a comma list or a glob over
+#: them — ``3``, ``-1``, ``3:0``, ``7:4,1``, ``*``, ``1?`` (rtl-buddy-cdc#398).
+#: Never an SDC command name, and only ever called with no arguments.
+_BUS_INDEX_COMMAND_RE = re.compile(
+    r"^-?[0-9*?]+(?::-?[0-9*?]+)?(?:,-?[0-9*?]+(?::-?[0-9*?]+)?)*$"
+)
 
 
 #: Commands that declare clocks — the first pass of :func:`parse` runs
