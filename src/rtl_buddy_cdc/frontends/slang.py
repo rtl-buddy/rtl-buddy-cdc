@@ -6474,9 +6474,18 @@ class _ModuleBuilder:
             if live is not None:
                 self._walk_comb_statement(live)
             return
-        sel = self._condition_bit(stmt)
+        # A negated one-bit condition (``if (!a)``, ``if (~a)``) selects on
+        # ``a`` with the legs swapped, as Yosys ``proc`` builds it (the
+        # clocked walk does since rtl-buddy-cdc#402). rtl-buddy-cdc#405: a
+        # ``$logic_not`` select put the ``else`` value on ``A``, so a clock
+        # mux ``if (!sel) c = clk_a; else c = clk_b;`` traced to ``clk_b``
+        # where Yosys traces ``clk_a`` (``trace_clock_root`` follows ``A``).
+        negated = self._negated_condition_bit(stmt)
+        sel = negated if negated is not None else self._condition_bit(stmt)
         base = dict(self._var_bits)
         true_state, false_state = self._walk_branches([stmt.ifTrue, stmt.ifFalse])
+        if negated is not None:
+            true_state, false_state = false_state, true_state
         written = {
             k
             for state in (true_state, false_state)

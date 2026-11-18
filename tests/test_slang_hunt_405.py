@@ -14,15 +14,20 @@ from __future__ import annotations
 
 import importlib.util
 import itertools
+import json
 import logging
 import shutil
 import subprocess
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from rtl_buddy_cdc import netlist
+from rtl_buddy_cdc import sdc as sdc_mod
+from rtl_buddy_cdc.cli import app
 from rtl_buddy_cdc.netlist import Bit, Cell, Module
 
 if importlib.util.find_spec("pyslang") is None:
@@ -694,3 +699,86 @@ def test_bit_count_functions(tmp_path: Path, caplog: pytest.LogCaptureFixture) -
     assert _warnings(caplog) == []
     assert full.ports["r"].bits == ("0",)
     assert module.ports["o"].bits != ("0", "0", "0")
+
+
+# --- item 5: a negated combinational condition swaps the mux legs ------------------
+
+_NEG_COND = """module m (input clk_a, input clk_b, input sel, input en, input d,
+          input [1:0] x, input [1:0] y, output logic q, output logic [1:0] o,
+          output logic [1:0] l, output logic [1:0] p);
+    logic cm, a_q;
+    always_comb if (!sel) cm = clk_a; else cm = clk_b;
+    always_ff @(posedge clk_a) a_q <= d;
+    always_ff @(posedge cm) q <= a_q;
+    always_comb if (!sel) o = x; else o = y;
+    always_latch if (!en) l = x;
+    always_comb begin p = y; if (~en) p = x; end
+endmodule
+"""
+
+_NEG_SDC = """create_clock -name clk_a -period 10 [get_ports clk_a]
+create_clock -name clk_b -period 7 [get_ports clk_b]
+set_clock_groups -asynchronous -group {clk_a} -group {clk_b}
+"""
+
+
+def _lint_verdict(tmp_path: Path, src: str, frontend: str) -> tuple:
+    """``(crossings, findings per rule, flops per clock)`` of ``lint``."""
+    sv = _write(tmp_path, src, f"{frontend}.sv")
+    sdc_path = _write(tmp_path, _NEG_SDC, "m.sdc")
+    out = tmp_path / f"{frontend}.json"
+    args = ["lint", "--top", "m", "--sdc", str(sdc_path), "--frontend", frontend]
+    args += ["--format", "json", "--output", str(out), str(sv)]
+    env = {sdc_mod.BACKEND_ENV_VAR: "tokenizer"}
+    result = CliRunner(env=env).invoke(app, args)
+    assert result.exit_code in (0, 1), result.output
+    report = json.loads(out.read_text())
+    clocks = Counter(d["clock"] for d in report["domains"])
+    rules = Counter(v["rule_id"] for v in report["violations"])
+    return report["summary"]["crossings"], dict(rules), dict(clocks)
+
+
+def test_negated_condition_swaps_comb_mux_legs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``if (!sel) c = clk_a; else c = clk_b;`` is ``$mux(S=sel, A=clk_a,
+    B=clk_b)``, as Yosys ``proc`` builds it; it was ``$mux(S=!sel,
+    A=clk_b, B=clk_a)``, which ``trace_clock_root`` (it follows ``A``)
+    resolved to ``clk_b`` where Yosys resolves ``clk_a``: a flop clocked by
+    the mux was in the other domain, adding a crossing. The latch
+    ``if (!en) l = x`` is still a latch enabled while ``en`` is low, and
+    ``p = y; if (~en) p = x;`` still combinational. Values match the
+    SystemVerilog semantics; the domain map and verdict match Yosys'."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _NEG_COND)
+    assert _warnings(caplog) == []
+    ports = module.ports
+    (cm,) = [
+        c
+        for c in module.cells.values()
+        if c.type == "$mux" and c.connections["A"] == ports["clk_a"].bits
+    ]
+    assert cm.connections["S"] == ports["sel"].bits
+    assert cm.connections["B"] == ports["clk_b"].bits
+    assert not [c for c in module.cells.values() if c.type == "$logic_not"]
+    (latch,) = [c for c in module.cells.values() if c.type == "$dlatch"]
+    assert latch.connections["D"] == ports["x"].bits
+    assert latch.connections["Q"] == ports["l"].bits
+    for sel, en, x, y in itertools.product((0, 1), (0, 1), range(4), range(4)):
+        values = {"sel": sel, "en": en, "x": x, "y": y}
+        got = _outputs(module, values, ("o", "p"))
+        assert got == {"o": y if sel else x, "p": y if en else x}, values
+        probe = Module(
+            name="m",
+            ports={
+                **ports,
+                "__en": netlist.Port("__en", "output", latch.connections["EN"]),
+            },
+            cells=module.cells,
+            netnames=module.netnames,
+        )
+        assert _outputs(probe, values, ("__en",)) == {"__en": 1 - en}, values
+    slang = _lint_verdict(tmp_path, _NEG_COND, "slang")
+    assert slang[2] == {"clk_a": 2}
+    if _HAVE_YOSYS:
+        assert _lint_verdict(tmp_path, _NEG_COND, "yosys") == slang
