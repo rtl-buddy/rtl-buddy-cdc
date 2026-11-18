@@ -523,11 +523,12 @@ endmodule
         " o = x; f = x; endfunction",
         # A write to a module variable.
         "function automatic [3:0] f(input [3:0] x); side = x; f = x; endfunction",
-        # A statement the walker does not lower.
-        "function automatic [3:0] f(input [3:0] x); f = x;"
-        " while (f[0]) f = f >> 1; endfunction",
+        # A statement the walker does not lower (a ``while`` loop is
+        # unrolled since rtl-buddy-cdc#408).
+        "function automatic [3:0] f(input [3:0] x);"
+        " begin : blk f = x; if (x[0]) disable blk; f = 0; end endfunction",
     ],
-    ids=["output_arg", "side_effect", "while_loop"],
+    ids=["output_arg", "side_effect", "disable"],
 )
 def test_function_not_inlined_stays_opaque(tmp_path: Path, func: str) -> None:
     """A function body outside the inlined shapes is not half-lowered:
@@ -803,7 +804,9 @@ endmodule
     ("body", "needle"),
     [
         ("for (int i = 0; i < n; i++) q[i] = a;", "`for` loop not lowered"),
-        ("while (n[0]) q = a;", "`WhileLoopStatement` is not modelled"),
+        # A ``while`` loop is unrolled when its trip count folds
+        # (rtl-buddy-cdc#408); one that never ends is reported.
+        ("while (n[0]) q = a;", "`while` loop not lowered (its trip count"),
         # A constant ``repeat`` is unrolled (rtl-buddy-cdc#405).
         ("repeat (n) q = a;", "`repeat` loop not lowered"),
         ("t(q);", "`ExpressionStatement` is not modelled"),

@@ -814,6 +814,20 @@ class _ModuleBuilder:
         self._branch_muxes: dict[
             tuple[Bit, ...], tuple[Bit, tuple[Bit, ...], tuple[Bit, ...]]
         ] = {}
+        # The variables a ``while`` / ``do … while`` loop being unrolled
+        # tests in its condition (rtl-buddy-cdc#408): read as a constant
+        # wherever their current value folds to one (:meth:`_fold_bits`).
+        self._fold_vars: set[Any] = set()
+        # Bits known to be 0 wherever the code being walked runs: the
+        # skip flags of the unrolled loop iterations enclosing it (a later
+        # iteration only runs when no earlier one ended the loop). Used
+        # by :meth:`_fold_bits` to see a loop counter as a constant.
+        self._fold_assume: dict[Bit, int] = {}
+        # Output bit -> (cell name, position) for :meth:`_fold_bits`; the
+        # cells indexed so far (cells are only ever appended or deleted).
+        self._driver_index: dict[int, tuple[str, int]] = {}
+        self._driver_indexed: set[str] = set()
+        self._fold_depth = 0
 
     # -- public ----------------------------------------------------------
 
@@ -1971,6 +1985,15 @@ class _ModuleBuilder:
         # (``getattr``: also reached on a bare builder in unit tests.)
         self._lowering_failures = getattr(self, "_lowering_failures", 0) + 1
         where = self._src_attr(block) or "<unknown location>"
+        # Once per location: an unrolled loop's body or an inlined call
+        # reaches the same statement again (rtl-buddy-cdc#408: a clocked
+        # ``break`` warned once per iteration).
+        warned = getattr(self, "_lvalue_warned", None)
+        key = (where, f"{what}: {reason}")
+        if warned is not None:
+            if key in warned:
+                return
+            warned.add(key)
         _log.warning(
             "slang frontend: %s: %s not lowered (%s); its "
             "registers and logic are missing from the CDC netlist",
@@ -2068,7 +2091,7 @@ class _ModuleBuilder:
             return
         if kind == "VariableDeclStatement":
             return
-        if kind in self._LOOP_KINDS:
+        if kind in self._LOOP_KINDS - self._WHILE_KINDS:
             # Unrolled like the data branch: ``for (i) q[i] <= 0``.
             self._unroll_for(
                 stmt, lambda body: self._collect_reset_assignments(body, into)
@@ -2436,9 +2459,25 @@ class _ModuleBuilder:
             # Older pyslang names; included defensively. Real walk is
             # via the .list attribute when present.
             for s in getattr(statement, "list", []) or []:
-                self._emit_assignments_in(
-                    s, clk_sym, reset_sym, reset_active_low, src_node
+                walk_one = functools.partial(
+                    self._emit_assignments_in,
+                    s,
+                    clk_sym,
+                    reset_sym,
+                    reset_active_low,
+                    src_node,
                 )
+                if not self._flags:
+                    walk_one()
+                elif not self._clocked_gated_walk(walk_one):
+                    break
+            return
+        if kind in ("BreakStatement", "ContinueStatement") and self._set_flag(
+            "break" if kind == "BreakStatement" else "continue"
+        ):
+            # In an unrolled loop (rtl-buddy-cdc#408: reported once per
+            # iteration and dropped, so the writes after it were
+            # unconditional).
             return
         if kind == "ConditionalStatement":
             # Compile-time-constant fold: if the condition is a
@@ -2777,15 +2816,37 @@ class _ModuleBuilder:
                 body, clk_sym, reset_sym, reset_active_low, src_node
             )
 
-        self._unroll_for(stmt, walk)
+        self._unroll_loop(stmt, walk, clocked=True)
 
-    def _unroll_for(self, stmt: Any, walk: Any, *, control: bool = False) -> None:
+    def _unroll_loop(self, stmt: Any, walk: Any, *, clocked: bool) -> None:
+        """Unroll a loop statement in a combinational (``clocked`` false) or
+        clocked body, with a ``break`` flag in scope: a ``for`` /
+        ``repeat`` / ``foreach`` loop (:meth:`_unroll_for`) or a ``while``
+        / ``do … while`` / ``forever`` loop (:meth:`_unroll_while`)."""
+        if self._kind_name(stmt) in self._WHILE_KINDS:
+            unroll = functools.partial(self._unroll_while, stmt, walk, clocked=clocked)
+        else:
+            unroll = functools.partial(
+                self._unroll_for, stmt, walk, control=True, clocked=clocked
+            )
+        saved = dict(self._fold_assume)
+        try:
+            self._with_flag("break", unroll, clocked=clocked)
+        finally:
+            # What follows the loop runs whether or not it ended early.
+            self._fold_assume = saved
+
+    def _unroll_for(
+        self, stmt: Any, walk: Any, *, control: bool = False, clocked: bool = False
+    ) -> None:
         """Walk ``stmt``'s body once per iteration (``walk(body)``) with the
         loop variable bound in :attr:`_loop_bindings`, so element selects
         like ``chain[i]`` / ``chain[i-1]`` fold to per-iteration bits, as
         Yosys' frontend unrolls them. A loop whose trip count is not known
         at elaboration time is reported, never skipped silently
-        (rtl-buddy-cdc#377)."""
+        (rtl-buddy-cdc#377). With ``control`` a ``break`` / ``continue`` in
+        the body ends the loop / the iteration (:meth:`_gated_walk`, or
+        :meth:`_clocked_gated_walk` in a ``clocked`` body)."""
         iterations = self._loop_iterations(stmt)
         if iterations is None:
             what = {
@@ -2807,11 +2868,7 @@ class _ModuleBuilder:
             try:
                 if not control:
                     walk(body)
-                elif not self._gated_walk(
-                    # A ``continue`` ends this iteration only.
-                    lambda: self._with_flag("continue", lambda: walk(body)),
-                    stmt,
-                ):
+                elif not self._loop_iteration(stmt, walk, clocked):
                     break
             finally:
                 for var, old in prev.items():
@@ -2820,10 +2877,212 @@ class _ModuleBuilder:
                     else:
                         self._loop_bindings[var] = old
 
+    def _loop_iteration(self, stmt: Any, walk: Any, clocked: bool) -> bool:
+        """Walk one iteration of an unrolled loop's body, gated by the
+        ``break`` flag, with a fresh ``continue`` flag that ends this
+        iteration only. ``False`` when a ``break`` is known to have run."""
+        body = getattr(stmt, "body", None)
+
+        def iteration() -> None:
+            self._with_flag("continue", lambda: walk(body), clocked=clocked)
+
+        if not self._assume_running():
+            return False
+        skip = self._skip_bit()
+        if clocked:
+            return self._clocked_gated_walk(iteration, skip)
+        return self._gated_walk(iteration, stmt, skip)
+
+    def _assume_running(self) -> bool:
+        """``False`` when every path reaching this point of an unrolled loop
+        has ended it (its skip flag folds to 1). Otherwise what follows
+        matters only where the loop still runs, so the skip flag is assumed
+        0 for what it computes (:meth:`_assume`)."""
+        skip = self._skip_bit()
+        if skip == "1":
+            return False
+        if skip != "0":
+            if self._fold_bits((skip,)) == 1:
+                return False
+            self._assume(skip, 0)
+        return True
+
+    def _unroll_while(self, stmt: Any, walk: Any, *, clocked: bool) -> None:
+        """Unroll a ``while`` / ``do … while`` / ``forever`` loop
+        (rtl-buddy-cdc#408: reported and dropped).
+
+        The variables the condition tests are folded as they change
+        (:attr:`_fold_vars`): ``i = 0; while (i < 4) begin … i++; end``
+        runs the body four times, ``i`` a constant in each, as a ``for``
+        loop's variable is. A condition that folds to a constant ends the
+        loop or runs the next iteration; one that does not (``while
+        (!a[i] && i < 8)`` before ``i`` reaches 8) ends it where it is
+        false at run time, as a ``break`` does. A loop still running after
+        :data:`_ITER_CAP` iterations, or whose condition does not lower, is
+        undone and reported: its trip count is not known at elaboration
+        time."""
+        kind = self._kind_name(stmt)
+        cond = getattr(stmt, "cond", None)
+        names = self._loop_state_vars(stmt)
+        saved_fold = self._fold_vars
+        self._fold_vars = saved_fold | names
+        snapshot = self._loop_snapshot()
+        reason = None
+        try:
+            count = 0
+            while True:
+                # The condition is tested only where no iteration so far
+                # ended the loop.
+                if not self._assume_running():
+                    break
+                if kind != "ForeverLoopStatement" and not (
+                    kind == "DoWhileLoopStatement" and count == 0
+                ):
+                    go = self._loop_condition_bit(cond)
+                    if go is None:
+                        reason = "its condition does not lower"
+                        break
+                    if go == "0":
+                        break
+                    if go != "1":
+                        self._exit_where_false(go)
+                if count >= self._ITER_CAP:
+                    reason = (
+                        "its trip count is not known at elaboration time: "
+                        f"still running after {self._ITER_CAP} iterations"
+                    )
+                    break
+                count += 1
+                if not self._loop_iteration(stmt, walk, clocked):
+                    break
+        finally:
+            self._fold_vars = saved_fold
+        if reason is not None:
+            self._loop_rollback(snapshot)
+            what = {
+                "DoWhileLoopStatement": "`do … while` loop",
+                "ForeverLoopStatement": "`forever` loop",
+            }.get(kind, "`while` loop")
+            self._warn_dropped(stmt, reason, what)
+
+    def _loop_state_vars(self, stmt: Any) -> set[Any]:
+        """The variables a ``while`` loop's condition reads and its body
+        writes (an assignment's target, ``n++``): what may count the
+        iterations, folded while it is unrolled."""
+        visit_action = _pyslang_namespaces(self.pyslang)[0].VisitAction
+        names: set[Any] = set()
+
+        def name(n: Any) -> Any:
+            if type(n).__name__ in self._NAME_KINDS:
+                names.add(self._canonical_var(n.symbol))
+            return visit_action.Advance
+
+        def written(n: Any) -> Any:
+            kind = type(n).__name__
+            target = None
+            if kind == "AssignmentExpression":
+                target = n.left
+            elif kind == "UnaryExpression" and str(n.op).rsplit(".", 1)[-1] in (
+                self._STEP_OPS
+            ):
+                target = n.operand
+            while type(target).__name__ in self._SELECT_KINDS:
+                target = getattr(target, "value", None)
+            if type(target).__name__ in self._NAME_KINDS:
+                names.add(self._canonical_var(target.symbol))
+            return visit_action.Advance
+
+        cond = getattr(stmt, "cond", None)
+        if cond is not None:
+            cond.visit(name)
+        body = getattr(stmt, "body", None)
+        if body is not None:
+            body.visit(written)
+        return names
+
+    def _loop_condition_bit(self, cond: Any) -> Bit | None:
+        """A loop condition as one bit, folded to ``"0"`` / ``"1"`` when it
+        is a constant; ``None`` when it does not lower. ``&&`` / ``||``
+        short-circuit on a constant operand, so ``i < 8 && !a[i]`` ends
+        the loop at ``i == 8`` without reading ``a[8]``."""
+        inner = cond
+        while self._kind_name(inner) == "ConversionExpression":
+            inner = getattr(inner, "operand", None)
+        op = str(getattr(inner, "op", "")).rsplit(".", 1)[-1]
+        if self._kind_name(inner) == "BinaryExpression" and op in (
+            "LogicalAnd",
+            "LogicalOr",
+        ):
+            stop = "0" if op == "LogicalAnd" else "1"
+            left = self._loop_condition_bit(inner.left)
+            if left == stop:
+                return stop
+            right = self._loop_condition_bit(inner.right)
+            if right == stop or left is None or right is None:
+                return right if right == stop else None
+            if left != stop and left in ("0", "1"):
+                return right
+            if right in ("0", "1"):
+                return left
+            cell = "$logic_and" if op == "LogicalAnd" else "$logic_or"
+            return self._emit_comb_cell(
+                cell, {"A": (left,), "B": (right,)}, 1, src_node=inner
+            )[0]
+        bits = self._bits_of_expression(cond) if cond is not None else None
+        if not bits:
+            return None
+        value = self._fold_bits(bits)
+        if value is not None:
+            return "1" if value else "0"
+        if len(bits) == 1:
+            return bits[0]
+        return self._emit_comb_cell("$reduce_bool", {"A": bits}, 1, src_node=cond)[0]
+
+    def _exit_where_false(self, go: Bit) -> None:
+        """Set the innermost ``break`` flag where the run-time loop
+        condition ``go`` is false."""
+        for flag in reversed(self._flags):
+            if flag.kind == "break":
+                current = self._var_bits.get(flag, ("0",))[0]
+                stop = self._lower_not(go)
+                merged = stop if current == "0" else self._or_bits([current, stop])
+                self._var_bits[flag] = (merged if merged is not None else stop,)
+                return
+
+    def _loop_snapshot(self) -> tuple[Any, ...]:
+        """What :meth:`_loop_rollback` restores: the walk state a loop body
+        changes."""
+        return (
+            set(self._cells),
+            dict(self._var_bits),
+            dict(self._blocking_nets),
+            set(self._proc_regs),
+            len(self._proc_case.items),
+            dict(self._memory_write_ports),
+        )
+
+    def _loop_rollback(self, snapshot: tuple[Any, ...]) -> None:
+        """Undo the iterations of a loop that turned out not to be
+        unrollable: every cell, value and write they added."""
+        cells, var_bits, blocking, regs, items, ports = snapshot
+        for name in [n for n in self._cells if n not in cells]:
+            del self._cells[name]
+        self._var_bits = var_bits
+        self._blocking_nets = blocking
+        for sym in [s for s in self._proc_regs if s not in regs]:
+            del self._proc_regs[sym]
+        del self._proc_case.items[items:]
+        self._memory_write_ports = ports
+
     # Loops unrolled at elaboration time (rtl-buddy-cdc#405: ``repeat`` and
-    # ``foreach`` were reported and their bodies dropped).
-    _LOOP_KINDS = frozenset(
-        {"ForLoopStatement", "RepeatLoopStatement", "ForeachLoopStatement"}
+    # ``foreach`` were reported and their bodies dropped; rtl-buddy-cdc#408:
+    # ``while`` / ``do … while`` / ``forever``).
+    _WHILE_KINDS = frozenset(
+        {"WhileLoopStatement", "DoWhileLoopStatement", "ForeverLoopStatement"}
+    )
+    _LOOP_KINDS = (
+        frozenset({"ForLoopStatement", "RepeatLoopStatement", "ForeachLoopStatement"})
+        | _WHILE_KINDS
     )
 
     def _loop_iterations(self, stmt: Any) -> list[dict[Any, int]] | None:
@@ -4439,6 +4698,10 @@ class _ModuleBuilder:
             sym = getattr(expr, "symbol", None)
             if sym is not None and sym in self._loop_bindings:
                 return self._loop_bindings[sym]
+            if sym is not None and self._fold_vars:
+                folded = self._folded_var(sym)
+                if folded is not None:
+                    return folded
             # ParameterSymbol carries its compile-time value on the
             # symbol's ``.value`` field; the NamedValueExpression that
             # references it doesn't populate ``.constant`` (pyslang
@@ -4545,6 +4808,231 @@ class _ModuleBuilder:
             return None
         return sum(1 << i for i, b in enumerate(picked) if b == "1")
 
+    # -- constant folding of lowered values (rtl-buddy-cdc#408) -----------
+
+    def _folded_bits(self, sym: Any) -> tuple[Bit, ...] | None:
+        """The current value of a ``while`` loop's condition variable
+        (:attr:`_fold_vars`) as constant bits, when it folds to a constant;
+        ``None`` otherwise."""
+        sym = self._canonical_var(sym)
+        if sym not in self._fold_vars:
+            return None
+        bits = self._var_bits.get(sym)
+        value = None if not bits else self._fold_bits(bits)
+        if value is None or not bits:
+            return None
+        return self._int_bits(value, len(bits))
+
+    def _folded_var(self, sym: Any) -> int | None:
+        """:meth:`_folded_bits` as an ``int``, signed per the type."""
+        bits = self._folded_bits(sym)
+        if bits is None:
+            return None
+        value = sum(1 << i for i, b in enumerate(bits) if b == "1")
+        signed = bool(getattr(getattr(sym, "type", None), "isSigned", False))
+        if signed and bits[-1] == "1":
+            value -= 1 << len(bits)
+        return value
+
+    def _driver_of(self, bit: int) -> tuple[Cell, int] | None:
+        """The combinational cell driving ``bit`` and the bit's position on
+        its ``Y``, or ``None``."""
+        if bit not in self._driver_index:
+            # Index the cells added since the last lookup (the newest last).
+            for name in reversed(self._cells):
+                if name in self._driver_indexed:
+                    break
+                self._driver_indexed.add(name)
+                for pos, b in enumerate(self._cells[name].connections.get("Y", ())):
+                    if isinstance(b, int):
+                        self._driver_index[b] = (name, pos)
+        hit = self._driver_index.get(bit)
+        if hit is None:
+            return None
+        cell = self._cells.get(hit[0])
+        if cell is None or cell.connections.get("Y", ())[hit[1] : hit[1] + 1] != (bit,):
+            return None
+        return cell, hit[1]
+
+    def _fold_bits(
+        self, bits: tuple[Bit, ...], memo: dict[str, int | None] | None = None
+    ) -> int | None:
+        """The unsigned value of ``bits`` when every bit is a constant or the
+        output of combinational cells over constants (the counter of an
+        unrolled ``while`` loop: ``i = 0; … i++``), evaluated with Yosys
+        cell semantics; ``None`` when any bit is a run-time value or an
+        ``x`` / ``z``. Emits nothing."""
+        memo = {} if memo is None else memo
+        value = 0
+        for i, b in enumerate(bits):
+            v = self._fold_bit(b, memo)
+            if v is None:
+                return None
+            value |= v << i
+        return value
+
+    # How deep :meth:`_fold_bit` follows a cone of cells.
+    _FOLD_DEPTH_CAP = 200
+
+    def _assume(self, bit: Bit, value: int, depth: int = 0) -> None:
+        """Record that ``bit`` is ``value`` wherever the code being walked
+        runs (:attr:`_fold_assume`), and what that implies for the cells
+        driving it: a ``$mux`` passes it to the leg its select picks (a
+        select the other leg's constant decides is assumed too), an OR that
+        is 0 has all inputs 0, an AND that is 1 all inputs 1, an inverter
+        the opposite value. So the flag that ends a loop being 0 makes the
+        conditions that would have set it 0, and the loop counter behind a
+        ``break`` a constant again."""
+        if not isinstance(bit, int) or bit in self._fold_assume:
+            return
+        self._fold_assume[bit] = value
+        found = self._driver_of(bit)
+        if found is None or depth >= self._FOLD_DEPTH_CAP:
+            return
+        cell, pos = found
+        k = cell.connections
+        t = cell.type
+        a = tuple(k.get("A", ()))
+        b = tuple(k.get("B", ()))
+        nxt = depth + 1
+        if t == "$mux":
+            sel = self._fold_bits(tuple(k.get("S", ())))
+            if sel is None:
+                leg_a = self._fold_bits(a[pos : pos + 1])
+                leg_b = self._fold_bits(b[pos : pos + 1])
+                if leg_b is not None and leg_b != value:
+                    sel = 0
+                elif leg_a is not None and leg_a != value:
+                    sel = 1
+                else:
+                    return
+                self._assume(k["S"][0], sel, nxt)
+            self._assume((b if sel else a)[pos], value, nxt)
+            return
+        lanes: tuple[Bit, ...] = ()
+        if (t == "$or" and value == 0) or (t == "$and" and value == 1):
+            lanes = a[pos : pos + 1] + b[pos : pos + 1]
+        elif (
+            (t in ("$logic_or", "$reduce_or", "$reduce_bool") and value == 0)
+            or (t == "$reduce_and" and value == 1)
+            or (t == "$logic_and" and value == 1 and len(a) == len(b) == 1)
+        ):
+            lanes = a + b
+        elif t == "$not" or (t == "$logic_not" and len(a) == 1):
+            for lane in a[pos : pos + 1]:
+                self._assume(lane, 1 - value, nxt)
+            return
+        for lane in lanes:
+            self._assume(lane, value, nxt)
+
+    def _fold_bit(self, b: Bit, memo: dict[str, int | None]) -> int | None:
+        if b == "0" or b == "1":
+            return int(b)
+        if b in self._fold_assume:
+            return self._fold_assume[b]
+        if not isinstance(b, int):
+            return None
+        found = self._driver_of(b)
+        if found is None:
+            return None
+        cell, pos = found
+        if cell.name not in memo:
+            memo[cell.name] = None  # a combinational loop folds to nothing
+            if self._fold_depth < self._FOLD_DEPTH_CAP:
+                self._fold_depth += 1
+                try:
+                    memo[cell.name] = self._fold_cell(cell, memo)
+                finally:
+                    self._fold_depth -= 1
+        value = memo[cell.name]
+        return None if value is None else (value >> pos) & 1
+
+    def _fold_cell(self, cell: Cell, memo: dict[str, int | None]) -> int | None:
+        """The value of one cell's ``Y`` (see :meth:`_fold_bits`)."""
+        k = cell.connections
+        t = cell.type
+        width = len(k.get("Y", ()))
+        mask = (1 << width) - 1
+
+        def get(pin: str) -> int | None:
+            return self._fold_bits(tuple(k.get(pin, ())), memo)
+
+        def flag(name: str) -> bool:
+            v = cell.parameters.get(name, "")
+            return bool(v) and set(v) <= {"0", "1"} and int(v, 2) != 0
+
+        def sx(v: int, n: int, signed: bool) -> int:
+            if signed and n and v >> (n - 1):
+                return v - (1 << n)
+            return v
+
+        if t == "$mux":
+            s = get("S")
+            if s is None:
+                a, b = get("A"), get("B")
+                return a if a is not None and a == b else None
+            return get("B" if s else "A")
+        a_w, b_w = len(k.get("A", ())), len(k.get("B", ()))
+        a, b = get("A"), get("B") if "B" in k else 0
+        # Short circuits: one known operand decides the result.
+        if t in ("$logic_and", "$logic_or"):
+            stop = 0 if t == "$logic_and" else 1
+            if (a is not None and int(a != 0) == stop) or (
+                b is not None and int(b != 0) == stop
+            ):
+                return stop
+            if a is None or b is None:
+                return None
+            return int(a != 0 and b != 0) if t == "$logic_and" else int(a or b)
+        if a is None or b is None:
+            return None
+        signed = flag("A_SIGNED") and (t in self._UNARY_FOLDS or flag("B_SIGNED"))
+        sa, sb = sx(a, a_w, signed), sx(b, b_w, signed)
+        if t in self._UNARY_FOLDS:
+            return self._UNARY_FOLDS[t](sa, a_w) & mask
+        if t in ("$shl", "$sshl"):
+            return (sx(a, a_w, flag("A_SIGNED")) << b) & mask
+        if t in ("$shr", "$sshr"):
+            src = sx(a, a_w, flag("A_SIGNED"))
+            if t == "$shr":  # logical: the extended value shifts in zeros
+                src &= (1 << max(a_w, width)) - 1
+            return (src >> b) & mask
+        fn = self._BINARY_FOLDS.get(t)
+        if fn is None:
+            return None
+        result = fn(sa, sb)
+        return None if result is None else result & mask
+
+    _UNARY_FOLDS: dict[str, Callable[[int, int], int]] = {
+        "$not": lambda a, w: ~a,
+        "$neg": lambda a, w: -a,
+        "$pos": lambda a, w: a,
+        "$logic_not": lambda a, w: int(a == 0),
+        "$reduce_bool": lambda a, w: int(a != 0),
+        "$reduce_or": lambda a, w: int(a != 0),
+        "$reduce_and": lambda a, w: int(a % (1 << w) == (1 << w) - 1),
+        "$reduce_xor": lambda a, w: bin(a % (1 << w)).count("1") & 1,
+        "$reduce_xnor": lambda a, w: 1 - (bin(a % (1 << w)).count("1") & 1),
+    }
+
+    _BINARY_FOLDS: dict[str, Callable[[int, int], int | None]] = {
+        "$and": lambda a, b: a & b,
+        "$or": lambda a, b: a | b,
+        "$xor": lambda a, b: a ^ b,
+        "$xnor": lambda a, b: ~(a ^ b),
+        "$add": lambda a, b: a + b,
+        "$sub": lambda a, b: a - b,
+        "$mul": lambda a, b: a * b,
+        "$eq": lambda a, b: int(a == b),
+        "$ne": lambda a, b: int(a != b),
+        "$eqx": lambda a, b: int(a == b),
+        "$nex": lambda a, b: int(a != b),
+        "$lt": lambda a, b: int(a < b),
+        "$le": lambda a, b: int(a <= b),
+        "$gt": lambda a, b: int(a > b),
+        "$ge": lambda a, b: int(a >= b),
+    }
+
     def _bits_of_expression(self, expr: Any) -> tuple[Bit, ...] | None:
         """Return the bit tuple for an RHS expression, or ``None`` if
         the shape isn't supported yet.
@@ -4584,6 +5072,10 @@ class _ModuleBuilder:
                 value = self._loop_bindings[expr.symbol]
                 width = self._expr_width(expr) or 32
                 return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
+            if self._fold_vars:
+                folded = self._folded_bits(expr.symbol)
+                if folded is not None:
+                    return folded
             if self._kind_name(expr.symbol) in self._CONSTANT_SYMBOLS:
                 # A parameter / enum value is its value, not a net
                 # (rtl-buddy-cdc#377: it read as an undriven placeholder).
@@ -5027,16 +5519,24 @@ class _ModuleBuilder:
             self._var_bits = saved
         return (result, outs) if clean else None
 
-    def _with_flag(self, kind: str, walk: Callable[[], None]) -> None:
-        """Run ``walk`` with a fresh, clear ``kind`` flag in scope."""
+    def _with_flag(
+        self, kind: str, walk: Callable[[], None], *, clocked: bool = False
+    ) -> None:
+        """Run ``walk`` with a fresh, clear ``kind`` flag in scope. In a
+        ``clocked`` body the flag is a blocking-written value, so the arms
+        of an ``if`` / ``case`` merge it like any other
+        (:meth:`_merge_blocking`)."""
         flag = _Flag(kind)
         self._flags.append(flag)
         self._var_bits[flag] = ("0",)
+        if clocked:
+            self._blocking_nets[flag] = ("0",)
         try:
             walk()
         finally:
             self._flags.pop()
             self._var_bits.pop(flag, None)
+            self._blocking_nets.pop(flag, None)
 
     def _skip_bit(self) -> Bit:
         """One bit: a flag in scope is set, so the next statement does not
@@ -5050,12 +5550,16 @@ class _ModuleBuilder:
             return "1"
         return self._or_bits(bits) or "0"
 
-    def _gated_walk(self, walk: Callable[[], None], node: Any) -> bool:
+    def _gated_walk(
+        self, walk: Callable[[], None], node: Any, skip: Bit | None = None
+    ) -> bool:
         """Run ``walk`` unless a flag in scope is set: a set flag known at
         elaboration time skips it, a run-time one muxes every value it
         changes back to the one before it (``$mux(S=skip, A=new,
-        B=old)``). ``False`` when it was skipped outright."""
-        skip = self._skip_bit()
+        B=old)``). ``False`` when it was skipped outright. ``skip`` is
+        :meth:`_skip_bit` when the caller has it already."""
+        if skip is None:
+            skip = self._skip_bit()
         if skip == "1":
             return False
         if skip == "0":
@@ -5067,6 +5571,27 @@ class _ModuleBuilder:
             old = base.get(var)
             if old is not None and value != old:
                 self._var_bits[var] = self._branch_mux(skip, value, old, node)
+        return True
+
+    def _clocked_gated_walk(
+        self, walk: Callable[[], None], skip: Bit | None = None
+    ) -> bool:
+        """:meth:`_gated_walk` in a clocked body: what ``walk`` writes goes
+        into an arm of the decision tree taken unless a flag in scope is
+        set at run time (``if (!skip) …``), and its blocking writes are
+        merged with the values before it (rtl-buddy-cdc#408)."""
+        if skip is None:
+            skip = self._skip_bit()
+        if skip == "1":
+            return False
+        if skip == "0":
+            walk()
+            return True
+        base = self._blocking_values()
+        run = self._lazy_bit(lambda: self._lower_not(skip))
+        state, case = self._clocked_arm(run, None, lambda _stmt: walk(), base)
+        self._proc_case.items.append(_ProcSwitch([(skip, _ProcCase()), (None, case)]))
+        self._merge_blocking(base, [(skip, base)], state)
         return True
 
     def _set_flag(self, kind: str) -> bool:
@@ -5191,6 +5716,15 @@ class _ModuleBuilder:
         a_bits = self._bits_of_expression(expr.left)
         b_bits = self._bits_of_expression(expr.right)
         if a_bits is None or b_bits is None:
+            # ``1 || x`` / ``0 && x`` is decided by the constant whatever the
+            # other operand is (an out-of-range ``a[i]`` of an unrolled
+            # loop's last test, rtl-buddy-cdc#408).
+            if op_name in ("LogicalAnd", "LogicalOr"):
+                stop = 0 if op_name == "LogicalAnd" else 1
+                for side in (expr.left, expr.right):
+                    value = self._const_int(side)
+                    if value is not None and int(value != 0) == stop:
+                        return (str(stop),)
             return None
         # Constant-shift fold: when ``x << N`` / ``x >> N`` has a
         # compile-time-constant shift amount, emit the result as a
@@ -6458,10 +6992,7 @@ class _ModuleBuilder:
             self._set_flag("return")
             return
         if kind in self._LOOP_KINDS:
-            self._with_flag(
-                "break",
-                lambda: self._unroll_for(stmt, self._walk_comb_statement, control=True),
-            )
+            self._unroll_loop(stmt, self._walk_comb_statement, clocked=False)
             return
         if kind == "VariableDeclStatement":
             self._declare_local(stmt, clocked=False)
