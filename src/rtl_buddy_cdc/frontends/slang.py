@@ -101,8 +101,13 @@ What currently works
 - In clocked blocks a blocking write's value reaches the later reads of
   the same block; each register is one flop per contiguous run of the
   bits the block writes, as ``proc`` groups them (rtl-buddy-cdc#377).
-- User-defined function calls are inlined; ``for`` loops (SV and
-  Verilog-2001 forms) are unrolled in every block; ``n++`` and compound
+- Hierarchical references (rtl-buddy-cdc#405): a dotted name into a
+  generate block, a child instance or upward reads and writes its
+  target's bits when the target is in an inlined instance
+  (:meth:`_ModuleBuilder._is_named`).
+- User-defined function and task calls are inlined; ``for`` /
+  ``repeat`` / ``foreach`` loops (SV and Verilog-2001 forms) are
+  unrolled in every block; ``n++`` and compound
   assignments are writes; ``casez`` / ``casex`` labels compare their
   non-wildcard bits; parameters, enum values and ``x`` / ``z`` literals
   are constants; gate primitives lower to ``$and`` / ``$or`` / ``$xor``
@@ -162,9 +167,9 @@ What currently works
   and continuous writes to part of a variable splice into its other bits
   (:meth:`_splice_assign`). Every assignment's RHS is sized to its target.
 - An assignment target this frontend cannot lower — a streaming
-  concatenation, a run-time index outside the memory-write and
-  ``$shl``-decoder shapes, an unpacked-struct member, a hierarchical
-  reference — is reported once per location with a ``WARNING`` (see
+  concatenation with a ``with`` range, a run-time index outside the
+  memory-write and ``$shl``-decoder shapes, an unpacked-struct member, a
+  hierarchical reference into a blackbox — is reported once per location with a ``WARNING`` (see
   :meth:`_ModuleBuilder._warn_lvalue_dropped`), never dropped silently.
 - A right-hand side, condition or statement the frontend cannot lower
   is reported with a ``WARNING`` and modelled as an opaque ``$_UNKNOWN_``
@@ -189,9 +194,12 @@ What currently works
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- ``while`` / ``repeat`` / ``foreach`` loops, task calls, functions
-  with an early ``return`` or an ``output`` argument, tristate gates,
-  switches and user-defined primitives: reported, not lowered.
+- ``while`` / ``do … while`` loops, ``break`` / ``continue`` in a
+  clocked loop, a function with an ``output`` argument called in an
+  expression, tristate gates, switches and user-defined primitives:
+  reported, not lowered. (``repeat`` / ``foreach`` loops, an early
+  ``return``, combinational ``break`` / ``continue`` and task / ``void``
+  function calls are lowered since rtl-buddy-cdc#405.)
 - (was: ``CLK_POLARITY = "0"`` for negedge-clocked flops — landed
   in rtl-buddy-cdc#221 to close the CDC-016 cross-frontend parity
   gap. ``_analyse_event_list`` now reports the clock edge alongside
@@ -212,6 +220,7 @@ from __future__ import annotations
 
 import functools
 import importlib.metadata
+import itertools
 import logging
 import math
 import re
@@ -637,6 +646,18 @@ class _ArrayAccess(NamedTuple):
     packed: list[Any]  # selects applied to that element, innermost first
 
 
+class _Flag:
+    """A control-flow flag of a combinational walk (rtl-buddy-cdc#405): set
+    by a ``return`` / ``break`` / ``continue``; while set, the statements
+    after it keep the values from before them. Kept in ``_var_bits`` as a
+    one-bit value while its function call or loop is being lowered."""
+
+    __slots__ = ("kind",)
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+
+
 class _ModuleBuilder:
     """Translate a pyslang elaborated :class:`InstanceSymbol` into a
     :class:`netlist.Module`.
@@ -687,6 +708,13 @@ class _ModuleBuilder:
         # the continuous-assign aliasing pass can rewrite them to point
         # at constants or other variables' bits — hence ``Bit``.
         self._var_bits: dict[Any, tuple[Bit, ...]] = {}
+        # Each variable's *net*: the bits first handed out for it (or the
+        # parent's connection for a bound port), which a continuous driver
+        # re-points through ``_forward_renames``; ``_var_bits`` holds the
+        # value lowered so far, which can be another variable's bits
+        # (rtl-buddy-cdc#405: a second ``assign`` of a net renamed the
+        # first driver's input to the second's).
+        self._net_bits: dict[Any, tuple[Bit, ...]] = {}
         self._ports: dict[str, Port] = {}
         self._cells: dict[str, Cell] = {}
         self._netnames: dict[str, Netname] = {}
@@ -745,7 +773,7 @@ class _ModuleBuilder:
         self._memory_write_ports: dict[str, int] = {}
         # The unpacked arrays Yosys keeps as memories (canonical symbols)
         # and their ``MEMID`` spellings; every other unpacked array is a
-        # list of registers (:meth:`_classify_arrays`, rtl-buddy-cdc#398).
+        # list of registers (:meth:`_classify_design_arrays`, rtl-buddy-cdc#398).
         self._memories: set[Any] = set()
         self._memory_ids: set[str] = set()
         # Each memory's ``MEMID`` (its declaration's hierarchical name).
@@ -769,11 +797,20 @@ class _ModuleBuilder:
         # not add to.
         self._inline_depth = 0
         self._inline_returns: list[Any] = []
+        # The control flags of the inlined calls and unrolled loops being
+        # walked, innermost last (:class:`_Flag`).
+        self._flags: list[_Flag] = []
         # Target of each compound assignment (``x += 1``) whose right-hand
         # side is being lowered: what its ``LValueReferenceExpression``
         # reads.
         self._compound_lhs: list[Any] = []
         self._lowering_failures = 0
+        # The instance bodies this builder inlines (rtl-buddy-cdc#405): a
+        # hierarchical reference (``gr.lm[i]``, ``u_child.q``, an upward
+        # ``top.sig``) resolves to its target's bits when the target is
+        # declared in one of them, and is reported otherwise (a name
+        # inside a blackbox, or above a greybox body lowered on its own).
+        self._inlined_bodies: set[Any] = set()
         self._branch_muxes: dict[
             tuple[Bit, ...], tuple[Bit, tuple[Bit, ...], tuple[Bit, ...]]
         ] = {}
@@ -784,6 +821,7 @@ class _ModuleBuilder:
         # The top instance's ports become the flat ``Module``'s ports;
         # child instances contribute flops / comb / netnames into the
         # same flat namespace, hierarchically prefixed (``u_b0.q``).
+        self._classify_design_arrays()
         self._walk_instance(self.top, hier_prefix="", bound_internals=frozenset())
         self._apply_forward_renames()
         # A memory has no netname in Yosys' output (rtl-buddy-cdc#394,
@@ -831,7 +869,6 @@ class _ModuleBuilder:
             if hier_prefix == "":
                 for member in inst.body:
                     self._collect_port(member)
-            self._classify_arrays(inst, hier_prefix)
             for member, prefix in self._iter_scope(inst.body, hier_prefix):
                 # ``_fresh_cell_name`` reads ``_hier_stack[-1]`` when
                 # naming cells; for members inside a generate block
@@ -910,6 +947,7 @@ class _ModuleBuilder:
         self._placeholder_bits.update(ids)
         bits: tuple[Bit, ...] = tuple(ids)
         self._var_bits[var_sym] = bits
+        self._net_bits[var_sym] = bits
         return bits
 
     def _src_attr(self, node: Any) -> str | None:
@@ -1017,6 +1055,26 @@ class _ModuleBuilder:
         and a ``kind`` enum; the class name is sufficient and avoids
         having to thread the enum import through every comparison."""
         return type(sym).__name__
+
+    def _is_named(self, expr: Any) -> bool:
+        """``expr`` names a variable or net this builder lowers: a plain
+        name, or a hierarchical one (``gr.lm``, ``g[1].x``, ``u_child.q``,
+        an upward ``top.sig``) whose target is declared in an instance
+        body this builder inlines, so it reads and writes the target's
+        own bits (rtl-buddy-cdc#405: it was an opaque driver / a dropped
+        write). A hierarchical name of a constant reads its value."""
+        kind = type(expr).__name__
+        if kind == "NamedValueExpression":
+            return True
+        if kind != "HierarchicalValueExpression":
+            return False
+        sym = getattr(expr, "symbol", None)
+        if sym is None:
+            return False
+        if self._kind_name(sym) in self._CONSTANT_SYMBOLS:
+            return True
+        scope = getattr(sym, "parentScope", None)
+        return getattr(scope, "containingInstance", None) in self._inlined_bodies
 
     # -- pass 1: variables ----------------------------------------------
 
@@ -1228,17 +1286,10 @@ class _ModuleBuilder:
         if init_expr is None:
             return
         rhs_bits = self._rhs_bits(init_expr, len(self._alloc_bits(member)))
-        canonical = self._canonical_var(member)
-        # Allocate the net's bits if it's the first time we've seen it;
-        # then merge them into the RHS bits via the same alias-rewrite
-        # primitive ``_emit_continuous_assign`` uses, so any reader of
-        # the net follows through to the driving cell's output.
-        net_bits = self._alloc_bits(member)
-        before = dict(self._var_bits)
-        self._merge_canonical_var(canonical, net_bits, rhs_bits)
-        # A reader earlier in source order sees the driver too, as for
-        # ``assign`` (rtl-buddy-cdc#377).
-        self._record_forward_renames(before)
+        # The same driver ``_emit_continuous_assign`` records, so any
+        # reader of the net (earlier in source order too,
+        # rtl-buddy-cdc#377) follows through to the driving cell's output.
+        self._drive_net(member, 0, rhs_bits, member)
 
     def _emit_instance(self, inst: Any, parent_prefix: str, name: str) -> None:
         """Lower one module instance named ``name`` under ``parent_prefix``:
@@ -1322,7 +1373,17 @@ class _ModuleBuilder:
             # wire. ``_alloc_bits`` keys on the internal Symbol identity
             # which is unique per elaborated instance, so two
             # instantiations of the same module don't share bits.
-            self._var_bits[self._canonical_var(internal)] = parent_bits
+            canonical = self._canonical_var(internal)
+            early = self._var_bits.get(canonical)
+            if early is not None:
+                # A hierarchical read of the port (``u_child.a``) lowered
+                # before this instance (rtl-buddy-cdc#405): its readers
+                # see the parent's net.
+                for o, n in zip(early, parent_bits):
+                    if o in self._placeholder_bits and o != n:
+                        self._forward_renames[o] = n
+            self._var_bits[canonical] = parent_bits
+            self._net_bits[canonical] = parent_bits
             bound.add(internal)
             # Also emit a netname for the port at ``<child_prefix><port_name>``
             # so SDC pin paths like ``[get_pins u_a/clk_out_b0]`` resolve
@@ -2007,7 +2068,7 @@ class _ModuleBuilder:
             return
         if kind == "VariableDeclStatement":
             return
-        if kind == "ForLoopStatement":
+        if kind in self._LOOP_KINDS:
             # Unrolled like the data branch: ``for (i) q[i] <= 0``.
             self._unroll_for(
                 stmt, lambda body: self._collect_reset_assignments(body, into)
@@ -2186,8 +2247,7 @@ class _ModuleBuilder:
         rst_edge = str(getattr(rst_ev, "edge", "")).rsplit(".", 1)[-1]
         return clk_sym, rst_sym, rst_edge == "NegEdge", clk_edge == "NegEdge"
 
-    @staticmethod
-    def _extract_condition_symbol(expr: Any) -> Any | None:
+    def _extract_condition_symbol(self, expr: Any) -> Any | None:
         """For an if-condition that's the reset check (``rst`` or
         ``!rst_n``), return the underlying VariableSymbol. Anything
         more elaborate (``rst && enable``, function calls, …) → None,
@@ -2195,10 +2255,10 @@ class _ModuleBuilder:
         # UnaryExpression(operand=NamedValueExpression)  → !rst form
         if type(expr).__name__ == "UnaryExpression":
             operand = getattr(expr, "operand", None)
-            if operand is not None and type(operand).__name__ == "NamedValueExpression":
+            if operand is not None and self._is_named(operand):
                 return operand.symbol
         # NamedValueExpression directly  → positive-polarity reset
-        if type(expr).__name__ == "NamedValueExpression":
+        if self._is_named(expr):
             return expr.symbol
         return None
 
@@ -2306,7 +2366,7 @@ class _ModuleBuilder:
             if default is not None:
                 ok = ok and self._is_constant_only_assignment_tree(default)
             return ok
-        if kind == "ForLoopStatement":
+        if kind in self._LOOP_KINDS:
             return self._is_constant_only_assignment_tree(getattr(stmt, "body", None))
         if kind == "ExpressionStatement":
             expr = getattr(stmt, "expr", None)
@@ -2349,7 +2409,20 @@ class _ModuleBuilder:
         if kind == "ExpressionStatement":
             write = self._as_assignment(statement.expr)
             if write is None:
-                self._other_statement(statement, "clocked block")
+                outs = self._call_statement_outputs(statement.expr)
+                if outs is None:
+                    self._other_statement(statement, "clocked block")
+                    return
+                # A task / void-function call: its output arguments are
+                # blocking writes of the block (rtl-buddy-cdc#405).
+                for target, bits in outs:
+                    self._emit_assignment_expression(
+                        _Assign(target, _Bits(bits, statement.expr), statement.expr),
+                        clk_sym,
+                        reset_sym,
+                        reset_active_low,
+                        src_node=src_node,
+                    )
                 return
             self._emit_assignment_expression(
                 write,
@@ -2444,7 +2517,7 @@ class _ModuleBuilder:
                 statement, clk_sym, reset_sym, reset_active_low, src_node
             )
             return
-        if kind == "ForLoopStatement":
+        if kind in self._LOOP_KINDS:
             self._emit_for_loop(
                 statement, clk_sym, reset_sym, reset_active_low, src_node
             )
@@ -2491,27 +2564,16 @@ class _ModuleBuilder:
           still emit; we just lose the gating-mux shape on this
           particular case.
         """
-        case_expr = getattr(statement, "expr", None)
         items = list(getattr(statement, "items", []) or [])
         default_arm = getattr(statement, "defaultCase", None)
 
         # #84: compile-time-constant case-expr — short-circuit to the
         # matching arm. ``_const_int`` already folds parameter refs
         # and arithmetic, so ``case (MODE)`` with a parameter-bound
-        # MODE resolves cleanly.
-        case_const = self._const_int(case_expr)
-        if case_const is not None:
-            live_arm: Any = None
-            for item in items:
-                for match_expr in getattr(item, "expressions", []) or []:
-                    match_const = self._const_int(match_expr)
-                    if match_const is not None and match_const == case_const:
-                        live_arm = getattr(item, "stmt", None)
-                        break
-                if live_arm is not None:
-                    break
-            if live_arm is None:
-                live_arm = default_arm
+        # MODE resolves cleanly (only while every label up to the match
+        # is a constant too: :meth:`_constant_case_arm`).
+        folded, live_arm = self._constant_case_arm(statement)
+        if folded:
             if live_arm is not None:
                 self._emit_assignments_in(
                     live_arm, clk_sym, reset_sym, reset_active_low, src_node
@@ -2614,6 +2676,37 @@ class _ModuleBuilder:
             "1" if (value >> i) & 1 else "0" for i in range(value.bit_length())
         )
 
+    def _constant_case_arm(self, stmt: Any) -> tuple[bool, Any]:
+        """``(True, arm)`` when the ``case`` is decided at elaboration time:
+        its expression is a constant and so is every label up to the first
+        one equal to it (``arm`` that item's statement, else the
+        ``default``, else ``None``). ``(False, None)`` otherwise — a label
+        that is not a constant (``case (1'b1) a[3]: ..``), a range or a
+        wildcard comes first, so the match is a run-time one
+        (rtl-buddy-cdc#405: such labels were skipped, so ``case (1'b1)``
+        walked the ``default`` alone and every arm's fan-in was lost)."""
+        case_const = self._const_int(getattr(stmt, "expr", None))
+        if case_const is None:
+            return False, None
+        for item in getattr(stmt, "items", []) or []:
+            for label in getattr(item, "expressions", []) or []:
+                if self._kind_name(label) == "ValueRangeExpression":
+                    return False, None
+                if not self._is_plain_constant(label):
+                    return False, None
+                if self._const_int(label) == case_const:
+                    return True, getattr(item, "stmt", None)
+        return True, getattr(stmt, "defaultCase", None)
+
+    def _is_plain_constant(self, label: Any) -> bool:
+        """``label`` folds to a constant with no ``x`` / ``z`` / ``?``
+        digit (``_const_int`` reads those digits as 0: ``casez (2'b10)
+        2'b1?:`` would miss its arm)."""
+        if self._const_int(label) is None:
+            return False
+        bits = self._bits_of_expression(label)
+        return bits is not None and all(b in ("0", "1") for b in bits)
+
     def _case_expr_bits(self, stmt: Any) -> tuple[Bit, ...]:
         """The bits of a ``case`` statement's expression, or a reported
         opaque value of its width."""
@@ -2639,10 +2732,12 @@ class _ModuleBuilder:
         literal ``z`` / ``x`` values, and such a label used to drop its
         arm). A label that does not lower (a ``case inside`` range, …) is
         a reported opaque match."""
-        if self._kind_name(label) == "RangeExpression" or label is None:
-            return self._opaque(
-                label if label is not None else stmt, 1, "`case` label"
-            )[0]
+        if label is None:
+            return self._opaque(stmt, 1, "`case` label")[0]
+        if self._kind_name(label) == "ValueRangeExpression":
+            # ``case … inside`` ``[lo:hi]`` (rtl-buddy-cdc#405: opaque).
+            hit = self._range_match(sel_bits, label)
+            return hit if hit is not None else self._opaque(label, 1, "`case` label")[0]
         bits = self._bits_of_expression(label)
         if not bits:
             return self._opaque(label, 1, "`case` label")[0]
@@ -2684,32 +2779,86 @@ class _ModuleBuilder:
 
         self._unroll_for(stmt, walk)
 
-    def _unroll_for(self, stmt: Any, walk: Any) -> None:
+    def _unroll_for(self, stmt: Any, walk: Any, *, control: bool = False) -> None:
         """Walk ``stmt``'s body once per iteration (``walk(body)``) with the
         loop variable bound in :attr:`_loop_bindings`, so element selects
         like ``chain[i]`` / ``chain[i-1]`` fold to per-iteration bits, as
         Yosys' frontend unrolls them. A loop whose trip count is not known
         at elaboration time is reported, never skipped silently
         (rtl-buddy-cdc#377)."""
+        iterations = self._loop_iterations(stmt)
+        if iterations is None:
+            what = {
+                "RepeatLoopStatement": ("count is not constant", "`repeat` loop"),
+                "ForeachLoopStatement": (
+                    "the array has no fixed bounds",
+                    "`foreach` loop",
+                ),
+            }.get(
+                self._kind_name(stmt),
+                ("bounds, step or loop variable are not constant", "`for` loop"),
+            )
+            self._warn_dropped(stmt, *what)
+            return
+        body = getattr(stmt, "body", None)
+        for binding in iterations:
+            prev = {var: self._loop_bindings.pop(var, _SENTINEL) for var in binding}
+            self._loop_bindings.update(binding)
+            try:
+                if not control:
+                    walk(body)
+                elif not self._gated_walk(
+                    # A ``continue`` ends this iteration only.
+                    lambda: self._with_flag("continue", lambda: walk(body)),
+                    stmt,
+                ):
+                    break
+            finally:
+                for var, old in prev.items():
+                    if old is _SENTINEL:
+                        self._loop_bindings.pop(var, None)
+                    else:
+                        self._loop_bindings[var] = old
+
+    # Loops unrolled at elaboration time (rtl-buddy-cdc#405: ``repeat`` and
+    # ``foreach`` were reported and their bodies dropped).
+    _LOOP_KINDS = frozenset(
+        {"ForLoopStatement", "RepeatLoopStatement", "ForeachLoopStatement"}
+    )
+
+    def _loop_iterations(self, stmt: Any) -> list[dict[Any, int]] | None:
+        """The loop-variable bindings of each iteration of a ``for``,
+        ``repeat (N)`` (no variable) or ``foreach`` loop (each named
+        dimension from its left bound to its right, the first dimension
+        outermost, IEEE 1800-2017 12.7.3); ``None`` when the trip count is
+        not known at elaboration time or exceeds the unroll cap."""
+        kind = self._kind_name(stmt)
+        if kind == "RepeatLoopStatement":
+            count = self._const_int(getattr(stmt, "count", None))
+            if count is None or count > self._ITER_CAP:
+                return None
+            return [{} for _ in range(max(count, 0))]
+        if kind == "ForeachLoopStatement":
+            axes: list[list[tuple[Any, int]]] = []
+            for dim in getattr(stmt, "loopDims", None) or []:
+                var = getattr(dim, "loopVar", None)
+                if var is None:
+                    continue
+                rng = getattr(dim, "range", None)
+                left = getattr(rng, "left", None)
+                right = getattr(rng, "right", None)
+                if left is None or right is None:
+                    return None
+                step = 1 if right >= left else -1
+                axes.append([(var, v) for v in range(left, right + step, step)])
+            if math.prod(len(a) for a in axes) > self._ITER_CAP:
+                return None
+            return [dict(combo) for combo in itertools.product(*axes)]
         header = self._for_loop_iterations(stmt)
         if header is None:
-            self._warn_dropped(
-                stmt,
-                "bounds, step or loop variable are not constant",
-                "`for` loop",
-            )
-            return
+            return None
         loopvar, values = header
-        for v in values:
-            prev = self._loop_bindings.pop(loopvar, _SENTINEL)
-            self._loop_bindings[loopvar] = v
-            try:
-                walk(getattr(stmt, "body", None))
-            finally:
-                if prev is _SENTINEL:
-                    self._loop_bindings.pop(loopvar, None)
-                else:
-                    self._loop_bindings[loopvar] = prev
+        return [{loopvar: v} for v in values]
 
     _ITER_CAP = 1024
 
@@ -3666,7 +3815,7 @@ class _ModuleBuilder:
         LSB-first (an output port bound to ``{a, b}``); procedural and
         continuous writes split one first, see :meth:`_concat_writes`."""
         kind = type(expr).__name__
-        if kind == "NamedValueExpression":
+        if self._is_named(expr):
             return self._alloc_bits(expr.symbol)
         if kind in {"ElementSelectExpression", "MemberAccessExpression"}:
             return self._element_select_bits(expr)
@@ -3705,9 +3854,11 @@ class _ModuleBuilder:
                     return None
                 out.extend(sub)
             return out or None
-        if kind == "NamedValueExpression":
+        if self._is_named(expr):
             sym = self._canonical_var(expr.symbol)
             return [(sym, 0, len(self._alloc_bits(sym)))]
+        if kind == "StreamingConcatenationExpression":
+            return self._streaming_targets(expr)
         if kind in {"ElementSelectExpression", "MemberAccessExpression"}:
             sym, bits, start, width = self._resolve_select_chain(expr)
         elif kind == "RangeSelectExpression":
@@ -3720,6 +3871,44 @@ class _ModuleBuilder:
         if sym is None or width < 1 or start < 0 or start + width > len(bits):
             return None
         return [(self._canonical_var(sym), start, width)]
+
+    def _streaming_targets(self, expr: Any) -> list[tuple[Any, int, int]] | None:
+        """A streaming-concatenation target (``{<<{o}} = a``,
+        ``{<<4{x, y}} <= d``): its operands' bits, one target per bit,
+        in the order :meth:`_lower_streaming` reads them, so the source's
+        MSB lands in the stream's first bit (rtl-buddy-cdc#405: dropped
+        and reported). ``None`` for a ``with`` range or a dynamic size."""
+        if not getattr(expr, "isFixedSize", False):
+            return None
+        stream: list[tuple[Any, int, int]] = []  # MSB first
+        for st in getattr(expr, "streams", None) or []:
+            if getattr(st, "withExpr", None) is not None:
+                return None
+            sub = self._lvalue_targets(st.operand)
+            if sub is None:
+                return None
+            for sym, start, width in sub:
+                stream.extend((sym, start + k, 1) for k in reversed(range(width)))
+        if self._streaming_op(expr) == "<<":
+            size = int(getattr(expr, "sliceSize", 0) or 0) or 1
+            chunks = [stream[i : i + size] for i in range(0, len(stream), size)]
+            stream = [t for chunk in reversed(chunks) for t in chunk]
+        return stream or None
+
+    def _streaming_op(self, expr: Any) -> str:
+        """``"<<"`` or ``">>"``: a streaming concatenation's direction, from
+        its syntax, or (pyslang 11 leaves ``syntax`` empty on one wrapped
+        in a conversion) from the source text it starts at."""
+        token = getattr(getattr(expr, "syntax", None), "operatorToken", None)
+        op = str(getattr(token, "valueText", "") or "").strip()
+        if op:
+            return op
+        try:
+            start = expr.sourceRange.start
+            text = str(self.comp.sourceManager.getSourceText(start.buffer))
+        except Exception:
+            return ""
+        return text[start.offset :].lstrip("{ \t\r\n")[:2]
 
     @staticmethod
     def _group_parts(
@@ -3773,7 +3962,16 @@ class _ModuleBuilder:
             if inner is None:
                 return None
             width = self._expr_width(expr) or len(inner)
-            signed = bool(getattr(getattr(operand, "type", None), "isSigned", False))
+            # Sign extension needs a signed operand *and* a signed target:
+            # slang converts a signed operand of an unsigned expression
+            # (``a + b``, ``a`` signed, ``b`` not) straight to the
+            # unsigned type, which zero-extends (IEEE 1800-2017 11.8.2),
+            # and an assignment's signed right-hand side to its own signed
+            # type first, then to the target's.
+            signed = all(
+                getattr(getattr(e, "type", None), "isSigned", False)
+                for e in (operand, expr)
+            )
             return self._resize_bits(inner, width, signed)
         return self._bits_of_expression(expr)
 
@@ -3838,14 +4036,71 @@ class _ModuleBuilder:
         for (sym, start, width), piece in zip(
             targets, self._split_rhs(rhs_bits, targets)
         ):
+            if continuous:
+                self._drive_net(sym, start, piece, lhs)
+                continue
             old = self._alloc_bits(sym)
             new = old[:start] + piece + old[start + width :]
             self._merge_canonical_var(sym, old, new)
-            if continuous:
-                for o, n in zip(old, new):
-                    if o in self._placeholder_bits and o != n:
-                        self._forward_renames[o] = n
         return True
+
+    # Resolved net types whose drivers combine (IEEE 1800-2017 6.6.3).
+    _WIRED_NETS = {"WOr": "$or", "TriOr": "$or", "WAnd": "$and", "TriAnd": "$and"}
+
+    def _drive_net(
+        self, sym: Any, start: int, piece: tuple[Bit, ...], node: Any
+    ) -> None:
+        """A continuous driver of ``sym``'s bits ``start ..``: its net's
+        placeholder bits are renamed to ``piece`` and its value becomes
+        ``piece`` there.
+
+        A bit that already has a continuous driver has two: on a ``wor`` /
+        ``wand`` net their ``$or`` / ``$and``, as the net resolves them; on
+        any other net their ``$or`` too, reported, so neither driver's
+        fan-in is lost (rtl-buddy-cdc#405: the second ``assign`` renamed
+        the first one's source net to its own, shorting two inputs)."""
+        canonical = self._canonical_var(sym)
+        net = self._net_bits.get(canonical) or self._alloc_bits(canonical)
+        value = list(self._var_bits.get(canonical, net))
+        clashes: list[tuple[int, Bit, Bit]] = []
+        for k, n in enumerate(piece):
+            i = start + k
+            o = net[i]
+            if o not in self._placeholder_bits:
+                value[i] = n
+                continue
+            prev = self._forward_renames.get(o)
+            if prev is None or prev == n:
+                if o != n:
+                    self._forward_renames[o] = n
+                value[i] = n
+            else:
+                clashes.append((i, prev, n))
+        if clashes:
+            kind = str(getattr(getattr(canonical, "netType", None), "netKind", ""))
+            cell = self._WIRED_NETS.get(kind.rsplit(".", 1)[-1])
+            if cell is None:
+                cell = "$or"
+                _log.warning(
+                    "slang frontend: %s: net `%s` has more than one continuous "
+                    "driver; modelled as their OR, so neither driver's fan-in "
+                    "is lost",
+                    self._src_attr(node) or "<unknown location>",
+                    getattr(canonical, "name", "?"),
+                )
+            merged = self._emit_comb_cell(
+                cell,
+                {
+                    "A": tuple(prev for _i, prev, _n in clashes),
+                    "B": tuple(n for _i, _prev, n in clashes),
+                },
+                len(clashes),
+                node,
+            )
+            for (i, _prev, _n), m in zip(clashes, merged):
+                self._forward_renames[net[i]] = m
+                value[i] = m
+        self._var_bits[canonical] = tuple(value)
 
     def _lvalue_unsupported_reason(self, expr: Any) -> str:
         """Why :meth:`_lvalue_targets` cannot resolve ``expr``."""
@@ -3856,12 +4111,17 @@ class _ModuleBuilder:
                     return self._lvalue_unsupported_reason(op)
         if kind == "StreamingConcatenationExpression":
             return "target is a streaming concatenation"
+        base = expr
+        while type(base).__name__ in self._SELECT_KINDS:
+            base = getattr(base, "value", None)
+        if type(base).__name__ == "HierarchicalValueExpression" and not self._is_named(
+            base
+        ):
+            return "target is a hierarchical reference outside the lowered design"
         if kind in {"ElementSelectExpression", "RangeSelectExpression"}:
             return "target select has a run-time index or is out of range"
         if kind == "MemberAccessExpression":
             return "target is a member of an unpacked or indexed aggregate"
-        if kind == "HierarchicalValueExpression":
-            return "target is a hierarchical reference"
         return f"target `{kind}` is not modelled"
 
     def _warn_lvalue_dropped(self, node: Any, lhs: Any) -> None:
@@ -3923,7 +4183,7 @@ class _ModuleBuilder:
         (non-constant selector, non-NamedValueExpression base, …).
         """
         kind = type(expr).__name__
-        if kind == "NamedValueExpression":
+        if self._is_named(expr):
             sym = getattr(expr, "symbol", None)
             if sym is None or self._canonical_var(sym) in self._memories:
                 # A memory's words are read and written through ports.
@@ -4145,7 +4405,7 @@ class _ModuleBuilder:
 
         # Loop-variable binding takes priority — pyslang considers the
         # loopvar a runtime variable, so its own ``.constant`` is None.
-        if kind == "NamedValueExpression":
+        if kind in self._NAME_KINDS:
             sym = getattr(expr, "symbol", None)
             if sym is not None and sym in self._loop_bindings:
                 return self._loop_bindings[sym]
@@ -4243,7 +4503,7 @@ class _ModuleBuilder:
         ):
             base = getattr(base, "value", None) or getattr(base, "operand", None)
         sym = getattr(base, "symbol", None)
-        if type(base).__name__ != "NamedValueExpression" or sym is None:
+        if not self._is_named(base) or sym is None:
             return None
         if not self._is_constant_name(sym):
             return None
@@ -4288,7 +4548,7 @@ class _ModuleBuilder:
         than crashing.
         """
         kind = type(expr).__name__
-        if kind == "NamedValueExpression":
+        if self._is_named(expr):
             if expr.symbol in self._loop_bindings:
                 # An unrolled loop's variable read as a value.
                 value = self._loop_bindings[expr.symbol]
@@ -4304,9 +4564,13 @@ class _ModuleBuilder:
                 return bits
             return self._alloc_bits(expr.symbol)
         if kind == "ConversionExpression":
-            inner = getattr(expr, "operand", None)
-            if inner is not None:
-                return self._bits_of_expression(inner)
+            # A width conversion slang inserts anywhere an operand meets a
+            # wider or narrower context: zero or sign extension (a signed
+            # operand's MSB fans out to the new bits), or truncation
+            # (rtl-buddy-cdc#405: only an assignment's outermost conversion
+            # was applied, so a signed operand of ``s ? a : b`` or ``a * b``
+            # was zero-extended and the MSB's fan-in to the upper bits lost).
+            return self._sized_bits(expr)
         if kind in {"IntegerLiteral", "UnbasedUnsizedIntegerLiteral"}:
             return self._value_bits(
                 getattr(expr, "value", None), self._expr_width(expr)
@@ -4323,6 +4587,12 @@ class _ModuleBuilder:
             return self._lower_concatenation(expr)
         if kind == "ReplicationExpression":
             return self._lower_replication(expr)
+        if kind in self._PATTERN_KINDS:
+            return self._lower_assignment_pattern(expr)
+        if kind == "InsideExpression":
+            return self._lower_inside(expr)
+        if kind == "StreamingConcatenationExpression":
+            return self._lower_streaming(expr)
         if kind == "CallExpression":
             return self._lower_call(expr)
         if kind == "_Bits":
@@ -4462,6 +4732,9 @@ class _ModuleBuilder:
             },
         )
 
+    # Expressions that name a symbol: a plain name, a dotted one.
+    _NAME_KINDS = frozenset({"NamedValueExpression", "HierarchicalValueExpression"})
+
     # Symbols a NamedValueExpression reads as a constant.
     _CONSTANT_SYMBOLS = frozenset(
         {"ParameterSymbol", "EnumValueSymbol", "SpecparamSymbol"}
@@ -4524,8 +4797,43 @@ class _ModuleBuilder:
             name = getattr(expr, "subroutineName", "")
             if name in {"$signed", "$unsigned"} and len(args) == 1:
                 return self._bits_of_expression(args[0])
+            if name in self._BIT_COUNT_CALLS and len(args) == 1:
+                return self._lower_bit_count(name, args[0], expr)
             return None
         return self._inline_function(expr)
+
+    # Bit-counting system functions lowered to logic (rtl-buddy-cdc#405:
+    # each was an opaque driver; Yosys lowers them to an adder chain).
+    _BIT_COUNT_CALLS = frozenset({"$countones", "$onehot", "$onehot0", "$isunknown"})
+
+    def _lower_bit_count(
+        self, name: str, arg: Any, expr: Any
+    ) -> tuple[Bit, ...] | None:
+        """``$countones(a)`` as a chain of ``$add`` of ``a``'s bits;
+        ``$onehot`` / ``$onehot0`` as that count ``== 1`` / ``<= 1``.
+        ``$isunknown`` is ``0``: a netlist value has no ``x`` / ``z``."""
+        width = self._expr_width(expr) or 1
+        if name == "$isunknown":
+            return self._resize_bits(("0",), width)
+        bits = self._bits_of_expression(arg)
+        if bits is None:
+            return None
+        cw = max(len(bits).bit_length(), 1)
+        count: tuple[Bit, ...] = self._resize_bits(bits[:1], cw)
+        for bit in bits[1:]:
+            count = self._emit_comb_cell(
+                "$add",
+                {"A": count, "B": self._resize_bits((bit,), cw)},
+                output_width=cw,
+                src_node=expr,
+            )
+        if name == "$countones":
+            return self._resize_bits(count, width)
+        one = self._resize_bits(("1",), cw)
+        cell = "$eq" if name == "$onehot" else "$le"
+        return self._emit_comb_cell(
+            cell, {"A": count, "B": one}, output_width=1, src_node=expr
+        )
 
     def _constant_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """LSB-first bits of ``expr``'s elaboration-time value, sized to its
@@ -4542,22 +4850,65 @@ class _ModuleBuilder:
         """Inline a call to a combinational user-defined function, as
         Yosys' frontend does: bind each formal argument to its actual
         argument's bits, walk the body as a combinational block, and read
-        the result off the function's return variable.
+        the result off the function's return variable
+        (:meth:`_inline_subroutine`). ``None`` (the caller then treats the
+        call as unlowered) for a task or void function, an ``output`` /
+        ``inout`` / ``ref`` argument, or whatever the inliner cannot
+        lower."""
+        sub = getattr(expr, "subroutine", None)
+        if str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] != "Function":
+            return None
+        inlined = self._inline_subroutine(expr, outputs=False)
+        return None if inlined is None else inlined[0]
+
+    def _inline_call_statement(self, expr: Any) -> bool:
+        """A task or function called as a statement in a combinational body
+        (``addt(a, b, o);``, a ``void`` function): its body inlined, then
+        each ``output`` / ``inout`` argument written to its actual
+        (rtl-buddy-cdc#405: the statement was reported and dropped).
+        ``False`` when it cannot be lowered."""
+        outs = self._call_statement_outputs(expr)
+        if outs is None:
+            return False
+        for target, bits in outs:
+            self._alias_assign(_Assign(target, _Bits(bits, expr), expr))
+        return True
+
+    def _call_statement_outputs(
+        self, expr: Any
+    ) -> list[tuple[Any, tuple[Bit, ...]]] | None:
+        """``[(output actual, its value)]`` of a task / function call
+        statement inlined by :meth:`_inline_subroutine`; ``None`` when it
+        is no such call or cannot be lowered."""
+        if self._kind_name(expr) != "CallExpression" or getattr(
+            expr, "isSystemCall", False
+        ):
+            return None
+        inlined = self._inline_subroutine(expr, outputs=True)
+        return None if inlined is None else inlined[1]
+
+    def _inline_subroutine(
+        self, expr: Any, *, outputs: bool
+    ) -> tuple[tuple[Bit, ...] | None, list[tuple[Any, tuple[Bit, ...]]]] | None:
+        """Walk the body of the subroutine ``expr`` calls with each formal
+        bound to its actual's bits; ``(return value, [(output actual, its
+        value)])``.
 
         Locals (formals, the return variable, declared variables) start
         as ``x``, are visible only during the walk, and are removed
-        afterwards, so two calls never share a value. ``None`` (the
-        caller then treats the call as unlowered) for a task or void
-        function, an ``output`` / ``inout`` / ``ref`` argument, a ``return``
-        anywhere but at the end of the body, a write to a variable outside
-        the function, a statement or target the walker cannot lower,
-        recursion deeper than :data:`_INLINE_DEPTH_CAP`.
-        """
+        afterwards, so two calls never share a value. A ``return`` (also
+        early, or in a loop) ends the walk through a control flag
+        (:meth:`_with_flag`). ``outputs`` allows ``output`` / ``inout``
+        arguments (written back by the caller). ``None`` for a ``ref``
+        argument (or an ``output`` one without ``outputs``), a write to a
+        variable outside the subroutine, a statement or target the walker
+        cannot lower, recursion deeper than :data:`_INLINE_DEPTH_CAP`."""
         sub = getattr(expr, "subroutine", None)
         if sub is None or self._inline_depth >= self._INLINE_DEPTH_CAP:
             return None
-        if str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] != "Function":
-            return None
+        is_function = (
+            str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] == "Function"
+        )
         ret = getattr(sub, "returnValVar", None)
         locals_: list[Any] = []
         for member in sub:
@@ -4575,35 +4926,53 @@ class _ModuleBuilder:
                 ret = member
         formals = list(getattr(sub, "arguments", None) or [])
         actuals = list(getattr(expr, "arguments", None) or [])
-        if ret is None or len(formals) != len(actuals):
+        if len(formals) != len(actuals) or (ret is None and not outputs):
             return None
-        if any(
-            str(getattr(f, "direction", "")).rsplit(".", 1)[-1] != "In" for f in formals
-        ):
-            return None
-        body = getattr(sub, "body", None)
-        if not self._returns_only_at_end(body, top=True):
-            return None
-        arg_bits: list[tuple[Bit, ...]] = []
+        arg_bits: list[tuple[Bit, ...] | None] = []
+        writes: list[tuple[Any, Any]] = []
         for formal, actual in zip(formals, actuals):
-            bits = self._sized_rhs_bits(actual, self._width_of(formal))
-            if bits is None:
+            direction = str(getattr(formal, "direction", "")).rsplit(".", 1)[-1]
+            if direction == "In":
+                bits = self._sized_rhs_bits(actual, self._width_of(formal))
+            elif direction in ("Out", "InOut") and outputs:
+                target = getattr(actual, "left", None)
+                if target is None:
+                    return None
+                writes.append((formal, target))
+                bits = None
+                if direction == "InOut":
+                    current = self._bits_of_expression(target)
+                    bits = (
+                        None
+                        if current is None
+                        else self._resize_bits(current, self._width_of(formal))
+                    )
+                    if bits is None:
+                        return None
+            else:
+                return None
+            if direction == "In" and bits is None:
                 return None
             arg_bits.append(bits)
+        body = getattr(sub, "body", None)
         saved = dict(self._var_bits)
         failures = self._lowering_failures
         self._inline_depth += 1
         try:
             for local in locals_:
                 self._var_bits[local] = ("x",) * self._width_of(local)
-            for formal, bits in zip(formals, arg_bits):
-                self._var_bits[formal] = bits
+            for formal, maybe in zip(formals, arg_bits):
+                if maybe is not None:
+                    self._var_bits[formal] = maybe
             self._inline_returns.append(ret)
             try:
-                self._walk_comb_statement(body)
+                self._with_flag("return", lambda: self._walk_comb_statement(body))
             finally:
                 self._inline_returns.pop()
-            result = self._var_bits.get(ret)
+            result = (
+                self._var_bits.get(ret) if is_function and ret is not None else None
+            )
+            outs = [(target, self._var_bits[formal]) for formal, target in writes]
             local_set = set(locals_)
             clean = self._lowering_failures == failures and all(
                 self._var_bits.get(k) == v
@@ -4613,34 +4982,60 @@ class _ModuleBuilder:
         finally:
             self._inline_depth -= 1
             self._var_bits = saved
-        return result if clean else None
+        return (result, outs) if clean else None
 
-    def _returns_only_at_end(self, stmt: Any, *, top: bool) -> bool:
-        """``return`` appears in ``stmt`` only as the last statement of the
-        function body's top-level list (the shape inlining supports)."""
-        if stmt is None:
+    def _with_flag(self, kind: str, walk: Callable[[], None]) -> None:
+        """Run ``walk`` with a fresh, clear ``kind`` flag in scope."""
+        flag = _Flag(kind)
+        self._flags.append(flag)
+        self._var_bits[flag] = ("0",)
+        try:
+            walk()
+        finally:
+            self._flags.pop()
+            self._var_bits.pop(flag, None)
+
+    def _skip_bit(self) -> Bit:
+        """One bit: a flag in scope is set, so the next statement does not
+        run (``"0"`` with none in scope)."""
+        bits = [
+            v[0]
+            for f in self._flags
+            if (v := self._var_bits.get(f)) is not None and v[0] != "0"
+        ]
+        if "1" in bits:
+            return "1"
+        return self._or_bits(bits) or "0"
+
+    def _gated_walk(self, walk: Callable[[], None], node: Any) -> bool:
+        """Run ``walk`` unless a flag in scope is set: a set flag known at
+        elaboration time skips it, a run-time one muxes every value it
+        changes back to the one before it (``$mux(S=skip, A=new,
+        B=old)``). ``False`` when it was skipped outright."""
+        skip = self._skip_bit()
+        if skip == "1":
+            return False
+        if skip == "0":
+            walk()
             return True
-        kind = self._kind_name(stmt)
-        if kind == "ReturnStatement":
-            return top
-        if kind == "BlockStatement":
-            return self._returns_only_at_end(stmt.body, top=top)
-        if kind in {"StatementList", "ListStatement"}:
-            items = list(getattr(stmt, "list", []) or [])
-            return all(
-                self._returns_only_at_end(s, top=top and i == len(items) - 1)
-                for i, s in enumerate(items)
-            )
-        found = False
+        base = dict(self._var_bits)
+        walk()
+        for var, value in list(self._var_bits.items()):
+            old = base.get(var)
+            if old is not None and value != old:
+                self._var_bits[var] = self._branch_mux(skip, value, old, node)
+        return True
 
-        def visit(node: Any) -> bool:
-            nonlocal found
-            if type(node).__name__ == "ReturnStatement":
-                found = True
-            return not found
-
-        stmt.visit(visit)
-        return not found
+    def _set_flag(self, kind: str) -> bool:
+        """Set the innermost ``kind`` flag in scope; ``False`` without one
+        (a ``break`` outside an unrolled loop, ...)."""
+        for flag in reversed(self._flags):
+            if flag.kind == kind:
+                self._var_bits[flag] = ("1",)
+                return True
+            if flag.kind == "return":
+                return False  # no loop of this call's own encloses it
+        return False
 
     def _lower_concatenation(self, expr: Any) -> tuple[Bit, ...] | None:
         """``{a, b, c}`` — return a single LSB-first bit tuple.
@@ -4725,16 +5120,28 @@ class _ModuleBuilder:
         "BitwiseAnd": "$reduce_and",
         "BitwiseOr": "$reduce_or",
         "BitwiseXor": "$reduce_xor",
-        "BitwiseNand": "$reduce_and",  # then invert; we don't model the
-        # inversion explicitly — the rule
-        # pack doesn't read the cell name
-        # beyond category membership.
+        # ``~&`` / ``~|`` are the reduction then a ``$logic_not``, as Yosys
+        # lowers them (rtl-buddy-cdc#405: the inversion was dropped, so
+        # ``~&a`` computed ``&a``); ``~^`` is ``$reduce_xnor``.
+        "BitwiseNand": "$reduce_and",
         "BitwiseNor": "$reduce_or",
-        "BitwiseXnor": "$reduce_xor",
+        "BitwiseXnor": "$reduce_xnor",
     }
+
+    # Reductions whose result is inverted by a following ``$logic_not``.
+    _INVERTED_REDUCTIONS = frozenset({"BitwiseNand", "BitwiseNor"})
 
     def _lower_binary(self, expr: Any) -> tuple[Bit, ...] | None:
         op_name = str(expr.op).rsplit(".", 1)[-1]
+        if op_name in ("WildcardEquality", "WildcardInequality"):
+            a_bits = self._bits_of_expression(expr.left)
+            b_bits = self._bits_of_expression(expr.right)
+            if a_bits is None or b_bits is None:
+                return None
+            hit = self._wildcard_match(a_bits, b_bits, expr)
+            if op_name == "WildcardInequality":
+                hit = self._lower_not(hit)
+            return (hit,)
         cell_type = self._BINOP_CELL.get(op_name)
         if cell_type is None:
             return None  # unmodelled op → unknown driver
@@ -4765,8 +5172,32 @@ class _ModuleBuilder:
             if value is not None and width:
                 return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
         return self._emit_comb_cell(
-            cell_type, {"A": a_bits, "B": b_bits}, output_width=width, src_node=expr
+            cell_type,
+            {"A": a_bits, "B": b_bits},
+            output_width=width,
+            src_node=expr,
+            parameters=self._signedness(cell_type, expr.left, expr.right),
         )
+
+    # Cells whose ``B`` (a shift amount) is unsigned whatever its type.
+    _UNSIGNED_B_CELLS = frozenset({"$shl", "$shr", "$sshl", "$sshr"})
+
+    def _signedness(self, cell_type: str, left: Any, right: Any) -> dict[str, str]:
+        """``A_SIGNED`` / ``B_SIGNED`` of a binary cell, as Yosys sets them:
+        an operand of a signed type (slang has already converted both
+        operands of a comparison or an arithmetic operator to the common
+        type, so they agree), a shift amount never (rtl-buddy-cdc#405:
+        every cell was unsigned, so ``a < b``, ``a >>> s``, ``a / b`` of
+        signed operands computed the unsigned result)."""
+
+        def signed(e: Any) -> bool:
+            return bool(getattr(getattr(e, "type", None), "isSigned", False))
+
+        b_signed = signed(right) and cell_type not in self._UNSIGNED_B_CELLS
+        return {
+            "A_SIGNED": _param_int32(1 if signed(left) else 0),
+            "B_SIGNED": _param_int32(1 if b_signed else 0),
+        }
 
     @staticmethod
     def _wire_route_shift(
@@ -4799,6 +5230,167 @@ class _ModuleBuilder:
                 out.append("0")
         return tuple(out)
 
+    def _wildcard_match(
+        self, a_bits: tuple[Bit, ...], b_bits: tuple[Bit, ...], node: Any
+    ) -> Bit:
+        """``a ==? b``: equal on every bit where ``b`` is not ``x`` / ``z``
+        (IEEE 1800-2017 11.4.6), the ``$eq`` of those lanes; ``"1"`` when
+        every bit of ``b`` is a wildcard."""
+        width = max(len(a_bits), len(b_bits))
+        a = self._resize_bits(a_bits, width)
+        b = self._resize_bits(b_bits, width)
+        lanes = [i for i in range(width) if b[i] not in ("x", "z")]
+        if not lanes:
+            return "1"
+        return self._emit_comb_cell(
+            "$eq",
+            {"A": tuple(a[i] for i in lanes), "B": tuple(b[i] for i in lanes)},
+            output_width=1,
+            src_node=node,
+        )[0]
+
+    def _range_match(self, value_bits: tuple[Bit, ...], rng: Any) -> Bit | None:
+        """``value`` lies in the ``[lo:hi]`` of an ``inside`` list or a
+        ``case … inside`` label: ``$ge`` and ``$le`` (``$`` leaves a side
+        open). ``None`` when a bound does not lower."""
+        hit: Bit = "1"
+        for bound, cell in ((rng.left, "$ge"), (rng.right, "$le")):
+            inner = bound
+            while self._kind_name(inner) == "ConversionExpression":
+                inner = getattr(inner, "operand", None)
+            if self._kind_name(inner) == "UnboundedLiteral":
+                continue
+            bits = self._bits_of_expression(bound)
+            if not bits:
+                return None
+            width = max(len(bits), len(value_bits))
+            # slang converts the value and the bounds to their common
+            # type, so a signed bound means a signed comparison.
+            signed = bool(getattr(getattr(bound, "type", None), "isSigned", False))
+            hit = self._and_bit(
+                hit,
+                self._emit_comb_cell(
+                    cell,
+                    {
+                        "A": self._resize_bits(value_bits, width),
+                        "B": self._resize_bits(bits, width),
+                    },
+                    output_width=1,
+                    src_node=bound,
+                    parameters={
+                        "A_SIGNED": _param_int32(int(signed)),
+                        "B_SIGNED": _param_int32(int(signed)),
+                    },
+                )[0],
+            )
+        return hit
+
+    _PATTERN_KINDS = frozenset(
+        {
+            "SimpleAssignmentPatternExpression",
+            "StructuredAssignmentPatternExpression",
+            "ReplicatedAssignmentPatternExpression",
+        }
+    )
+
+    def _lower_assignment_pattern(self, expr: Any) -> tuple[Bit, ...] | None:
+        """An assignment pattern (``'{a, b}``, ``'{default: '0}``,
+        ``'{f: x, default: 0}``, ``'{4{d}}``) of a packed type or an
+        unpacked array of packed elements: its elements' bits, laid out as
+        the type stores them — a packed value's first element is its MSB,
+        an unpacked array's first element its left-bound index
+        (rtl-buddy-cdc#405: an opaque driver unless slang folded it to a
+        constant). ``None`` for any other type (an unpacked struct, ...)."""
+        constant = self._constant_bits(expr)
+        if constant is not None:
+            return constant
+        elements = list(getattr(expr, "elements", None) or [])
+        if self._kind_name(expr) == "ReplicatedAssignmentPatternExpression":
+            count = self._const_int(getattr(expr, "count", None))
+            if count is None or count < 0:
+                return None
+            elements = elements * count
+        parts: list[tuple[Bit, ...]] = []
+        for element in elements:
+            bits = self._bits_of_expression(element)
+            if bits is None:
+                return None
+            parts.append(bits)
+        t = getattr(expr, "type", None)
+        t = getattr(t, "canonicalType", None) or t
+        if getattr(t, "isIntegral", False):
+            out: list[Bit] = []
+            for bits in reversed(parts):  # the last element is the LSB
+                out.extend(bits)
+            return self._resize_bits(tuple(out), self._expr_width(expr) or len(out))
+        if not getattr(t, "isUnpackedArray", False):
+            return None
+        rng = getattr(t, "range", None)
+        left, right = getattr(rng, "left", None), getattr(rng, "right", None)
+        if left is None or right is None or len(parts) != abs(left - right) + 1:
+            return None
+        width = len(parts[0])
+        if any(len(bits) != width for bits in parts):
+            return None
+        slots: list[tuple[Bit, ...]] = [()] * len(parts)
+        step = 1 if right >= left else -1
+        for k, bits in enumerate(parts):
+            slots[left + k * step - min(left, right)] = bits
+        return tuple(b for bits in slots for b in bits)
+
+    def _lower_inside(self, expr: Any) -> tuple[Bit, ...] | None:
+        """``a inside {v, [lo:hi], …}``: the OR of ``a ==? v`` and the
+        range checks (rtl-buddy-cdc#405: an opaque driver). ``None`` for an
+        item that does not lower (an unpacked array to search, …)."""
+        left = self._bits_of_expression(expr.left)
+        if left is None:
+            return None
+        hits: list[Bit] = []
+        for item in getattr(expr, "rangeList", None) or []:
+            if self._kind_name(item) == "ValueRangeExpression":
+                hit = self._range_match(left, item)
+            else:
+                itype = getattr(item, "type", None)
+                if not getattr(itype, "isIntegral", False):
+                    return None
+                bits = self._bits_of_expression(item)
+                hit = None if bits is None else self._wildcard_match(left, bits, item)
+            if hit is None:
+                return None
+            hits.append(hit)
+        result = self._or_bits(hits)
+        return (result if result is not None else "0",)
+
+    def _lower_streaming(self, expr: Any) -> tuple[Bit, ...] | None:
+        """A streaming concatenation read (``{<<{a}}``, ``{<<4{a, b}}``,
+        ``{>>{a, b}}``): the operands' bits packed MSB first and, for
+        ``<<``, the slices of ``sliceSize`` bits (1 by default) taken in
+        reverse order (IEEE 1800-2017 11.4.14), left-aligned in the
+        target as slang sizes it. Pure rewiring (rtl-buddy-cdc#405: an
+        opaque driver). ``None`` for a ``with`` range or a dynamic size."""
+        stream: list[Bit] = []  # MSB first
+        for st in getattr(expr, "streams", None) or []:
+            if getattr(st, "withExpr", None) is not None:
+                return None
+            bits = self._bits_of_expression(st.operand)
+            if bits is None:
+                return None
+            stream.extend(reversed(bits))
+        if not getattr(expr, "isFixedSize", False):
+            return None
+        if self._streaming_op(expr) == "<<":
+            size = int(getattr(expr, "sliceSize", 0) or 0) or 1
+            chunks = [stream[i : i + size] for i in range(0, len(stream), size)]
+            stream = [b for chunk in reversed(chunks) for b in chunk]
+        width = self._expr_width(expr) or len(stream)
+        # Left-aligned: the stream's MSB is the target's MSB, zero-filled
+        # below (a wider target) or its trailing bits dropped (narrower).
+        if width >= len(stream):
+            msb_first = stream + ["0"] * (width - len(stream))
+        else:
+            msb_first = stream[:width]
+        return tuple(reversed(msb_first))
+
     def _lower_unary(self, expr: Any) -> tuple[Bit, ...] | None:
         op_name = str(expr.op).rsplit(".", 1)[-1]
         if op_name == "Plus":
@@ -4816,9 +5408,12 @@ class _ModuleBuilder:
             output_width = 1
         else:
             output_width = self._expr_width(expr) or len(a_bits)
-        return self._emit_comb_cell(
+        y = self._emit_comb_cell(
             cell_type, {"A": a_bits}, output_width=output_width, src_node=expr
         )
+        if op_name in self._INVERTED_REDUCTIONS:
+            y = self._emit_comb_cell("$logic_not", {"A": y}, 1, src_node=expr)
+        return y
 
     def _lower_conditional(self, expr: Any) -> tuple[Bit, ...] | None:
         # pyslang ConditionalExpression has ``conditions`` (a list) and
@@ -4834,7 +5429,11 @@ class _ModuleBuilder:
         const = self._const_int(conds[0].expr) if len(conds) == 1 else None
         if const is not None:
             return self._bits_of_expression(expr.left if const else expr.right)
-        sel_bits = self._bits_of_expression(conds[0].expr)
+        # A multi-bit condition is true when non-zero: the ``$reduce_bool``
+        # Yosys emits (rtl-buddy-cdc#405: ``S`` took bit 0 alone, so the
+        # other bits' fan-in was lost).
+        sel = self._lower_condition_to_bit(conds) if len(conds) == 1 else None
+        sel_bits = None if sel is None else (sel,)
         # pyslang names the branches from source order: ``left`` is the
         # TRUE branch of ``s ? left : right``, ``right`` the FALSE one.
         true_bits = self._bits_of_expression(expr.left)
@@ -4853,7 +5452,7 @@ class _ModuleBuilder:
         # selector.
         return self._emit_comb_cell(
             cell_type="$mux",
-            inputs={"A": false_bits, "B": true_bits, "S": sel_bits[:1]},
+            inputs={"A": false_bits, "B": true_bits, "S": sel_bits},
             output_width=width,
             src_node=expr,
         )
@@ -4939,7 +5538,7 @@ class _ModuleBuilder:
         while type(e).__name__ in self._SELECT_KINDS:
             nodes.append(e)
             e = getattr(e, "value", None)
-        if type(e).__name__ != "NamedValueExpression" or not nodes:
+        if not self._is_named(e) or not nodes:
             return None
         sym = self._canonical_var(e.symbol)
         dims = self._unpacked_ranges(sym)
@@ -4959,8 +5558,37 @@ class _ModuleBuilder:
                     element = node
         return _ArrayAccess(sym, dims, selectors, element, packed)
 
-    def _classify_arrays(self, inst: Any, hier_prefix: str) -> None:
-        """Decide which unpacked arrays of ``inst`` are memories, as Yosys'
+    def _design_instances(
+        self, inst: Any, prefix: str, out: list[tuple[Any, str]]
+    ) -> None:
+        """Append ``(instance, hierarchy prefix)`` for ``inst`` and every
+        instance below it that this builder inlines (boundary instances
+        stay cells), named as :meth:`_emit_instance` /
+        :meth:`_emit_instance_array` name them."""
+        out.append((inst, prefix))
+        self._inlined_bodies.add(inst.body)
+
+        def child(member: Any, scope_prefix: str, name: str) -> None:
+            kind = self._kind_name(member)
+            if kind == "InstanceSymbol":
+                if not self._is_boundary_instance(member):
+                    self._design_instances(member, f"{scope_prefix}{name}.", out)
+            elif kind == "InstanceArraySymbol":
+                if getattr(member, "isUninstantiated", False):
+                    return
+                lower = getattr(getattr(member, "range", None), "lower", None)
+                if lower is None:
+                    return
+                for offset, element in enumerate(
+                    getattr(member, "elements", None) or []
+                ):
+                    child(element, scope_prefix, f"{name}[{int(lower) + offset}]")
+
+        for member, scope_prefix in self._iter_scope(inst.body, prefix):
+            child(member, scope_prefix, getattr(member, "name", "") or "")
+
+    def _classify_design_arrays(self) -> None:
+        """Decide which unpacked arrays of the design are memories, as Yosys'
         Verilog frontend does before ``proc`` (``mem2reg``), checked
         against Yosys 0.64 for each case (rtl-buddy-cdc#398). An array is
         a list of registers, named per element, when
@@ -4979,28 +5607,38 @@ class _ModuleBuilder:
         Anything else is a memory, also one nothing writes: every read of
         it is a ``$memrd_v2``, every write a ``$memwr_v2``, at a constant
         address too, and it has no netname. Arrays bound to ports stay
-        registers."""
+        registers.
+
+        The whole inlined design is scanned before anything is lowered
+        (rtl-buddy-cdc#405): a hierarchical write (``u_child.a[i] <= d``)
+        counts against the array it names, and a read of a memory through
+        a hierarchical name (``gr.lm[ra]``, ``u_child.mem[ra]``) is a read
+        port wherever it sits in source order."""
+        instances: list[tuple[Any, str]] = []
+        self._design_instances(self.top, "", instances)
         flags: dict[Any, set[str]] = {}
         arrays: list[tuple[Any, str]] = []
-        ports = {
-            self._canonical_var(m)
-            for m in inst.body
-            if self._kind_name(m) == "PortSymbol"
-            and getattr(m, "internalSymbol", None) is not None
-        }
-        for member, prefix in self._iter_scope(inst.body, hier_prefix):
-            kind = self._kind_name(member)
-            if kind == "VariableSymbol":
-                arrays.append((member, prefix))
-            elif kind == "ProceduralBlockSymbol":
-                proc = str(member.procedureKind).rsplit(".", 1)[-1]
-                if proc not in {"Initial", "Final"}:
-                    sync = self._edge_event_count(member.body) == 1
-                    self._scan_array_process(member.body, sync, flags)
-            elif kind == "ContinuousAssignSymbol":
-                assign = getattr(member, "assignment", None)
-                if assign is not None:
-                    self._scan_array_process(assign, False, flags)
+        ports: set[Any] = set()
+        for inst, hier_prefix in instances:
+            ports.update(
+                self._canonical_var(m)
+                for m in inst.body
+                if self._kind_name(m) == "PortSymbol"
+                and getattr(m, "internalSymbol", None) is not None
+            )
+            for member, prefix in self._iter_scope(inst.body, hier_prefix):
+                kind = self._kind_name(member)
+                if kind == "VariableSymbol":
+                    arrays.append((member, prefix))
+                elif kind == "ProceduralBlockSymbol":
+                    proc = str(member.procedureKind).rsplit(".", 1)[-1]
+                    if proc not in {"Initial", "Final"}:
+                        sync = self._edge_event_count(member.body) == 1
+                        self._scan_array_process(member.body, sync, flags)
+                elif kind == "ContinuousAssignSymbol":
+                    assign = getattr(member, "assignment", None)
+                    if assign is not None:
+                        self._scan_array_process(assign, False, flags)
         for member, prefix in arrays:
             sym = self._canonical_var(member)
             if sym in ports or self._unpacked_ranges(sym) is None:
@@ -5036,7 +5674,7 @@ class _ModuleBuilder:
         self, node: Any, sync: bool, flags: dict[Any, set[str]]
     ) -> None:
         """Record in ``flags`` how one process (or continuous assignment)
-        writes and reads unpacked arrays, for :meth:`_classify_arrays`:
+        writes and reads unpacked arrays, for :meth:`_classify_design_arrays`:
         ``async`` (written outside a single-edge process), ``reread``
         (read after a blocking write in the same process), ``whole`` (the
         whole array or a slice written), ``const`` / ``var`` (an element
@@ -5051,7 +5689,7 @@ class _ModuleBuilder:
             names: list[Any] = []
 
             def name(n: Any) -> None:
-                if type(n).__name__ == "NamedValueExpression":
+                if type(n).__name__ in self._NAME_KINDS:
                     names.append(n.symbol)
 
             sel.visit(name)
@@ -5065,13 +5703,17 @@ class _ModuleBuilder:
 
         def visit(n: Any) -> Any:
             kind = type(n).__name__
+            if kind == "ForeachLoopStatement":
+                loop_vars.update(
+                    d.loopVar for d in getattr(n, "loopDims", None) or [] if d.loopVar
+                )
             if kind == "ForLoopStatement":
                 loop_vars.update(getattr(n, "loopVars", None) or [])
                 for init in getattr(n, "initializers", None) or []:
                     target = getattr(init, "left", None)
                     if type(target).__name__ == "NamedValueExpression":
                         loop_vars.add(getattr(target, "symbol", None))
-            elif kind == "NamedValueExpression":
+            elif kind in self._NAME_KINDS:
                 sym = self._canonical_var(n.symbol)
                 if sym in blocking:
                     flags.setdefault(sym, set()).add("reread")
@@ -5102,7 +5744,7 @@ class _ModuleBuilder:
             return out
         acc = self._array_access(lhs)
         if acc is None:
-            if type(lhs).__name__ == "NamedValueExpression":
+            if self._is_named(lhs):
                 sym = self._canonical_var(lhs.symbol)
                 if self._unpacked_ranges(sym) is not None:
                     flags.setdefault(sym, set()).add("whole")
@@ -5715,12 +6357,22 @@ class _ModuleBuilder:
             return
         if kind in {"StatementList", "ListStatement"}:
             for s in getattr(stmt, "list", []) or []:
-                self._walk_comb_statement(s)
+                if not self._flags:
+                    self._walk_comb_statement(s)
+                elif not self._gated_walk(
+                    functools.partial(self._walk_comb_statement, s), s
+                ):
+                    break
+            return
+        if kind in ("BreakStatement", "ContinueStatement") and self._set_flag(
+            "break" if kind == "BreakStatement" else "continue"
+        ):
             return
         if kind == "ExpressionStatement":
             write = self._as_assignment(stmt.expr)
             if write is None:
-                self._other_statement(stmt, "combinational block")
+                if not self._inline_call_statement(stmt.expr):
+                    self._other_statement(stmt, "combinational block")
                 return
             self._alias_assign(write)
             return
@@ -5731,21 +6383,28 @@ class _ModuleBuilder:
             self._walk_case_statement(stmt)
             return
         if kind == "ReturnStatement" and self._inline_returns:
-            # ``return expr;`` ending an inlined function body.
+            # ``return expr;`` (or a bare ``return;`` of a task / void
+            # function) in an inlined body: the value, then the flag that
+            # skips the rest of the body.
             ret = self._inline_returns[-1]
             value = getattr(stmt, "expr", None)
-            bits = (
-                self._sized_rhs_bits(value, self._width_of(ret))
-                if value is not None
-                else None
-            )
-            if bits is None:
-                self._lowering_failures += 1
-            else:
-                self._var_bits[ret] = bits
+            if value is not None:
+                bits = (
+                    self._sized_rhs_bits(value, self._width_of(ret))
+                    if ret is not None
+                    else None
+                )
+                if bits is None:
+                    self._lowering_failures += 1
+                else:
+                    self._var_bits[ret] = bits
+            self._set_flag("return")
             return
-        if kind == "ForLoopStatement":
-            self._unroll_for(stmt, self._walk_comb_statement)
+        if kind in self._LOOP_KINDS:
+            self._with_flag(
+                "break",
+                lambda: self._unroll_for(stmt, self._walk_comb_statement, control=True),
+            )
             return
         if kind == "VariableDeclStatement":
             self._declare_local(stmt, clocked=False)
@@ -5856,9 +6515,18 @@ class _ModuleBuilder:
             if live is not None:
                 self._walk_comb_statement(live)
             return
-        sel = self._condition_bit(stmt)
+        # A negated one-bit condition (``if (!a)``, ``if (~a)``) selects on
+        # ``a`` with the legs swapped, as Yosys ``proc`` builds it (the
+        # clocked walk does since rtl-buddy-cdc#402). rtl-buddy-cdc#405: a
+        # ``$logic_not`` select put the ``else`` value on ``A``, so a clock
+        # mux ``if (!sel) c = clk_a; else c = clk_b;`` traced to ``clk_b``
+        # where Yosys traces ``clk_a`` (``trace_clock_root`` follows ``A``).
+        negated = self._negated_condition_bit(stmt)
+        sel = negated if negated is not None else self._condition_bit(stmt)
         base = dict(self._var_bits)
         true_state, false_state = self._walk_branches([stmt.ifTrue, stmt.ifFalse])
+        if negated is not None:
+            true_state, false_state = false_state, true_state
         written = {
             k
             for state in (true_state, false_state)
@@ -5892,14 +6560,8 @@ class _ModuleBuilder:
         """
         items = list(getattr(stmt, "items", []) or [])
         default_arm = getattr(stmt, "defaultCase", None)
-        case_const = self._const_int(stmt.expr)
-        if case_const is not None:
-            live: Any = default_arm
-            for item in items:
-                labels = [self._const_int(e) for e in item.expressions]
-                if case_const in labels:
-                    live = getattr(item, "stmt", None)
-                    break
+        folded, live = self._constant_case_arm(stmt)
+        if folded:
             if live is not None:
                 self._walk_comb_statement(live)
             return
@@ -5975,7 +6637,7 @@ class _ModuleBuilder:
         # skipped without a word).
         lhs = expr.left
         lhs_kind = type(lhs).__name__
-        if lhs_kind == "NamedValueExpression":
+        if self._is_named(lhs):
             rhs_bits = self._rhs_bits(expr.right, len(self._alloc_bits(lhs.symbol)))
             self._rewrite_aliased(lhs, rhs_bits)
             return
@@ -6063,7 +6725,7 @@ class _ModuleBuilder:
         while type(e).__name__ in self._SELECT_KINDS:
             nodes.append(e)
             e = getattr(e, "value", None)
-        if type(e).__name__ != "NamedValueExpression" or not nodes:
+        if not self._is_named(e) or not nodes:
             return None
         sym = self._canonical_var(e.symbol)
         sym_type = getattr(sym, "type", None)
@@ -6334,29 +6996,24 @@ class _ModuleBuilder:
         if a is None or type(a).__name__ != "AssignmentExpression":
             return
         lhs, rhs = a.left, a.right
-        if type(lhs).__name__ != "NamedValueExpression":
+        if not self._is_named(lhs):
             # ``assign {c, s} = a + b;`` / ``assign bus[3:0] = x;``
             # (rtl-buddy-cdc#370).
             if not self._splice_assign(lhs, rhs, continuous=True):
                 self._warn_lvalue_dropped(member, lhs)
             return
         rhs_bits = self._rhs_bits(rhs, len(self._alloc_bits(lhs.symbol)))
-        # Aliasing trick: rewrite the LHS variable's bits to point at
-        # the RHS's bits so any reader of the LHS sees the RHS source
-        # directly. This matches Yosys' post-opt_clean output for
-        # ``assign out = sig`` and means we don't need a $buf cell.
-        old_bits = self._var_bits.get(self._canonical_var(lhs.symbol))
-        self._rewrite_aliased(lhs, rhs_bits)
-        # A continuous assign holds for the whole simulation, so a cell
-        # emitted *earlier in source order* that already read the net
-        # (``if (pop && !empty)`` above ``assign empty = …``) must see
-        # the RHS too, not the net's now-undriven placeholder bits.
-        # Recorded here, applied to every cell once the walk is done
-        # (#326: the async-FIFO flags are the canonical forward use).
-        if old_bits is not None:
-            for o, n in zip(old_bits, rhs_bits):
-                if o in self._placeholder_bits and o != n:
-                    self._forward_renames[o] = n
+        # Aliasing trick: point the LHS variable at the RHS's bits so any
+        # reader of the LHS sees the RHS source directly. This matches
+        # Yosys' post-opt_clean output for ``assign out = sig`` and means
+        # we don't need a $buf cell. A continuous assign holds for the
+        # whole simulation, so a cell emitted *earlier in source order*
+        # that already read the net (``if (pop && !empty)`` above ``assign
+        # empty = …``) must see the RHS too, not the net's undriven
+        # placeholder bits: :meth:`_drive_net` records that, applied to
+        # every cell once the walk is done (#326: the async-FIFO flags are
+        # the canonical forward use).
+        self._drive_net(lhs.symbol, 0, rhs_bits, member)
 
     def _apply_forward_renames(self) -> None:
         """Rewrite every cell connection through ``_forward_renames``

@@ -468,9 +468,15 @@ endmodule
 @pytest.mark.parametrize(
     ("decl", "stmt", "reason"),
     [
-        ("reg [7:0] y;", "always @(posedge clk_b) {>>{y}} <= x;", "streaming"),
-        ("reg [7:0] y;", "always_comb {>>{y}} = x;", "streaming"),
-        ("wire [7:0] y;", "assign {>>{y}} = x;", "streaming"),
+        # A ``with`` range (a plain streaming target is lowered,
+        # rtl-buddy-cdc#405).
+        (
+            "reg [1:0] y [8];",
+            "always @(posedge clk_b) {>>{y with [0 +: 4]}} <= x;",
+            "streaming",
+        ),
+        ("reg [1:0] y [8];", "always_comb {>>{y with [0 +: 4]}} = x;", "streaming"),
+        ("wire [1:0] y [8];", "assign {>>{y with [0 +: 4]}} = x;", "streaming"),
         # A row of a two-dimensional array at a run-time index (a run-time
         # element or bit is lowered, rtl-buddy-cdc#402).
         (
@@ -526,7 +532,12 @@ _UNPACKED = "typedef struct { logic [1:0] f; } us_t;\n"
             "output port connection `q` not lowered (target is a member",
         ),
         ("us_t us; always_comb us.f = x[1:0];", "member of an unpacked"),
-        ("always @(posedge clk_b) u.r <= x[0];", "hierarchical reference"),
+        # A name inside a blackbox (rtl-buddy-cdc#405: one into an
+        # inlined instance is lowered).
+        (
+            "bbx v (); always @(posedge clk_b) v.r <= x[0];",
+            "hierarchical reference outside the lowered design",
+        ),
     ],
     ids=[
         "port_unpacked",
@@ -537,7 +548,10 @@ _UNPACKED = "typedef struct { logic [1:0] f; } us_t;\n"
 def test_more_unlowered_targets_warn(tmp_path: Path, caplog, body: str, needle: str):
     src = (
         _UNPACKED
-        + f"""module sub (output logic [1:0] q);
+        + f"""(* blackbox *) module bbx;
+    logic r;
+endmodule
+module sub (output logic [1:0] q);
     logic r;
     assign q = 2'b0;
 endmodule
@@ -554,7 +568,7 @@ endmodule
 
 
 def test_unlowerable_rhs_into_concatenation(tmp_path: Path) -> None:
-    """An RHS with no lowering (``$countones``) still gives the
+    """An RHS with no lowering (``$clog2``) still gives the
     registers an opaque ``$_UNKNOWN_`` driver, as for a plain target; a
     combinational splice leaves the bits undriven, as a whole-variable
     combinational target does."""
@@ -562,9 +576,9 @@ def test_unlowerable_rhs_into_concatenation(tmp_path: Path) -> None:
           output reg [1:0] b, output reg [2:0] c);
     always @(posedge clk_b or negedge rst_n)
         if (!rst_n) {a, b} <= x;
-        else {a, b} <= $countones(x);
+        else {a, b} <= $clog2(x);
     reg [2:0] w;
-    always_comb {w[2], w[1:0]} = $countones(x);
+    always_comb {w[2], w[1:0]} = $clog2(x);
     always @(posedge clk_b) c <= w;
 endmodule
 """

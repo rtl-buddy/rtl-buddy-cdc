@@ -452,19 +452,19 @@ def test_unary_plus_is_identity_no_cell(tmp_path: Path) -> None:
 
 
 def test_continuous_assign_unmodelled_rhs_is_opaque(tmp_path: Path, caplog) -> None:
-    """``assign y = $countones(a);`` where the RHS isn't modelled: ``y``
+    """``assign y = $clog2(a);`` where the RHS isn't modelled: ``y``
     is driven by a reported ``$_UNKNOWN_`` cell (rtl-buddy-cdc#377; it
     used to be left silently undriven)."""
     src = """
     module m (input logic [3:0] a, output logic [3:0] y);
-        assign y = $countones(a);
+        assign y = $clog2(a);
     endmodule
     """
     with caplog.at_level(logging.WARNING):
         mod = _elaborate(tmp_path, src)
     (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
     assert mod.ports["y"].bits == unknown.connections["Y"]
-    assert any("$countones(a)" in r.getMessage() for r in caplog.records)
+    assert any("$clog2(a)" in r.getMessage() for r in caplog.records)
 
 
 def test_arithmetic_shift_left_emits_sshl(tmp_path: Path) -> None:
@@ -490,16 +490,17 @@ def test_arithmetic_shift_left_emits_sshl(tmp_path: Path) -> None:
         ("|", "$reduce_or"),
         ("~|", "$reduce_or"),
         ("^", "$reduce_xor"),
-        ("~^", "$reduce_xor"),
+        ("~^", "$reduce_xnor"),
     ],
 )
 def test_reduction_unary_ops_lower_and_collapse_to_one_bit(
     tmp_path: Path, op: str, expected_cell: str
 ) -> None:
     """Each reduction ``UnaryOperator`` collapses its multi-bit operand
-    to a single-bit ``$reduce_*`` cell. ``~&`` / ``~|`` / ``~^`` share a
-    cell with their non-inverting form (the rule pack only reads
-    category membership), and the Y width is exactly 1."""
+    to a single-bit ``$reduce_*`` cell, and the Y width is exactly 1.
+    ``~&`` / ``~|`` are that cell then a ``$logic_not`` and ``~^`` is a
+    ``$reduce_xnor``, as Yosys lowers them (rtl-buddy-cdc#405: the
+    inversion was dropped)."""
     src = f"""
     module m (input logic [3:0] a, output logic y);
         assign y = {op}a;
@@ -516,6 +517,12 @@ def test_reduction_unary_ops_lower_and_collapse_to_one_bit(
     assert len(reduces[0].connections["A"]) == 4, (
         f"reduction A should be the full 4-bit operand; got {reduces[0].connections['A']}"
     )
+    nots = [c for c in mod.cells.values() if c.type == "$logic_not"]
+    if op in ("~&", "~|"):
+        (inv,) = nots
+        assert inv.connections["A"] == reduces[0].connections["Y"]
+    else:
+        assert not nots
 
 
 # --- _const_int folding ---------------------------------------------------
@@ -578,7 +585,7 @@ def test_unmodelled_rhs_becomes_unknown_driver(tmp_path: Path) -> None:
     reach D."""
     src = """
     module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
-        always_ff @(posedge clk) q <= $countones(d);
+        always_ff @(posedge clk) q <= $clog2(d);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -710,7 +717,7 @@ def test_comb_if_with_unlowerable_selector_is_reported(tmp_path: Path, caplog) -
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
         logic [3:0] y;
         always_comb begin
-            if ($countones(a)) y = a;
+            if ($clog2(a)) y = a;
             else      y = b;
         end
         always_ff @(posedge clk) q <= y;

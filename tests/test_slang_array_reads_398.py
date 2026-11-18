@@ -3,7 +3,7 @@
 
 Yosys' Verilog frontend decides per array whether it stays a memory or
 becomes a list of registers (``mem2reg``); the slang frontend makes the
-same decision (``_ModuleBuilder._classify_arrays``) and lowers reads and
+same decision (``_ModuleBuilder._classify_design_arrays``) and lowers reads and
 writes to match:
 
 1. a register array read at a run-time index is a ``$pmux`` over every

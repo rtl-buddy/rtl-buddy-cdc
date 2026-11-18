@@ -418,7 +418,7 @@ def test_unlowerable_condition_warns(tmp_path: Path, caplog) -> None:
     and muxed on an opaque select (item 4), not walked as if both arms
     were unconditional."""
     src = """module m (input [3:0] a, input [3:0] b, output reg [3:0] y);
-    always @* begin y = b; if (a ==? 4'b1z0x) y = a; end
+    always @* begin y = b; if (a[0] -> b[0]) y = a; end
 endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
@@ -517,9 +517,7 @@ endmodule
 @pytest.mark.parametrize(
     "func",
     [
-        # A ``return`` before the end of the body.
-        "function automatic [3:0] f(input [3:0] x); if (x[0]) return x;"
-        " return ~x; endfunction",
+        # (An early ``return`` is inlined since rtl-buddy-cdc#405.)
         # An output argument.
         "function automatic [3:0] f(input [3:0] x, output [3:0] o);"
         " o = x; f = x; endfunction",
@@ -529,7 +527,7 @@ endmodule
         "function automatic [3:0] f(input [3:0] x); f = x;"
         " while (f[0]) f = f >> 1; endfunction",
     ],
-    ids=["early_return", "output_arg", "side_effect", "while_loop"],
+    ids=["output_arg", "side_effect", "while_loop"],
 )
 def test_function_not_inlined_stays_opaque(tmp_path: Path, func: str) -> None:
     """A function body outside the inlined shapes is not half-lowered:
@@ -603,11 +601,11 @@ endmodule
 @pytest.mark.parametrize(
     "body",
     [
-        "assign y = $countones(a);",
-        "always_comb y = $countones(a);",
-        "always @* begin y = 4'd0; y[1:0] = $countones(a); end",
-        "wire [3:0] w = $countones(a); assign y = w;",
-        "sub u (.i($countones(a)), .o(y));",
+        "assign y = $clog2(a);",
+        "always_comb y = $clog2(a);",
+        "always @* begin y = 4'd0; y[1:0] = $clog2(a); end",
+        "wire [3:0] w = $clog2(a); assign y = w;",
+        "sub u (.i($clog2(a)), .o(y));",
     ],
     ids=["assign", "always_comb", "part_select", "wire_init", "port"],
 )
@@ -629,13 +627,13 @@ endmodule
     assert unknown & set(module.ports["y"].bits)
     msgs = _warnings(caplog)
     assert any(
-        "`$countones(a)` not lowered; modelled as an opaque driver" in m for m in msgs
+        "`$clog2(a)` not lowered; modelled as an opaque driver" in m for m in msgs
     ), msgs
 
 
 def test_unlowerable_register_input_is_reported(tmp_path: Path, caplog) -> None:
     src = """module m (input clk, input [3:0] a, output reg [3:0] q);
-    always @(posedge clk) q <= $countones(a);
+    always @(posedge clk) q <= $clog2(a);
 endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
@@ -806,7 +804,8 @@ endmodule
     [
         ("for (int i = 0; i < n; i++) q[i] = a;", "`for` loop not lowered"),
         ("while (n[0]) q = a;", "`WhileLoopStatement` is not modelled"),
-        ("repeat (2) q = a;", "`RepeatLoopStatement` is not modelled"),
+        # A constant ``repeat`` is unrolled (rtl-buddy-cdc#405).
+        ("repeat (n) q = a;", "`repeat` loop not lowered"),
         ("t(q);", "`ExpressionStatement` is not modelled"),
     ],
     ids=["runtime_bound", "while", "repeat", "task_call"],
@@ -816,7 +815,7 @@ def test_unmodelled_statements_warn(
     tmp_path: Path, caplog, body: str, needle: str, kw: str
 ) -> None:
     src = f"""module m (input clk, input [1:0] n, input a, output logic [3:0] q);
-    task automatic t(output logic [3:0] o); o = 4'd1; endtask
+    task automatic t(output logic [3:0] o); #1 o = 4'd1; endtask
     {kw} begin {body} end
 endmodule
 """

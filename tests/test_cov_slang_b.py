@@ -213,26 +213,33 @@ def test_struct_member_lhs_lowers(tmp_path: Path) -> None:
     assert flop.connections["D"] == mod.ports["d"].bits
 
 
-def test_unresolvable_lhs_is_reported(tmp_path: Path, caplog) -> None:
-    """``{>>{q}} <= d`` (a streaming concatenation) has no lowering, so
-    the write contributes no flop — and says so with a WARNING rather
-    than vanishing (rtl-buddy-cdc#370)."""
+def test_streaming_lhs_is_one_register(tmp_path: Path, caplog) -> None:
+    """``{>>{q}} <= d`` (a streaming concatenation target) is ``q <= d``
+    and ``{<<{r}} <= d`` is ``r`` loaded bit-reversed, each one register
+    (rtl-buddy-cdc#405: such a write was reported and dropped, #370). An
+    unlowerable target is still reported: see
+    ``test_slang_concat_lvalue.py::test_more_unlowered_targets_warn``."""
     src = """
-    module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
+    module m (input logic clk, input logic [3:0] d, output logic [3:0] q,
+              output logic [3:0] r);
         always_ff @(posedge clk) {>>{q}} <= d;
+        always_ff @(posedge clk) {<<{r}} <= d;
     endmodule
     """
     with caplog.at_level("WARNING", logger="rtl_buddy_cdc.frontends.slang"):
         mod = _elaborate(tmp_path, src)
-    assert _flop_count(mod) == 0
-    assert any("assignment not lowered" in r.getMessage() for r in caplog.records)
+    assert not caplog.records
+    flops = {c.connections["Q"]: c for c in mod.cells.values() if c.type == "$dff"}
+    d = mod.ports["d"].bits
+    assert flops[mod.ports["q"].bits].connections["D"] == d
+    assert flops[mod.ports["r"].bits].connections["D"] == d[::-1]
 
 
 # --- non-lowerable case-expr: conservative bail ---------------------------
 
 
 def test_case_on_unlowerable_expr_compares_an_opaque_value(tmp_path: Path) -> None:
-    """``case ($countones(sel))`` — the case expression does not lower,
+    """``case ($clog2(sel))`` — the case expression does not lower,
     so it becomes a reported opaque value the arms' ``$eq`` enables
     compare against (rtl-buddy-cdc#377: every arm used to be walked as
     if unconditional). The ``q`` writes still surface as one flop."""
@@ -245,7 +252,7 @@ def test_case_on_unlowerable_expr_compares_an_opaque_value(tmp_path: Path) -> No
     );
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
-            else case ($countones(sel))
+            else case ($clog2(sel))
                 2'd0:    q <= d;
                 default: q <= 4'd0;
             endcase
@@ -285,7 +292,7 @@ def test_case_match_function_call_walks_item_without_enable(tmp_path: Path) -> N
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
             else case (sel)
-                $countones(d): q <= d;
+                $clog2(d): q <= d;
                 default:  ;
             endcase
         end

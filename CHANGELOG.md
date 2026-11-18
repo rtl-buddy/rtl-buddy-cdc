@@ -1774,6 +1774,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     a plain vector inside a concatenation target (`{c, y[i]} = x`) is
     written; Yosys 0.64 drops that part without a warning.
 
+- **slang frontend: hierarchical references, and wrong-netlist gaps found
+  by a cross-frontend simulation sweep** (rtl-buddy-cdc#405, items 2 and
+  5). Small designs covering functions and tasks, `always_comb` forms,
+  `case` / `casez` / `case inside` / `unique` / `priority`, streaming and
+  replication, signed arithmetic, shifts, ternaries, packed structs and
+  unions, enums, typedef'd arrays, parameters and generate conditions,
+  interfaces, generate loops, delays, multiple drivers, `inout`, latches
+  and `always @*` were elaborated on both frontends and the netlists
+  simulated on the same stimulus. Checked in
+  `tests/test_slang_hier_refs_405.py` and `tests/test_slang_hunt_405.py`
+  against Yosys 0.64's `lint` netlist where Yosys parses the shape, and
+  against the SystemVerilog semantics otherwise.
+  - **Hierarchical references are lowered.** A dotted name whose target
+    is declared in an inlined instance reads and writes the target's own
+    bits, a memory through its ports: into a generate block (`gr.lm[ra]`,
+    `g[1].h.x`, `cs.y`), into a child instance (`u.q`, `ua[1].last`,
+    `u.mem[ra]`, `u.g[1].x`, a parameter `u.P`), and upward (`top.sig`).
+    Each read was an opaque driver and each write a reported, dropped
+    assignment, so a crossing through one was missed. Arrays are now
+    classified over the whole inlined design before lowering, so a
+    hierarchical write counts against the array it names. A name inside
+    a blackbox, or above a greybox body lowered on its own, is still
+    reported. Yosys resolves the generate-block names; for a child or
+    upward name it declares a new undriven one-bit wire, so there slang
+    now finds crossings Yosys misses.
+  - **A negated combinational condition swaps the mux legs** (item 5).
+    `if (!a) X else Y` in a level-sensitive body is `$mux(S=a, A=X, B=Y)`,
+    as Yosys `proc` builds it and the clocked walk already did; it was
+    `$mux(S=!a, A=Y, B=X)`. Not cosmetic: a clock mux written that way
+    traced to the other clock, putting the flops it clocks in another
+    domain than on Yosys (an extra crossing).
+  - **Signed operands.** A width conversion inside an expression was
+    ignored, so a signed operand widened by `s ? a : b` or `a * b` was
+    zero-extended and its MSB had no fan-in to the upper result bits;
+    every binary cell was unsigned, so `<`, `>>>` and `/` of signed
+    operands computed the unsigned result. Conversions now extend (sign
+    only from a signed operand into a signed type) or truncate wherever
+    they appear, and binary cells carry `A_SIGNED` / `B_SIGNED`.
+  - **`case (1'b1)` with signal labels**, and `casez` of a constant
+    against wildcard labels, were folded as decided at elaboration: the
+    labels were skipped and the `default` walked alone, so every arm's
+    fan-in was lost.
+  - **A second continuous driver of a net** renamed the first driver's
+    source net to its own, so `assign w = a; assign w = b;` made the
+    inputs `a` and `b` one net. A `wor` / `wand` net now resolves its
+    drivers by `$or` / `$and`; any other net is their `$or`, reported.
+  - **`c ? a : b` with a multi-bit `c`** selected on `c[0]` alone;
+    **`~&`, `~|`, `~^`** computed `&`, `|`, `^`.
+  - **Lowered instead of an opaque driver or a dropped statement:**
+    `inside` (values, ranges, `$`), `==?` / `!=?`, `case … inside`
+    ranges, streaming concatenations read or written, assignment
+    patterns (`'{default: '0}`, positional, keyed, replicated), `repeat`
+    and `foreach` loops, a `return` before the end of a function,
+    `break` / `continue` in a combinational loop, task and `void`
+    function calls with `output` / `inout` arguments (combinational and
+    clocked), and `$countones` / `$onehot` / `$onehot0` / `$isunknown`.
+  - Still reported, not lowered: `while` / `do … while`, `break` /
+    `continue` in a clocked loop, `->` / `<->`, `++` / `--` inside an
+    expression, enum methods, a streaming `with` range, `bufif` /
+    `notif` and switch primitives. No committed fixture, golden or
+    integration verdict changes; unit tests that pinned the old
+    reporting of now-lowered shapes use still-unlowered ones.
+
 ### Internal
 
 - **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —
