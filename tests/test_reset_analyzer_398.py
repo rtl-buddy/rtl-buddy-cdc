@@ -332,10 +332,10 @@ def _reset_table(module: Module) -> dict[str, list[tuple]]:
 )
 def test_slang_reset_table_matches_the_proc_form() -> None:
     """Every register classifies as the ``proc`` form does, lane groups
-    included, with one exception pinned here: slang writes ``else if
-    (!rb)`` as an active-high mux behind a ``$logic_not`` where ``proc``
-    swaps the mux legs, so the combined reset of ``q_two_n`` is read
-    active high (still ``comb``)."""
+    included: ``else if (!rb)`` selects on ``rb`` with the mux legs
+    swapped, as ``proc`` builds it, so the combined reset of ``q_two_n``
+    reads active low on both (rtl-buddy-cdc#402; slang read it active
+    high, through a ``$logic_not``)."""
     from rtl_buddy_cdc.frontends import slang as slang_fe
 
     module, _ = slang_fe.elaborate_with_blackboxes([FIX / LANES / f"{LANES}.sv"], LANES)
@@ -347,6 +347,5 @@ def test_slang_reset_table_matches_the_proc_form() -> None:
     assert srst_types["q_ce"] == "$sdffce"
     got = _reset_table(module)
     proc = _reset_table(netlist.load(FIX / LANES / f"{LANES}.json"))
-    assert got.pop("q_two_n") == [("", "comb", "high", "sync", 0)]
-    assert proc.pop("q_two_n") == [("", "comb", "low", "sync", 0)]
+    assert got["q_two_n"] == [("", "comb", "low", "sync", 0)]
     assert got == proc

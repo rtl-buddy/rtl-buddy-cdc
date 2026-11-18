@@ -1679,6 +1679,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   committed fixture or integration golden changes verdict; three unit
   tests that pinned the old shapes now assert the new ones.
 
+- **slang frontend: loop-variable selects, run-time index writes, negated
+  sync selects, memory names** (rtl-buddy-cdc#402, items 1, 2, 3, 4, 8,
+  9). Checked against Yosys 0.64's `lint` netlist by simulation and on
+  the `lint` verdict in `tests/test_slang_loops_arrays_402.py`. No
+  committed fixture, golden or integration verdict changes.
+  - **A bit or part select of a loop variable reads its value.** `k[0]`,
+    `k[2:1]` of an unrolled `for` loop's variable, and of a genvar, read
+    0, so `arr[r][k] = r[0] ^ k[0]` was `$xor('0', '0')`. Conditions on
+    the loop variable (`k < 3`, `k == N`, `k[2] && …`) are decided per
+    iteration, as Yosys' frontend folds them, so a dead arm's fan-in is
+    not in the netlist. A select of a parameter reads its value too:
+    `Q[5:4]` of a packed parameter read an undriven placeholder, and an
+    element of an unpacked parameter array (`P[1]`, `P[i]`) an undriven
+    placeholder or an opaque driver.
+  - **A combinational write at a run-time index reaches the indexed
+    element.** `g[i] = d` of a register array was a `$shl` over the whole
+    array by `hi - i`, so an ascending `[0:3]` array took `d` in element
+    `3 - i`, and the shift mixed the lanes. Each element is now `mux(i ==
+    k, old, d)` over its own lanes, as Yosys `mem2reg` builds it, for any
+    range, offset or number of dimensions. A run-time bit of a packed
+    vector (`v[i] = d`) is `(v & ~mask) | data`; it was `v | data`, so a 0
+    never cleared a bit.
+  - **Run-time bits of words, words in concatenations.** `m[i][j] <= b`
+    (a memory's word or a register array's element), `{cx[i], t} <= {d,
+    e}`, and `v[j] <= b` / `v[j +: N] <= x` of a plain vector in a clocked
+    block were reported and dropped (with their crossings). A memory's is
+    a write port with the data and a one-hot bit enable shifted to `j`; a
+    register's a write of `(Q & ~mask) | data`, under each element's index
+    compare; a concatenation is one write per part.
+  - **`else if (!rb)` reads active low.** A one-bit negated `if`
+    condition (`!x`, `~x`, `!(a & b)`) in a clocked block selects on the
+    operand with the mux legs swapped, as `proc` builds it; it was an
+    active-high mux behind a `$logic_not`, so the reset map read a
+    combination of active-low sync selects active high on slang only (the
+    residual noted for rtl-buddy-cdc#398 below). A sync reset arm under
+    a vector condition (`if (!v)`, `if (&v)`) is no longer folded into an
+    `$sdff` with `v` on a multi-bit `SRST` (`&v` read as an active-low
+    `v`); it is the `$logic_not` / `$reduce_and` select on `D` `proc`
+    builds.
+  - **A memory's `MEMID` is its declaration's name.** Ports of one memory
+    in different generate blocks took each block's prefix and read as
+    separate memories.
+  - Kept on purpose, pinned in the test: an offset array `[4:7]` written
+    at a run-time index names `off[4..7]`, where Yosys `mem2reg` also
+    makes registers `off[0..3]` that no index reaches (and reports
+    crossings into them); elements of an array only blocking-written in a
+    clocked block keep their netnames, which Yosys `opt_clean` drops. A
+    partly out-of-range `v[p -: 3] = d` writes its in-range bits (Yosys
+    computes the position unsigned and writes nothing). A run-time bit of
+    a plain vector inside a concatenation target (`{c, y[i]} = x`) is
+    written; Yosys 0.64 drops that part without a warning.
+
 ### Internal
 
 - **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —

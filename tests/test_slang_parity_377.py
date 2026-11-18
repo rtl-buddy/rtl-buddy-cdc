@@ -1080,6 +1080,13 @@ endmodule
                     r = num["A"] * num["B"]
                 elif c.type == "$shl":
                     r = num["A"] << num["B"]
+                elif c.type == "$neg":
+                    r = -num["A"]
+                elif c.type == "$shift":
+                    # ``B`` signed: a negative amount shifts left.
+                    b_bits = len(c.connections["B"])
+                    amount = num["B"] - ((num["B"] >> (b_bits - 1)) << b_bits)
+                    r = num["A"] >> amount if amount >= 0 else num["A"] << -amount
                 else:
                     raise AssertionError(c.type)
                 for k, b in enumerate(y):

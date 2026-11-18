@@ -515,15 +515,16 @@ def test_array_shapes_around_the_reads(
     array is read through a ``$pmux`` per dimension, a two-dimensional
     memory through one port at the flattened address; an array only an
     ``initial`` block writes is a memory; a memory written under an enable
-    and a sync reset gets a port per arm, enabled by both; a word in a
-    concatenation target, and a run-time bit of a word, are reported,
-    never dropped silently."""
+    and a sync reset gets a port per arm, enabled by both. A word in a
+    concatenation target and a run-time bit of a word are lowered
+    (rtl-buddy-cdc#402; they were reported and dropped), see
+    ``tests/test_slang_loops_arrays_402.py``."""
     with caplog.at_level(logging.WARNING, logger="rtl_buddy_cdc.frontends.slang"):
         module = _slang(tmp_path, _EDGES)
     dropped = [r.getMessage() for r in caplog.records if "assignment" in r.getMessage()]
-    assert len(dropped) == 3
-    assert set(_memories(module)) == {"\\cat", "\\ce", "\\md2", "\\rom"}
-    assert "mw[0]" not in module.netnames  # a memory: no port left, no name
+    assert dropped == []
+    assert set(_memories(module)) == {"\\cat", "\\ce", "\\md2", "\\mw", "\\rom"}
+    assert "mw[0]" not in module.netnames  # a memory: no element names
     drivers = _drivers(module)
     for port, memid in (("o7", "\\md2"), ("o8", "\\rom")):
         cell = drivers[module.ports[port].bits[0]][0]

@@ -471,15 +471,11 @@ endmodule
         ("reg [7:0] y;", "always @(posedge clk_b) {>>{y}} <= x;", "streaming"),
         ("reg [7:0] y;", "always_comb {>>{y}} = x;", "streaming"),
         ("wire [7:0] y;", "assign {>>{y}} = x;", "streaming"),
-        ("reg [7:0] y;", "always @(posedge clk_b) y[i] <= x[0];", "run-time index"),
-        (
-            "reg [7:0] y; reg c;",
-            "always @(posedge clk_b) {c, y[i]} <= x[1:0];",
-            "run-time index",
-        ),
+        # A row of a two-dimensional array at a run-time index (a run-time
+        # element or bit is lowered, rtl-buddy-cdc#402).
         (
             "reg [1:0] y [0:1][0:1];",
-            "always_comb y[i][1] = x[1:0];",
+            "always @(posedge clk_b) y[i[0]] <= '{x[1:0], x[3:2]};",
             "run-time index",
         ),
     ],
@@ -487,9 +483,7 @@ endmodule
         "ff_stream",
         "comb_stream",
         "assign_stream",
-        "ff_index",
-        "concat_index",
-        "nested_index",
+        "ff_row_index",
     ],
 )
 def test_unlowered_target_warns(
@@ -532,20 +526,11 @@ _UNPACKED = "typedef struct { logic [1:0] f; } us_t;\n"
             "output port connection `q` not lowered (target is a member",
         ),
         ("us_t us; always_comb us.f = x[1:0];", "member of an unpacked"),
-        ("reg [7:0] y; always_comb {y[i +: 2], y[0]} = x[2:0];", "run-time index"),
-        ("reg [0:0] y; always_comb y[i] = x[0];", "run-time index"),
-        (
-            "reg [1:0] y; reg c; always_latch if (x[0]) {c, y[i]} = x[2:0];",
-            "run-time index",
-        ),
         ("always @(posedge clk_b) u.r <= x[0];", "hierarchical reference"),
     ],
     ids=[
         "port_unpacked",
         "comb_unpacked",
-        "comb_indexed",
-        "comb_1bit_index",
-        "latch_concat",
         "hierarchical",
     ],
 )
