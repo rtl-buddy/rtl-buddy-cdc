@@ -230,7 +230,9 @@ internal flop the analyzer cannot place on any of the parent's clock roots
 (a clock arriving on an unrecognised pin — a case `--blackbox` used to
 abstract away **silently**, so greyboxing strictly *adds* soundness here),
 an input captured in two internal domains, and a multi-clock module with
-no internal registers.
+no internal registers. A decline is per instance (per clock context): a
+sibling instance of the same module whose clock context summarises is
+abstracted and gets no `CDC-BBX` (rtl-buddy-cdc#408).
 
 **It is opt-in — without `--blackbox`, behavior is unchanged.** On a normally-flattened netlist with no blackbox modules there is nothing to abstract, so the analyzer walks the full flat design exactly as in prior releases (the pre-existing fixture suite is unchanged proof). The abstraction is conservative: exact for registered single-clock logic, and it over-approximates but **never under-reports** on combinational paths through a boundary — see [`wiki/raw/articles/rtl-buddy-cdc-architecture.md`](wiki/raw/articles/rtl-buddy-cdc-architecture.md) §4.8–§4.9 for the precision model.
 

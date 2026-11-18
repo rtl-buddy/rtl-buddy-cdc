@@ -432,6 +432,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Abstracted instances' pins are left out of the driver map, so every
   pin name reaches the pin's published facts.
 
+- **A blackbox / greybox decline is per instance** (rtl-buddy-cdc#408,
+  item 10). One instance whose clock context declined (a clock pin
+  driven from an undeclared port, say) put `CDC-BBX` on every instance of
+  its module type, the well-formed siblings included, though those were
+  abstracted and analysed. `CDC-BBX` now names only the declined
+  instances; the clock-output decline (rtl-buddy-cdc#273) stays per module
+  type by design.
+
 - **`--greybox` reports the flat rule at a block's pin**
   (rtl-buddy-cdc#408, items 5, 6, 8, 9). The greybox pass publishes per
   pin what the body does with it besides a flop capture, and the parent

@@ -1115,7 +1115,10 @@ def _analyze_module_and_report(
         # blackboxed without the clock network vanishing with it. Same rule
         # id, same severity, same waiver: ``waive CDC-BBX <instance-regex>``.
         for inst, cell in module.cells.items():
-            if cell.type in comp_stats.declined_modules:
+            # Per declined instance (rtl-buddy-cdc#408): a sibling of the
+            # same type whose clock context summarised is abstracted, not
+            # opaque, and gets no CDC-BBX.
+            if inst in comp_stats.declined_instances:
                 clk_out = comp_stats.clock_output_ports_of(cell.type)
                 if clk_out:
                     noun = "a clock output" if len(clk_out) == 1 else "clock outputs"

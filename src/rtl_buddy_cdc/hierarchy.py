@@ -157,6 +157,12 @@ class CompositionStats:
     # the CDC-BBX message says it was the missing destination clock, not
     # the generic "not provably single-clock".
     undirected_primitive_modules: frozenset[str] = field(default_factory=frozenset)
+    # (rtl-buddy-cdc#408) The declined *instances*: every instance of a
+    # clock-output type (#273 — a module-level verdict), and each instance
+    # whose own ``(module type, clock context)`` was declined. A sibling
+    # whose context summarised is abstracted and is not in here, so the
+    # CLI reports CDC-BBX per declined instance, not per module type.
+    declined_instances: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def shared_subtree_reused(self) -> bool:
@@ -285,6 +291,7 @@ def compose_boundaries(
     ambiguous_input_modules: set[str] = set()
     unresolved_internal_modules: set[str] = set()
     undirected_primitive_modules: set[str] = set()
+    declined_instances: set[str] = set()
 
     # Clock-output decline (#273), decided per MODULE before anything is
     # summarised: a candidate whose output drives a clock generates or
@@ -343,6 +350,7 @@ def compose_boundaries(
             # clock network exactly the same way, and the user's
             # ``--sync-primitive`` promise is about the data crossing.
             declined_modules.add(cell.type)
+            declined_instances.add(inst_name)
             continue
         if is_sync_primitive(cell.type, sync_primitives):
             # Recognised CDC macro (#275): summarised as a synchroniser,
@@ -418,6 +426,7 @@ def compose_boundaries(
         analysis = analyses.get(cache_key)
         if summary is None:
             declined_modules.add(cell.type)
+            declined_instances.add(inst_name)
             if analysis is None:
                 pass  # stub blackbox: the pre-#261 decline flavours apply
             elif analysis.resolved:
@@ -465,6 +474,7 @@ def compose_boundaries(
         ambiguous_input_modules=frozenset(ambiguous_input_modules),
         unresolved_internal_modules=frozenset(unresolved_internal_modules),
         undirected_primitive_modules=frozenset(undirected_primitive_modules),
+        declined_instances=frozenset(declined_instances),
     )
     return out, stats
 

@@ -537,3 +537,33 @@ def test_gating_inside_a_block_with_an_acknowledge_is_clean(tmp_path: Path) -> N
     reports = _views(tmp_path, _GATED_INSIDE_ACKED, sdc)
     assert _rules(reports["flat"])["CDC-012"] == 0
     assert _rules(reports["greybox"]) == _rules(reports["flat"])
+
+
+# --- item 10: a greybox decline is per instance -------------------------------
+
+_TWO_TAPS = """\
+module tap (input smp_clk, input d, output q);
+    logic a, b;
+    always_ff @(posedge smp_clk) begin a <= d; b <= a; end
+    assign q = b;
+endmodule
+module top (input fast, input ck, input d, output q0, output q1);
+    tap u1 (.smp_clk(fast), .d(d), .q(q0));
+    tap u2 (.smp_clk(ck), .d(d), .q(q1));
+endmodule
+"""
+
+
+@needs_slang
+def test_greybox_decline_is_per_instance(tmp_path: Path) -> None:
+    """``u2`` is clocked from an undeclared port: its context declines
+    (CDC-BBX, loud, as the flat run's CDC-021 is). ``u1`` is clocked from
+    a declared clock: its context summarises, so it is abstracted and
+    gets no CDC-BBX."""
+    sdc = "create_clock -name fast -period 4 [get_ports fast]\n" + _typed("fast", "d")
+    reports = _views(tmp_path, _TWO_TAPS, sdc, module="tap")
+    assert _rules(reports["flat"]) == Counter({"CDC-021": 1})
+    grey = reports["greybox"]
+    assert _rules(grey) == Counter({"CDC-021": 1, "CDC-BBX": 1})
+    (bbx,) = [v for v in grey["violations"] if v["rule_id"] == "CDC-BBX"]
+    assert bbx["cell_name"] == "u2"

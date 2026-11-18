@@ -1015,8 +1015,8 @@ found, plus the clock-output hole #273 found.** All of them err toward
 - **Declined-opaque `CDC-BBX` error (FIX 2).** A declined instance is
   absent from the boundary map; its zero-cell internals are unanalysed —
   a coverage gap. Each declined instance (from
-  `CompositionStats.declined_modules`, plus the reconvergence-declined set
-  below) is emitted as a per-instance **`error`-severity `Violation`** with
+  `CompositionStats.declined_instances`, plus the reconvergence-declined
+  set below) is emitted as a per-instance **`error`-severity `Violation`** with
   `rule_id = "CDC-BBX"` and `cell_name = <instance>`, folded into the
   `violations` list before waiver/baseline/exit-code processing. So it is
   rendered in every format, **fails the run by default** (exit 1), and is
@@ -1312,7 +1312,12 @@ the parent's rule reach the verdict the flat run reaches
   one apart from the added facts.
 
 **What still declines, and why.** A conservative decline carrying a
-`CDC-BBX` diagnostic is acceptable; silence is not. Three cases survive:
+`CDC-BBX` diagnostic is acceptable; silence is not. A decline is per
+**instance** — per `(module type, clock context)`, the cache key — not per
+module type (rtl-buddy-cdc#408): a sibling whose context summarises is
+abstracted and gets no `CDC-BBX` (`CompositionStats.declined_instances`).
+Only the clock-output decline above is per module type, by design.
+Three cases survive:
 
 1. **An internal flop that lands on no parent clock root.** This is the
    case pin inspection *cannot* see, and the pass's most valuable catch.
