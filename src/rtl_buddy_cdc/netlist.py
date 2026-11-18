@@ -80,6 +80,32 @@ class Netname:
 
 
 @dataclass(frozen=True)
+class DriverFacts:
+    """The one register whose ``Q`` drives every bit of an output pin.
+
+    The source-side facts flat rules read off a source flop, published so
+    the parent can read them off the pin (rtl-buddy-cdc#405):
+
+    - ``width`` — the register's width; a pin carrying a whole register
+      of two or more bits that the parent slices into per-bit crossings
+      is CDC-020's shape.
+    - ``marks`` — which of ``gray`` / ``static`` / ``handshake`` the user
+      tagged it with (``cdc_gray`` / ``cdc_static`` / ``cdc_handshake``);
+      ``gray`` — it is structurally gray-encoded.
+    - ``reset_value`` — a single-bit register's async-reset value
+      (RDC-002), ``None`` when it has none or is a reset synchroniser.
+    - ``toggle`` — a single-bit register whose ``D`` is the
+      toggle-with-enable shape (CDC-013), not handshake-tagged.
+    """
+
+    width: int
+    marks: frozenset[str] = frozenset()
+    gray: bool = False
+    reset_value: str | None = None
+    toggle: bool = False
+
+
+@dataclass(frozen=True)
 class PortBoundary:
     """CDC summary of one port of a blackboxed subtree.
 
@@ -116,6 +142,17 @@ class PortBoundary:
     # parent can carry the chain on through whatever it hangs on that
     # output, as a flat walk would.
     chain_exit: tuple[str, int] | None = None
+    # rtl-buddy-cdc#405: the proven input chain's stages, first to last,
+    # with each one's clock edge (1 posedge, 0 negedge).
+    chain_stages: tuple[tuple[str, int], ...] = ()
+    # rtl-buddy-cdc#405: for a single-bit output, the comb cells between
+    # the launching register and the pin inside the block (``None``: no
+    # register, or a latch on the way), and the transparent latch that
+    # drives the pin directly, with the clock its ``D`` is launched from.
+    comb_hops: int | None = None
+    latch: tuple[str, str] | None = None
+    # rtl-buddy-cdc#405: the register driving an output pin directly.
+    driver: DriverFacts | None = None
 
 
 @dataclass(frozen=True)

@@ -71,6 +71,7 @@ from rtl_buddy_cdc.reset_hints import (
     load as load_reset_hints,
 )
 from rtl_buddy_cdc.rules import (
+    BoundarySource,
     Violation,
     _build_context as build_rule_context,
     run_all as run_all_rules,
@@ -1173,9 +1174,26 @@ def _analyze_module_and_report(
         boundary_reconvergence: dict[str, frozenset[frozenset[str]]] = {}
         boundary_sink_clocks: dict[str, str | None] = {}
         boundary_chain_exits: dict[str, netlist.Bit] = {}
+        boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] = {}
+        boundary_sources: dict[netlist.Bit, BoundarySource] = {}
         for inst_name, summary in boundaries.items():
             if summary.reconvergent_inputs:
                 boundary_reconvergence[inst_name] = summary.reconvergent_inputs
+            # The output pins, as the sources the parent's backward walks
+            # stop at (rtl-buddy-cdc#405).
+            for port_name, pb in summary.ports.items():
+                conn = module.cells[inst_name].connections.get(port_name, ())
+                source = BoundarySource(
+                    label=f"{inst_name}.{port_name}",
+                    clock=pb.src_clock,
+                    width=len(conn),
+                    comb_hops=pb.comb_hops,
+                    latch=pb.latch,
+                    driver=pb.driver,
+                )
+                for b in conn:
+                    if isinstance(b, int):
+                        boundary_sources[b] = source
             for port_name, pb in summary.input_ports.items():
                 sink = f"{inst_name}.{port_name}"
                 if pb.sync_depth is not None:
@@ -1183,6 +1201,11 @@ def _analyze_module_and_report(
                     boundary_sink_clocks[sink] = (
                         pb.src_clock if pb.src_clock is not None else summary.clock
                     )
+                    if pb.chain_stages:
+                        boundary_chain_stages[sink] = tuple(
+                            (f"{inst_name}.{name}", edge)
+                            for name, edge in pb.chain_stages
+                        )
                     if pb.chain_exit is not None:
                         out_port, idx = pb.chain_exit
                         conn = module.cells[inst_name].connections.get(out_port, ())
@@ -1221,6 +1244,8 @@ def _analyze_module_and_report(
             "boundary_user_syncs": frozenset(boundary_user_syncs),
             "boundary_sink_clocks": boundary_sink_clocks,
             "boundary_chain_exits": boundary_chain_exits,
+            "boundary_chain_stages": boundary_chain_stages,
+            "boundary_sources": boundary_sources,
             "max_depth": clock_trace_depth,
         }
         if not no_findings:

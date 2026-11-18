@@ -534,6 +534,9 @@ def _summarise_single_clock(
                 user_synchronised=(
                     facts.user_synchronised if facts is not None else False
                 ),
+                comb_hops=facts.comb_hops if facts is not None else None,
+                latch=facts.latch if facts is not None else None,
+                driver=facts.driver if facts is not None else None,
             )
         if port.direction in ("input", "inout") and port.name not in ic.clock_pins:
             # Clock pins are excluded by the *traced* determination (FIX
@@ -551,6 +554,7 @@ def _summarise_single_clock(
                     facts.user_synchronised if facts is not None else False
                 ),
                 chain_exit=facts.chain_exit if facts is not None else None,
+                chain_stages=facts.chain_stages if facts is not None else (),
             )
     return BoundarySummary(
         module=sub.name,
@@ -605,6 +609,9 @@ def _summarise_multi_clock(
                 width=len(port.bits),
                 sync_depth=facts.sync_depth,
                 user_synchronised=facts.user_synchronised,
+                comb_hops=facts.comb_hops,
+                latch=facts.latch,
+                driver=facts.driver,
             )
         if port.direction in ("input", "inout"):
             if facts.ambiguous:
@@ -624,6 +631,7 @@ def _summarise_multi_clock(
                 sync_depth=facts.sync_depth,
                 user_synchronised=facts.user_synchronised,
                 chain_exit=facts.chain_exit,
+                chain_stages=facts.chain_stages,
             )
     return BoundarySummary(
         module=sub.name,

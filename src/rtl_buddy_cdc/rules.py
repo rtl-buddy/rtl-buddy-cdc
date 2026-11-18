@@ -40,7 +40,7 @@ from rtl_buddy_cdc.flops import (
 )
 from rtl_buddy_cdc.gate_eval import cone_tables
 from rtl_buddy_cdc.memory import MemPort, find_memories
-from rtl_buddy_cdc.netlist import Bit, Cell, Module, Port
+from rtl_buddy_cdc.netlist import Bit, Cell, DriverFacts, Module, Port
 from rtl_buddy_cdc.primitives import (
     is_sync_primitive,
     is_xpm_primitive,
@@ -92,6 +92,26 @@ RuleFn = Callable[..., list[Violation]]
 
 
 # --- shared rule context ----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BoundarySource:
+    """An abstracted block's output pin, as a source the parent sees.
+
+    In a flat run the registers behind the pin are flops of the design;
+    abstracted, the pin is where the parent's backward walks stop. A
+    walk that reaches one learns what it would have learned from those
+    flops (rtl-buddy-cdc#405): the clock that launches it, and, from a
+    greybox body, the comb cells between the launching register and the
+    pin and the transparent latch driving it, if any.
+    """
+
+    label: str  # "<instance>.<port>"
+    clock: str | None  # launch clock; None = not one known clock
+    width: int  # bits on the pin
+    comb_hops: int | None = None
+    latch: tuple[str, str] | None = None
+    driver: DriverFacts | None = None
 
 
 @dataclass(frozen=True)
@@ -226,6 +246,14 @@ class _RuleContext:
     # walk measures it (:func:`_effective_sync_chain_depth`).
     boundary_sink_clocks: dict[str, str | None] = field(default_factory=dict)
     boundary_chain_exits: dict[str, Bit] = field(default_factory=dict)
+    # The proven chain behind each sink, stage by stage with its clock
+    # edge (instance-qualified names), for CDC-016 (rtl-buddy-cdc#405).
+    boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] = field(
+        default_factory=dict
+    )
+    # Each parent bit an abstracted block's output drives, as the source
+    # the parent's backward walks stop at (rtl-buddy-cdc#405).
+    boundary_sources: dict[Bit, BoundarySource] = field(default_factory=dict)
     # Input-port groups that RECONVERGE inside an abstracted block (#261),
     # keyed by instance name. Each member is a set of the block's input port
     # names whose captured values recombine internally. CDC-005 re-raises at
@@ -324,6 +352,11 @@ class _RuleContext:
         )
 
     @cached_property
+    def boundary_source_by_label(self) -> dict[str, BoundarySource]:
+        """:attr:`boundary_sources` keyed by ``"<instance>.<port>"``."""
+        return {src.label: src for src in self.boundary_sources.values()}
+
+    @cached_property
     def boundary_sink_by_bit(self) -> dict[Bit, str]:
         """The single parent bit feeding each boundary sink with a proven
         depth, mapped to the sink's name (``"<instance>.<port>"``)."""
@@ -363,6 +396,8 @@ def _build_context(
     boundary_user_syncs: frozenset[str] = frozenset(),
     boundary_sink_clocks: dict[str, str | None] | None = None,
     boundary_chain_exits: dict[str, Bit] | None = None,
+    boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] | None = None,
+    boundary_sources: dict[Bit, BoundarySource] | None = None,
     max_depth: int = 16,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
@@ -489,6 +524,8 @@ def _build_context(
         boundary_sync_depth=boundary_sync_depth or {},
         boundary_sink_clocks=boundary_sink_clocks or {},
         boundary_chain_exits=boundary_chain_exits or {},
+        boundary_chain_stages=boundary_chain_stages or {},
+        boundary_sources=boundary_sources or {},
         boundary_reconvergence=boundary_reconvergence or {},
         max_depth=max_depth,
     )
@@ -1142,6 +1179,8 @@ def _backward_flop_fanin(
     start_bits: tuple[Bit, ...],
     drivers: dict[Bit, tuple[str, str, int]],
     max_depth: int = 12,
+    *,
+    undriven: set[Bit] | None = None,
 ) -> set[str]:
     """Backward BFS through combinational cells; return the set of flop
     cell names whose ``Q`` is reached.
@@ -1153,6 +1192,10 @@ def _backward_flop_fanin(
     Each combinational cell is expanded at most once (see
     :func:`_forward_reachable_cells`): its first expansion is at its
     shallowest depth, so a later one cannot reach anything new.
+
+    ``undriven``, when given, collects the bits the walk stopped at for
+    want of a driver: ports, and abstracted blocks' output pins
+    (:func:`_backward_sources`).
     """
     flops: set[str] = set()
     seen: set[Bit] = set()
@@ -1168,6 +1211,8 @@ def _backward_flop_fanin(
             if drv is None:
                 # bit comes from a top-level port or is a constant; the
                 # caller will treat it as "untracked source" and decide
+                if undriven is not None:
+                    undriven.add(bit)
                 continue
             cell_name, port, _idx = drv
             cell = module.cells[cell_name]
@@ -1186,6 +1231,41 @@ def _backward_flop_fanin(
                         nxt.append((b, depth + 1))
         frontier = nxt
     return flops
+
+
+def _backward_sources(
+    module: Module, start_bits: tuple[Bit, ...], ctx: _RuleContext
+) -> dict[str, tuple[str | None, bool]]:
+    """The registers behind ``start_bits``, abstracted blocks included.
+
+    :func:`_backward_flop_fanin` plus the output pins of abstracted
+    blocks the walk stops at (rtl-buddy-cdc#405): name → ``(clock,
+    is_boundary)``, a flop by its cell name and clock domain, a block pin
+    by ``"<instance>.<port>"`` and the clock the block launches it in —
+    what the flops behind the pin give a flat walk.
+    """
+    undriven: set[Bit] | None = set() if ctx.boundary_sources else None
+    names = _backward_flop_fanin(module, start_bits, ctx.bit_drivers, undriven=undriven)
+    out: dict[str, tuple[str | None, bool]] = {
+        n: (ctx.domains.get(n), False) for n in names
+    }
+    for b in undriven or ():
+        src = ctx.boundary_sources.get(b)
+        if src is not None:
+            out[src.label] = (src.clock, True)
+    return out
+
+
+def _boundary_source_of(c: Crossing, ctx: _RuleContext) -> BoundarySource | None:
+    """The abstracted block output ``c`` is launched from, if any."""
+    if c.src_boundary is None:
+        return None
+    return ctx.boundary_source_by_label.get(".".join(c.src_boundary))
+
+
+def _source_desc(name: str, is_boundary: bool) -> str:
+    """``flop x`` or ``abstracted block output u.q`` for a message."""
+    return f"abstracted block output {name}" if is_boundary else f"flop {name}"
 
 
 def _bit_drivers(module: Module) -> dict[Bit, tuple[str, str, int]]:
@@ -1615,6 +1695,73 @@ def _depth_after_exit(
     if nxt is None or ctx.domains.get(nxt.cell.name) != clock:
         return 0
     return _joined_chain_depth(module, nxt, clock, ctx, seen | {sink})
+
+
+def _joined_chain_stages(
+    module: Module,
+    head: Flop,
+    clock: str,
+    ctx: _RuleContext,
+    seen: frozenset[str] = frozenset(),
+) -> list[tuple[str, int]]:
+    """The stages of the chain from ``head``, each with its clock edge.
+
+    :func:`_sync_chain_flops` joined across abstracted blocks exactly as
+    :func:`_joined_chain_depth` joins the depth (rtl-buddy-cdc#405), the
+    stages inside a block taken from its proven chain. A sink whose chain
+    was not proven stage by stage ends the list.
+    """
+    sink_stages = ctx.boundary_chain_stages.get(head.cell.name)
+    if sink_stages is not None:
+        return list(sink_stages) + _stages_after_exit(
+            module, head.cell.name, clock, ctx, seen
+        )
+    chain = _sync_chain_flops(
+        module,
+        head,
+        clock,
+        ctx.domains,
+        ctx.reader_counts,
+        ctx.d_bit_to_single_bit_flop,
+        ctx.srst_mux_data_bit_to_single_bit_flop,
+    )
+    stages = [(f.name, _clk_polarity(f)) for f in chain]
+    tail = chain[-1]
+    if not ctx.boundary_chain_stages or len(tail.q) != 1:
+        return stages
+    sink = ctx.boundary_sink_by_bit.get(tail.q[0])
+    if (
+        sink is None
+        or sink in seen
+        or sink not in ctx.boundary_chain_stages
+        or ctx.reader_counts.get(tail.q[0], 0) != 1
+        or ctx.boundary_sink_clocks.get(sink) != clock
+    ):
+        return stages
+    return (
+        stages
+        + list(ctx.boundary_chain_stages[sink])
+        + _stages_after_exit(module, sink, clock, ctx, seen | {sink})
+    )
+
+
+def _stages_after_exit(
+    module: Module,
+    sink: str,
+    clock: str,
+    ctx: _RuleContext,
+    seen: frozenset[str],
+) -> list[tuple[str, int]]:
+    """Parent stages that carry on the chain proven behind ``sink``."""
+    bit = ctx.boundary_chain_exits.get(sink)
+    if bit is None or ctx.reader_counts.get(bit, 0) != 1:
+        return []
+    nxt = ctx.d_bit_to_single_bit_flop.get(bit)
+    if nxt is None:
+        nxt = ctx.srst_mux_data_bit_to_single_bit_flop.get(bit)
+    if nxt is None or ctx.domains.get(nxt.cell.name) != clock:
+        return []
+    return _joined_chain_stages(module, nxt, clock, ctx, seen | {sink})
 
 
 def _sync_chain_flops(
@@ -2119,7 +2266,16 @@ def check_cdc_003(
     for c in crossings:
         if c.width != 1:
             continue
-        if c.min_hops < 1:
+        # Comb cells between the launching register and an abstracted
+        # block's output pin are on the path a flat walk counts
+        # (rtl-buddy-cdc#405).
+        inside = 0
+        if c.src_boundary is not None:
+            src = ctx.boundary_source_by_label.get(".".join(c.src_boundary))
+            if src is not None and src.width == 1 and src.comb_hops:
+                inside = src.comb_hops
+        hops = c.min_hops + inside
+        if hops < 1:
             continue
         if c.is_port_sourced:
             # CDC-006 already covers comb logic from a top-level port
@@ -2129,7 +2285,7 @@ def check_cdc_003(
             continue
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
             continue  # source is (* cdc_static *) — held constant, no metastability
-        if _crossing_enters_through_reset_mux_only(module, c, ctx):
+        if not inside and _crossing_enters_through_reset_mux_only(module, c, ctx):
             # The only cell on the path is the destination flop's own
             # synchronous-reset mux (#301) — part of the flop, not
             # logic combining two source-domain signals. See the
@@ -2146,7 +2302,7 @@ def check_cdc_003(
                 message=(
                     f"combinational logic between source flop and "
                     f"synchronizer on {c.src_clock} → {c.dst_clock} "
-                    f"crossing: {c.min_hops} cell(s) on path "
+                    f"crossing: {hops} cell(s) on path "
                     f"(src: {c.src_name}, "
                     f"sync first stage: {c.dst_flop.name})"
                 ),
@@ -2861,6 +3017,23 @@ def check_cdc_004(
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_grays:
             # Explicit user assertion of gray-coding.
             continue
+        # The register behind an abstracted block's output pin, as the
+        # greybox body describes it (rtl-buddy-cdc#405): the same three
+        # acceptances a source flop gets below.
+        reg = None
+        if c.src_flop is None:
+            bsrc = _boundary_source_of(c, ctx)
+            reg = bsrc.driver if bsrc is not None else None
+        if reg is not None and reg.marks & {"gray", "static"}:
+            continue
+        if (
+            reg is not None
+            and reg.gray
+            and _is_multibit_sync_first_stage(
+                module, c.dst_flop, c.dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx
+            )
+        ):
+            continue
         if c.src_flop is not None and c.src_flop.cell.name in ctx.user_statics:
             # Explicit user assertion of quasi-static source: the bus
             # is held constant during the operating window, so dst-side
@@ -2991,10 +3164,22 @@ def check_cdc_005(
     # + destination domain. We require depth>=2 so we don't double-fire
     # against CDC-001 (the depth==1 cases will be reported there).
     grouped: dict[tuple[str, str], list[Crossing]] = defaultdict(list)
+    # Source name -> the cell to anchor on, for a single-bit output pin of
+    # an abstracted block: the register behind it is a flop in a flat run
+    # (rtl-buddy-cdc#405).
+    boundary_srcs: dict[str, str] = {}
     for c in crossings:
         if c.width != 1:
             continue
-        if c.src_flop is None:
+        if c.src_flop is not None:
+            src_name = c.src_flop.cell.name
+        elif c.src_boundary is not None:
+            src_name = ".".join(c.src_boundary)
+            src = ctx.boundary_source_by_label.get(src_name)
+            if src is None or src.width != 1:
+                continue
+            boundary_srcs[src_name] = c.src_boundary[0]
+        else:
             # Reconvergence is defined by a single source flop fanning
             # out to multiple sync chains; port sources don't have the
             # metastability-resolution behaviour the rule is testing.
@@ -3002,7 +3187,7 @@ def check_cdc_005(
         depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
         if depth < 2:
             continue
-        grouped[(c.src_flop.cell.name, c.dst_clock)].append(c)
+        grouped[(src_name, c.dst_clock)].append(c)
 
     for (src_name, dst_clk), group in grouped.items():
         if len(group) < 2:
@@ -3055,15 +3240,16 @@ def check_cdc_005(
                 rule_id="CDC-005",
                 severity="warning",
                 message=(
-                    f"reconvergent synchronizers: source flop "
-                    f"{src_name} drives {len(group)} independent sync "
+                    f"reconvergent synchronizers: source "
+                    f"{_source_desc(src_name, src_name in boundary_srcs)} "
+                    f"drives {len(group)} independent sync "
                     f"chains in domain {dst_clk} (dst flops: "
                     f"{', '.join(dst_names)}); independent metastability "
                     f"resolution can produce mismatched synchronized "
                     f"values when these outputs recombine{where}"
                 ),
                 crossing=group[0],
-                cell_name=src_name,
+                cell_name=boundary_srcs.get(src_name, src_name),
             )
         )
     return violations
@@ -3201,29 +3387,37 @@ def check_cdc_006(
             clock_ports.update(clk.ports)
         typing = _port_typing(ctx, module, clock_spec)
 
-    for f in ctx.flops:
-        my_clk = ctx.domains.get(f.cell.name)
+    # Synchroniser first stages: the design's flops, and the input pins of
+    # abstracted blocks whose first internal stage was proven to head a
+    # chain (rtl-buddy-cdc#405) — in a flat run that stage is a flop here.
+    stages: list[tuple[str, Flop | None, tuple[Bit, ...]]] = [
+        (f.cell.name, f, f.d) for f in ctx.flops
+    ]
+    stages.extend(
+        (sink, None, (bit,))
+        for bit, sink in sorted(ctx.boundary_sink_by_bit.items(), key=lambda kv: kv[1])
+    )
+    for cell_name, f, stage_d in stages:
+        my_clk = (
+            ctx.domains.get(cell_name)
+            if f is not None
+            else ctx.boundary_sink_clocks.get(cell_name)
+        )
         if my_clk is None:
             continue
         # User-marked synchronizers are explicitly trusted regardless
         # of the input shape.
-        if f.cell.name in ctx.user_syncs:
+        if cell_name in ctx.user_syncs:
             continue
         # We only fire on flops that are bona fide synchronizer first
         # stages — i.e. the chain on the destination side is >= 2.
-        depth = _sync_chain_depth(
-            module,
-            f,
-            my_clk,
-            ctx.domains,
-            ctx.reader_counts,
-            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
-            bit_drivers=ctx.bit_drivers,
-            srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
-        )
+        if f is not None:
+            depth = _effective_sync_chain_depth(module, f, my_clk, ctx)
+        else:
+            depth = ctx.boundary_sync_depth[cell_name]
         if depth < 2:
             continue
-        fanin_flops, _ = _backward_fanin(module, f.d, ctx.bit_drivers)
+        fanin_flops, _ = _backward_fanin(module, stage_d, ctx.bit_drivers)
         # If a real source-domain flop exists in the fanin, this
         # crossing is already covered by CDC-001/-002/-003 logic.
         if fanin_flops:
@@ -3235,8 +3429,9 @@ def check_cdc_006(
             _own_srst_data_leg(
                 module, f, my_clk, ctx.domains, ctx.bit_drivers, ctx.reader_counts
             )
-            or f.d
-        )
+            if f is not None
+            else None
+        ) or stage_d
         comb_bits = _comb_driven_bits(module, d_bits, ctx.bit_drivers)
         if not comb_bits:
             continue
@@ -3293,12 +3488,13 @@ def check_cdc_006(
                 severity="error",
                 message=(
                     f"glitchy combinational source on synchronizer "
-                    f"{f.cell.name} (clk={my_clk}): D pin is driven "
+                    f"{cell_name if f is not None else 'abstracted block input ' + cell_name} "
+                    f"(clk={my_clk}): D pin is driven "
                     f"by combinational logic with no registering flop, "
                     f"reaching unregistered top-level port(s): "
                     f"{port_descs}"
                 ),
-                cell_name=f.cell.name,
+                cell_name=cell_name,
             )
         )
     return violations
@@ -3893,6 +4089,8 @@ def check_rdc_001(
     # tree is reviewed.
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     edge_pins: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    # A source behind an abstracted block's output pin (rtl-buddy-cdc#405).
+    boundary_srcs: set[str] = set()
     for f in ctx.flops:
         controls = flop_async_controls(f.cell)
         if not controls:
@@ -3903,13 +4101,14 @@ def check_rdc_001(
         if my_clk is None:
             continue
         for pin in controls:
-            fanin_flops = _backward_flop_fanin(module, pin.bits, ctx.bit_drivers)
-            for src_name in fanin_flops:
-                src_clk = ctx.domains.get(src_name)
+            sources = _backward_sources(module, pin.bits, ctx)
+            for src_name, (src_clk, is_boundary) in sources.items():
                 if src_clk is None or src_clk == my_clk:
                     continue
                 if not _async(my_clk, src_clk):
                     continue
+                if is_boundary:
+                    boundary_srcs.add(src_name)
                 edges[(src_name, src_clk, my_clk)].append(f.cell.name)
                 edge_pins[(src_name, src_clk, my_clk)].add(_ASYNC_PIN_LABEL[pin.role])
 
@@ -3935,7 +4134,8 @@ def check_rdc_001(
                 severity="error",
                 message=(
                     f"async reset crossing: flop(s) in clk={dst_clk} "
-                    f"have {pins} driven by flop {src_name} from a "
+                    f"have {pins} driven by "
+                    f"{_source_desc(src_name, src_name in boundary_srcs)} from a "
                     f"different domain (clk={src_clk}); add a reset "
                     f"synchronizer in the {dst_clk} domain. {dst_desc}"
                 ),
@@ -4062,6 +4262,7 @@ def check_rdc_003(
 
     edges: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     via_mux: dict[tuple[str, str, str], bool] = defaultdict(bool)
+    boundary_srcs: set[str] = set()
     for f in ctx.flops:
         srst_bits = flop_reset_bits(f.cell, "srst")
         mux_selects = _folded_srst_selects(
@@ -4075,13 +4276,14 @@ def check_rdc_003(
         for bits, is_mux in ((srst_bits, False), (mux_selects, True)):
             if not bits:
                 continue
-            fanin_flops = _backward_flop_fanin(module, bits, ctx.bit_drivers)
-            for src_name in fanin_flops:
-                src_clk = ctx.domains.get(src_name)
+            sources = _backward_sources(module, bits, ctx)
+            for src_name, (src_clk, is_boundary) in sources.items():
                 if src_clk is None or src_clk == my_clk:
                     continue
                 if not _async(my_clk, src_clk):
                     continue
+                if is_boundary:
+                    boundary_srcs.add(src_name)
                 key = (src_name, src_clk, my_clk)
                 edges[key].append(f.cell.name)
                 via_mux[key] |= is_mux
@@ -4109,7 +4311,9 @@ def check_rdc_003(
                 severity="error",
                 message=(
                     f"sync reset crossing: flop(s) in clk={dst_clk} have "
-                    f"{reset_desc} driven by flop {src_name} from a different "
+                    f"{reset_desc} driven by "
+                    f"{_source_desc(src_name, src_name in boundary_srcs)} from a "
+                    f"different "
                     f"async domain (clk={src_clk}); the sync reset is "
                     f"sampled on the destination clock and the cross-"
                     f"domain source may produce metastability. Add a 2FF "
@@ -4583,6 +4787,9 @@ def check_rdc_002(
     # declared_polarity_bit, consumer_polarity_bit). Keeping the two
     # buckets separate avoids cross-contaminating their messages.
     port_groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    # Producers that are the register behind an abstracted block's
+    # output pin (rtl-buddy-cdc#405).
+    boundary_producers: set[str] = set()
     for f in ctx.flops:
         if f.cell.name in recognised_syncs:
             continue
@@ -4622,6 +4829,21 @@ def check_rdc_002(
             groups[(producer_name, producer_arst_value, consumer_polarity_bit)].append(
                 f.cell.name
             )
+        elif rd.reset.source == "comb" and ctx.boundary_sources:
+            # The reset pin wired straight to an abstracted block's
+            # output: the greybox body names the register behind it.
+            rst = flop_reset(f.cell)
+            bits = rst.bits if rst is not None else ()
+            src = ctx.boundary_sources.get(bits[0]) if len(bits) == 1 else None
+            driver = src.driver if src is not None else None
+            if src is None or driver is None or driver.reset_value is None:
+                continue
+            if driver.reset_value == consumer_polarity_bit:
+                continue
+            boundary_producers.add(src.label)
+            groups[(src.label, driver.reset_value, consumer_polarity_bit)].append(
+                f.cell.name
+            )
         elif rd.reset.source == "port" and rd.reset.name in polarity_overrides:
             declared = polarity_overrides[rd.reset.name]
             declared_bit = "1" if declared == "high" else "0"
@@ -4651,8 +4873,9 @@ def check_rdc_002(
                 message=(
                     f"reset polarity mismatch: consumer flop(s) expect "
                     f"reset asserted on '{cons_pol}' "
-                    f"(ARST_POLARITY={cons_pol}), but the producer flop "
-                    f"{producer_name} drives its reset to '{prod_val}' "
+                    f"(ARST_POLARITY={cons_pol}), but the producer "
+                    f"{_producer_desc(producer_name, boundary_producers)} "
+                    f"drives its reset to '{prod_val}' "
                     f"on assert (ARST_VALUE={prod_val}); consumer(s) "
                     f"will never enter reset when the producer does. Add "
                     f"an inverter between them, or flip the consumer's "
@@ -4693,6 +4916,13 @@ def check_rdc_002(
             )
         )
     return violations
+
+
+def _producer_desc(name: str, boundary: set[str]) -> str:
+    """``flop x`` or ``register behind abstracted block output u.q``."""
+    if name in boundary:
+        return f"register behind abstracted block output {name}"
+    return f"flop {name}"
 
 
 def _trailing_bit(raw: str) -> str:
@@ -5423,7 +5653,14 @@ def check_cdc_013(
     for c in crossings:
         if c.src_clock == UNCONSTRAINED_SENTINEL:
             continue
-        if c.src_flop is None or c.width != 1:
+        if c.width != 1:
+            continue
+        # A toggle register behind an abstracted block's output pin: the
+        # greybox body classified it (rtl-buddy-cdc#405).
+        bsrc = _boundary_source_of(c, ctx) if c.src_flop is None else None
+        if c.src_flop is None and (
+            bsrc is None or bsrc.driver is None or not bsrc.driver.toggle
+        ):
             continue
         src_clk = clock_spec.clocks.get(c.src_clock)
         dst_clk = clock_spec.clocks.get(c.dst_clock)
@@ -5431,32 +5668,33 @@ def check_cdc_013(
             continue
         if src_clk.period * PULSE_FACTOR >= dst_clk.period:
             continue
-        d_bits = c.src_flop.cell.connections.get("D", ())
-        q_bits = c.src_flop.cell.connections.get("Q", ())
-        if len(d_bits) != 1 or len(q_bits) != 1:
-            continue
-        if c.src_flop.cell.name in ctx.user_handshakes:
-            continue  # (* cdc_handshake *) — req toggle is backpressured until ack (#247)
-        # A synchronous reset on the toggle flop is part of the flop:
-        # classify what it samples between resets (rtl-buddy-cdc#376),
-        # as on the ``$sdffe`` that ``opt_dff`` folds it into.
-        src_leg = _own_srst_data_leg(
-            module,
-            c.src_flop,
-            c.src_clock,
-            ctx.domains,
-            ctx.bit_drivers,
-            ctx.reader_counts,
-        )
-        shape = classify_toggle_d_pin(
-            src_leg[0] if src_leg is not None else d_bits[0],
-            q_bits[0],
-            module,
-            ctx.bit_drivers,
-            flop=c.src_flop.cell,
-        )
-        if shape != "toggle":
-            continue
+        if c.src_flop is not None:
+            d_bits = c.src_flop.cell.connections.get("D", ())
+            q_bits = c.src_flop.cell.connections.get("Q", ())
+            if len(d_bits) != 1 or len(q_bits) != 1:
+                continue
+            if c.src_flop.cell.name in ctx.user_handshakes:
+                continue  # (* cdc_handshake *) — req toggle is backpressured until ack (#247)
+            # A synchronous reset on the toggle flop is part of the flop:
+            # classify what it samples between resets (rtl-buddy-cdc#376),
+            # as on the ``$sdffe`` that ``opt_dff`` folds it into.
+            src_leg = _own_srst_data_leg(
+                module,
+                c.src_flop,
+                c.src_clock,
+                ctx.domains,
+                ctx.bit_drivers,
+                ctx.reader_counts,
+            )
+            shape = classify_toggle_d_pin(
+                src_leg[0] if src_leg is not None else d_bits[0],
+                q_bits[0],
+                module,
+                ctx.bit_drivers,
+                flop=c.src_flop.cell,
+            )
+            if shape != "toggle":
+                continue
         # Suppress on the canonical pulse-synchroniser shape
         # (toggle + 2FF + XOR tail in dst domain) — that's the
         # *correct* idiom, not the bug CDC-013 targets. See
@@ -5469,7 +5707,8 @@ def check_cdc_013(
                 severity="warning",
                 message=(
                     f"toggle-synchroniser event-loss risk on "
-                    f"{c.src_flop.name!r} → {c.dst_flop.name!r}: src "
+                    f"{c.src_flop.name if c.src_flop is not None else c.src_name!r}"
+                    f" → {c.dst_flop.name!r}: src "
                     f"clock {c.src_clock!r} (period {src_clk.period}) "
                     f"is faster than dst clock {c.dst_clock!r} (period "
                     f"{dst_clk.period}); the src flop toggles on an "
@@ -5481,7 +5720,13 @@ def check_cdc_013(
                     f"observed."
                 ),
                 crossing=c,
-                cell_name=c.src_flop.cell.name,
+                cell_name=(
+                    c.src_flop.cell.name
+                    if c.src_flop is not None
+                    else c.src_boundary[0]
+                    if c.src_boundary is not None
+                    else None
+                ),
             )
         )
     return out
@@ -5983,9 +6228,8 @@ def check_cdc_015(
         for chain_flop in chain:
             rd = ctx.reset_domains.get(chain_flop.cell.name)
             for ctl in rd.controls if rd is not None else ():
-                fanin = _backward_flop_fanin(module, ctl.bits, ctx.bit_drivers)
-                for src_name in fanin:
-                    src_clk = ctx.domains.get(src_name)
+                sources = _backward_sources(module, ctl.bits, ctx)
+                for src_name, (src_clk, _bnd) in sources.items():
                     if src_clk is None or src_clk == c.dst_clock:
                         continue
                     if not _async(src_clk, c.dst_clock):
@@ -6038,8 +6282,8 @@ def _clk_polarity(flop: Flop) -> int:
     return flop_clk_polarity(flop.cell)
 
 
-def _clk_polarity_str(flop: Flop) -> str:
-    return "posedge" if _clk_polarity(flop) == 1 else "negedge"
+def _edge_str(polarity: int) -> str:
+    return "posedge" if polarity == 1 else "negedge"
 
 
 def check_cdc_016(
@@ -6080,20 +6324,14 @@ def check_cdc_016(
             continue
         if head.cell.name in ctx.user_syncs:
             continue
-        chain = _sync_chain_flops(
-            module,
-            head,
-            c.dst_clock,
-            ctx.domains,
-            ctx.reader_counts,
-            ctx.d_bit_to_single_bit_flop,
-            ctx.srst_mux_data_bit_to_single_bit_flop,
-        )
+        # Joined across abstracted blocks (rtl-buddy-cdc#405): a chain
+        # with stages inside a greybox is checked edge by edge too.
+        chain = _joined_chain_stages(module, head, c.dst_clock, ctx)
         if len(chain) < 2:
             continue
         for i in range(len(chain) - 1):
-            a, b = chain[i], chain[i + 1]
-            if _clk_polarity(a) != _clk_polarity(b):
+            (a, a_pol), (b, b_pol) = chain[i], chain[i + 1]
+            if a_pol != b_pol:
                 reported_heads.add(head.cell.name)
                 violations.append(
                     Violation(
@@ -6102,8 +6340,8 @@ def check_cdc_016(
                         message=(
                             f"opposite-edge synchroniser on "
                             f"{c.src_clock} → {c.dst_clock}: chain "
-                            f"stage {a.name} ({_clk_polarity_str(a)}) "
-                            f"and {b.name} ({_clk_polarity_str(b)}) "
+                            f"stage {a} ({_edge_str(a_pol)}) "
+                            f"and {b} ({_edge_str(b_pol)}) "
                             f"sample on different edges of "
                             f"{c.dst_clock} — halves MTBF"
                         ),
@@ -6230,6 +6468,44 @@ def check_cdc_017(
                         cell_name=cell.name,
                     )
                 )
+
+    # A latch inside an abstracted block that drives its output pin
+    # directly (rtl-buddy-cdc#405): the greybox body names it and the
+    # clock its D is launched from; the destination is the parent flop
+    # reading the pin.
+    for bit, src in sorted(ctx.boundary_sources.items(), key=lambda kv: str(kv[0])):
+        if src.latch is None:
+            continue
+        latch_name, src_clk = src.latch
+        dst = ctx.d_bit_to_single_bit_flop.get(bit)
+        if dst is None or dst.cell.name in ctx.user_syncs:
+            continue
+        dst_clk = ctx.domains.get(dst.cell.name)
+        if dst_clk is None or dst_clk == src_clk:
+            continue
+        inst = src.label.rpartition(".")[0]
+        key = (f"{inst}.{latch_name}", src_clk, dst_clk)
+        if key in seen:
+            continue
+        seen.add(key)
+        violations.append(
+            Violation(
+                rule_id="CDC-017",
+                severity="error",
+                message=(
+                    f"transparent latch in CDC path {src_clk} → {dst_clk}: "
+                    f"latch {latch_name} inside abstracted block {inst} "
+                    f"drives its output {src.label}, which feeds destination "
+                    f"flop {dst.name} (in {dst_clk}) from a source launched "
+                    f"in {src_clk}. During the latch's enable-active phase "
+                    f"the foreign-domain signal propagates transparently to "
+                    f"the destination — no metastability resolution. Replace "
+                    f"the latch with a 2FF synchroniser flop chain on "
+                    f"{dst_clk}."
+                ),
+                cell_name=inst,
+            )
+        )
 
     return violations
 
@@ -6493,8 +6769,18 @@ def check_cdc_020(
 
     groups: dict[tuple[str, str], dict[str, Flop]] = defaultdict(dict)
     src_flop_lookup: dict[str, Flop] = {}
+    # A whole register behind an abstracted block's output pin, by pin
+    # label (rtl-buddy-cdc#405): a flop of the design in a flat run.
+    boundary_regs: dict[str, tuple[DriverFacts, str]] = {}
     for c in crossings:
         if c.src_flop is None:
+            bsrc = _boundary_source_of(c, ctx)
+            reg = bsrc.driver if bsrc is not None else None
+            if bsrc is None or reg is None or reg.width < 2 or c.width >= reg.width:
+                continue
+            assert c.src_boundary is not None
+            boundary_regs[bsrc.label] = (reg, c.src_boundary[0])
+            groups[(bsrc.label, c.dst_clock)][c.dst_flop.cell.name] = c.dst_flop
             continue
         src_flop = c.src_flop
         if len(src_flop.q) < 2:
@@ -6514,6 +6800,27 @@ def check_cdc_020(
     for (src_name, dst_clock), dst_map in sorted(groups.items()):
         if len(dst_map) < 2:
             continue  # not sliced — single dst recombines it natively
+        if src_name in boundary_regs:
+            reg, inst = boundary_regs[src_name]
+            if reg.marks:
+                continue  # gray / static / handshake, as for a flop below
+            if reg.gray and any(
+                _is_multibit_sync_first_stage(
+                    module, dst, dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx
+                )
+                for dst in dst_map.values()
+            ):
+                continue
+            violations.append(
+                _cdc_020_violation(
+                    f"register behind abstracted block output {src_name}",
+                    reg.width,
+                    dst_clock,
+                    sorted(dst_map),
+                    inst,
+                )
+            )
+            continue
         src_flop = src_flop_lookup[src_name]
         if src_name in ctx.user_grays:
             continue
@@ -6529,31 +6836,43 @@ def check_cdc_020(
             for dst in dst_map.values()
         ):
             continue
-        lanes = sorted(dst_map.keys())
-        lane_desc = ", ".join(lanes[:4]) + (
-            f", ... ({len(lanes)} lanes total)" if len(lanes) > 4 else ""
-        )
         violations.append(
-            Violation(
-                rule_id="CDC-020",
-                severity="warning",
-                message=(
-                    f"sliced-bus reconvergence across CDC: source flop "
-                    f"{src_name} (WIDTH={len(src_flop.q)}) is sliced into "
-                    f"{len(lanes)} per-lane crossings to clock domain "
-                    f"{dst_clock} ({lane_desc}). Each lane resolves "
-                    f"metastability on its own schedule — transitions "
-                    f"where ≥2 source bits change simultaneously can be "
-                    f"sampled at the destination as intermediate "
-                    f"combinations the source never emits. Fix: gray-code "
-                    f"the source (mark `(* cdc_gray *)`), use a req/ack "
-                    f"handshake, or replace the per-lane sync chains with "
-                    f"a single multi-bit sync chain."
-                ),
-                cell_name=src_name,
+            _cdc_020_violation(
+                f"flop {src_name}",
+                len(src_flop.q),
+                dst_clock,
+                sorted(dst_map),
+                src_name,
             )
         )
     return violations
+
+
+def _cdc_020_violation(
+    source: str, width: int, dst_clock: str, lanes: list[str], cell_name: str
+) -> Violation:
+    """One CDC-020 finding: ``source`` sliced into ``lanes``."""
+    lane_desc = ", ".join(lanes[:4]) + (
+        f", ... ({len(lanes)} lanes total)" if len(lanes) > 4 else ""
+    )
+    return Violation(
+        rule_id="CDC-020",
+        severity="warning",
+        message=(
+            f"sliced-bus reconvergence across CDC: source "
+            f"{source} (WIDTH={width}) is sliced into "
+            f"{len(lanes)} per-lane crossings to clock domain "
+            f"{dst_clock} ({lane_desc}). Each lane resolves "
+            f"metastability on its own schedule — transitions "
+            f"where ≥2 source bits change simultaneously can be "
+            f"sampled at the destination as intermediate "
+            f"combinations the source never emits. Fix: gray-code "
+            f"the source (mark `(* cdc_gray *)`), use a req/ack "
+            f"handshake, or replace the per-lane sync chains with "
+            f"a single multi-bit sync chain."
+        ),
+        cell_name=cell_name,
+    )
 
 
 def check_cdc_021(
@@ -7309,6 +7628,22 @@ def check_cdc_024(
                 continue
             by_domain[launch].append(f"input `{in_label}`")
             seeds.extend(in_seeds)
+        # An abstracted block's output pin in the cone launches in the
+        # clock the block drives it in (rtl-buddy-cdc#405).
+        named: set[str] = set()
+        for b in sorted(b for b in cone if b in ctx.boundary_sources):
+            src = ctx.boundary_sources[b]
+            if src.clock is None:
+                continue
+            launch = canonical(src.clock)
+            if not is_async(launch, cap):
+                continue
+            if src.label not in named:
+                named.add(src.label)
+                by_domain[launch].append(f"abstracted block output `{src.label}`")
+            seeds.append(b)
+            if first_flop is None:
+                first_flop = src.label.rpartition(".")[0]
         if not by_domain:
             continue
 
@@ -8111,6 +8446,8 @@ def run_all(
     boundary_user_syncs: frozenset[str] = frozenset(),
     boundary_sink_clocks: dict[str, str | None] | None = None,
     boundary_chain_exits: dict[str, Bit] | None = None,
+    boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] | None = None,
+    boundary_sources: dict[Bit, BoundarySource] | None = None,
     max_depth: int = 16,
     sync_primitives: frozenset[str] = frozenset(),
     ignore_scan_mode: bool = False,
@@ -8148,6 +8485,8 @@ def run_all(
         boundary_user_syncs=boundary_user_syncs,
         boundary_sink_clocks=boundary_sink_clocks,
         boundary_chain_exits=boundary_chain_exits,
+        boundary_chain_stages=boundary_chain_stages,
+        boundary_sources=boundary_sources,
         max_depth=max_depth,
     )
     out: list[Violation] = []
