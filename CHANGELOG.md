@@ -434,8 +434,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     sweep, with an `inside` list of signed array elements compared
     zero-extended (now sign-extended).
   - Still reported, not lowered: a loop with no elaboration-time trip
-    count, a write inside an operand evaluated only on some condition
-    (`c && t++`), a `ref` argument, enum `name()`, an array method with
+    count, a loop condition that writes a variable (`while (i++ < 8)`)
+    once a run-time `break` may have ended the loop, a write inside an
+    operand evaluated only on some condition (`c && t++`), a `ref` argument, enum `name()`, an array method with
     a `with` clause, `$countbits` with a run-time control bit, an
     unpacked-union member, an element of an unpacked array inside a
     struct written at a run-time index. No committed fixture or

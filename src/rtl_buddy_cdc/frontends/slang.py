@@ -212,7 +212,8 @@ What is NOT yet implemented (next slices)
   loop whose trip count is not known at elaboration time (its counter
   depends on run-time values, or it is still running after
   :data:`_ModuleBuilder._ITER_CAP` iterations) or whose condition does
-  not lower, and one in a reset arm; a write inside an operand evaluated
+  not lower (a write in it, ``while (i++ < 8)``, once a ``break`` may have
+  ended the loop at run time), and one in a reset arm; a write inside an operand evaluated
   only on some condition (``c && t++``, ``c ? t++ : t--``, an ``output``
   argument of a call on the right of ``||``) — the expression is opaque
   and its write is missing; a function with a ``ref`` argument; enum
@@ -3016,9 +3017,21 @@ class _ModuleBuilder:
                 if kind != "ForeverLoopStatement" and not (
                     kind == "DoWhileLoopStatement" and count == 0
                 ):
-                    go = self._loop_condition_bit(cond)
+                    # Once the loop may have ended at run time, a write in
+                    # the condition (``while (i++ < 8)``) would still be
+                    # made where it has: not modelled (reported).
+                    gated = self._skip_bit() != "0"
+                    self._conditional_depth += gated
+                    try:
+                        go = self._loop_condition_bit(cond)
+                    finally:
+                        self._conditional_depth -= gated
                     if go is None:
-                        reason = "its condition does not lower"
+                        reason = "its condition does not lower" + (
+                            " where the loop may have ended (a write in it)"
+                            if gated
+                            else ""
+                        )
                         break
                     if go == "0":
                         break

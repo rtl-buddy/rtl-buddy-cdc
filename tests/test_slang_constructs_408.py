@@ -618,12 +618,21 @@ def test_while_loops_unroll(tmp_path: Path, caplog) -> None:
         " while (i < n) begin o = o + a; i++; end end",
         "always_ff @(posedge clk) begin automatic int i = 0; r <= a;"
         " while (i < n) begin o <= o + a; i++; end end",
+        # A write in the condition once the loop may have ended (after a
+        # run-time ``break``) would still be made there.
+        "always_comb begin int i; i = 0; o = 0; while (i++ < 8) begin"
+        " if (n[0]) break; o = o + a; end end",
         # A counter that depends on the data: the state stops folding.
         "always_comb begin int i; i = 0; o = 0; while (i < 4) begin"
         " case (a[i[1:0]]) 1'b1: begin i = i + 1; continue; end"
         " default: o = o + 1; endcase i++; end end",
     ],
-    ids=["comb_runtime_bound", "clocked_runtime_bound", "data_dependent_counter"],
+    ids=[
+        "comb_runtime_bound",
+        "clocked_runtime_bound",
+        "write_in_condition",
+        "data_dependent_counter",
+    ],
 )
 def test_while_without_a_fixed_trip_count_is_undone_and_reported(
     tmp_path: Path, caplog, body: str
@@ -639,7 +648,7 @@ endmodule
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
         module = _slang(tmp_path, src)
     msgs = _warnings(caplog)
-    assert len(msgs) == 1 and "`while` loop not lowered (its trip count" in msgs[0]
+    assert len(msgs) == 1 and "`while` loop not lowered (its " in msgs[0], msgs
     driven = {
         b
         for c in module.cells.values()
