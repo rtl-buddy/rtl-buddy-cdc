@@ -2817,6 +2817,13 @@ class _ModuleBuilder:
             # ``case … inside`` ``[lo:hi]`` (rtl-buddy-cdc#405: opaque).
             hit = self._range_match(sel_bits, label)
             return hit if hit is not None else self._opaque(label, 1, "`case` label")[0]
+        ltype = getattr(getattr(label, "type", None), "canonicalType", None)
+        if getattr(ltype, "isUnpackedArray", False):
+            # ``case … inside`` an unpacked array: any of its elements
+            # (rtl-buddy-cdc#408: its bits were compared as one value).
+            hits = self._array_inside_hits(sel_bits, label, ltype)
+            hit = None if hits is None else self._or_bits(hits)
+            return hit if hit is not None else self._opaque(label, 1, "`case` label")[0]
         bits = self._bits_of_expression(label)
         if not bits:
             return self._opaque(label, 1, "`case` label")[0]
@@ -6098,6 +6105,15 @@ class _ModuleBuilder:
                 hit = self._range_match(left, item)
             else:
                 itype = getattr(item, "type", None)
+                itype = getattr(itype, "canonicalType", None) or itype
+                if getattr(itype, "isUnpackedArray", False):
+                    # An unpacked array stands for its elements
+                    # (rtl-buddy-cdc#408: an opaque driver).
+                    elements = self._array_inside_hits(left, item, itype)
+                    if elements is None:
+                        return None
+                    hits.extend(elements)
+                    continue
                 if not getattr(itype, "isIntegral", False):
                     return None
                 bits = self._bits_of_expression(item)
@@ -6107,6 +6123,30 @@ class _ModuleBuilder:
             hits.append(hit)
         result = self._or_bits(hits)
         return (result if result is not None else "0",)
+
+    def _array_inside_hits(
+        self, left: tuple[Bit, ...], item: Any, itype: Any
+    ) -> list[Bit] | None:
+        """``left ==? element`` for every (innermost) element of the
+        unpacked array ``item`` of an ``inside`` list (IEEE 1800-2017
+        11.4.13); ``None`` when it does not lower."""
+        leaf = itype
+        while getattr(leaf, "isUnpackedArray", False):
+            leaf = getattr(leaf, "elementType", None)
+            leaf = getattr(leaf, "canonicalType", None) or leaf
+        width = int(getattr(leaf, "bitWidth", 0) or 0)
+        bits = self._bits_of_expression(item)
+        if (
+            not getattr(leaf, "isIntegral", False)
+            or width < 1
+            or not bits
+            or len(bits) % width
+        ):
+            return None
+        return [
+            self._wildcard_match(left, bits[k : k + width], item)
+            for k in range(0, len(bits), width)
+        ]
 
     def _lower_streaming(self, expr: Any) -> tuple[Bit, ...] | None:
         """A streaming concatenation read (``{<<{a}}``, ``{<<4{a, b}}``,
