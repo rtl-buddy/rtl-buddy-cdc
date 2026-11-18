@@ -519,6 +519,12 @@ def test_cli_lifted_greybox_finding_is_scoped_to_its_instance(tmp_path: Path) ->
     sup = [(s["rule_id"], s["cell_name"]) for s in rep["suppressed"]]
     assert sup == [("CDC-001", "u_thru")]
     assert rep["suppressed"][0]["message"].startswith("[inside `feedthru`")
-    # The other blackboxes are untouched.
-    assert sorted(v["cell_name"] for v in rep["violations"]) == ["u_odd", "u_two"]
+    # The other blackboxes are untouched. ``u_odd``'s ``strobe`` clocks a
+    # flop inside it from an undeclared port: CDC-021, anchored on the pin
+    # as the flattened run anchors it inside ``u_odd`` (rtl-buddy-cdc#402).
+    assert sorted(v["cell_name"] for v in rep["violations"]) == [
+        "u_odd",
+        "u_odd.strobe",
+        "u_two",
+    ]
     assert code == 1

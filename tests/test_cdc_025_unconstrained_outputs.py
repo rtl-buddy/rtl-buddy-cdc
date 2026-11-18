@@ -292,7 +292,9 @@ def test_forcing_single_domain_on_without_contracts() -> None:
     # No other output is contracted, so the "likely an omission" lead is
     # dropped and the advice starts the sentence.
     assert all("Other outputs" not in v.message for v in found)
-    assert all("cannot check it. Add set_output_delay" in v.message for v in found)
+    assert all(
+        "cannot check it. Add `set_output_delay -clock " in v.message for v in found
+    )
 
 
 def test_single_domain_forced_off_with_contracts() -> None:

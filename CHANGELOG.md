@@ -406,6 +406,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Abstraction keeps the clock-network findings; fix hints are SDC;
+  double-indexed names warn with the flat index** (rtl-buddy-cdc#402,
+  items 5, 6, 7).
+  - **An abstracted instance's clock pins are clock sinks.** Under
+    `--blackbox` / `--greybox` the flops inside an instance are gone,
+    and every view that walks the clock network from flop `CLK` pins lost
+    what they contributed: CDC-021 vanished when the only flops on an
+    undeclared clock port were inside the abstracted module, a clock mux
+    or gate in front of one fell off the clock network (spurious CDC-008
+    on its clock legs, no CDC-010 on an asynchronous select), CDC-023
+    missed a clock combine feeding one, and a crossing into one clocked
+    through a scan mux lost its scan-mode tag, so `--ignore-scan-mode`
+    reported it. Each now starts from the instance's clock pins too, and
+    the flat, blackboxed and greyboxed runs agree on CDC-008, CDC-010,
+    CDC-021, CDC-023 and the scan-mode tag. CDC-021 anchors on the pin
+    (`u_ip.clk`), so it sits under the same instance as the flattened
+    finding, and its message lists the flops and the abstracted clock
+    pins the port drives; CDC-023 says "flop(s) and abstracted-instance
+    clock pin(s)" when it reaches one. A greybox body adds the input
+    ports that clock its own flops to the instance's clock pins, which
+    the parent-side trace could not prove for a pin on an undeclared
+    port. A bodyless stub whose clock pin has no allow-listed name and no
+    declared clock behind it is still data, so that one shape gets no
+    CDC-021 under `--blackbox`. Still flop-only (advisory or side views,
+    no finding): the inferred-clock candidates and the domain map's
+    clock-network edges.
+  - **Fix hints are complete SDC.** The CDC-011 and CDC-025 hints omitted
+    the delay (`add set_input_delay -clock clk_b [get_ports {…}]`), CDC-025
+    left the clock as `<receiving clock>`, the two-domain CDC-011 said
+    only `set_input_delay -clock <name>`, and CDC-021's period was
+    `<T>`: none parsed as written. Each hint is now one command in
+    backticks that this tool reads on both SDC backends,
+    `set_input_delay -clock <clk> 0.0 [get_ports <p>]`,
+    `set_output_delay -clock <clk> 0.0 [get_ports <p>]` and
+    `create_clock -name <p> -period 10.0 [get_ports <p>]`, and the
+    message says the `0.0` delay / `10.0` period is a placeholder to
+    replace. CDC-025 names the launching domain as the example clock (the
+    alternatives stay listed), the two-domain CDC-011 the first capturing
+    domain. A clock name Tcl would substitute is braced.
+  - **`p[i][j]` on a single vector says why it names nothing.** Neither
+    the Yosys netlist nor the slang frontend records an array's
+    dimensions: a packed multi-dimensional vector is one netname, and a
+    multi-dimensional unpacked array's elements are numbered row-major.
+    So `pk_reg[1][2]` still selects nothing, but its "matches nothing"
+    warning (object endpoints, `-through`, `set_*_delay` and
+    `set_case_analysis` port targets) now explains that the vector keeps
+    no dimensions and asks for the flat index `pk_reg[i*W + j]` instead of
+    suggesting a typo. `grid_reg[1][2]` on an unpacked `[0:1][0:2]` array
+    keeps its reading (bit 2 of element 1): nothing in the netlist tells
+    it apart from element (1, 2), and the README now says so.
+  - Verdict changes on committed fixtures: the greybox view of
+    `bbx_residual_declines` gains the CDC-021 on `strobe` that its flat
+    view always reported. Message changes: the CDC-011, CDC-021 and
+    CDC-025 hint text, as above.
+
 - **Reset analysis: RDC-008's message, per-lane sync resets, a reset mux
   left on an `$sdff`'s `D`** (rtl-buddy-cdc#398, items 3, 6, 7). No
   committed fixture or integration golden changes verdict (per-rule
