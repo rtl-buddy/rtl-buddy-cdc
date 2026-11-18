@@ -1017,10 +1017,12 @@ def _analyze_module_and_report(
         # inferred-clock advisory and the domain map's clock-network
         # edges (rtl-buddy-cdc#405) — each weighed by the flops it clocks
         # inside a greybox body (1 for a stub).
-        for sink_name, bit in clock_pin_sinks.items():
-            inst, _, pin = sink_name.split("[", 1)[0].rpartition(".")
-            flops = body_fanout.get(module.cells[inst].type, {}).get(pin, 1)
-            clock_pin_weights[sink_name] = (bit, flops)
+        for inst_name, pins in boundary_clock_pins.items():
+            fanout = body_fanout.get(module.cells[inst_name].type, {})
+            for pin in pins:
+                one = boundary_clock_sinks(module, {inst_name: frozenset({pin})})
+                for sink_name, bit in one.items():
+                    clock_pin_weights[sink_name] = (bit, fanout.get(pin, 1))
         scan_mode_flops = _boundary_scan_sinks(
             module,
             scan_mode_clock_select_flops(

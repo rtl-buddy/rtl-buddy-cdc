@@ -406,6 +406,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Abstracted runs agree with the flat run on the data-path and reset
+  rules** (rtl-buddy-cdc#405, items 1, 3, 4).
+  - **CDC-018 under `--greybox`.** The per-module pass proved the depth
+    of a chain inside the block, but CDC-018 walked the boundary pin
+    structurally (depth 1) and needed a source flop, so a deep chain
+    inside a greybox, one launched from a block output, and one running
+    across the boundary were all lost. The rule context now joins a
+    chain across the boundary, which also clears a spurious CDC-001 on a
+    parent capture flop feeding a one-stage block (a two-stage
+    synchroniser flat).
+  - **Every rule audited flat vs `--greybox` vs `--blackbox`** with the
+    structure it reads put inside the abstracted block. The greybox pass
+    now publishes, and the parent's rules read, what the body hides: a
+    gate before or between the first stages (CDC-003 / CDC-006 /
+    CDC-014 — the greybox reported CDC-001, or nothing for a gate over
+    top-level ports in front of a block), opposite-edge stages (CDC-016,
+    was silent), the flops a reset pin drives (RDC-001 / RDC-003 /
+    RDC-004 / CDC-015 — a foreign reset into a block was a spurious
+    CDC-001, or silent), and the register or latch behind an output
+    (CDC-003 one per register, CDC-017, CDC-013, CDC-020, RDC-002 — all
+    silent; a gray-coded register no longer fires CDC-004). Every
+    summarised output, stub included, is a source in its launch clock
+    for RDC-001 / RDC-003 / CDC-015 (a reset launched inside a block was
+    silent), CDC-005, CDC-018 and CDC-024. RDC-005 moves from the
+    per-module pass to the parent, which knows whether two reset pins are
+    two top-level ports: the pass used to report it for any gate over
+    two pins. Remaining differences are listed in the README's
+    compositional-boundaries section; none is silent at the site.
+  - **A stub's clock pin is recognised through its module type.** A pin
+    one instance proves a clock pin (allow-listed, or clock-named and
+    traced to a declared clock) is a clock pin on every instance, so a
+    second instance clocked from an undeclared port gets CDC-021 under
+    `--blackbox` as it does flat. A pin no instance proves stays data —
+    the stub declares nothing about it and the tool does not guess from
+    names; that limit is documented and pinned by a test.
+  - **Clock views that counted flops count abstracted clock pins.**
+    Inferred-clock candidates weigh a pin by the flops it clocks inside a
+    greybox body (one for a stub), and the domain map's
+    `clock_network_crossings` end at an abstracted clock pin with an
+    additive `dst_boundary` object, so the flat and greyboxed runs list
+    the same forwarded clocks and clock-network sources.
+
 - **Abstraction keeps the clock-network findings; fix hints are SDC;
   double-indexed names warn with the flat index** (rtl-buddy-cdc#402,
   items 5, 6, 7).

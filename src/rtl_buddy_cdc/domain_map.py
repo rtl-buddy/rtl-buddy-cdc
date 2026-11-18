@@ -62,7 +62,11 @@ from rtl_buddy_cdc.sdc import UNCONSTRAINED_SENTINEL, ClockSpec, split_bit_key
 # ``set_false_path`` additions (#328) ride on it too: the top-level
 # ``false_path_exceptions`` list, and the optional per-crossing
 # ``sdc_exceptions`` / ``sdc_acknowledged`` keys, absent on every
-# crossing no object-scoped constraint covers.
+# crossing no object-scoped constraint covers. So does the optional
+# ``dst_boundary`` object (``{instance, port}``) on a
+# ``clock_network_crossings[]`` entry whose destination is an abstracted
+# instance's clock pin rather than a flop (rtl-buddy-cdc#405; ``dst_flop``
+# then names the pin), absent on every other entry.
 SCHEMA_VERSION = "1.3"
 
 # Identity of one data crossing: (src_clock, dst_clock, dst cell, source

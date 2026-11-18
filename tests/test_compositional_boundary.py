@@ -543,14 +543,15 @@ def test_derive_sub_spec_declares_an_undeclared_traced_root() -> None:
 
 
 def test_top_level_port_rules_are_excluded_from_the_internal_pass() -> None:
-    """CDC-006 / CDC-011 / CDC-025 / RDC-008 are defined on the DESIGN's top-level
-    ports. At module scope a port is a hierarchy pin, so they fire on
+    """CDC-006 / CDC-011 / CDC-025 / RDC-005 / RDC-008 are defined on the
+    DESIGN's top-level ports (RDC-005: a gate over two reset *ports* —
+    the parent re-raises it from the reset facts, rtl-buddy-cdc#405). At module scope a port is a hierarchy pin, so they fire on
     every correctly-built IP — CDC-006 in particular calls a textbook
     boundary input synchroniser a glitch hazard. They are excluded, and
     the hazard they are really about is reported by the parent as the
     boundary-sink crossing at that same port."""
     assert INTERNAL_RULE_EXCLUSIONS == frozenset(
-        {"CDC-006", "CDC-011", "CDC-025", "RDC-008"}
+        {"CDC-006", "CDC-011", "CDC-025", "RDC-005", "RDC-008"}
     )
     _flat, grey, _stub, sdc = _paths("bbx_input_sync")
     top, blackboxes, spec = _load(grey, sdc)

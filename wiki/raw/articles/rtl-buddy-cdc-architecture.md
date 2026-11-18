@@ -744,6 +744,12 @@ reports each net bit that
    Consulting only the first two re-reported a clock the user had
    already declared (#270); `domain._declared_clock_bits` closes that.
 
+Under `--blackbox` / `--greybox` the clock pins of abstracted instances
+count as sinks too (rtl-buddy-cdc#405): a pin is listed by its
+`"<instance>.<pin>"` name and weighs as many flops as it clocks inside a
+greybox body (one for a stub), so a forwarded clock bank that sits in an
+abstracted block is reported as it is flat.
+
 The report is surfaced as:
 
 - JSON `inferred_clock_candidates` (list of `{driver, driver_kind,
@@ -1064,16 +1070,26 @@ CDC-008 on its clock legs, CDC-010 still checks its select / enable),
 CDC-008's and CDC-025's clock-bit sets, CDC-023's combine walk
 (`find_clock_combines(extra_sinks=)`) and the scan-mode tag
 (`find_scan_mode_flops(extra_sinks=)`; a steered pin tags the
-instance's boundary sinks in its clock). The pin set is
-`instance_clock_pins` plus, for a greybox, `abstract.body_clock_pins`:
-the input ports that clock the body's own flops, which the parent-side
-trace cannot prove when the port driving one has no `create_clock`. A
-bodyless stub whose clock pin is neither allow-listed nor traceable to a
-declared clock stays data (unchanged), so such a pin on an undeclared
-port gets no CDC-021 under `--blackbox`. Still flop-only, and reported
-as such: the advisory inferred-clock candidates (a forwarded clock's
-fan-out counts flops) and the domain map's clock-network edges
-(`clock_network.find_clock_network_crossings`, keyed by destination flop).
+instance's boundary sinks in its clock). The pin set is the module
+type's clock pins — `abstract.blackbox_clock_pins_by_module`, the union
+over every instance of the type, so one instance whose pin traces to a
+declared clock proves the pin a clock pin of the module (the #273
+argument; rtl-buddy-cdc#405) — plus, for a greybox,
+`abstract.body_clock_pins`: the input ports that clock the body's own
+flops, which the parent-side trace cannot prove when the port driving
+one has no `create_clock`. A bodyless stub whose clock pin is neither
+allow-listed, nor traceable to a declared clock on any instance of its
+type, stays data: the stub carries no declaration of its pins' roles
+the tool accepts, and guessing from the pin name beyond the allow-list
+would absorb mis-wired data pins (CDC-008's FIX 4). Such a pin on an
+undeclared port gets no CDC-021 under `--blackbox` (pinned by
+`tests/test_abstraction_parity_405.py`); `--greybox` reports it. The
+two views that counted flops count the pins too (rtl-buddy-cdc#405):
+the advisory inferred-clock candidates weigh a pin by the flops it
+clocks inside a greybox body (`abstract.body_clock_pin_fanout`; one for
+a stub, whose body is unknown), and the domain map's clock-network
+edges (`clock_network.find_clock_network_crossings(extra_sinks=)`) end
+at a pin as at a flop, marked `dst_boundary`.
 
 **The `synchronised` field is the seam to a more precise model — and is
 now live, via route (a) (#261).** It was hard-wired `False` by the
@@ -1112,19 +1128,60 @@ hierarchy pin, and the parent's boundary-sink crossing is what reports
 data entering it) and `pin_clocks` generated-clock targets (their paths
 are parent-relative).
 
-Four rules are excluded from the internal pass because their predicate
+Five rules are excluded from the internal pass because their predicate
 is literally *"a top-level port of the design"*: **CDC-006** (a
 synchroniser fed from an unregistered top port with no source flop — the
 definition of a correct boundary input synchroniser), **CDC-011**
 (untyped primary input — no subtree pin is ever typed), **RDC-008**
 (async reset driven directly by a top-level port — what every reset pin
-is), and **CDC-025** (uncontracted top-level output, §8.22 — a subtree
-output pin is an internal net of the parent). The input-side three are
-still reported, by the parent, as the boundary-sink crossing at that
-same port; whatever captures a subtree output inside the parent is a
+is), **RDC-005** (an async reset gated over two or more top-level reset
+ports — whether two reset pins of a module are two ports, one, or
+registers is the parent's to know), and **CDC-025** (uncontracted
+top-level output, §8.22 — a subtree output pin is an internal net of the
+parent). The input-side ones are reported by the parent: CDC-006 and
+RDC-005 from the facts below, the rest as the boundary-sink crossing at
+that same port; whatever captures a subtree output inside the parent is a
 crossing the parent's own walk reports.
 
-**What the pass publishes, and what each fact does.**
+**What the pass publishes, and what each fact does.** The facts below
+are what the flat rules read off flops a boundary hides; each one makes
+the parent's rule reach the verdict the flat run reaches
+(rtl-buddy-cdc#405 audited every rule flat vs `--greybox` vs
+`--blackbox`, `tests/test_abstraction_parity_405.py`):
+
+- **Chain shape (inputs).** The proven chain's stages with their clock
+  edges (CDC-016 checks them), the output-port bit the chain's last stage
+  drives and nothing else reads (`chain_exit`), the comb cells between
+  the pin and the first stage (`comb_hops`: the proof now walks through
+  single-output gates each read once, and CDC-003 / CDC-006 count them),
+  and the stage a gate after a depth-1 first stage feeds
+  (`inter_stage`: CDC-014, and CDC-001's deferral to it). The rule
+  context joins a chain across the boundary
+  (`rules._effective_sync_chain_depth` / `_joined_chain_stages`): parent
+  stages whose last `Q` feeds nothing but a proven sink in the same clock
+  add the depth behind it, and a proven chain carries on through the
+  parent stages hung on its exit. So CDC-018 sees a deep chain wholly or
+  partly inside a block, and a parent capture flop feeding a one-stage
+  block is the two-stage synchroniser the flat run sees.
+- **Reset pins (inputs).** Per input pin, the flops inside whose reset
+  (`ARST` / `CLR` / `SET` / `ALOAD` / folded `SRST`) it drives
+  (`netlist.ResetPinFact`: the flop's clock, whether it is a reset
+  synchroniser, whether a gate or a live mux sits between). RDC-001 /
+  RDC-003 / CDC-015 / RDC-004 / RDC-005 judge what drives the pin in
+  the parent as the flat rules judge what drives the flop's reset. A pin
+  that reaches flops only through asynchronous controls is no data
+  capture and seeds no sink (the flat crossing walk finds none there).
+- **Launch shape (outputs).** For a single-bit output, the comb cells
+  between the launching registers and the pin and their names (CDC-003,
+  one finding per register), and the transparent latch driving it
+  (CDC-017); for an output one register drives whole, that register's
+  width, gray encoding and `cdc_gray` / `cdc_static` / `cdc_handshake`
+  tags (CDC-004 / CDC-020), single-bit async reset value (RDC-002) and
+  toggle shape (CDC-013). The parent reads these through
+  `rules.BoundarySource`, the source its backward walks stop at: every
+  summarised output pin, stub or greybox, carries its launch clock, so
+  RDC-001 / RDC-003 / CDC-015 / CDC-024 / CDC-005 / CDC-018 treat a block
+  output as the register behind it.
 
 - **Per-port `sync_depth` / `synchronised` (inputs).** For a *width-1*
   input port, the proof requires: the port bit has **exactly one** reader,
@@ -1220,12 +1277,19 @@ not a decline: it simply seeds **no sink**, because there is no crossing
 seeded as its own source — unconstrained when that output is a comb
 feed-through, so the path stays covered conservatively.
 
-**Residual imprecision, stated plainly.** A rule whose subject *spans*
-the boundary is evaluated on each side separately, because that is what a
-hierarchy boundary means: CDC-018's chain-length smell, for instance, sees
-the block's internal chain and the parent's chain but never their
-concatenation. This affects smell-level rules about path length, never
-the presence of a crossing.
+**Residual imprecision, stated plainly.** Chain depth is joined across
+the boundary (above). What is still evaluated on each side separately,
+each reported by the audit of rtl-buddy-cdc#405 with a reproducer, and
+none of them silent at the site: a gated bus whose gating sits inside
+the block (the parent reports CDC-004 where the flat run reports
+CDC-012 — an over-report), a clock mux / gate inside the block whose
+select arrives on a pin (CDC-001 at the pin instead of CDC-010), a latch
+or a memory between a pin and the first stage (CDC-001 / CDC-004 instead
+of CDC-017 / CDC-026), a block output that carries a clock pin
+combinationally (CDC-001 instead of CDC-008), a source register's data
+hold behind a block output (CDC-012), and an asynchronous merge that
+reaches a top-level output through a block's combinational feed-through
+(CDC-025).
 
 ### 4.10 Recognised CDC primitives (issue #275)
 

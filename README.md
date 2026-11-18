@@ -95,7 +95,7 @@ Primary mode (`analyze`):
 | Waiver file | optional | Per-violation suppression with reason (see [Waivers](#waivers)) |
 | `--baseline FILE.json` | optional | Filter out findings already present in a prior JSON report; the carried-over set is surfaced as a separate tally and never drives the exit code. Useful for "fail PR only on new findings". Matches on `(rule_id, cell_name, message)`. |
 | `--strict` | optional | Promote every `warning`-severity violation to `error` before reporting (see [Rules](#rules)). Exit code is unchanged — the flag is reframing, not gating. |
-| `--emit-domain-map FILE.json` | optional | Write the structured clock-domain map (schema v1.3) to a sidecar file: clocks, async groups, false paths, `set_max_delay -datapath_only` records and the clock pairs they mark async, `set_case_analysis` port values, per-flop domain assignments, typed port→clock map, and structural crossings tagged with `async_per_sdc`, the `synchronizer` scheme lint recognised at the destination (`2ff` / `pulse` / `gray` / `handshake` / `mux` / `static` / `glitchless`, or `null`) and the post-waiver rule ids raised on the crossing (`findings`; `null` when rules did not run). Designs with inferred memories also get a `memory_crossings` list — one entry per write-clock → read-clock storage path, with its `control` crossings, `synchronizer` (`fifo` or `null`) and `findings` (see [CDC-026](#rules)); the key is absent when the design has no memory cells. Designed for downstream consumers like [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view); the normal report still runs unless paired with `--no-findings`. |
+| `--emit-domain-map FILE.json` | optional | Write the structured clock-domain map (schema v1.3) to a sidecar file: clocks, async groups, false paths, `set_max_delay -datapath_only` records and the clock pairs they mark async, `set_case_analysis` port values, per-flop domain assignments, typed port→clock map, and structural crossings tagged with `async_per_sdc`, the `synchronizer` scheme lint recognised at the destination (`2ff` / `pulse` / `gray` / `handshake` / `mux` / `static` / `glitchless`, or `null`) and the post-waiver rule ids raised on the crossing (`findings`; `null` when rules did not run). A `clock_network_crossings` entry whose destination is an abstracted instance's clock pin carries `dst_boundary` (`{instance, port}`), with `dst_flop` naming the pin. Designs with inferred memories also get a `memory_crossings` list — one entry per write-clock → read-clock storage path, with its `control` crossings, `synchronizer` (`fifo` or `null`) and `findings` (see [CDC-026](#rules)); the key is absent when the design has no memory cells. Designed for downstream consumers like [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view); the normal report still runs unless paired with `--no-findings`. |
 | `--emit-reset-domain-map FILE.json` | optional | Write the structured reset-domain map (schema v1.0) to a sidecar file: distinct upstream reset sources, recognised reset-synchroniser stages, per-flop reset assignments, and structural reset crossings (`async-deassert` / `polarity-mismatch` / `sync-crossing` / `comb-driven`). Parallel to `--emit-domain-map`; both can be passed in one run. See [wiki/raw/articles/rtl-buddy-cdc-reset-domain-map-schema.md](wiki/raw/articles/rtl-buddy-cdc-reset-domain-map-schema.md). |
 | `--reset-hints FILE.yaml` | optional | External YAML file declaring reset-port polarity / synchroniser annotations, parallel to the in-RTL `(* reset_polarity *)` / `(* reset_sync *)` SV attributes. Hints win on disagreement with the attribute path. Requires the `[hints]` optional install extra (`pip install 'rtl-buddy-cdc[hints]'`). See [wiki/raw/articles/rtl-buddy-cdc-reset-hints-schema.md](wiki/raw/articles/rtl-buddy-cdc-reset-hints-schema.md). |
 | `--no-findings` | optional | Skip rule evaluation entirely. Only meaningful with `--emit-domain-map` / `--emit-reset-domain-map`: the run exits 0 on successful elaboration + map emission, 2 on elaboration failure, and the normal report is suppressed. |
@@ -175,12 +175,44 @@ own internals, and lifts what it finds:
   reconvergence-unsafe decline is retired for greyboxed modules.
 - **A multi-clock IP is summarised per port** — each stamped with the
   domain that really captures or launches it — instead of being declined.
+- **The parent's rules read what the body hides** (rtl-buddy-cdc#405).
+  A chain is measured across the boundary (CDC-018 on a deep chain inside
+  or spanning the block; a parent capture flop feeding a one-stage block
+  is a two-stage synchroniser), and the shapes the flat rules read off
+  flops the boundary hides are published and checked in the parent: a
+  gate before or between the first stages (CDC-003 / CDC-006 / CDC-014),
+  opposite-edge stages (CDC-016), the flops a reset pin drives (RDC-001 /
+  RDC-003 / RDC-004 / RDC-005 / CDC-015), and the register or latch
+  behind an output (CDC-003 / CDC-004 gray / CDC-013 / CDC-017 / CDC-020 /
+  RDC-002). Every summarised output, stub or greybox, is a source in its
+  launch clock for the reset rules, CDC-005, CDC-018 and CDC-024.
 
 The proof bar is deliberately one-sided: `synchronised` is the only lever
 in this model that can make the tool *under*-report, so it is set only
 when proven. A tie-off, a comb bypass around the chain, a second load on
 the input, a multi-bit port, or a chain one stage short all fall back to
 the conservative answer.
+
+A few shapes are still judged on each side of the boundary separately and
+report a different rule from the flat run — never nothing at the site: a
+gated bus whose gating is inside the block (CDC-004 instead of CDC-012), a
+clock mux or gate inside the block whose select arrives on a pin, a latch
+or memory between a pin and the first stage, and a block output that
+carries a clock pin (CDC-001 / CDC-004 instead of CDC-010 / CDC-017 /
+CDC-026 / CDC-008). A source register's data hold behind a block output
+(CDC-012) and an asynchronous merge reaching a top-level output through a
+block's combinational feed-through (CDC-025) are not seen.
+
+**Clock pins of a stub.** A pin is a clock pin of a bodyless
+(`--blackbox`) module when its name is on the allow-list (`clk`, `CLK`,
+`C`, `clock`, `clk_i`), or when it is clock-named (`wr_clk`, `clk_a`, …)
+and traces to a declared clock on *some* instance of the module. A pin
+that is neither — a clock arriving on `strobe`, or on `smp_clk` from a
+port with no `create_clock` on every instance — is read as data: the stub
+declares nothing about its pins, and guessing from names would hide a
+data pin mis-wired to a clock. Such a pin driven from an undeclared port
+gets no CDC-021 under `--blackbox`; `--greybox` keeps the body and
+reports it.
 
 Three cases still decline, each with its own `CDC-BBX` message: an
 internal flop the analyzer cannot place on any of the parent's clock roots
