@@ -603,11 +603,11 @@ endmodule
 @pytest.mark.parametrize(
     "body",
     [
-        "assign y = $clog2(a);",
-        "always_comb y = $clog2(a);",
-        "always @* begin y = 4'd0; y[1:0] = $clog2(a); end",
-        "wire [3:0] w = $clog2(a); assign y = w;",
-        "sub u (.i($clog2(a)), .o(y));",
+        "assign y = $urandom(a);",
+        "always_comb y = $urandom(a);",
+        "always @* begin y = 4'd0; y[1:0] = $urandom(a); end",
+        "wire [3:0] w = $urandom(a); assign y = w;",
+        "sub u (.i($urandom(a)), .o(y));",
     ],
     ids=["assign", "always_comb", "part_select", "wire_init", "port"],
 )
@@ -629,13 +629,13 @@ endmodule
     assert unknown & set(module.ports["y"].bits)
     msgs = _warnings(caplog)
     assert any(
-        "`$clog2(a)` not lowered; modelled as an opaque driver" in m for m in msgs
+        "`$urandom(a)` not lowered; modelled as an opaque driver" in m for m in msgs
     ), msgs
 
 
 def test_unlowerable_register_input_is_reported(tmp_path: Path, caplog) -> None:
     src = """module m (input clk, input [3:0] a, output reg [3:0] q);
-    always @(posedge clk) q <= $clog2(a);
+    always @(posedge clk) q <= $urandom(a);
 endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):

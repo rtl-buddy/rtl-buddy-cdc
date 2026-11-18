@@ -570,7 +570,7 @@ endmodule
 
 
 def test_unlowerable_rhs_into_concatenation(tmp_path: Path) -> None:
-    """An RHS with no lowering (``$clog2``) still gives the
+    """An RHS with no lowering (``$urandom``) still gives the
     registers an opaque ``$_UNKNOWN_`` driver, as for a plain target; a
     combinational splice leaves the bits undriven, as a whole-variable
     combinational target does."""
@@ -578,9 +578,9 @@ def test_unlowerable_rhs_into_concatenation(tmp_path: Path) -> None:
           output reg [1:0] b, output reg [2:0] c);
     always @(posedge clk_b or negedge rst_n)
         if (!rst_n) {a, b} <= x;
-        else {a, b} <= $clog2(x);
+        else {a, b} <= $urandom(x);
     reg [2:0] w;
-    always_comb {w[2], w[1:0]} = $clog2(x);
+    always_comb {w[2], w[1:0]} = $urandom(x);
     always @(posedge clk_b) c <= w;
 endmodule
 """

@@ -5383,6 +5383,10 @@ class _ModuleBuilder:
                 return self._bits_of_expression(args[0])
             if name in self._BIT_COUNT_CALLS and len(args) == 1:
                 return self._lower_bit_count(name, args[0], expr)
+            if name == "$countbits" and len(args) >= 2:
+                return self._lower_countbits(args, expr)
+            if name == "$clog2" and len(args) == 1:
+                return self._lower_clog2(args[0], expr)
             if name in self._ENUM_STEPS and args:
                 return self._lower_enum_step(expr, args, self._ENUM_STEPS[name])
             if name in self._ARRAY_REDUCTIONS and len(args) == 1:
@@ -5501,15 +5505,8 @@ class _ModuleBuilder:
         bits = self._bits_of_expression(arg)
         if bits is None:
             return None
-        cw = max(len(bits).bit_length(), 1)
-        count: tuple[Bit, ...] = self._resize_bits(bits[:1], cw)
-        for bit in bits[1:]:
-            count = self._emit_comb_cell(
-                "$add",
-                {"A": count, "B": self._resize_bits((bit,), cw)},
-                output_width=cw,
-                src_node=expr,
-            )
+        count = self._count_bits(bits, expr)
+        cw = len(count)
         if name == "$countones":
             return self._resize_bits(count, width)
         one = self._resize_bits(("1",), cw)
@@ -5517,6 +5514,78 @@ class _ModuleBuilder:
         return self._emit_comb_cell(
             cell, {"A": count, "B": one}, output_width=1, src_node=expr
         )
+
+    def _count_bits(self, bits: tuple[Bit, ...], node: Any) -> tuple[Bit, ...]:
+        """How many of ``bits`` are 1: a chain of ``$add``, as wide as the
+        count needs."""
+        cw = max(len(bits).bit_length(), 1)
+        count: tuple[Bit, ...] = self._resize_bits(bits[:1], cw)
+        for bit in bits[1:]:
+            count = self._emit_comb_cell(
+                "$add",
+                {"A": count, "B": self._resize_bits((bit,), cw)},
+                output_width=cw,
+                src_node=node,
+            )
+        return count
+
+    def _lower_countbits(self, args: list[Any], expr: Any) -> tuple[Bit, ...] | None:
+        """``$countbits(a, c, ...)``: how many bits of ``a`` equal one of the
+        control bits (IEEE 1800-2017 20.9) — its ones for ``1'b1``, its
+        zeros for ``1'b0``; a netlist value has no ``x`` / ``z`` bit, so
+        those controls count nothing (rtl-buddy-cdc#408: an opaque driver).
+        ``None`` for a control that is not a constant."""
+        width = self._expr_width(expr) or 1
+        bits = self._bits_of_expression(args[0])
+        if bits is None:
+            return None
+        controls: set[Bit] = set()
+        for control in args[1:]:
+            value = self._bits_of_expression(control)
+            if not value or not isinstance(value[0], str):
+                return None  # a run-time control bit
+            controls.add(value[0])
+        if {"0", "1"} <= controls:
+            return self._int_bits(len(bits), width)
+        if "1" in controls:
+            counted = bits
+        elif "0" in controls:
+            counted = tuple(
+                self._emit_comb_cell("$not", {"A": bits}, len(bits), src_node=expr)
+            )
+        else:
+            return self._resize_bits(("0",), width)
+        return self._resize_bits(self._count_bits(counted, expr), width)
+
+    def _lower_clog2(self, arg: Any, expr: Any) -> tuple[Bit, ...] | None:
+        """A run-time ``$clog2(a)``: the bit length of ``a - 1``, 0 for ``a``
+        0 (IEEE 1800-2017 20.8.1, ``a`` unsigned) — a ``$sub``, a priority
+        chain of ``$mux`` from the highest set bit and a ``$mux`` for 0
+        (rtl-buddy-cdc#408: an opaque driver, its fan-in invisible)."""
+        width = self._expr_width(expr) or 32
+        bits = self._bits_of_expression(arg)
+        if not bits:
+            return None
+        n = len(bits)
+        one = self._int_bits(1, n)
+        less = self._emit_comb_cell("$sub", {"A": bits, "B": one}, n, src_node=expr)
+        rw = max(n.bit_length(), 1)
+        length: tuple[Bit, ...] = self._int_bits(0, rw)
+        for k in range(n):  # the highest set bit is the last to load
+            length = self._emit_comb_cell(
+                "$mux",
+                {"A": length, "B": self._int_bits(k + 1, rw), "S": (less[k],)},
+                rw,
+                src_node=expr,
+            )
+        zero = self._emit_comb_cell("$logic_not", {"A": bits}, 1, src_node=expr)
+        result = self._emit_comb_cell(
+            "$mux",
+            {"A": length, "B": self._int_bits(0, rw), "S": zero},
+            rw,
+            src_node=expr,
+        )
+        return self._resize_bits(result, width)
 
     def _constant_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """LSB-first bits of ``expr``'s elaboration-time value, sized to its
