@@ -3047,8 +3047,8 @@ class _ModuleBuilder:
                     )
                     break
                 count += 1
-                if not self._loop_iteration(stmt, walk, clocked):
-                    break
+                # (A ``break`` known to have run ends it at the next test.)
+                self._loop_iteration(stmt, walk, clocked)
         finally:
             self._fold_vars = saved_fold
         if reason is not None:
@@ -3089,9 +3089,7 @@ class _ModuleBuilder:
         cond = getattr(stmt, "cond", None)
         if cond is not None:
             cond.visit(name)
-        body = getattr(stmt, "body", None)
-        if body is not None:
-            body.visit(written)
+        stmt.body.visit(written)
         return names
 
     # Iterations a ``while`` loop may run with none of its state folding.
@@ -3129,9 +3127,11 @@ class _ModuleBuilder:
                 right = self._loop_condition_bit(inner.right)
             finally:
                 self._conditional_depth -= 1
-            if right == stop or left is None or right is None:
-                return right if right == stop else None
-            if left != stop and left in ("0", "1"):
+            if right == stop:
+                return stop
+            if left is None or right is None:
+                return None
+            if left in ("0", "1"):  # the constant that does not decide
                 return right
             if right in ("0", "1"):
                 return left
@@ -3152,13 +3152,11 @@ class _ModuleBuilder:
     def _exit_where_false(self, go: Bit) -> None:
         """Set the innermost ``break`` flag where the run-time loop
         condition ``go`` is false."""
-        for flag in reversed(self._flags):
-            if flag.kind == "break":
-                current = self._var_bits.get(flag, ("0",))[0]
-                stop = self._lower_not(go)
-                merged = stop if current == "0" else self._or_bits([current, stop])
-                self._var_bits[flag] = (merged if merged is not None else stop,)
-                return
+        flag = next(f for f in reversed(self._flags) if f.kind == "break")
+        current = self._var_bits.get(flag, ("0",))[0]
+        stop = self._lower_not(go)
+        merged = stop if current == "0" else self._or_bits([current, stop])
+        self._var_bits[flag] = (merged if merged is not None else stop,)
 
     def _loop_snapshot(self) -> tuple[Any, ...]:
         """What :meth:`_loop_rollback` restores: the walk state a loop body
@@ -7968,14 +7966,9 @@ class _ModuleBuilder:
     ) -> list[Any]:
         """One write of each bit ``lane + j`` of ``sym`` that ``mask[j]``
         selects, its value ``data[j]``: a decision-tree switch on the mask
-        bit (a plain write where it is constant 1)."""
+        bit."""
         writes: list[Any] = []
         for j, (bit, sel) in enumerate(zip(data, mask)):
-            if sel == "0":
-                continue
-            if sel == "1":
-                writes.append((sym, lane + j, (bit,)))
-                continue
             case = _ProcCase()
             case.items.append((sym, lane + j, (bit,)))
             writes.append(_ProcSwitch([(sel, case)]))

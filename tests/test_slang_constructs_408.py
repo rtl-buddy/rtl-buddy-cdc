@@ -1142,3 +1142,273 @@ def test_runtime_bit_write_after_a_whole_write(tmp_path: Path, caplog) -> None:
         _REWRITE_ARRAY,
         (_rewrite_array_step, lambda st, v: {k: st.get(k, 0) for k in ("r0", "r1")}),
     )
+
+
+# --- the fold behind while-loop unrolling -------------------------------------
+
+_FOLDS = """module m (input [3:0] a, output logic [3:0] o1, output logic [3:0] o2,
+          output logic [7:0] o3, output logic [3:0] o4, output logic [3:0] o5,
+          output logic [3:0] o6, output logic [3:0] o7, output logic o8,
+          output logic [3:0] o9);
+    always_comb begin
+        int i, j, k, t, n;
+        logic signed [7:0] sv;
+        logic [7:0] k2;
+        // Every operator the fold evaluates, on a constant counter.
+        i = 0; o1 = 0;
+        while (((i << 1) >> 1) < 4 && (i ^ 1) != 9 && (i | 0) == (i & 15)
+               && -i > -4 && ~i != 0 && !(i == 9) && (i * 2 - i + 0) <= 3
+               && (i ~^ i) != 0 && (|i || 1) && (i >= 0 && i != 9)
+               && (a[0] ? i : i) < 4 && (^i || !(^i)) && (&i == 0 || i == 3)
+               && i < 4) begin
+            o1 = o1 + a; i++;
+        end
+        // A negative signed counter.
+        j = -3; o2 = 0;
+        while (j < 0) begin o2 = o2 + a[j + 3]; j++; end
+        // Run-time shifts by a constant amount.
+        t = 1; k = 1; k2 = 8'h80; sv = -8'sd128; o3 = 0;
+        while (k < 16) begin k = k << t; k2 = k2 >> t; sv = sv >>> t; o3 = o3 + 1; end
+        o3 = o3 ^ k2 ^ sv;
+        // A multi-bit condition that runs out of set bits.
+        n = 3; o4 = 0;
+        while (n) begin o4 = o4 + a; n = n - 1; end
+        // A break under an inverted condition, then a constant exit.
+        i = 0; o5 = 0;
+        while (1 && i < 4) begin if (!a[i]) o5 = o5 + 1; else break; i++; end
+        // Run-time on both sides of an ``&&``, and on the left only.
+        i = 0; o6 = 0;
+        while (i < 4 && !a[i] && !a[3 - i]) begin o6++; i++; end
+        i = 0; o7 = 0;
+        while (!a[i] && i < 3) begin o7++; i++; end
+        // A constant deciding ``&&`` whose other side does not lower.
+        o8 = 1'b0 && ($urandom(a) != 0);
+        // ``&&`` of two constants that are not loop state.
+        t = 1; i = 0; o9 = 0;
+        while (i < 2 && (t && t)) begin o9 = o9 + a; i++; end
+    end
+endmodule
+"""
+
+
+def _folds(a: int) -> dict[str, int]:
+    o5 = 0
+    for i in range(4):
+        if (a >> i) & 1:
+            break
+        o5 += 1
+    k2, sv = 0x80, -128
+    for _ in range(4):
+        k2 >>= 1
+        sv >>= 1
+    o6 = next((i for i in range(4) if (a >> i) & 1 or (a >> (3 - i)) & 1), 4)
+    o7 = next((i for i in range(3) if (a >> i) & 1), 3)
+    return {
+        "o6": o6,
+        "o7": o7,
+        "o8": 0,
+        "o9": (2 * a) & _M4,
+        "o1": (4 * a) & _M4,
+        "o2": bin(a & 7).count("1"),
+        "o3": (4 ^ k2 ^ (sv & 0xFF)) & 0xFF,
+        "o4": (3 * a) & _M4,
+        "o5": o5,
+    }
+
+
+def test_while_loops_fold_every_operator(tmp_path: Path, caplog) -> None:
+    """The fold that decides when an unrolled loop ends evaluates each
+    cell kind its counter passes through with Yosys semantics: signed and
+    unsigned compares, arithmetic, bitwise and reduction operators, shifts
+    by a value, a select whose two legs agree."""
+    _check(tmp_path, caplog, _FOLDS, _folds)
+
+
+@pytest.mark.parametrize(
+    ("body", "needle"),
+    [
+        # The condition does not lower.
+        ("while ($urandom(a) != 0) o = o + 1;", "its condition does not lower"),
+        # A multi-bit run-time condition never folds.
+        ("while (a) o = o + 1;", "its trip count"),
+        ("forever begin if (a[0]) break; o = o + 1; end", "`forever` loop"),
+        ("do o = o + 1; while (a != 0);", "`do … while` loop"),
+        ("o = $clog2($urandom(a));", "`$clog2($urandom(a))` not lowered"),
+        ("o = $countbits($urandom(a), 1'b1);", "not lowered"),
+        ("o = $urandom(a) -> a[0];", "not lowered"),
+    ],
+    ids=["condition", "multibit", "forever", "do_while", "clog2", "countbits", "imply"],
+)
+def test_loops_without_a_fixed_trip_count_name_their_kind(
+    tmp_path: Path, caplog, body: str, needle: str
+) -> None:
+    src = f"""module m (input [3:0] a, output logic [3:0] o);
+    always_comb begin o = 0; {body} end
+endmodule
+"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        _slang(tmp_path, src)
+    msgs = _warnings(caplog)
+    assert any(needle in m for m in msgs), msgs
+
+
+def test_clocked_break_known_at_elaboration(tmp_path: Path, caplog) -> None:
+    """An unconditional ``break`` ends a clocked loop at elaboration time;
+    one under a run-time condition followed by a constant one leaves the
+    remaining iterations out."""
+    src = """module m (input clk, input [3:0] a, output logic [3:0] q, output logic [3:0] r);
+    always_ff @(posedge clk) begin
+        q <= 0;
+        for (int i = 0; i < 4; i++) begin q <= i; break; q <= 4'hf; end
+        r <= 0;
+        for (int i = 0; i < 4; i++) begin if (a[i]) break; r <= i + 1; if (i == 1) break; end
+    end
+endmodule
+"""
+
+    def step(st: dict, v: dict) -> None:
+        r = 0
+        for i in range(4):
+            if (v["a"] >> i) & 1:
+                break
+            r = i + 1
+            if i == 1:
+                break
+        st.update(q=0, r=r)
+
+    _check(tmp_path, caplog, src, (step, lambda st, v: {k: st.get(k, 0) for k in "qr"}))
+
+
+# --- guards on shapes that do not lower ----------------------------------------
+
+
+def _bare_builder() -> Any:
+    return slang_fe._ModuleBuilder(top_inst=None, compilation=None, pyslang=None)
+
+
+class _Node:
+    def __init__(self, **attrs: Any) -> None:
+        self.__dict__.update(attrs)
+
+
+def test_member_span_guards() -> None:
+    span = slang_fe._ModuleBuilder._member_span
+    packed = _Node(isIntegral=True)
+    assert span(_Node(value=_Node(type=packed), member=None)) is None
+    assert span(_Node(value=None, member=_Node())) is None
+    no_offset = _Node(bitOffset=None, type=_Node(bitWidth=4))
+    assert span(_Node(value=_Node(type=packed), member=no_offset)) is None
+    union = _Node(isIntegral=False, isUnpackedStruct=False)
+    assert span(_Node(value=_Node(type=union), member=_Node(name="f"))) is None
+
+
+def test_fold_guards() -> None:
+    b = _bare_builder()
+    # An x digit, an undriven net and a cell the fold has no rule for.
+    assert b._fold_bits(("x",)) is None
+    assert b._fold_bits((5,)) is None
+    b._cells["c"] = Cell(
+        name="c",
+        type="$div",
+        connections={"A": ("1",), "B": ("1",), "Y": (9,)},
+        parameters={},
+        attributes={},
+    )
+    assert b._fold_bits((9,)) is None
+    # Only a loop's state variables fold.
+    assert b._folded_var(_Node(name="v")) is None
+    # Assumptions follow an OR at 0, an AND at 1 and an inverter.
+    for n, (kind, value, inputs) in enumerate(
+        (("$or", 0, ("A", "B")), ("$and", 1, ("A", "B")), ("$not", 1, ("A",)))
+    ):
+        bits = {pin: (100 + 10 * n + k,) for k, pin in enumerate(inputs)}
+        b._cells[kind] = Cell(
+            name=kind,
+            type=kind,
+            connections={**bits, "Y": (200 + n,)},
+            parameters={},
+            attributes={},
+        )
+        b._fold_assume = {}
+        b._assume(200 + n, value)
+        want = 1 - value if kind == "$not" else value
+        assert all(b._fold_assume[bit[0]] == want for bit in bits.values())
+
+
+def test_method_and_function_guards(tmp_path: Path) -> None:
+    b = _bare_builder()
+    not_enum = _Node(type=_Node(canonicalType=_Node(isEnum=False)))
+    assert b._lower_enum_step(_Node(), [not_enum], 1) is None
+    not_array = _Node(type=_Node(canonicalType=_Node(isUnpackedArray=False)))
+    assert b._lower_array_reduction(_Node(), not_array, "sum") is None
+    assert b._lower_step(_Node(), "Postincrement") is None  # no walk in progress
+    assert b._lower_assignment_value(_Node()) is None
+    b._expr_writer = lambda write: None
+    assert b._lower_assignment_value(_Node(isNonBlocking=True)) is None
+
+
+class FieldSymbol:  # noqa: D101 - named as pyslang names a struct member
+    def __init__(self, name: str, width: int) -> None:
+        self.name = name
+        self.type = _Node(selectableWidth=width)
+
+
+class EnumValueSymbol:  # noqa: D101 - named as pyslang names an enum member
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
+class _Scope(_Node):
+    def __init__(self, members: list[Any], **attrs: Any) -> None:
+        super().__init__(**attrs)
+        self.members = members
+
+    def __iter__(self):
+        return iter(self.members)
+
+
+def test_aggregate_guards() -> None:
+    b = _bare_builder()
+    span = slang_fe._ModuleBuilder._member_span
+    empty = _Scope([FieldSymbol("f", 0)], isIntegral=False, isUnpackedStruct=True)
+    assert span(_Node(value=_Node(type=empty), member=_Node(name="f"))) is None
+    other = _Scope([FieldSymbol("f", 2)], isIntegral=False, isUnpackedStruct=True)
+    assert span(_Node(value=_Node(type=other), member=_Node(name="g"))) is None
+    # A struct value that does not match its type.
+    assert b._unpacked_value_bits(_Node(value=1), other) is None
+    assert b._unpacked_value_bits(_Node(value=[None]), other) is None
+    # Enum members whose values do not lower, or none at all.
+    for members in ([EnumValueSymbol(None)], [_Node()]):
+        etype = _Scope(members, isEnum=True)
+        arg = _Node(type=_Node(canonicalType=etype))
+        b._bits_of_expression = lambda e: ("1",)
+        assert b._lower_enum_step(_Node(type=_Node(bitWidth=1)), [arg], 1) is None
+    # An array reduction over bits that do not match the array.
+    atype = _Node(isUnpackedArray=True, range=_Node(left=0, right=1), elementType=None)
+    arr = _Node(type=_Node(canonicalType=atype))
+    assert b._lower_array_reduction(_Node(type=_Node(bitWidth=1)), arr, "or") is None
+
+
+def test_driver_index_skips_a_deleted_cell() -> None:
+    b = _bare_builder()
+    b._cells["c"] = Cell(
+        name="c",
+        type="$not",
+        connections={"A": ("1",), "Y": (9,)},
+        parameters={},
+        attributes={},
+    )
+    assert b._fold_bits((9,)) == 0
+    del b._cells["c"]
+    assert b._driver_of(9) is None
+    # A select neither leg decides adds nothing past the select's output.
+    b._cells["m"] = Cell(
+        name="m",
+        type="$mux",
+        connections={"A": (20,), "B": (21,), "S": (22,), "Y": (23,)},
+        parameters={},
+        attributes={},
+    )
+    b._fold_assume = {}
+    b._assume(23, 1)
+    assert b._fold_assume == {23: 1}
