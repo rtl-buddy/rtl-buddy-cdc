@@ -9,6 +9,7 @@ constants. We preserve them as-is and treat anything non-int as a constant.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -238,6 +239,32 @@ class Module:
     def cells_of_type(self, types: Iterable[str]) -> list[Cell]:
         wanted = set(types)
         return [c for c in self.cells.values() if c.type in wanted]
+
+
+# An SDC name indexed twice or more (``p[1][2]``, ``p_reg[0][*]/Q``):
+# ``base`` carries no bracket, ``first`` is the first index.
+MULTI_INDEX_RE = re.compile(
+    r"^(?P<base>[^\[\]]+)(?P<first>\[[^\[\]]+\])(?:\[[^\[\]]+\])+(?P<pin>[./][^\[\]./]+)?$"
+)
+
+
+def flat_index_advice(base: str) -> str:
+    """Why ``base[i][j]`` names nothing when ``base`` is one vector, and
+    what to write instead (rtl-buddy-cdc#402).
+
+    A packed multi-dimensional vector (``logic [1:0][3:0] p``) is one
+    netname on both frontends, its dimensions gone, so a second index
+    has no dimension to select from. Neither the Yosys netlist nor the
+    slang frontend's records its packed dimensions, so the analyzer
+    cannot compute the flat index itself.
+    """
+    return (
+        f"'{base}' is a single vector in the netlist, and a packed "
+        f"multi-dimensional vector keeps no dimensions through elaboration, "
+        f"so it cannot be indexed twice: name the bit by its flat index, "
+        f"'{base}[n]' with n = i*W + j for '[i][j]' (W = width of the inner "
+        f"dimension)"
+    )
 
 
 def format_bit_select(indices: Iterable[int]) -> str:

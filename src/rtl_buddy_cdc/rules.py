@@ -9,6 +9,7 @@ done.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from functools import cached_property
@@ -18,9 +19,10 @@ from rtl_buddy_cdc.domain import (
     Crossing,
     _lane_targets,
     bit_clock_resolver,
+    boundary_clock_sinks,
+    clock_root_resolver,
     find_clock_combines,
     find_scan_mode_flops,
-    flop_clock_root_resolver,
     flop_domain_resolver,
     root_port_name,
 )
@@ -195,6 +197,16 @@ class _RuleContext:
     # ``blackbox_modules`` whole-instance exemption (e.g. legacy callers
     # that don't supply the map).
     boundary_clock_pins: dict[str, frozenset[str]] = field(default_factory=dict)
+    # The same pins as named clock sinks, ``"u_ip.clk" -> bit``
+    # (:func:`~rtl_buddy_cdc.domain.boundary_clock_sinks`), and the raw
+    # clock root of each by the walk ``clock_roots`` takes. In the
+    # flattened design these bits are the ``CLK`` of the flops inside the
+    # instance; abstracted, every view seeded from flop clocks — CDC-021's
+    # roots, the clock network CDC-008 / CDC-010 read — is seeded from
+    # them too, or it loses what the instance's flops contributed
+    # (rtl-buddy-cdc#402).
+    boundary_clock_sinks: dict[str, Bit] = field(default_factory=dict)
+    boundary_clock_roots: dict[str, str | None] = field(default_factory=dict)
     # Proven synchroniser depth behind a *boundary* virtual sink (#261).
     # Keyed by the synthetic sink's cell name (``<instance>.<port>``), the
     # value is the chain depth the compositional per-module pass measured
@@ -308,7 +320,12 @@ class _RuleContext:
         """:func:`_clock_network_cells` for this module. CDC-008 and
         CDC-010 both consult it; built once."""
         return frozenset(
-            _clock_network_cells(self.module, self.bit_drivers, flops=self.flops)
+            _clock_network_cells(
+                self.module,
+                self.bit_drivers,
+                flops=self.flops,
+                extra_clock_bits=self.boundary_clock_sinks.values(),
+            )
         )
 
 
@@ -369,18 +386,22 @@ def _build_context(
     normalise: Callable[[str], str | None] | None = None
     if clock_spec is not None:
         clock_inputs = clock_spec.clock_root_inputs()
-        root_of = flop_clock_root_resolver(module, max_depth=max_depth, **clock_inputs)
+        root_of = clock_root_resolver(module, max_depth=max_depth, **clock_inputs)
         normalise = clock_inputs["clock_for_port"]
     else:
-        root_of = flop_clock_root_resolver(module, max_depth=max_depth)
+        root_of = clock_root_resolver(module, max_depth=max_depth)
     clock_roots: dict[str, str | None] = {}
     domains: dict[str, str | None] = {}
     for f in flops:
-        root = root_of(f)
+        root = root_of(f.clk)
         clock_roots[f.cell.name] = root
         if root is not None and normalise is not None:
             root = normalise(root) or root
         domains[f.cell.name] = root
+    # An abstracted instance's clock pins root by the same walk
+    # (rtl-buddy-cdc#402).
+    clock_sinks = boundary_clock_sinks(module, boundary_clock_pins or {})
+    clock_sink_roots = {name: root_of(bit) for name, bit in clock_sinks.items()}
 
     # Forward index: same shape as ``bit_drivers`` but for *inputs*.
     # CLK is excluded (clock pins are walked separately by the clock-
@@ -440,6 +461,8 @@ def _build_context(
         boundary_modules=boundary_modules,
         blackbox_modules=blackbox_modules,
         boundary_clock_pins=boundary_clock_pins or {},
+        boundary_clock_sinks=clock_sinks,
+        boundary_clock_roots=clock_sink_roots,
         boundary_sync_depth=boundary_sync_depth or {},
         boundary_reconvergence=boundary_reconvergence or {},
         max_depth=max_depth,
@@ -750,6 +773,7 @@ def scan_mode_clock_select_flops(
     declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
+    extra_sinks: Mapping[str, Bit] | None = None,
 ) -> set[str]:
     """Cell names of flops whose ``CLK`` network is steered by a
     scan-mode port (issue #45).
@@ -773,6 +797,9 @@ def scan_mode_clock_select_flops(
     Returns an empty set immediately when the design declares no
     scan-mode port at all, which is the overwhelmingly common case and
     skips the walk entirely.
+
+    ``extra_sinks`` (an abstracted instance's clock pins, rtl-buddy-cdc#402)
+    are walked too and named in the result when steered.
     """
     ports = scan_mode_port_names(module)
     if not ports:
@@ -796,6 +823,7 @@ def scan_mode_clock_select_flops(
         declared_clock_for_port=declared_clock_for_port,
         max_depth=max_depth,
         case_analysis=case_analysis,
+        extra_sinks=extra_sinks,
     )
 
 
@@ -934,6 +962,24 @@ def _port_typing(
         typing = clock_spec.port_typing(module)
         ctx.port_typing_memo[id(clock_spec)] = typing
     return typing
+
+
+# The values a fix hint writes where an SDC command needs a number the
+# analyzer cannot know: the external delay of a ``set_input_delay`` /
+# ``set_output_delay`` and the period of a ``create_clock``. Every hint is
+# a complete command this tool parses as written (rtl-buddy-cdc#402), so
+# pasting it works; the message says the value is a placeholder to replace.
+SDC_HINT_DELAY = "0.0"
+SDC_HINT_PERIOD = "10.0"
+
+# A Tcl word that needs no quoting: anything else is braced, so a name
+# carrying ``[`` / ``$`` / whitespace is not substituted or split.
+_TCL_BARE_WORD = re.compile(r"[A-Za-z0-9_.:/-]+")
+
+
+def _tcl_word(name: str) -> str:
+    """``name`` as one literal Tcl word."""
+    return name if _TCL_BARE_WORD.fullmatch(name) else "{" + name + "}"
 
 
 def _sdc_port_word(label: str) -> str:
@@ -3170,6 +3216,7 @@ def _clock_network_cells(
     drivers: dict[Bit, tuple[str, str, int]],
     *,
     flops: Iterable[Flop] | None = None,
+    extra_clock_bits: Iterable[Bit] = (),
 ) -> set[str]:
     """Cells whose output transitively drives some flop's ``CLK`` pin.
 
@@ -3180,6 +3227,9 @@ def _clock_network_cells(
     gating / muxing structures.
 
     ``flops`` is ``find_flops(module)`` when the caller already has it.
+    ``extra_clock_bits`` are clock sinks that are not flops' — the clock
+    pins of abstracted instances (rtl-buddy-cdc#402), whose flattened
+    flops would have seeded the walk.
     """
     cells: set[str] = set()
     seen_bits: set[Bit] = set()
@@ -3187,6 +3237,7 @@ def _clock_network_cells(
     for f in find_flops(module) if flops is None else flops:
         if isinstance(f.clk, int):
             frontier.append(f.clk)
+    frontier.extend(b for b in extra_clock_bits if isinstance(b, int))
     while frontier:
         nxt: list[Bit] = []
         for bit in frontier:
@@ -3252,6 +3303,9 @@ def check_cdc_008(
     for f in ctx.flops:
         if isinstance(f.clk, int):
             clock_bits.add(f.clk)
+    # An abstracted instance's clock pins are the CLK of its flops in the
+    # flattened design (rtl-buddy-cdc#402).
+    clock_bits.update(ctx.boundary_clock_sinks.values())
     if clock_spec is not None:
         for clk in clock_spec.clocks.values():
             for port_name in clk.ports:
@@ -4977,8 +5031,13 @@ def check_cdc_011(
                         f"unconstrained primary input {port!r} is "
                         f"captured in multiple clock domains "
                         f"({dst_clocks}); a single port cannot be "
-                        f"synchronous to more than one clock — add "
-                        f"set_input_delay -clock <name> and a "
+                        f"synchronous to more than one clock — type it with "
+                        f"its true source clock, e.g. `set_input_delay "
+                        f"-clock {_tcl_word(dst_clocks[0])} {SDC_HINT_DELAY} "
+                        f"[get_ports {_sdc_port_word(port)}]` (the clock "
+                        f"must be the port's real source clock and the "
+                        f"{SDC_HINT_DELAY} delay is a placeholder for its "
+                        f"real external input delay), and add a "
                         f"synchronizer on at least one destination"
                     ),
                     cell_name=repr_cell,
@@ -4994,9 +5053,11 @@ def check_cdc_011(
                         f"unconstrained primary input {port!r} has no "
                         f"set_input_delay -clock typing in the SDC "
                         f"but is captured in domain {dst_clk!r}; add "
-                        f"set_input_delay -clock {dst_clk} "
-                        f"[get_ports {_sdc_port_word(port)}] (or declare the port's "
-                        f"true source clock and add a synchronizer)"
+                        f"`set_input_delay -clock {_tcl_word(dst_clk)} "
+                        f"{SDC_HINT_DELAY} [get_ports {_sdc_port_word(port)}]` "
+                        f"(the {SDC_HINT_DELAY} delay is a placeholder: set "
+                        f"the port's real external input delay), or declare "
+                        f"the port's true source clock and add a synchronizer"
                     ),
                     cell_name=repr_cell,
                 )
@@ -6450,35 +6511,65 @@ def check_cdc_021(
     for clk in clock_spec.clocks.values():
         declared_clock_ports.update(clk.ports)
 
+    def undeclared_port(root: str | None) -> str | None:
+        """The undeclared top-level input port ``root`` names, if any."""
+        if root is None or root in declared_clock_ports:
+            return None
+        # A bit of a port typed bit by bit roots as ``d[3]``
+        # (rtl-buddy-cdc#398); the undeclared clock is still port ``d``.
+        name = root_port_name(module, root)
+        port = module.ports.get(name)
+        if port is None or port.direction != "input":
+            return None  # not a port — e.g. an internal generated clock
+        if name in declared_clock_ports:
+            return None  # has a create_clock — the rule's only condition fails
+        return name
+
     undeclared: dict[str, list[str]] = defaultdict(list)
     for f in ctx.flops:
         # The raw root, not the canonical domain: on the CLI path an
         # undeclared clock port is normalised to the ``<unconstrained>``
         # sentinel, which names no port.
-        domain = ctx.clock_roots.get(f.cell.name)
-        if domain is None or domain in declared_clock_ports:
-            continue
-        # A bit of a port typed bit by bit roots as ``d[3]``
-        # (rtl-buddy-cdc#398); the undeclared clock is still port ``d``.
-        domain = root_port_name(module, domain)
-        port = module.ports.get(domain)
-        if port is None or port.direction != "input":
-            continue  # not a port — e.g. an internal generated clock
-        if domain in declared_clock_ports:
-            continue  # has a create_clock — the rule's only condition fails
-        undeclared[domain].append(f.cell.name)
+        port_name = undeclared_port(ctx.clock_roots.get(f.cell.name))
+        if port_name is not None:
+            undeclared[port_name].append(f.cell.name)
+    # The clock pins of an abstracted instance stand for the flops inside
+    # it: flattened, those flops are the port's consumers
+    # (rtl-buddy-cdc#402).
+    undeclared_pins: dict[str, list[str]] = defaultdict(list)
+    for sink, root in ctx.boundary_clock_roots.items():
+        port_name = undeclared_port(root)
+        if port_name is not None:
+            undeclared_pins[port_name].append(sink)
+
+    def listing(names: list[str], one: str, many: str) -> str:
+        if len(names) == 1:
+            return f"{one} {names[0]}"
+        return (
+            f"{len(names)} {many} ({', '.join(names[:3])}"
+            + (", ..." if len(names) > 3 else "")
+            + ")"
+        )
 
     violations: list[Violation] = []
-    for port_name, consumers in sorted(undeclared.items()):
-        flop_names = sorted(set(consumers))
-        if len(flop_names) == 1:
-            consumer_desc = f"flop {flop_names[0]}"
-        else:
-            consumer_desc = (
-                f"{len(flop_names)} flops ({', '.join(flop_names[:3])}"
-                + (", ..." if len(flop_names) > 3 else "")
-                + ")"
+    for port_name in sorted(undeclared.keys() | undeclared_pins.keys()):
+        flop_names = sorted(set(undeclared.get(port_name, ())))
+        pin_names = sorted(set(undeclared_pins.get(port_name, ())))
+        parts = []
+        if flop_names:
+            parts.append(listing(flop_names, "flop", "flops"))
+        if pin_names:
+            parts.append(
+                listing(
+                    pin_names,
+                    "the clock pin of abstracted instance",
+                    "clock pins of abstracted instances",
+                )
             )
+        consumer_desc = " and ".join(parts)
+        # A pin anchors as a boundary sink does (``u_ip.clk``), so the
+        # finding sits under the instance the flattened run names.
+        anchor = flop_names[0] if flop_names else pin_names[0]
         violations.append(
             Violation(
                 rule_id="CDC-021",
@@ -6492,10 +6583,12 @@ def check_cdc_021(
                     f"(undeclared clocks don't appear in any async "
                     f"group, so cross-domain crossings are dropped "
                     f"before any rule sees them). Add "
-                    f"`create_clock -name {port_name} -period <T> "
-                    f"[get_ports {port_name}]` to the SDC."
+                    f"`create_clock -name {_tcl_word(port_name)} -period "
+                    f"{SDC_HINT_PERIOD} [get_ports {_sdc_port_word(port_name)}]` "
+                    f"to the SDC (the {SDC_HINT_PERIOD} period is a "
+                    f"placeholder: set the clock's real period)."
                 ),
-                cell_name=flop_names[0],
+                cell_name=anchor,
             )
         )
     return violations
@@ -6724,9 +6817,15 @@ def check_cdc_023(
     if clock_spec is None:
         return []
     max_depth = ctx.max_depth if ctx is not None else 16
+    # An abstracted instance's clock pins are walked as the flops behind
+    # them would be when flattened (rtl-buddy-cdc#402).
+    pin_sinks = ctx.boundary_clock_sinks if ctx is not None else {}
     violations: list[Violation] = []
     for combine in find_clock_combines(
-        module, max_depth=max_depth, **clock_spec.clock_root_inputs()
+        module,
+        max_depth=max_depth,
+        extra_sinks=pin_sinks,
+        **clock_spec.clock_root_inputs(),
     ):
         shown = combine.sinks[:_CDC_023_SINK_SAMPLE]
         sample = ", ".join(f"`{name}`" for name in shown)
@@ -6734,6 +6833,9 @@ def check_cdc_023(
         if extra > 0:
             sample += f", +{extra} more"
         clocks = ", ".join(combine.clocks)
+        sink_noun = "flop(s)"
+        if any(name in pin_sinks for name in combine.sinks):
+            sink_noun = "flop(s) and abstracted-instance clock pin(s)"
         violations.append(
             Violation(
                 rule_id="CDC-023",
@@ -6746,7 +6848,7 @@ def check_cdc_023(
                     f"toggles on both, so it glitches and runs at no declared "
                     f"frequency; the clock-root tracer declines to assign a "
                     f"domain through it, leaving the "
-                    f"{len(combine.sinks)} flop(s) it reaches "
+                    f"{len(combine.sinks)} {sink_noun} it reaches "
                     f"({sample}) domain-unknown and their crossings "
                     f"unchecked. Gate ONE clock and use the other only as a "
                     f"synchronised enable, or select between them with a "
@@ -7284,7 +7386,9 @@ def check_cdc_025(
         if clock_net is None:
             clock_net = (
                 ctx.clock_network_cells,
-                {f.clk for f in ctx.flops if isinstance(f.clk, int)},
+                {f.clk for f in ctx.flops if isinstance(f.clk, int)}
+                # An abstracted instance's clock pins (rtl-buddy-cdc#402).
+                | set(ctx.boundary_clock_sinks.values()),
             )
         cells, clk_bits = clock_net
         for b in bits:
@@ -7410,9 +7514,12 @@ def check_cdc_025(
         launch_desc = _describe_launchers(by_domain)
         if not async_pairs:
             hint = (
-                f"add set_output_delay -clock <receiving clock> "
-                f"[get_ports {_sdc_port_word(label)}] (typically {' or '.join(domains)}, "
-                f"or a virtual clock related to it)"
+                f"add `set_output_delay -clock {_tcl_word(domains[0])} "
+                f"{SDC_HINT_DELAY} [get_ports {_sdc_port_word(label)}]`, with "
+                f"-clock naming the clock the receiver captures it on "
+                f"(typically {' or '.join(domains)}, or a virtual clock "
+                f"related to it) and the {SDC_HINT_DELAY} delay a placeholder "
+                f"for its real external output delay"
             )
         else:
             hint = (

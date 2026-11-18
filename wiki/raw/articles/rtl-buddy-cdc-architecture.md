@@ -1051,6 +1051,30 @@ not whole-instance: only the instance's traced clock pins (or the
 `_CLOCK_PIN_NAMES` fallback) are exempt from clock-as-data, so a clock
 wired into a genuine **data** input of a blackbox still fires CDC-008.
 
+**The clock pins are clock sinks (rtl-buddy-cdc#402).** Flattened, the
+flops inside an instance are where the clock network ends; abstracted,
+its clock pins are. Every view seeded from flop `CLK` pins is therefore
+seeded from the clock pins too — `domain.boundary_clock_sinks` names
+each pin bit `"<instance>.<pin>"`, `_RuleContext.boundary_clock_sinks` /
+`boundary_clock_roots` carry them and their raw roots (same walk as
+`clock_roots`), and they feed CDC-021 (an undeclared clock port that
+only clocks abstracted flops), `_clock_network_cells` (so a clock mux or
+gate in front of a blackbox stays on the clock network: no spurious
+CDC-008 on its clock legs, CDC-010 still checks its select / enable),
+CDC-008's and CDC-025's clock-bit sets, CDC-023's combine walk
+(`find_clock_combines(extra_sinks=)`) and the scan-mode tag
+(`find_scan_mode_flops(extra_sinks=)`; a steered pin tags the
+instance's boundary sinks in its clock). The pin set is
+`instance_clock_pins` plus, for a greybox, `abstract.body_clock_pins`:
+the input ports that clock the body's own flops, which the parent-side
+trace cannot prove when the port driving one has no `create_clock`. A
+bodyless stub whose clock pin is neither allow-listed nor traceable to a
+declared clock stays data (unchanged), so such a pin on an undeclared
+port gets no CDC-021 under `--blackbox`. Still flop-only, and reported
+as such: the advisory inferred-clock candidates (a forwarded clock's
+fan-out counts flops) and the domain map's clock-network edges
+(`clock_network.find_clock_network_crossings`, keyed by destination flop).
+
 **The `synchronised` field is the seam to a more precise model — and is
 now live, via route (a) (#261).** It was hard-wired `False` by the
 summariser and consumed nowhere, so the model assumed *no* boundary path
@@ -1900,7 +1924,14 @@ own declared range — `a_reg[1][5]`, `a[0][7:4]`, `a_reg[0][7]/Q`
 (a gate-level netlist read back), which wins. A multi-dimensional
 unpacked array's elements are named by row-major position (`mf[4]`), so
 there `mf[1][2]` is bit 2 of element 1, not element (1, 2); a packed
-2-D vector is one netname and `p[1][2]` names nothing.
+2-D vector is one netname and `p[1][2]` names nothing. Neither the
+Yosys netlist (`read_verilog -sv` or `read_slang`) nor the slang
+frontend records an array's dimensions, so neither case can be resolved
+or detected from names (rtl-buddy-cdc#402): the readings stay as they
+are, and a `p[i][j]` that names nothing because `p` is one vector warns
+with the fix — the flat index `p[i*W + j]` — instead of suggesting a
+typo (`NameIndex.multi_index_hint`, also on `set_*_delay` and
+`set_case_analysis` port targets).
 
 | Object | Matches | Does not match |
 |---|---|---|
@@ -2360,7 +2391,8 @@ free functions in `rules.py`:
 | `_reached_output_bits(module, seeds, cone, consumers, port_bit_index)` | CDC-024, -025 | Forward replay confined to that cone, lane-aware via `domain._lane_targets`, returning which of the output's bits the given launchers reach — so a bus reports "2 of 4 bits", not the whole bus, and CDC-025 can tell a per-bit merge of two domains from a bus whose halves merely sit side by side |
 | `_output_launch_index(module, clock_spec, ctx)` | CDC-024, -025 | The run's `_OutputLaunchIndex`, built on first use and cached in `_RuleContext.output_launch_memo` (keyed by the `ClockSpec`): each output's `_output_cone` (walked at most once per run however many output rules ask), the memoised `flop_domain_resolver`, the bit→input-port index, and the `canonical` / `is_async` predicate `filter_async` applies. A plain mutable memo by design — the one non-frozen object on the rule context, invisible outside the two rules |
 | `domain.flop_domain_resolver(module, pin_clocks, clock_for_port=, declared_clock_for_port=, max_depth=, drivers=, case_analysis=)` | `assign_domains`, CDC-024, -025 | The per-flop domain function `assign_domains` applies: `flop_clock_root_resolver`'s raw root put through `clock_for_port`. CDC-024 / -025 read the rule context's `domains`, which is built from the same inputs (`ClockSpec.clock_root_inputs()`, rtl-buddy-cdc#358); the resolver is their fallback for a context built for another spec |
-| `domain.flop_clock_root_resolver(...)` | `_build_context`, `flop_domain_resolver` | The raw root of the same walk, before normalisation. The rule context traces each flop once and keeps both: `clock_roots` (CDC-021) and `domains` |
+| `domain.clock_root_resolver(...)` | `_build_context`, `flop_clock_root_resolver`, `abstract.body_clock_pins` | The same raw walk for any clock-pin bit — an abstracted instance's clock pin roots exactly where its flattened flops do (rtl-buddy-cdc#402) |
+| `domain.flop_clock_root_resolver(...)` | `flop_domain_resolver` | The raw root of the same walk, before normalisation. The rule context traces each flop once and keeps both: `clock_roots` (CDC-021) and `domains` |
 | `user_sync_flop_names(module)` | CDC-001..-003, -006 | Return cell names of flops the user has annotated `(* cdc_sync *)` |
 | `user_gray_flop_names(module)` | CDC-004 | Return cell names of source-side flops the user has annotated `(* cdc_gray *)` |
 | `scan_mode_port_names(module)` | §8.20 scan filter | Return the names of top-level **input ports** annotated with one of `SCAN_MODE_ATTRS` (`scan_en` / `scan_mode` / `test_mode` / `dft_scan_en`, matched case-insensitively). Port-scoped, not flop-scoped |
@@ -2656,6 +2688,18 @@ port to the `<unconstrained>` sentinel. Generated clocks declared via
 `[get_pins ...]` have roots that are clock names (not port names), so
 they're filtered out by the port-membership check. The rule is skipped when no SDC is
 supplied (no rules fire in that case anyway).
+
+Under `--blackbox` / `--greybox` the abstracted instances' clock pins
+(`ctx.boundary_clock_roots`, §4.9 "The clock pins are clock sinks") are
+consumers too, so an undeclared port that only clocks abstracted flops
+is still reported, anchored on the pin (`u_ip.clk`) and so under the
+same instance as the flattened run's finding; the message lists the
+flops and the pins it drives. The fix hint is a complete command,
+`create_clock -name <port> -period 10.0 [get_ports <port>]`, with the
+period an explicit placeholder (rtl-buddy-cdc#402): every SDC command a
+finding suggests (CDC-011, CDC-021, CDC-025) is written in backticks as
+SDC this tool parses as written, with `0.0` standing in for an external
+delay and `10.0` for a period, and the message saying so.
 
 Severity `error` — undeclared clocks aren't a styling concern;
 they disable every other CDC check that touches the domain.

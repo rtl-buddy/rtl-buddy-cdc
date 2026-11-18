@@ -37,11 +37,12 @@ from rtl_buddy_cdc.domain import (
     _build_bit_to_clock,
     _build_case_bits,
     _clock_identity_fn,
+    clock_root_resolver,
     PortRoot,
     port_root_fn,
     trace_clock_root,
 )
-from rtl_buddy_cdc.flops import flop_clk_pin, is_ff_cell
+from rtl_buddy_cdc.flops import find_flops, flop_clk_pin, is_ff_cell
 from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, PortBoundary
 from rtl_buddy_cdc.primitives import clock_pin_role, port_domain
 from rtl_buddy_cdc.sdc import ClockSpec
@@ -805,6 +806,26 @@ def instance_clock_pins(
         max_depth=max_depth,
         drivers=drivers,
     ).clock_pins
+
+
+def body_clock_pins(sub: Module, *, max_depth: int = 16) -> frozenset[str]:
+    """Input ports of a greybox body that clock one of its own flops.
+
+    Read off the body, not the parent: a flop inside ``sub`` whose clock
+    walk stops at one of ``sub``'s input ports proves that port a clock
+    pin whatever it is called, and whatever drives it in the parent. The
+    parent-side classifier (:func:`_instance_clocks`) cannot prove a
+    non-allow-listed pin driven from an undeclared clock port — there is
+    no declared clock to trace to — which is exactly the pin CDC-021
+    must see (rtl-buddy-cdc#402). Empty for a bodyless stub.
+    """
+    if not sub.cells:
+        return frozenset()
+    root_of = clock_root_resolver(sub, max_depth=max_depth)
+    inputs = {p.name for p in sub.ports.values() if p.direction in ("input", "inout")}
+    return frozenset(
+        root for f in find_flops(sub) if (root := root_of(f.clk)) in inputs
+    )
 
 
 def _bit_consumers(parent: Module) -> dict[Bit, list[tuple[str, str]]]:

@@ -248,12 +248,14 @@ endmodule
 def test_flat_blackbox_and_greybox_views_agree(tmp_path: Path) -> None:
     """``pipe`` clocked from ``ck[2]`` (typed clk_v) and ``ck[3]``
     (untyped): flattened, blackboxed and greyboxed, the run reports the
-    same crossings between the same clocks."""
+    same crossings between the same clocks, and the same CDC-021 on
+    ``ck``, which has no create_clock (rtl-buddy-cdc#402)."""
     sv = tmp_path / "m.sv"
     sv.write_text(_ABS_SV)
     sdc = tmp_path / "m.sdc"
     sdc.write_text(_CLOCKS + "set_input_delay -clock clk_v 1 [get_ports {ck[2]}]\n")
     views = {}
+    undeclared = {}
     for view in ("flat", "blackbox", "greybox"):
         out = tmp_path / f"{view}.json"
         args = ["lint", "--top", "m", "--sdc", str(sdc), "--frontend", "slang"]
@@ -266,6 +268,11 @@ def test_flat_blackbox_and_greybox_views_agree(tmp_path: Path) -> None:
         views[view] = Counter(
             (c["src_clock"], c["dst_clock"]) for c in report["crossings"]
         )
+        undeclared[view] = [
+            re.search(r"port '([^']+)'", v["message"]).group(1)  # type: ignore[union-attr]
+            for v in report["violations"]
+            if v["rule_id"] == "CDC-021"
+        ]
     assert views["flat"] == Counter(
         {
             ("clk_a", "clk_v"): 1,
@@ -275,13 +282,13 @@ def test_flat_blackbox_and_greybox_views_agree(tmp_path: Path) -> None:
     )
     assert views["blackbox"] == views["flat"]
     assert views["greybox"] == views["flat"]
+    assert undeclared == dict.fromkeys(views, ["ck"])
 
 
 # --- item 5: fix hints are SDC this tool reads back ---------------------------
 
-_HINT_RE = re.compile(
-    r"set_(?:in|out)put_delay -clock (<[^>]*>|\S+) (\[get_ports (?:\{[^}]*\}|\S+)\])"
-)
+# A fix hint is a complete SDC command in backticks (rtl-buddy-cdc#402).
+_HINT_RE = re.compile(r"`((?:set_(?:in|out)put_delay|create_clock) [^`]*)`")
 
 
 def _hint_module(tmp_path: Path) -> Path:
@@ -325,12 +332,14 @@ def _typed_bits(spec: ClockSpec, module: netlist.Module, port: str) -> dict[int,
 
 
 @pytest.mark.parametrize(
-    ("rule", "typed", "port", "word", "rest"),
+    ("rule", "typed", "port", "hint", "rest"),
     [
         ("CDC-011", "set_input_delay -clock clk_b 1 [get_ports {in[3]}]", "in",
-         "[get_ports {in[7:4] in[2:0]}]", {0, 1, 2, 4, 5, 6, 7}),
+         "set_input_delay -clock clk_b 0.0 [get_ports {in[7:4] in[2:0]}]",
+         {0, 1, 2, 4, 5, 6, 7}),
         ("CDC-025", "set_output_delay -clock clk_a 1 [get_ports {o[2]}]", "o",
-         "[get_ports {o[3] o[1:0]}]", {0, 1, 3}),
+         "set_output_delay -clock clk_a 0.0 [get_ports {o[3] o[1:0]}]",
+         {0, 1, 3}),
     ],
     ids=["cdc-011", "cdc-025"],
 )  # fmt: skip
@@ -340,26 +349,22 @@ def test_multi_run_hint_round_trips(
     rule: str,
     typed: str,
     port: str,
-    word: str,
+    hint: str,
     rest: set[int],
 ) -> None:
     """One bit of the bus is typed, so the finding names the other bits
     (``in[7:4,2:0]``) and its hint types them with one name per run.
-    Fed back to the parser — on either backend — the hint types exactly
-    those bits, and with it added the finding is gone."""
+    Fed back to the parser verbatim — on either backend — the hint types
+    exactly those bits, and with it added the finding is gone."""
     path = _hint_module(tmp_path)
     module = netlist.load(path)
     report = _analyze(path, _HINT_CLOCKS + typed + "\n", tmp_path)
     (finding,) = [v for v in report["violations"] if v["rule_id"] == rule]
     assert "7:4,2:0" in finding["message"] or "3,1:0" in finding["message"]
-    m = _HINT_RE.search(finding["message"])
-    assert m is not None, finding["message"]
-    clock, got_word = m.groups()
-    assert got_word == word
-    if clock.startswith("<"):  # CDC-025 leaves the receiving clock open
-        clock = "clk_a"
-    command = "set_input_delay" if rule == "CDC-011" else "set_output_delay"
-    statement = f"{command} -clock {clock} 1 {got_word}\n"
+    (got,) = _HINT_RE.findall(finding["message"])
+    assert got == hint
+    clock = hint.split()[2]
+    statement = got + "\n"
     alone = parse(_HINT_CLOCKS + statement)
     assert not alone.partial_warnings
     assert _typed_bits(alone, module, port) == dict.fromkeys(rest, clock)
