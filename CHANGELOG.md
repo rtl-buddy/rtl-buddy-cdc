@@ -406,41 +406,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **slang frontend: constructs that were opaque or dropped now lower**
-  (rtl-buddy-cdc#408, item 11). Each is checked by simulating the netlist
-  against the SystemVerilog semantics (`tests/test_slang_constructs_408.py`).
-  - Unpacked-struct members are read and written: nested structs, member
-    arrays, arrays of structs at constant and run-time indices,
-    assignment patterns, struct parameters and ports. The struct is laid
-    out first member most significant, as Yosys stores it.
-  - `while` / `do … while` / `forever` loops unroll while the variables
-    they test and write fold to constants; a run-time condition ends the
-    loop where it is false (`while (i < 8 && !a[i]) i++;`). A loop whose
-    trip count is not known at elaboration time is undone and reported.
-  - `break` / `continue` in a clocked loop gate the rest of the loop (a
-    clocked `break` was reported once per unrolled iteration and dropped,
-    so every later write was unconditional). A statement reported inside
-    an unrolled loop is reported once.
-  - `->` / `<->`; `t++` / `++t` / `t--` / `--t` and assignments used as
-    values; enum `next()` / `prev()` (`first()` / `last()` / `num()`
-    fold); array `sum()` / `product()` / `and()` / `or()` / `xor()`;
-    `inside` an unpacked array (as a `case … inside` label its bits were
-    compared as one value, a silently wrong match); a function with
-    `output` / `inout` arguments called in an expression; run-time
-    `$clog2` and `$countbits`.
-  - A nonblocking run-time bit write to a register the block already
-    wrote (`p <= o; p[k] <= b;`) loaded the register's own value into
-    every other bit, overriding the earlier write. Found by the construct
-    sweep, with an `inside` list of signed array elements compared
-    zero-extended (now sign-extended).
-  - Still reported, not lowered: a loop with no elaboration-time trip
-    count, a loop condition that writes a variable (`while (i++ < 8)`)
-    once a run-time `break` may have ended the loop, a write inside an
-    operand evaluated only on some condition (`c && t++`), a `ref` argument, enum `name()`, an array method with
-    a `with` clause, `$countbits` with a run-time control bit, an
-    unpacked-union member, an element of an unpacked array inside a
-    struct written at a run-time index. No committed fixture or
-    integration verdict changes.
+- **A clock gate with a foreign-domain enable flop is CDC-010, not
+  CDC-023** (rtl-buddy-cdc#408, item 1). On `clk_a & en_q` (or a latch
+  ICG whose enable is `en_q`) with `en_q` a flop clocked by an
+  asynchronous `clk_b`, the clock-root walk followed `en_q` back to
+  `clk_b` as a divided clock, declined the gate as a combine of two
+  clocks (CDC-023, warning) and left every gated flop domain-unknown.
+  A gate / latch leg that reaches a declared clock only through a
+  flop's `Q` is now read as an enable when another leg is a declared
+  clock, and CDC-010 checks the legs the walk reads as controls, so a
+  raw `$and` gate and a latch ICG with the enable on `D` are covered.
+  A divided clock declared with `create_generated_clock` still
+  combines. Verdict change on a committed fixture:
+  `bad_clock_gating_async_enable` reports CDC-010 (error) instead of
+  CDC-023, and its gated flop resolves to `clk_a`.
+
+- **An abstracted block's output pin named `Q` or `Y` is a pin, not a
+  cell output** (rtl-buddy-cdc#408, item 4). The rule context's driver
+  map took any cell's `Q` / `Y` connection as a flop or gate output, so
+  under `--greybox` / `--blackbox` a block pin literally named `Q` read
+  as a register with no domain (RDC-001 from a block-launched reset was
+  lost), and one named `Y` as a gate the backward walks went on through,
+  block inputs and clock pin included (a spurious CDC-006 on the ports
+  behind the block; CDC-025 lost to the clock pin in the output cone).
+  Abstracted instances' pins are left out of the driver map, so every
+  pin name reaches the pin's published facts.
+
+- **A blackbox / greybox decline is per instance** (rtl-buddy-cdc#408,
+  item 10). One instance whose clock context declined (a clock pin
+  driven from an undeclared port, say) put `CDC-BBX` on every instance of
+  its module type, the well-formed siblings included, though those were
+  abstracted and analysed. `CDC-BBX` now names only the declined
+  instances; the clock-output decline (rtl-buddy-cdc#273) stays per module
+  type by design.
+
+- **`--greybox` reports the flat rule at a block's pin**
+  (rtl-buddy-cdc#408, items 5, 6, 8, 9). The greybox pass publishes per
+  pin what the body does with it besides a flop capture, and the parent
+  raises the rule the flat run raises at the cell behind it: a clock mux
+  select or clock-gate enable on a pin is CDC-010 (was CDC-001), a latch
+  between a pin and the first stage is CDC-017 (was CDC-001), a block
+  output carrying the block's clock pin into parent data is CDC-008 (was
+  CDC-001 twice), and a bus captured under an enable synchronised inside
+  the block is gated — CDC-012 (warning) instead of CDC-004 (error). A pin
+  the body only steers a clock with, feeds a latch with, or does not use
+  seeds no boundary sink (no spurious CDC-001 on an unused pin). A body
+  of wires only (`assign q = clk;`) is analysed instead of read as a stub.
+  Still different, documented: a memory read asynchronously into the
+  parent (CDC-004 ×2 instead of CDC-026), and every stub reading.
+
+- **CDC-012 and CDC-025 across abstracted block boundaries**
+  (rtl-buddy-cdc#408, items 2, 3).
+  - **CDC-012 behind a block output.** A gated bus captured from an
+    abstracted block's output reported nothing under `--greybox` or
+    `--blackbox` where the flat run reports CDC-012: the rule needed a
+    source flop. A greybox now publishes where the payload register's
+    hold control leads inside the block (the clock domains and input
+    pins its acknowledge walk reaches), and the parent completes the
+    walk from those pins. A stub's payload counts as held when an
+    acknowledge from the destination enters it on any pin.
+  - **CDC-025 / CDC-024 through a block's combinational feed-through.**
+    The summary dropped input→output connectivity, so an asynchronous
+    merge reaching a top-level output through a block gate was lost, and
+    CDC-025 ignored launches from abstracted block outputs altogether.
+    A greybox output now carries the input pins that reach it
+    combinationally and the output-cone walk continues through them;
+    CDC-025 counts a block output as a launch in its clock, as CDC-024
+    already did. A stub shows no feed-through (documented). Verdict
+    change on a committed fixture: `bbx_residual_declines`' greybox
+    netlist now reports the CDC-025 on `y_thru` its flat netlist reports.
 
 - **Abstracted runs agree with the flat run on the data-path and reset
   rules** (rtl-buddy-cdc#405, items 1, 3, 4).
@@ -1872,6 +1906,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `notif` and switch primitives. No committed fixture, golden or
     integration verdict changes; unit tests that pinned the old
     reporting of now-lowered shapes use still-unlowered ones.
+
+- **slang frontend: constructs that were opaque or dropped now lower**
+  (rtl-buddy-cdc#408, item 11). Each is checked by simulating the netlist
+  against the SystemVerilog semantics (`tests/test_slang_constructs_408.py`).
+  - Unpacked-struct members are read and written: nested structs, member
+    arrays, arrays of structs at constant and run-time indices,
+    assignment patterns, struct parameters and ports. The struct is laid
+    out first member most significant, as Yosys stores it.
+  - `while` / `do … while` / `forever` loops unroll while the variables
+    they test and write fold to constants; a run-time condition ends the
+    loop where it is false (`while (i < 8 && !a[i]) i++;`). A loop whose
+    trip count is not known at elaboration time is undone and reported.
+  - `break` / `continue` in a clocked loop gate the rest of the loop (a
+    clocked `break` was reported once per unrolled iteration and dropped,
+    so every later write was unconditional). A statement reported inside
+    an unrolled loop is reported once.
+  - `->` / `<->`; `t++` / `++t` / `t--` / `--t` and assignments used as
+    values; enum `next()` / `prev()` (`first()` / `last()` / `num()`
+    fold); array `sum()` / `product()` / `and()` / `or()` / `xor()`;
+    `inside` an unpacked array (as a `case … inside` label its bits were
+    compared as one value, a silently wrong match); a function with
+    `output` / `inout` arguments called in an expression; run-time
+    `$clog2` and `$countbits`.
+  - A nonblocking run-time bit write to a register the block already
+    wrote (`p <= o; p[k] <= b;`) loaded the register's own value into
+    every other bit, overriding the earlier write. Found by the construct
+    sweep, with an `inside` list of signed array elements compared
+    zero-extended (now sign-extended).
+  - Still reported, not lowered: a loop with no elaboration-time trip
+    count, a loop condition that writes a variable (`while (i++ < 8)`)
+    once a run-time `break` may have ended the loop, a write inside an
+    operand evaluated only on some condition (`c && t++`), a `ref` argument, enum `name()`, an array method with
+    a `with` clause, `$countbits` with a run-time control bit, an
+    unpacked-union member, an element of an unpacked array inside a
+    struct written at a run-time index. No committed fixture or
+    integration verdict changes.
 
 ### Internal
 

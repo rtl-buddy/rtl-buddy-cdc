@@ -48,6 +48,7 @@ from rtl_buddy_cdc.netlist import (
     BoundarySummary,
     Cell,
     Module,
+    PinFacts,
     PortBoundary,
     ResetPinFact,
 )
@@ -55,7 +56,7 @@ from rtl_buddy_cdc.primitives import clock_pin_role, port_domain
 from rtl_buddy_cdc.sdc import ClockSpec
 
 if TYPE_CHECKING:
-    from rtl_buddy_cdc.compositional import ModuleAnalysis
+    from rtl_buddy_cdc.compositional import ModuleAnalysis, PortFacts
 
 # ``bit -> (cell_name, output_port)`` as built by
 # :func:`~rtl_buddy_cdc.domain._bit_drivers`. Building it is a full scan
@@ -531,7 +532,7 @@ def _summarise_single_clock(
     input_ports: dict[str, PortBoundary] = {}
     for port in sub.ports.values():
         facts = analysis.ports.get(port.name) if analysis is not None else None
-        if port.direction in ("output", "inout"):
+        if port.direction in ("output", "inout") and not _clock_only(facts):
             ports[port.name] = PortBoundary(
                 port=port.name,
                 src_clock=clk,
@@ -545,10 +546,16 @@ def _summarise_single_clock(
                 latch=facts.latch if facts is not None else None,
                 driver=facts.driver if facts is not None else None,
                 launchers=facts.launchers if facts is not None else (),
+                feedthrough=facts.feedthrough if facts is not None else (),
             )
-        if facts is not None and facts.async_only:
+        if facts is not None and (
+            facts.async_only or (facts.pin is not None and facts.pin.no_capture)
+        ):
             # A reset pin and nothing else: no data capture to seed
             # (rtl-buddy-cdc#405); its reset facts travel in ``reset_pins``.
+            # Likewise a pin that only steers a clock mux / gate, feeds a
+            # latch, or is unused (rtl-buddy-cdc#408): flat, no crossing
+            # ends behind it; its facts travel in ``pin_facts``.
             continue
         if port.direction in ("input", "inout") and port.name not in ic.clock_pins:
             # Clock pins are excluded by the *traced* determination (FIX
@@ -580,6 +587,7 @@ def _summarise_single_clock(
             analysis.reconvergent_inputs if analysis is not None else frozenset()
         ),
         reset_pins=_reset_pins(analysis),
+        pin_facts=_pin_facts(analysis),
     )
 
 
@@ -590,6 +598,28 @@ def _reset_pins(
     if analysis is None:
         return {}
     return {name: f.resets for name, f in analysis.ports.items() if f.resets}
+
+
+def _clock_only(facts: "PortFacts | None") -> bool:
+    """An output that carries only a clock pin of the block: no register
+    or data input reaches it (rtl-buddy-cdc#408). It seeds no source —
+    flat, a clock is no crossing source — and the parent reads it as a
+    clock through :attr:`PinFacts.clock_out`."""
+    return (
+        facts is not None
+        and facts.pin is not None
+        and bool(facts.pin.clock_out)
+        and facts.clock is None
+        and not facts.ambiguous
+        and not facts.feedthrough
+    )
+
+
+def _pin_facts(analysis: "ModuleAnalysis | None") -> dict[str, PinFacts]:
+    """:attr:`BoundarySummary.pin_facts` from a greybox analysis."""
+    if analysis is None:
+        return {}
+    return {name: f.pin for name, f in analysis.ports.items() if f.pin is not None}
 
 
 def _summarise_multi_clock(
@@ -621,7 +651,7 @@ def _summarise_multi_clock(
         # ``analyse_module`` describes every port except the traced clock
         # pins, which are exactly what the loop above skips.
         facts = analysis.ports[port.name]
-        if port.direction in ("output", "inout"):
+        if port.direction in ("output", "inout") and not _clock_only(facts):
             # ``facts.clock`` None (comb feed-through, or launched from
             # several domains) becomes the ``<unconstrained>`` source that
             # crosses to every known-domain sink — the documented
@@ -637,9 +667,10 @@ def _summarise_multi_clock(
                 latch=facts.latch,
                 driver=facts.driver,
                 launchers=facts.launchers,
+                feedthrough=facts.feedthrough,
             )
         if port.direction in ("input", "inout"):
-            if facts.async_only:
+            if facts.async_only or (facts.pin is not None and facts.pin.no_capture):
                 continue
             if facts.ambiguous:
                 return None
@@ -670,6 +701,7 @@ def _summarise_multi_clock(
         internal_analysed=True,
         reconvergent_inputs=analysis.reconvergent_inputs,
         reset_pins=_reset_pins(analysis),
+        pin_facts=_pin_facts(analysis),
     )
 
 

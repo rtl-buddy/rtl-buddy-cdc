@@ -1115,7 +1115,10 @@ def _analyze_module_and_report(
         # blackboxed without the clock network vanishing with it. Same rule
         # id, same severity, same waiver: ``waive CDC-BBX <instance-regex>``.
         for inst, cell in module.cells.items():
-            if cell.type in comp_stats.declined_modules:
+            # Per declined instance (rtl-buddy-cdc#408): a sibling of the
+            # same type whose clock context summarised is abstracted, not
+            # opaque, and gets no CDC-BBX.
+            if inst in comp_stats.declined_instances:
                 clk_out = comp_stats.clock_output_ports_of(cell.type)
                 if clk_out:
                     noun = "a clock output" if len(clk_out) == 1 else "clock outputs"
@@ -1199,10 +1202,13 @@ def _analyze_module_and_report(
         boundary_sink_comb_hops: dict[str, int] = {}
         boundary_inter_stage: dict[str, str] = {}
         boundary_reset_pins: dict[str, tuple[netlist.ResetPinFact, ...]] = {}
+        boundary_pin_facts: dict[str, netlist.PinFacts] = {}
         boundary_sources: dict[netlist.Bit, BoundarySource] = {}
         for inst_name, summary in boundaries.items():
             if summary.reconvergent_inputs:
                 boundary_reconvergence[inst_name] = summary.reconvergent_inputs
+            for port_name, facts in summary.pin_facts.items():
+                boundary_pin_facts[f"{inst_name}.{port_name}"] = facts
             for port_name, entries in summary.reset_pins.items():
                 boundary_reset_pins[f"{inst_name}.{port_name}"] = tuple(
                     dataclasses.replace(e, flop=f"{inst_name}.{e.flop}")
@@ -1220,6 +1226,12 @@ def _analyze_module_and_report(
                     latch=pb.latch,
                     driver=pb.driver,
                     launchers=tuple(f"{inst_name}.{n}" for n in pb.launchers),
+                    feedthrough=tuple(
+                        b
+                        for pin in pb.feedthrough
+                        for b in module.cells[inst_name].connections.get(pin, ())
+                        if isinstance(b, int)
+                    ),
                 )
                 for b in conn:
                     if isinstance(b, int):
@@ -1283,6 +1295,7 @@ def _analyze_module_and_report(
             "boundary_sink_comb_hops": boundary_sink_comb_hops,
             "boundary_inter_stage": boundary_inter_stage,
             "boundary_reset_pins": boundary_reset_pins,
+            "boundary_pin_facts": boundary_pin_facts,
             "max_depth": clock_trace_depth,
         }
         if not no_findings:
