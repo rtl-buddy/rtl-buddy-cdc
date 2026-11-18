@@ -4908,6 +4908,9 @@ class _ModuleBuilder:
                 for s in names
             )
 
+        # pyslang 11 moved VisitAction into ``pyslang.ast``.
+        visit_action = _pyslang_namespaces(pyslang)[0].VisitAction
+
         def visit(n: Any) -> Any:
             kind = type(n).__name__
             if kind == "ForLoopStatement":
@@ -4925,8 +4928,8 @@ class _ModuleBuilder:
                 n.right.visit(visit)
                 if not getattr(n, "isNonBlocking", False):
                     blocking.update(written)
-                return pyslang.VisitAction.Skip
-            return pyslang.VisitAction.Advance
+                return visit_action.Skip
+            return visit_action.Advance
 
         node.visit(visit)
 
