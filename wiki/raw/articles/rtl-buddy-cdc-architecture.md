@@ -1638,8 +1638,15 @@ has its other bits untyped. Every consumer reads it through one view,
 builds the per-position table; an SDC typing only whole ports costs one
 dict lookup per key and yields an empty table, so the whole-port path is
 unchanged). `ClockSpec.clock_for_port(name)` stays the whole-port answer,
-so a port typed bit by bit has no single `set_*_delay` clock there. The
-consumers: `find_crossings` seeds one walk per (port, clock) from that
+so a port typed bit by bit has no single `set_*_delay` clock there. A
+flop *clocked* from one bit of such a port is rooted at that bit: the
+clock walk (`domain.port_root_fn`, shared by every clock-root resolver
+and the abstraction's boundary walk) names the root `d[3]` when
+`clock_for_port` knows that key, so the domain is the bit's clock — an
+untyped bit is stamped `<unconstrained>` like an untyped scalar input,
+and without stamping keeps the port name; a port carrying a
+`create_clock` stays that clock (rtl-buddy-cdc#398). CDC-021 maps the
+bit root back to its port. The consumers: `find_crossings` seeds one walk per (port, clock) from that
 clock's bits and stamps `Crossing.src_port_bits` (declared indices;
 `None` for a whole port), so a bus with bits in two clocks, or some
 bits untyped, gives one crossing per (port, clock, destination);
@@ -1795,8 +1802,11 @@ muxes in the clock walker (§5.2). A second `create_clock` on a port
 replaces the first unless `-add` is given; with `-add` the port carries
 both (§4.5, "Multi-clock ports"). Bus bits must be braced
 (`[get_ports {sel[3]}]`): unbraced, the Tcl backend evaluates `[3]` as
-command substitution and the target becomes the whole bus, so the
-reader warns on any command whose name is a number.
+command substitution, so the reader warns on any argument-less command
+whose name is a bus index — a number, a range, a comma list or a glob
+over them (`3`, `-1`, `3:0`, `*`, `1?`; before rtl-buddy-cdc#398 only a
+number warned). The reader's `unknown` hands the call back verbatim, so
+the target still reads `sel[3]` / `sel[*]`.
 
 ### 6.2 What it deliberately ignores
 
@@ -1873,12 +1883,20 @@ exact name is a dict hit and a glob scans only the sorted-key slice
 sharing its literal prefix). An SDC name is normalised first: `\`
 escapes dropped, the `/` hierarchy separator becomes `.` (the separator
 both frontends use). `*` / `?` never cross a hierarchy level;
-`get_* -hierarchical` matches the pattern at any depth. `[…]` is a
-literal bus index.
+`get_* -hierarchical` matches the pattern at any depth. A trailing
+`[…]` selects bits by declared index: one index (`d[3]`), a range in
+either order (`d[7:4]`), or a glob (`d[*]`). Written after an
+unpacked-array element it selects bits of that element in the element's
+own declared range — `a_reg[1][5]`, `a[0][7:4]`, `a_reg[0][7]/Q`
+(rtl-buddy-cdc#398) — unless the whole name is itself a netlist name
+(a gate-level netlist read back), which wins. A multi-dimensional
+unpacked array's elements are named by row-major position (`mf[4]`), so
+there `mf[1][2]` is bit 2 of element 1, not element (1, 2); a packed
+2-D vector is one netname and `p[1][2]` names nothing.
 
 | Object | Matches | Does not match |
 |---|---|---|
-| register (`get_cells`, a pin's owner) | every non-internal (no `$`) netname on the flop's `Q` whose scope is the flop's own instance or a generate scope inside it — the cell is `$flatten\u_cfg.$procdff$8` (Yosys) or `u_cfg.$slang$dff$3` (slang), neither the register's name, while both name `Q` `u_cfg.mode_q`; each name bare and with `_reg` on its leaf (`u_cfg/mode_q_reg`, `u_sync/chain_reg[1]` for an unpacked element); `[i]` selects one bit, numbered by the net's declared range (`offset` / `upto`, now loaded on `Netname`); a cell whose own name is meaningful (a read-back gate-level netlist) | a parent's wire the flop drives through a port (`w` for `u_cfg.mode_q`), a child instance's port it feeds (`u_sub.d`); synthesis renames (`mode_q_reg_3_`, a generate scope flattened to `g_1__r`). An output port written straight from the register is the same net, so it is an alias (`u_cfg/mode_reg` names `u_cfg.mode_q`) — over-match by design |
+| register (`get_cells`, a pin's owner) | every non-internal (no `$`) netname on the flop's `Q` whose scope is the flop's own instance or a generate scope inside it — the cell is `$flatten\u_cfg.$procdff$8` (Yosys) or `u_cfg.$slang$dff$3` (slang), neither the register's name, while both name `Q` `u_cfg.mode_q`; each name bare and with `_reg` on its leaf (`u_cfg/mode_q_reg`, `u_sync/chain_reg[1]` for an unpacked element); `[i]` (or `[hi:lo]`, a glob) selects bits, numbered by the net's declared range (`offset` / `upto`, now loaded on `Netname`); a cell whose own name is meaningful (a read-back gate-level netlist) | a parent's wire the flop drives through a port (`w` for `u_cfg.mode_q`), a child instance's port it feeds (`u_sub.d`); synthesis renames (`mode_q_reg_3_`, a generate scope flattened to `g_1__r`). An output port written straight from the register is the same net, so it is an alias (`u_cfg/mode_reg` names `u_cfg.mode_q`) — over-match by design |
 | pin (`get_pins`) | any pin of a register names that register (`…/Q`, `…/D`, `…/CK`); otherwise the hierarchical pin of a flattened instance, i.e. the net of that name (`u_cfg/mode_o` → `u_cfg.mode_o`) | pins of anonymous combinational cells |
 | port (`get_ports`) | top-level ports, `[i]` per bit | — |
 | net (`get_nets`) | netname bits; as `-from`, the flop / input port driving them; as `-to`, the flops whose `D` they feed | internal `$` names |

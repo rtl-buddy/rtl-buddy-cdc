@@ -444,10 +444,14 @@ _ARRAY_BASES = ("a", "c", "mf", "mx", "sb", "w", "u.ch")
         ("nets", "a[0]", {f"a[0]:{i}" for i in range(4)}),
         ("nets", "w[1]", {f"w[1]:{i}" for i in range(4)}),
         ("nets", "sb[*]", {f"sb[{k}]:0" for k in range(4)}),
-        # A bit of an element names nothing on either frontend: the name
-        # index reads a trailing ``[i]`` after a bus name only.
-        ("registers", "a[1][5]", set()),
-        ("nets", "c[3][1]", set()),
+        # A bit of an element, in the element's declared range
+        # (rtl-buddy-cdc#398): ``a[1]`` is ``[7:4]``, ``c[3]`` ``[0:3]``.
+        ("registers", "a[1][5]", {"a[1]:1"}),
+        ("registers", "a_reg[0][7:6]", {"a[0]:2", "a[0]:3"}),
+        ("registers", "a_reg[1][2]", set()),  # outside [7:4]
+        ("registers", "u.ch_reg[*][0]", {"u.ch[0]:0", "u.ch[1]:0"}),
+        ("nets", "c[3][1]", {"c[3]:2"}),
+        ("nets", "w[0][5:4]", {"w[0]:2", "w[0]:3"}),
     ],
 )
 def test_unpacked_element_names_resolve_alike(
@@ -497,6 +501,9 @@ endmodule
         ("set_false_path -from [get_cells src_reg[1]]", 1),
         ("set_false_path -through [get_nets {src[0]}]", 1),
         ("set_false_path -from [get_pins src_reg[0]/Q]", 1),
+        ("set_false_path -from [get_pins {src_reg[0][7:4]/Q}]", 1),
+        ("set_false_path -through [get_nets {src[1][*]}]", 1),
+        ("set_false_path -from [get_cells {src_reg[1][6]}]", 0),  # 1 bit of 4
     ],
 )
 def test_unpacked_element_constraints_cut_alike(

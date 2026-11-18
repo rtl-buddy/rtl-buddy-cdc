@@ -1557,6 +1557,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `offset` / `upto` and the declaration's attributes; an array written at
   a run-time address (a memory, no netname on Yosys) gets none.
 
+- **SDC bit selections: per-bit clocked flops, fix hints, element bits,
+  unbraced-index warnings** (rtl-buddy-cdc#398, items 4, 5, 8, 9). No
+  committed fixture or integration golden changes verdict.
+  - **A flop clocked from one bit of a port typed bit by bit** took the
+    raw port name as its domain (it took the whole-port delay clock
+    before per-bit typing, rtl-buddy-cdc#394). The clock walk now roots
+    such a bit at its own `d[3]` key (`domain.port_root_fn`), in the
+    flat walk, the rule context, the clock-combine / scan walks and the
+    abstraction's boundary walk alike, so the flop takes that bit's
+    clock. An untyped bit is `<unconstrained>` on the CLI path, as an
+    untyped scalar port used as a clock is, and keeps the port name
+    without stamping; a port carrying a `create_clock` is still that
+    clock. CDC-021 still names the port (`'d'`).
+  - **CDC-011 / CDC-025 fix hints** for a selection of several runs
+    printed `[get_ports {in[7:4,2:0]}]`, which is not SDC. They now print
+    one name per run, `[get_ports {in[7:4] in[2:0]}]`, and the object
+    matcher reads a bus range `d[hi:lo]` (either order) in every
+    `get_*` pattern, so the hint types exactly those bits when added to
+    the SDC, on both reader backends. The message's own label
+    (`'in[7:4,2:0]'`) is unchanged.
+  - **One bit of an unpacked-array element** (`get_cells a_reg[1][5]`,
+    `get_nets a[0][7:4]`, `get_pins a_reg[0][7]/Q`) selected nothing.
+    The index after an element now selects that element's bits in its
+    own declared range, on both frontends' netlists; a name that is
+    literally in the netlist (`a[1][5]` in a gate-level netlist read
+    back) still wins.
+  - **Unbraced `[get_ports d[*]]`** (and `d[3:0]`, `d[-1]`, `d[1?]`, …)
+    on the Tcl backend ran command substitution without the "unbraced
+    bus index" warning `d[3]` gets. Every index form now warns, on every
+    command; the resolved targets are unchanged.
+
 ### Internal
 
 - **CDC-011's separate `SRST`-pin walk is gone** (rtl-buddy-cdc#383) —
