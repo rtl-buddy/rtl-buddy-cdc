@@ -687,6 +687,13 @@ class _ModuleBuilder:
         # the continuous-assign aliasing pass can rewrite them to point
         # at constants or other variables' bits — hence ``Bit``.
         self._var_bits: dict[Any, tuple[Bit, ...]] = {}
+        # Each variable's *net*: the bits first handed out for it (or the
+        # parent's connection for a bound port), which a continuous driver
+        # re-points through ``_forward_renames``; ``_var_bits`` holds the
+        # value lowered so far, which can be another variable's bits
+        # (rtl-buddy-cdc#405: a second ``assign`` of a net renamed the
+        # first driver's input to the second's).
+        self._net_bits: dict[Any, tuple[Bit, ...]] = {}
         self._ports: dict[str, Port] = {}
         self._cells: dict[str, Cell] = {}
         self._netnames: dict[str, Netname] = {}
@@ -916,6 +923,7 @@ class _ModuleBuilder:
         self._placeholder_bits.update(ids)
         bits: tuple[Bit, ...] = tuple(ids)
         self._var_bits[var_sym] = bits
+        self._net_bits[var_sym] = bits
         return bits
 
     def _src_attr(self, node: Any) -> str | None:
@@ -1254,17 +1262,10 @@ class _ModuleBuilder:
         if init_expr is None:
             return
         rhs_bits = self._rhs_bits(init_expr, len(self._alloc_bits(member)))
-        canonical = self._canonical_var(member)
-        # Allocate the net's bits if it's the first time we've seen it;
-        # then merge them into the RHS bits via the same alias-rewrite
-        # primitive ``_emit_continuous_assign`` uses, so any reader of
-        # the net follows through to the driving cell's output.
-        net_bits = self._alloc_bits(member)
-        before = dict(self._var_bits)
-        self._merge_canonical_var(canonical, net_bits, rhs_bits)
-        # A reader earlier in source order sees the driver too, as for
-        # ``assign`` (rtl-buddy-cdc#377).
-        self._record_forward_renames(before)
+        # The same driver ``_emit_continuous_assign`` records, so any
+        # reader of the net (earlier in source order too,
+        # rtl-buddy-cdc#377) follows through to the driving cell's output.
+        self._drive_net(member, 0, rhs_bits, member)
 
     def _emit_instance(self, inst: Any, parent_prefix: str, name: str) -> None:
         """Lower one module instance named ``name`` under ``parent_prefix``:
@@ -1358,6 +1359,7 @@ class _ModuleBuilder:
                     if o in self._placeholder_bits and o != n:
                         self._forward_renames[o] = n
             self._var_bits[canonical] = parent_bits
+            self._net_bits[canonical] = parent_bits
             bound.add(internal)
             # Also emit a netname for the port at ``<child_prefix><port_name>``
             # so SDC pin paths like ``[get_pins u_a/clk_out_b0]`` resolve
@@ -3899,14 +3901,71 @@ class _ModuleBuilder:
         for (sym, start, width), piece in zip(
             targets, self._split_rhs(rhs_bits, targets)
         ):
+            if continuous:
+                self._drive_net(sym, start, piece, lhs)
+                continue
             old = self._alloc_bits(sym)
             new = old[:start] + piece + old[start + width :]
             self._merge_canonical_var(sym, old, new)
-            if continuous:
-                for o, n in zip(old, new):
-                    if o in self._placeholder_bits and o != n:
-                        self._forward_renames[o] = n
         return True
+
+    # Resolved net types whose drivers combine (IEEE 1800-2017 6.6.3).
+    _WIRED_NETS = {"WOr": "$or", "TriOr": "$or", "WAnd": "$and", "TriAnd": "$and"}
+
+    def _drive_net(
+        self, sym: Any, start: int, piece: tuple[Bit, ...], node: Any
+    ) -> None:
+        """A continuous driver of ``sym``'s bits ``start ..``: its net's
+        placeholder bits are renamed to ``piece`` and its value becomes
+        ``piece`` there.
+
+        A bit that already has a continuous driver has two: on a ``wor`` /
+        ``wand`` net their ``$or`` / ``$and``, as the net resolves them; on
+        any other net their ``$or`` too, reported, so neither driver's
+        fan-in is lost (rtl-buddy-cdc#405: the second ``assign`` renamed
+        the first one's source net to its own, shorting two inputs)."""
+        canonical = self._canonical_var(sym)
+        net = self._net_bits.get(canonical) or self._alloc_bits(canonical)
+        value = list(self._var_bits.get(canonical, net))
+        clashes: list[tuple[int, Bit, Bit]] = []
+        for k, n in enumerate(piece):
+            i = start + k
+            o = net[i]
+            if o not in self._placeholder_bits:
+                value[i] = n
+                continue
+            prev = self._forward_renames.get(o)
+            if prev is None or prev == n:
+                if o != n:
+                    self._forward_renames[o] = n
+                value[i] = n
+            else:
+                clashes.append((i, prev, n))
+        if clashes:
+            kind = str(getattr(getattr(canonical, "netType", None), "netKind", ""))
+            cell = self._WIRED_NETS.get(kind.rsplit(".", 1)[-1])
+            if cell is None:
+                cell = "$or"
+                _log.warning(
+                    "slang frontend: %s: net `%s` has more than one continuous "
+                    "driver; modelled as their OR, so neither driver's fan-in "
+                    "is lost",
+                    self._src_attr(node) or "<unknown location>",
+                    getattr(canonical, "name", "?"),
+                )
+            merged = self._emit_comb_cell(
+                cell,
+                {
+                    "A": tuple(prev for _i, prev, _n in clashes),
+                    "B": tuple(n for _i, _prev, n in clashes),
+                },
+                len(clashes),
+                node,
+            )
+            for (i, _prev, _n), m in zip(clashes, merged):
+                self._forward_renames[net[i]] = m
+                value[i] = m
+        self._var_bits[canonical] = tuple(value)
 
     def _lvalue_unsupported_reason(self, expr: Any) -> str:
         """Why :meth:`_lvalue_targets` cannot resolve ``expr``."""
@@ -6481,22 +6540,17 @@ class _ModuleBuilder:
                 self._warn_lvalue_dropped(member, lhs)
             return
         rhs_bits = self._rhs_bits(rhs, len(self._alloc_bits(lhs.symbol)))
-        # Aliasing trick: rewrite the LHS variable's bits to point at
-        # the RHS's bits so any reader of the LHS sees the RHS source
-        # directly. This matches Yosys' post-opt_clean output for
-        # ``assign out = sig`` and means we don't need a $buf cell.
-        old_bits = self._var_bits.get(self._canonical_var(lhs.symbol))
-        self._rewrite_aliased(lhs, rhs_bits)
-        # A continuous assign holds for the whole simulation, so a cell
-        # emitted *earlier in source order* that already read the net
-        # (``if (pop && !empty)`` above ``assign empty = …``) must see
-        # the RHS too, not the net's now-undriven placeholder bits.
-        # Recorded here, applied to every cell once the walk is done
-        # (#326: the async-FIFO flags are the canonical forward use).
-        if old_bits is not None:
-            for o, n in zip(old_bits, rhs_bits):
-                if o in self._placeholder_bits and o != n:
-                    self._forward_renames[o] = n
+        # Aliasing trick: point the LHS variable at the RHS's bits so any
+        # reader of the LHS sees the RHS source directly. This matches
+        # Yosys' post-opt_clean output for ``assign out = sig`` and means
+        # we don't need a $buf cell. A continuous assign holds for the
+        # whole simulation, so a cell emitted *earlier in source order*
+        # that already read the net (``if (pop && !empty)`` above ``assign
+        # empty = …``) must see the RHS too, not the net's undriven
+        # placeholder bits: :meth:`_drive_net` records that, applied to
+        # every cell once the walk is done (#326: the async-FIFO flags are
+        # the canonical forward use).
+        self._drive_net(lhs.symbol, 0, rhs_bits, member)
 
     def _apply_forward_renames(self) -> None:
         """Rewrite every cell connection through ``_forward_renames``

@@ -361,3 +361,56 @@ def _next_q(module: Module, ff: Cell, values: dict[str, int]) -> int:
         netnames=module.netnames,
     )
     return _outputs(probe, values, ("__d",))["__d"]
+
+
+# --- nets with more than one continuous driver -----------------------------------
+
+_WIRED = """module m (input a, input b, input c, input d, input e, input f,
+          output o, output p, output q, output r);
+    wor wo;
+    wand wa;
+    wire wi;
+    wire [1:0] wp;
+    assign wo = a;
+    assign wo = b;
+    assign wa = c;
+    assign wa = d;
+    assign wi = e;
+    assign wi = f;
+    assign wp[0] = a;
+    assign wp = {c, d};
+    assign o = wo;
+    assign p = wa;
+    assign q = wi;
+    assign r = wp[0];
+endmodule
+"""
+
+
+def test_second_continuous_driver_keeps_both(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A second ``assign`` to a net renamed the first driver's source net
+    to its own: with ``assign w = a; assign w = b;`` the inputs ``a`` and
+    ``b`` became one net, inventing fan-in from ``b`` to every reader of
+    ``a``. Now a ``wor`` / ``wand`` net resolves its drivers by ``$or`` /
+    ``$and``; any other net is their ``$or``, reported, so neither driver's
+    fan-in is lost. The inputs stay distinct nets. (Yosys shorts the two
+    drivers of a plain ``wire``; slang alone is checked.)"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _WIRED)
+    names = ("a", "b", "c", "d", "e", "f")
+    bits = [module.ports[n].bits for n in names]
+    assert len(set(bits)) == len(names)
+    msgs = _warnings(caplog)
+    assert len(msgs) == 2, msgs
+    assert all("more than one continuous driver" in m for m in msgs)
+    assert any("`wi`" in m for m in msgs) and any("`wp`" in m for m in msgs)
+    for combo in itertools.product((0, 1), repeat=6):
+        v = dict(zip(names, combo))
+        assert _outputs(module, v, ("o", "p", "q", "r")) == {
+            "o": v["a"] | v["b"],
+            "p": v["c"] & v["d"],
+            "q": v["e"] | v["f"],
+            "r": v["a"] | v["d"],
+        }, v
