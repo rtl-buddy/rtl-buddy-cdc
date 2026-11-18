@@ -505,3 +505,43 @@ def test_streaming_concatenation(
                 "v": vw >> 4,
                 "w": vw & 0xF,
             }, (a, b)
+
+
+# --- assignment patterns (were opaque unless constant; Yosys rejects them) --------
+
+_PATTERNS = """module m (input s, input [3:0] d, input [1:0] i, output logic [7:0] o,
+          output [3:0] p, output [3:0] q, output [7:0] r);
+    typedef struct packed { logic [3:0] x; logic [3:0] y; } s_t;
+    s_t t;
+    logic [3:0] a [4];
+    logic [3:0] b [3:0];
+    always_comb begin t = '{default: '0}; if (s) t.y = d; o = t; end
+    assign a = '{d, ~d, d + 1, 4'h5};
+    assign b = '{2{d, ~d}};
+    assign p = a[i];
+    assign q = b[i];
+    assign r = s_t'{x: d, default: 4'h3};
+endmodule
+"""
+
+
+def test_assignment_patterns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """``'{default: '0}``, a positional pattern of an ascending unpacked
+    array, a replicated one of a descending array (its first element is
+    the left-bound index, ``b[3]``) and a keyed struct pattern carry their
+    elements' fan-in (they were opaque drivers unless constant)."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _PATTERNS)
+    assert _warnings(caplog) == []
+    for s in (0, 1):
+        for d in range(16):
+            for i in range(4):
+                nd = ~d & 0xF
+                assert _outputs(
+                    module, {"s": s, "d": d, "i": i}, ("o", "p", "q", "r")
+                ) == {
+                    "o": d if s else 0,
+                    "p": [d, nd, (d + 1) & 0xF, 5][i],
+                    "q": [nd, d, nd, d][i],
+                    "r": (d << 4) | 3,
+                }, (s, d, i)

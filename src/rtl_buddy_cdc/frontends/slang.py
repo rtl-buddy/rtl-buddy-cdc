@@ -4485,6 +4485,8 @@ class _ModuleBuilder:
             return self._lower_concatenation(expr)
         if kind == "ReplicationExpression":
             return self._lower_replication(expr)
+        if kind in self._PATTERN_KINDS:
+            return self._lower_assignment_pattern(expr)
         if kind == "InsideExpression":
             return self._lower_inside(expr)
         if kind == "StreamingConcatenationExpression":
@@ -5058,6 +5060,59 @@ class _ModuleBuilder:
                 )[0],
             )
         return hit
+
+    _PATTERN_KINDS = frozenset(
+        {
+            "SimpleAssignmentPatternExpression",
+            "StructuredAssignmentPatternExpression",
+            "ReplicatedAssignmentPatternExpression",
+        }
+    )
+
+    def _lower_assignment_pattern(self, expr: Any) -> tuple[Bit, ...] | None:
+        """An assignment pattern (``'{a, b}``, ``'{default: '0}``,
+        ``'{f: x, default: 0}``, ``'{4{d}}``) of a packed type or an
+        unpacked array of packed elements: its elements' bits, laid out as
+        the type stores them — a packed value's first element is its MSB,
+        an unpacked array's first element its left-bound index
+        (rtl-buddy-cdc#405: an opaque driver unless slang folded it to a
+        constant). ``None`` for any other type (an unpacked struct, ...)."""
+        constant = self._constant_bits(expr)
+        if constant is not None:
+            return constant
+        elements = list(getattr(expr, "elements", None) or [])
+        if self._kind_name(expr) == "ReplicatedAssignmentPatternExpression":
+            count = self._const_int(getattr(expr, "count", None))
+            if count is None or count < 0:
+                return None
+            elements = elements * count
+        parts: list[tuple[Bit, ...]] = []
+        for element in elements:
+            bits = self._bits_of_expression(element)
+            if bits is None:
+                return None
+            parts.append(bits)
+        t = getattr(expr, "type", None)
+        t = getattr(t, "canonicalType", None) or t
+        if getattr(t, "isIntegral", False):
+            out: list[Bit] = []
+            for bits in reversed(parts):  # the last element is the LSB
+                out.extend(bits)
+            return self._resize_bits(tuple(out), self._expr_width(expr) or len(out))
+        if not getattr(t, "isUnpackedArray", False):
+            return None
+        rng = getattr(t, "range", None)
+        left, right = getattr(rng, "left", None), getattr(rng, "right", None)
+        if left is None or right is None or len(parts) != abs(left - right) + 1:
+            return None
+        width = len(parts[0])
+        if any(len(bits) != width for bits in parts):
+            return None
+        slots: list[tuple[Bit, ...]] = [()] * len(parts)
+        step = 1 if right >= left else -1
+        for k, bits in enumerate(parts):
+            slots[left + k * step - min(left, right)] = bits
+        return tuple(b for bits in slots for b in bits)
 
     def _lower_inside(self, expr: Any) -> tuple[Bit, ...] | None:
         """``a inside {v, [lo:hi], …}``: the OR of ``a ==? v`` and the
