@@ -520,13 +520,15 @@ endmodule
 
 # --- edge paths -----------------------------------------------------------
 
-_UNPACKED = "typedef struct { logic [1:0] f; } us_t;\n"
+# An unpacked union still has no layout here (an unpacked struct is
+# lowered since rtl-buddy-cdc#408).
+_UNPACKED = "typedef union { logic [1:0] f; } us_t;\n"
 
 
 @pytest.mark.parametrize(
     ("body", "needle"),
     [
-        # Output port bound to an unpacked-struct member: no bits here.
+        # Output port bound to an unpacked-union member: no bits here.
         (
             "us_t us; sub u (.q(us.f));",
             "output port connection `q` not lowered (target is a member",

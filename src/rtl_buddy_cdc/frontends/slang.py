@@ -4231,30 +4231,60 @@ class _ModuleBuilder:
                 return None, (), 0, 0
             return span
         if kind == "MemberAccessExpression":
-            # A member of a packed struct / union (rtl-buddy-cdc#370):
-            # ``FieldSymbol.bitOffset`` counts from the aggregate's LSB,
-            # as Yosys lays the struct out. Unpacked aggregates have no
-            # integral layout here and stay unresolved.
+            # A member of a packed struct / union (rtl-buddy-cdc#370) or of
+            # an unpacked struct (rtl-buddy-cdc#408): see
+            # :meth:`_member_span`.
             value = getattr(expr, "value", None)
-            value_type = getattr(value, "type", None)
-            member = getattr(expr, "member", None)
-            offset = getattr(member, "bitOffset", None)
-            if (
-                value is None
-                or not getattr(value_type, "isIntegral", False)
-                or offset is None
-            ):
+            span = self._member_span(expr)
+            if value is None or span is None:
                 return None, (), 0, 0
             inner_sym, inner_bits, inner_offset, _inner_stride = (
                 self._resolve_select_chain(value)
             )
             if inner_sym is None:
                 return None, (), 0, 0
-            width = int(getattr(getattr(member, "type", None), "bitWidth", 0) or 0)
-            if width < 1:
-                return None, (), 0, 0
-            return inner_sym, inner_bits, inner_offset + int(offset), width
+            return inner_sym, inner_bits, inner_offset + span[0], span[1]
         return None, (), 0, 0
+
+    @staticmethod
+    def _member_span(expr: Any) -> tuple[int, int] | None:
+        """``(offset, width)`` of the member a ``MemberAccessExpression``
+        selects, within the bits of the aggregate it selects from, counted
+        from the aggregate's LSB; ``None`` for anything else.
+
+        A packed struct / union member is at ``FieldSymbol.bitOffset``, as
+        Yosys lays the struct out (rtl-buddy-cdc#370). An unpacked struct
+        (rtl-buddy-cdc#408: its members were reported and dropped) is laid
+        out the same way, its first member in the most significant bits,
+        as Yosys stores one: each member's offset is the width of the
+        members after it. Its members may be unpacked themselves (an
+        array, a nested struct), so widths are ``selectableWidth``.
+        Unpacked unions stay unresolved."""
+        value_type = getattr(getattr(expr, "value", None), "type", None)
+        value_type = getattr(value_type, "canonicalType", None) or value_type
+        member = getattr(expr, "member", None)
+        if member is None or value_type is None:
+            return None
+        if getattr(value_type, "isIntegral", False):
+            offset = getattr(member, "bitOffset", None)
+            width = int(getattr(getattr(member, "type", None), "bitWidth", 0) or 0)
+            if offset is None or width < 1:
+                return None
+            return int(offset), width
+        if not getattr(value_type, "isUnpackedStruct", False):
+            return None
+        name = getattr(member, "name", None)
+        fields = [f for f in value_type if type(f).__name__ == "FieldSymbol"]
+        widths = [
+            int(getattr(getattr(f, "type", None), "selectableWidth", 0) or 0)
+            for f in fields
+        ]
+        if not fields or min(widths) < 1:
+            return None
+        for i, f in enumerate(fields):
+            if f.name == name:
+                return sum(widths[i + 1 :]), widths[i]
+        return None
 
     def _is_constant_name(self, sym: Any) -> bool:
         """``sym`` reads as a value, not a net: a bound loop variable, a
@@ -4646,9 +4676,8 @@ class _ModuleBuilder:
         value = getattr(expr, "value", None)
         if value is None:
             return None
-        vtype = getattr(value, "type", None)
         kind = type(expr).__name__
-        if kind == "MemberAccessExpression" and not getattr(vtype, "isIntegral", False):
+        if kind == "MemberAccessExpression" and self._member_span(expr) is None:
             return None
         base = self._bits_of_expression(value)
         if base is None:
@@ -4765,6 +4794,20 @@ class _ModuleBuilder:
         reads its element (rtl-buddy-cdc#402); ``None`` for anything
         else."""
         t = getattr(vtype, "canonicalType", None) or vtype
+        if getattr(t, "isUnpackedStruct", False):
+            # Each member's value in declaration order, the first in the
+            # most significant bits (:meth:`_member_span`).
+            members = getattr(value, "value", value)
+            fields = [f for f in t if type(f).__name__ == "FieldSymbol"]
+            if not isinstance(members, list) or len(members) != len(fields):
+                return None
+            parts: list[tuple[Bit, ...]] = []
+            for item, field in zip(members, fields):
+                bits = self._unpacked_value_bits(item, getattr(field, "type", None))
+                if bits is None:
+                    return None
+                parts.append(bits)
+            return tuple(b for bits in reversed(parts) for b in bits)
         if not getattr(t, "isUnpackedArray", False):
             return self._value_bits(value, int(getattr(t, "bitWidth", 0) or 0))
         items = getattr(value, "value", value)
@@ -5323,6 +5366,13 @@ class _ModuleBuilder:
             for bits in reversed(parts):  # the last element is the LSB
                 out.extend(bits)
             return self._resize_bits(tuple(out), self._expr_width(expr) or len(out))
+        if getattr(t, "isUnpackedStruct", False):
+            # Laid out as :meth:`_member_span` reads it: the first member
+            # in the most significant bits (rtl-buddy-cdc#408).
+            out = [b for bits in reversed(parts) for b in bits]
+            if len(out) != int(getattr(t, "selectableWidth", 0) or 0):
+                return None
+            return tuple(out)
         if not getattr(t, "isUnpackedArray", False):
             return None
         rng = getattr(t, "range", None)
@@ -5508,10 +5558,14 @@ class _ModuleBuilder:
     )
 
     @staticmethod
-    def _unpacked_ranges(sym: Any) -> list[tuple[int, int]] | None:
+    def _unpacked_ranges(
+        sym: Any, *, aggregate: bool = False
+    ) -> list[tuple[int, int]] | None:
         """``(left, right)`` of each unpacked dimension of ``sym``'s type,
-        outermost first, when its element is an integral (packed) type;
-        ``None`` for anything else."""
+        outermost first, when its element is an integral (packed) type, or
+        with ``aggregate`` also an unpacked struct (rtl-buddy-cdc#408: such
+        an array is a register array, never a memory); ``None`` for
+        anything else."""
         t = getattr(sym, "type", None)
         t = getattr(t, "canonicalType", None) or t
         dims: list[tuple[int, int]] = []
@@ -5524,7 +5578,11 @@ class _ModuleBuilder:
             dims.append((int(left), int(right)))
             t = getattr(t, "elementType", None)
             t = getattr(t, "canonicalType", None) or t
-        if not dims or not getattr(t, "isIntegral", False):
+        if not dims:
+            return None
+        if not getattr(t, "isIntegral", False) and not (
+            aggregate and getattr(t, "isUnpackedStruct", False)
+        ):
             return None
         return dims
 
@@ -5541,7 +5599,7 @@ class _ModuleBuilder:
         if not self._is_named(e) or not nodes:
             return None
         sym = self._canonical_var(e.symbol)
-        dims = self._unpacked_ranges(sym)
+        dims = self._unpacked_ranges(sym, aggregate=True)
         if dims is None:
             return None
         selectors: list[Any] = []
@@ -5860,12 +5918,11 @@ class _ModuleBuilder:
                 start += offsets[0]
                 size = offsets[1]
             else:
-                member = getattr(node, "member", None)
-                offset = getattr(member, "bitOffset", None)
-                size = int(getattr(getattr(member, "type", None), "bitWidth", 0) or 0)
-                if offset is None or size < 1:
+                span = self._member_span(node)
+                if span is None:
                     return None
-                start += int(offset)
+                start += span[0]
+                size = span[1]
         if start < 0 or start + size > width:
             return None
         return start, size
