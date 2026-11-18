@@ -20,7 +20,10 @@ from rtl_buddy_cdc import (
     sdc_objects,
     waivers as waivers_mod,
 )
-from rtl_buddy_cdc.abstract import body_clock_pins, instance_clock_pins
+from rtl_buddy_cdc.abstract import (
+    blackbox_clock_pins_by_module,
+    body_clock_pin_fanout,
+)
 from rtl_buddy_cdc.domain import (
     Crossing,
     DepthCut,
@@ -903,6 +906,9 @@ def _analyze_module_and_report(
     # ``--no-findings``) — the domain map says "not checked" otherwise.
     rules_ran = False
     rule_ctx_kwargs: dict[str, Any] = {"max_depth": clock_trace_depth}
+    # Abstracted instances' clock pins as clock sinks, with the flops each
+    # stands for (rtl-buddy-cdc#405); filled when the SDC branch runs.
+    clock_pin_weights: dict[str, tuple[netlist.Bit, int]] = {}
     # Paths a --crossing-depth cap stopped short of a capture pin
     # (rtl-buddy-cdc#347): reported, never silent. Always empty uncapped.
     depth_cuts: list[DepthCut] = []
@@ -970,29 +976,34 @@ def _analyze_module_and_report(
         # from them too (rtl-buddy-cdc#402). A greybox body adds the input
         # ports that clock its own flops, which the parent-side trace
         # cannot prove when the port feeding one has no create_clock.
+        # A pin is a clock pin of the module TYPE once any one instance
+        # proves it (the #273 union): a bodyless stub instance whose pin is
+        # driven from an undeclared port is recognised through a sibling
+        # instance driven from a declared clock (rtl-buddy-cdc#405).
         boundary_clock_pins: dict[str, frozenset[str]] = {}
+        # Flops each greybox body clocks from each input pin.
+        body_fanout: dict[str, dict[str, int]] = {}
         if blackboxes:
             # One driver map for every instance (issue #320).
             drivers = _bit_drivers(module)
-            body_pins: dict[str, frozenset[str]] = {}
+            type_pins = blackbox_clock_pins_by_module(
+                module,
+                blackboxes,
+                spec=spec,
+                pin_clocks=spec.pin_clocks,
+                max_depth=clock_trace_depth,
+                drivers=drivers,
+            )
             for inst_name, cell in module.cells.items():
                 sub = blackboxes.get(cell.type)
                 if sub is None:
                     continue
-                if cell.type not in body_pins:
-                    body_pins[cell.type] = body_clock_pins(
+                if cell.type not in body_fanout:
+                    body_fanout[cell.type] = body_clock_pin_fanout(
                         sub, max_depth=clock_trace_depth
                     )
-                boundary_clock_pins[inst_name] = body_pins[
-                    cell.type
-                ] | instance_clock_pins(
-                    module,
-                    cell,
-                    sub,
-                    spec=spec,
-                    pin_clocks=spec.pin_clocks,
-                    max_depth=clock_trace_depth,
-                    drivers=drivers,
+                boundary_clock_pins[inst_name] = (
+                    frozenset(body_fanout[cell.type]) | type_pins[cell.type]
                 )
         # DFT scan structures in the clock network (#45). Computed off
         # the same clock-root walk that assigned the domains above, and
@@ -1002,6 +1013,14 @@ def _analyze_module_and_report(
         # explicit decision below. An abstracted instance's steered clock
         # pin tags the boundary sinks it captures (rtl-buddy-cdc#402).
         clock_pin_sinks = boundary_clock_sinks(module, boundary_clock_pins)
+        # The same pins for the clock views that count flops — the
+        # inferred-clock advisory and the domain map's clock-network
+        # edges (rtl-buddy-cdc#405) — each weighed by the flops it clocks
+        # inside a greybox body (1 for a stub).
+        for sink_name, bit in clock_pin_sinks.items():
+            inst, _, pin = sink_name.split("[", 1)[0].rpartition(".")
+            flops = body_fanout.get(module.cells[inst].type, {}).get(pin, 1)
+            clock_pin_weights[sink_name] = (bit, flops)
         scan_mode_flops = _boundary_scan_sinks(
             module,
             scan_mode_clock_select_flops(
@@ -1380,6 +1399,7 @@ def _analyze_module_and_report(
         module,
         pin_clocks=spec.pin_clocks if spec is not None else None,
         clock_for_port=spec.clock_for_port if spec is not None else None,
+        extra_sinks=clock_pin_weights,
     )
 
     result = AnalysisResult(
@@ -1407,6 +1427,7 @@ def _analyze_module_and_report(
             clock_for_port=spec.clock_for_port if spec is not None else None,
             use_heuristic=not cdc_010_no_heuristic,
             max_depth=clock_trace_depth,
+            extra_sinks={name: bit for name, (bit, _n) in clock_pin_weights.items()},
         )
         payload = build_domain_map(
             module,

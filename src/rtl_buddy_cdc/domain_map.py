@@ -514,31 +514,37 @@ def _serialize_clock_network_crossings(
     """
     out: list[dict[str, Any]] = []
     for c in crossings:
-        out.append(
-            {
-                "src_clock": c.src_clock,
-                "dst_clock": c.dst_clock,
-                "src_flop": _hier_path(module, c.src_flop.cell.name),
-                "src_source_instance_path": _source_instance_path(
-                    module, c.src_flop.cell.name
-                ),
-                "dst_flop": _hier_path(module, c.dst_flop.cell.name),
-                "dst_source_instance_path": _source_instance_path(
-                    module, c.dst_flop.cell.name
-                ),
-                "control_cell": c.control_cell,
-                "control_cell_type": c.control_cell_type,
-                "control_pin": c.control_pin,
-                "control_kind": c.control_kind,
-                "async_per_sdc": True,
-                "synchronizer": clock_network_synchronizer(
-                    module, c.control_cell, c.control_pin, rule_context
-                ),
-                "findings": (
-                    index.for_clock_network_crossing(c) if index is not None else None
-                ),
+        entry: dict[str, Any] = {
+            "src_clock": c.src_clock,
+            "dst_clock": c.dst_clock,
+            "src_flop": _hier_path(module, c.src_flop.cell.name),
+            "src_source_instance_path": _source_instance_path(
+                module, c.src_flop.cell.name
+            ),
+            "dst_flop": _hier_path(module, c.dst_flop.cell.name),
+            "dst_source_instance_path": _source_instance_path(
+                module, c.dst_flop.cell.name
+            ),
+            "control_cell": c.control_cell,
+            "control_cell_type": c.control_cell_type,
+            "control_pin": c.control_pin,
+            "control_kind": c.control_kind,
+            "async_per_sdc": True,
+            "synchronizer": clock_network_synchronizer(
+                module, c.control_cell, c.control_pin, rule_context
+            ),
+            "findings": (
+                index.for_clock_network_crossing(c) if index is not None else None
+            ),
+        }
+        # The destination is an abstracted instance's clock pin
+        # (rtl-buddy-cdc#405): ``dst_flop`` names the pin.
+        if c.dst_boundary is not None:
+            entry["dst_boundary"] = {
+                "instance": c.dst_boundary[0],
+                "port": c.dst_boundary[1],
             }
-        )
+        out.append(entry)
     out.sort(
         key=lambda e: (
             str(e["src_flop"]),

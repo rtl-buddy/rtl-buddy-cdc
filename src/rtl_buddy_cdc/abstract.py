@@ -839,6 +839,27 @@ def instance_clock_pins(
     ).clock_pins
 
 
+def body_clock_pin_fanout(sub: Module, *, max_depth: int = 16) -> dict[str, int]:
+    """Per input port of a greybox body, the number of its flops it clocks.
+
+    :func:`body_clock_pins` with the count each pin stands for: in a flat
+    run those flops are clock sinks of the parent net, so a fanout view
+    (the inferred-clock advisory) weighs the pin by them
+    (rtl-buddy-cdc#405). Empty for a bodyless stub.
+    """
+    if not sub.cells:
+        return {}
+    root_of = clock_root_resolver(sub, max_depth=max_depth)
+    inputs = {p.name for p in sub.ports.values() if p.direction in ("input", "inout")}
+    out: dict[str, int] = {}
+    for f in find_flops(sub):
+        root = root_of(f.clk)
+        if root in inputs:
+            assert root is not None
+            out[root] = out.get(root, 0) + 1
+    return out
+
+
 def body_clock_pins(sub: Module, *, max_depth: int = 16) -> frozenset[str]:
     """Input ports of a greybox body that clock one of its own flops.
 
@@ -850,13 +871,7 @@ def body_clock_pins(sub: Module, *, max_depth: int = 16) -> frozenset[str]:
     no declared clock to trace to — which is exactly the pin CDC-021
     must see (rtl-buddy-cdc#402). Empty for a bodyless stub.
     """
-    if not sub.cells:
-        return frozenset()
-    root_of = clock_root_resolver(sub, max_depth=max_depth)
-    inputs = {p.name for p in sub.ports.values() if p.direction in ("input", "inout")}
-    return frozenset(
-        root for f in find_flops(sub) if (root := root_of(f.clk)) in inputs
-    )
+    return frozenset(body_clock_pin_fanout(sub, max_depth=max_depth))
 
 
 def _bit_consumers(parent: Module) -> dict[Bit, list[tuple[str, str]]]:

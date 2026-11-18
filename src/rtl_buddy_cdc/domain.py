@@ -1500,6 +1500,7 @@ def find_inferred_clock_candidates(
     *,
     clock_for_port: Callable[[str], str | None] | None = None,
     threshold: int = _INFERRED_CLOCK_FANOUT_THRESHOLD,
+    extra_sinks: Mapping[str, tuple[Bit, int]] | None = None,
 ) -> list[InferredClockCandidate]:
     """Report internal nets that *look like* undeclared generated clocks.
 
@@ -1525,6 +1526,12 @@ def find_inferred_clock_candidates(
     :func:`find_crossings`. Resolving a flop behind such a net is allowed
     ONLY when :func:`trace_clock_root` already follows the divider/latch
     to a real root — never on this fanout heuristic. See issue #263.
+
+    ``extra_sinks`` adds the clock pins of abstracted instances
+    (rtl-buddy-cdc#405), ``name -> (bit, flops)``: in a flat run the
+    flops behind each pin are ``CLK`` sinks of the net, so a pin counts
+    as the number of flops it clocks inside a greybox body (``1`` for a
+    stub, whose body is unknown) and is listed by its pin name.
     """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
@@ -1535,6 +1542,12 @@ def find_inferred_clock_candidates(
     for f in find_flops(module):
         if isinstance(f.clk, int):
             clk_sinks[f.clk].append(f.cell.name)
+    # Flops a pin stands for beyond the one entry it adds to the list.
+    extra_weight: dict[Bit, int] = defaultdict(int)
+    for name, (bit, flops) in (extra_sinks or {}).items():
+        if isinstance(bit, int):
+            clk_sinks[bit].append(name)
+            extra_weight[bit] += max(flops, 1) - 1
 
     # Nets that clear the fanout floor and carry no generated-clock
     # identity are the only ones we need an SDC clock-name lookup for.
@@ -1544,13 +1557,14 @@ def find_inferred_clock_candidates(
         {
             b
             for b, s in clk_sinks.items()
-            if len(s) >= threshold and b not in bit_to_clock
+            if len(s) + extra_weight.get(b, 0) >= threshold and b not in bit_to_clock
         },
     )
 
     out: list[InferredClockCandidate] = []
     for bit, sinks in clk_sinks.items():
-        if len(sinks) < threshold:
+        fanout = len(sinks) + extra_weight.get(bit, 0)
+        if fanout < threshold:
             continue
         # Already a named clock — not "forgotten". A top-level input port
         # IS the declared clock root; a generated-clock pin is declared
@@ -1585,7 +1599,7 @@ def find_inferred_clock_candidates(
             InferredClockCandidate(
                 driver=cell_name,
                 driver_kind=kind,
-                fanout=len(ordered),
+                fanout=fanout,
                 example_sinks=tuple(ordered[:_INFERRED_CLOCK_SINK_SAMPLE]),
             )
         )
