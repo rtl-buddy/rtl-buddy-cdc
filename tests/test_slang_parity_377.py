@@ -418,7 +418,7 @@ def test_unlowerable_condition_warns(tmp_path: Path, caplog) -> None:
     and muxed on an opaque select (item 4), not walked as if both arms
     were unconditional."""
     src = """module m (input [3:0] a, input [3:0] b, output reg [3:0] y);
-    always @* begin y = b; if (a[0] -> b[0]) y = a; end
+    always @* begin y = b; if ($urandom(a) == 0) y = a; end
 endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
@@ -518,21 +518,23 @@ endmodule
     "func",
     [
         # (An early ``return`` is inlined since rtl-buddy-cdc#405.)
-        # An output argument.
-        "function automatic [3:0] f(input [3:0] x, output [3:0] o);"
+        # A ``ref`` argument (an ``output`` one is written back since
+        # rtl-buddy-cdc#408).
+        "function automatic [3:0] f(input [3:0] x, ref logic [3:0] o);"
         " o = x; f = x; endfunction",
         # A write to a module variable.
         "function automatic [3:0] f(input [3:0] x); side = x; f = x; endfunction",
-        # A statement the walker does not lower.
-        "function automatic [3:0] f(input [3:0] x); f = x;"
-        " while (f[0]) f = f >> 1; endfunction",
+        # A statement the walker does not lower (a ``while`` loop is
+        # unrolled since rtl-buddy-cdc#408).
+        "function automatic [3:0] f(input [3:0] x);"
+        " begin : blk f = x; if (x[0]) disable blk; f = 0; end endfunction",
     ],
-    ids=["output_arg", "side_effect", "while_loop"],
+    ids=["ref_arg", "side_effect", "disable"],
 )
 def test_function_not_inlined_stays_opaque(tmp_path: Path, func: str) -> None:
     """A function body outside the inlined shapes is not half-lowered:
     the call stays an opaque ``$_UNKNOWN_`` driver."""
-    call = "f(a, o)" if "output" in func else "f(a)"
+    call = "f(a, o)" if "ref" in func else "f(a)"
     src = f"""module m (input clk, input [3:0] a, output reg [3:0] q);
     reg [3:0] side, o;
     {func}
@@ -601,11 +603,11 @@ endmodule
 @pytest.mark.parametrize(
     "body",
     [
-        "assign y = $clog2(a);",
-        "always_comb y = $clog2(a);",
-        "always @* begin y = 4'd0; y[1:0] = $clog2(a); end",
-        "wire [3:0] w = $clog2(a); assign y = w;",
-        "sub u (.i($clog2(a)), .o(y));",
+        "assign y = $urandom(a);",
+        "always_comb y = $urandom(a);",
+        "always @* begin y = 4'd0; y[1:0] = $urandom(a); end",
+        "wire [3:0] w = $urandom(a); assign y = w;",
+        "sub u (.i($urandom(a)), .o(y));",
     ],
     ids=["assign", "always_comb", "part_select", "wire_init", "port"],
 )
@@ -627,13 +629,13 @@ endmodule
     assert unknown & set(module.ports["y"].bits)
     msgs = _warnings(caplog)
     assert any(
-        "`$clog2(a)` not lowered; modelled as an opaque driver" in m for m in msgs
+        "`$urandom(a)` not lowered; modelled as an opaque driver" in m for m in msgs
     ), msgs
 
 
 def test_unlowerable_register_input_is_reported(tmp_path: Path, caplog) -> None:
     src = """module m (input clk, input [3:0] a, output reg [3:0] q);
-    always @(posedge clk) q <= $clog2(a);
+    always @(posedge clk) q <= $urandom(a);
 endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
@@ -803,7 +805,9 @@ endmodule
     ("body", "needle"),
     [
         ("for (int i = 0; i < n; i++) q[i] = a;", "`for` loop not lowered"),
-        ("while (n[0]) q = a;", "`WhileLoopStatement` is not modelled"),
+        # A ``while`` loop is unrolled when its trip count folds
+        # (rtl-buddy-cdc#408); one that never ends is reported.
+        ("while (n[0]) q = a;", "`while` loop not lowered (its trip count"),
         # A constant ``repeat`` is unrolled (rtl-buddy-cdc#405).
         ("repeat (n) q = a;", "`repeat` loop not lowered"),
         ("t(q);", "`ExpressionStatement` is not modelled"),

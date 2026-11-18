@@ -520,13 +520,15 @@ endmodule
 
 # --- edge paths -----------------------------------------------------------
 
-_UNPACKED = "typedef struct { logic [1:0] f; } us_t;\n"
+# An unpacked union still has no layout here (an unpacked struct is
+# lowered since rtl-buddy-cdc#408).
+_UNPACKED = "typedef union { logic [1:0] f; } us_t;\n"
 
 
 @pytest.mark.parametrize(
     ("body", "needle"),
     [
-        # Output port bound to an unpacked-struct member: no bits here.
+        # Output port bound to an unpacked-union member: no bits here.
         (
             "us_t us; sub u (.q(us.f));",
             "output port connection `q` not lowered (target is a member",
@@ -568,7 +570,7 @@ endmodule
 
 
 def test_unlowerable_rhs_into_concatenation(tmp_path: Path) -> None:
-    """An RHS with no lowering (``$clog2``) still gives the
+    """An RHS with no lowering (``$urandom``) still gives the
     registers an opaque ``$_UNKNOWN_`` driver, as for a plain target; a
     combinational splice leaves the bits undriven, as a whole-variable
     combinational target does."""
@@ -576,9 +578,9 @@ def test_unlowerable_rhs_into_concatenation(tmp_path: Path) -> None:
           output reg [1:0] b, output reg [2:0] c);
     always @(posedge clk_b or negedge rst_n)
         if (!rst_n) {a, b} <= x;
-        else {a, b} <= $clog2(x);
+        else {a, b} <= $urandom(x);
     reg [2:0] w;
-    always_comb {w[2], w[1:0]} = $clog2(x);
+    always_comb {w[2], w[1:0]} = $urandom(x);
     always @(posedge clk_b) c <= w;
 endmodule
 """
