@@ -1165,10 +1165,14 @@ def _analyze_module_and_report(
         # ever answer 1); ``boundary_user_syncs`` marks a sink whose first
         # internal stage the user tagged, honoured exactly as the flat
         # rules honour ``(* cdc_sync *)``; ``boundary_reconvergence``
-        # carries the internal recombination CDC-005 re-raises.
+        # carries the internal recombination CDC-005 re-raises. The sink
+        # clocks and chain exits let a chain that runs across the boundary
+        # be measured whole (rtl-buddy-cdc#405).
         boundary_sync_depth: dict[str, int] = {}
         boundary_user_syncs: set[str] = set()
         boundary_reconvergence: dict[str, frozenset[frozenset[str]]] = {}
+        boundary_sink_clocks: dict[str, str | None] = {}
+        boundary_chain_exits: dict[str, netlist.Bit] = {}
         for inst_name, summary in boundaries.items():
             if summary.reconvergent_inputs:
                 boundary_reconvergence[inst_name] = summary.reconvergent_inputs
@@ -1176,6 +1180,14 @@ def _analyze_module_and_report(
                 sink = f"{inst_name}.{port_name}"
                 if pb.sync_depth is not None:
                     boundary_sync_depth[sink] = pb.sync_depth
+                    boundary_sink_clocks[sink] = (
+                        pb.src_clock if pb.src_clock is not None else summary.clock
+                    )
+                    if pb.chain_exit is not None:
+                        out_port, idx = pb.chain_exit
+                        conn = module.cells[inst_name].connections.get(out_port, ())
+                        if idx < len(conn) and isinstance(conn[idx], int):
+                            boundary_chain_exits[sink] = conn[idx]
                 if pb.user_synchronised:
                     boundary_user_syncs.add(sink)
         async_crossings = _filter_async(crossings, spec)
@@ -1207,6 +1219,8 @@ def _analyze_module_and_report(
             "boundary_sync_depth": boundary_sync_depth,
             "boundary_reconvergence": boundary_reconvergence,
             "boundary_user_syncs": frozenset(boundary_user_syncs),
+            "boundary_sink_clocks": boundary_sink_clocks,
+            "boundary_chain_exits": boundary_chain_exits,
             "max_depth": clock_trace_depth,
         }
         if not no_findings:

@@ -218,6 +218,14 @@ class _RuleContext:
     # exactly as they would on the flattened design. Absent entry = unknown =
     # today's conservative depth-1 answer.
     boundary_sync_depth: dict[str, int] = field(default_factory=dict)
+    # The capture clock of each boundary virtual sink, and, for a sink
+    # whose proven chain ends on an output port of the block, the parent
+    # bit that output drives (rtl-buddy-cdc#405). With them a chain that
+    # runs across the boundary — parent stages into the block, or the
+    # block's stages on into the parent — is measured whole, as the flat
+    # walk measures it (:func:`_effective_sync_chain_depth`).
+    boundary_sink_clocks: dict[str, str | None] = field(default_factory=dict)
+    boundary_chain_exits: dict[str, Bit] = field(default_factory=dict)
     # Input-port groups that RECONVERGE inside an abstracted block (#261),
     # keyed by instance name. Each member is a set of the block's input port
     # names whose captured values recombine internally. CDC-005 re-raises at
@@ -316,6 +324,19 @@ class _RuleContext:
         )
 
     @cached_property
+    def boundary_sink_by_bit(self) -> dict[Bit, str]:
+        """The single parent bit feeding each boundary sink with a proven
+        depth, mapped to the sink's name (``"<instance>.<port>"``)."""
+        out: dict[Bit, str] = {}
+        for sink in self.boundary_sync_depth:
+            inst, _, port = sink.rpartition(".")
+            cell = self.module.cells.get(inst)
+            bits = cell.connections.get(port, ()) if cell is not None else ()
+            if len(bits) == 1 and isinstance(bits[0], int):
+                out[bits[0]] = sink
+        return out
+
+    @cached_property
     def clock_network_cells(self) -> frozenset[str]:
         """:func:`_clock_network_cells` for this module. CDC-008 and
         CDC-010 both consult it; built once."""
@@ -340,6 +361,8 @@ def _build_context(
     boundary_sync_depth: dict[str, int] | None = None,
     boundary_reconvergence: dict[str, frozenset[frozenset[str]]] | None = None,
     boundary_user_syncs: frozenset[str] = frozenset(),
+    boundary_sink_clocks: dict[str, str | None] | None = None,
+    boundary_chain_exits: dict[str, Bit] | None = None,
     max_depth: int = 16,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
@@ -464,6 +487,8 @@ def _build_context(
         boundary_clock_sinks=clock_sinks,
         boundary_clock_roots=clock_sink_roots,
         boundary_sync_depth=boundary_sync_depth or {},
+        boundary_sink_clocks=boundary_sink_clocks or {},
+        boundary_chain_exits=boundary_chain_exits or {},
         boundary_reconvergence=boundary_reconvergence or {},
         max_depth=max_depth,
     )
@@ -1508,20 +1533,88 @@ def _effective_sync_chain_depth(
     fires when the proven depth is below the site requirement. Absent
     entry (a stub blackbox, or a port whose proof failed) falls back to
     the structural answer — the conservative default stands.
+
+    A chain that crosses the boundary is measured whole
+    (rtl-buddy-cdc#405): parent stages whose last ``Q`` feeds nothing but
+    a boundary sink in the same clock add the depth proven behind it, and
+    a proven chain whose last stage drives an output of the block
+    (``ctx.boundary_chain_exits``) carries on through the parent stages
+    hung on that output. Both joins apply the one-reader, same-clock test
+    every link of :func:`_sync_chain_depth` passes, so the total is the
+    depth a flat walk of the same design finds.
     """
-    proven = ctx.boundary_sync_depth.get(dst_flop.cell.name)
+    return _joined_chain_depth(module, dst_flop, dst_clock, ctx, frozenset())
+
+
+def _joined_chain_depth(
+    module: Module,
+    head: Flop,
+    clock: str,
+    ctx: _RuleContext,
+    seen: frozenset[str],
+) -> int:
+    """:func:`_effective_sync_chain_depth`; ``seen`` holds the boundary
+    sinks already joined, so a loop through a block cannot recurse."""
+    proven = ctx.boundary_sync_depth.get(head.cell.name)
     if proven is not None:
-        return proven
-    return _sync_chain_depth(
+        return proven + _depth_after_exit(module, head.cell.name, clock, ctx, seen)
+    depth = _sync_chain_depth(
         module,
-        dst_flop,
-        dst_clock,
+        head,
+        clock,
         ctx.domains,
         ctx.reader_counts,
         d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
         bit_drivers=ctx.bit_drivers,
         srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
     )
+    if not ctx.boundary_sync_depth:
+        return depth
+    chain = _sync_chain_flops(
+        module,
+        head,
+        clock,
+        ctx.domains,
+        ctx.reader_counts,
+        ctx.d_bit_to_single_bit_flop,
+        ctx.srst_mux_data_bit_to_single_bit_flop,
+    )
+    tail = chain[-1]
+    if len(chain) != depth or len(tail.q) != 1 or len(tail.d) != 1:
+        return depth
+    sink = ctx.boundary_sink_by_bit.get(tail.q[0])
+    if (
+        sink is None
+        or sink in seen
+        or ctx.reader_counts.get(tail.q[0], 0) != 1
+        or ctx.boundary_sink_clocks.get(sink) != clock
+    ):
+        return depth
+    seen = seen | {sink}
+    return (
+        depth
+        + ctx.boundary_sync_depth[sink]
+        + _depth_after_exit(module, sink, clock, ctx, seen)
+    )
+
+
+def _depth_after_exit(
+    module: Module,
+    sink: str,
+    clock: str,
+    ctx: _RuleContext,
+    seen: frozenset[str],
+) -> int:
+    """Parent stages that carry on the chain proven behind ``sink``."""
+    bit = ctx.boundary_chain_exits.get(sink)
+    if bit is None or ctx.reader_counts.get(bit, 0) != 1:
+        return 0
+    nxt = ctx.d_bit_to_single_bit_flop.get(bit)
+    if nxt is None:
+        nxt = ctx.srst_mux_data_bit_to_single_bit_flop.get(bit)
+    if nxt is None or ctx.domains.get(nxt.cell.name) != clock:
+        return 0
+    return _joined_chain_depth(module, nxt, clock, ctx, seen | {sink})
 
 
 def _sync_chain_flops(
@@ -6630,6 +6723,13 @@ def check_cdc_018(
     rule on legitimate fanout). Groups by ``(src_flop, dst_clock)``
     so a sliced-bus shape doesn't multi-fire.
 
+    Under ``--greybox`` / ``--blackbox`` (rtl-buddy-cdc#405) the walk is
+    :func:`_effective_sync_chain_depth`: a chain inside an abstracted
+    block counts at the depth the per-module pass proved, a chain that
+    runs across the boundary counts whole, and a crossing launched from a
+    block's output groups under that output, as the flat run groups it
+    under the flop behind it.
+
     Suppression:
 
     * Chain head marked ``(* cdc_sync *)``: user has explicitly vetted
@@ -6642,45 +6742,51 @@ def check_cdc_018(
     if ctx is None:
         ctx = _build_context(module, clock_spec)
 
-    # Per-(src_flop_name, dst_clock) bookkeeping: pick the deepest chain
-    # in the group so we report a single, maximal finding per group.
+    # Per-(source, dst_clock) bookkeeping: pick the deepest chain in the
+    # group so we report a single, maximal finding per group. The source
+    # is a flop, or an abstracted block's output (rtl-buddy-cdc#405): the
+    # flops behind it are flops in a flat run. A port-sourced chain never
+    # fires (its first stage is CDC-006 / CDC-011 territory).
     best: dict[tuple[str, str], tuple[int, Flop]] = {}
     for c in crossings:
-        if c.src_flop is None or c.dst_flop is None:
+        if c.dst_flop is None:
+            continue
+        if c.src_flop is not None:
+            src_name = c.src_flop.cell.name
+        elif c.src_boundary is not None:
+            src_name = c.src_name
+        else:
             continue
         head = c.dst_flop
         if head.cell.name in ctx.user_syncs:
             continue
-        if len(head.q) != 1 or len(head.d) != 1:
-            continue
-        if not isinstance(head.q[0], int) or not isinstance(head.d[0], int):
-            continue
-        depth = _sync_chain_depth(
-            module,
-            head,
-            c.dst_clock,
-            ctx.domains,
-            ctx.reader_counts,
-            d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
-            bit_drivers=ctx.bit_drivers,
-            srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
-        )
+        # A boundary sink stands for the block's first internal stage;
+        # its proven depth is published only for a single-bit port.
+        if head.cell.name not in ctx.boundary_sync_depth:
+            if len(head.q) != 1 or len(head.d) != 1:
+                continue
+            if not isinstance(head.q[0], int) or not isinstance(head.d[0], int):
+                continue
+        depth = _effective_sync_chain_depth(module, head, c.dst_clock, ctx)
         if depth < depth_threshold:
             continue
-        key = (c.src_flop.cell.name, c.dst_clock)
+        key = (src_name, c.dst_clock)
         prev = best.get(key)
         if prev is None or depth > prev[0]:
             best[key] = (depth, head)
 
     violations: list[Violation] = []
     for (src_name, dst_clock), (depth, head) in sorted(best.items()):
+        start = head.cell.name
+        if head.cell.name in ctx.boundary_sync_depth:
+            start = f"abstracted block input {start}"
         violations.append(
             Violation(
                 rule_id="CDC-018",
                 severity="warning",
                 message=(
                     f"cascaded synchroniser chain: {depth}-flop chain "
-                    f"in {dst_clock} starting at {head.cell.name} (source: "
+                    f"in {dst_clock} starting at {start} (source: "
                     f"{src_name}). The textbook 2FF sync is sufficient; "
                     f"every flop beyond the first 2 adds latency without "
                     f"improving metastability resolution. Common causes: "
@@ -8003,6 +8109,8 @@ def run_all(
     boundary_sync_depth: dict[str, int] | None = None,
     boundary_reconvergence: dict[str, frozenset[frozenset[str]]] | None = None,
     boundary_user_syncs: frozenset[str] = frozenset(),
+    boundary_sink_clocks: dict[str, str | None] | None = None,
+    boundary_chain_exits: dict[str, Bit] | None = None,
     max_depth: int = 16,
     sync_primitives: frozenset[str] = frozenset(),
     ignore_scan_mode: bool = False,
@@ -8038,6 +8146,8 @@ def run_all(
         boundary_sync_depth=boundary_sync_depth,
         boundary_reconvergence=boundary_reconvergence,
         boundary_user_syncs=boundary_user_syncs,
+        boundary_sink_clocks=boundary_sink_clocks,
+        boundary_chain_exits=boundary_chain_exits,
         max_depth=max_depth,
     )
     out: list[Violation] = []

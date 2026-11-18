@@ -140,6 +140,12 @@ class PortFacts:
     ambiguous: bool = False
     sync_depth: int | None = None
     user_synchronised: bool = False
+    # The output port, and the bit of it, the proven input chain's last
+    # stage drives and nothing else reads (rtl-buddy-cdc#405). A flat run
+    # sees the chain carry on into whatever the parent hangs on that
+    # output; the boundary hides that, so the parent rejoins the two
+    # halves through this fact. ``None`` when the chain ends inside.
+    chain_exit: tuple[str, int] | None = None
 
     @property
     def synchronised(self) -> bool:
@@ -394,7 +400,9 @@ def _input_facts(
     port = sub.ports[name]
     heads = _capture_flops(sub, port.bits, ctx)
     clock, ambiguous = _single_domain({domains.get(h) for h in heads})
-    depth, user = _prove_input_synchroniser(sub, name, ctx, domains, flop_by_name)
+    depth, user, exit_ = _prove_input_synchroniser(
+        sub, name, ctx, domains, flop_by_name
+    )
     return PortFacts(
         port=name,
         direction=port.direction,
@@ -403,6 +411,7 @@ def _input_facts(
         ambiguous=ambiguous,
         sync_depth=depth,
         user_synchronised=user,
+        chain_exit=exit_,
     )
 
 
@@ -412,11 +421,12 @@ def _prove_input_synchroniser(
     ctx: _RuleContext,
     domains: dict[str, str | None],
     flop_by_name: dict[str, Flop],
-) -> tuple[int | None, bool]:
+) -> tuple[int | None, bool, tuple[str, int] | None]:
     """Prove (or refuse to prove) that ``name`` lands on a synchroniser.
 
-    Returns ``(chain_depth, user_tagged)``; ``(None, False)`` whenever any
-    step of the proof fails. The refusals are the ones §4.9 demands —
+    Returns ``(chain_depth, user_tagged, chain_exit)``; ``(None, False,
+    None)`` whenever any step of the proof fails. ``chain_exit`` is
+    :attr:`PortFacts.chain_exit`. The refusals are the ones §4.9 demands —
     each is a way a real design defeats the "the IP synchronises it"
     claim, and every one of them falls back to the conservative
     over-reporting default:
@@ -437,25 +447,25 @@ def _prove_input_synchroniser(
     """
     port = sub.ports[name]
     if len(port.bits) != 1:
-        return None, False
+        return None, False, None
     bit = port.bits[0]
     if not isinstance(bit, int):
-        return None, False
+        return None, False, None
     for other in sub.ports.values():
         if other.direction in ("output", "inout") and bit in other.bits:
-            return None, False
+            return None, False, None
     readers = ctx.bit_consumers.get(bit, ())
     if len(readers) != 1:
-        return None, False
+        return None, False, None
     cell_name, pin, _idx = readers[0]
     if not is_ff_cell(sub.cells[cell_name].type) or pin != "D":
-        return None, False
+        return None, False, None
     head = flop_by_name[cell_name]
     if len(head.d) != 1:
-        return None, False
+        return None, False, None
     clock = domains.get(cell_name)
     if clock is None:
-        return None, False
+        return None, False, None
     depth = _sync_chain_depth(
         sub,
         head,
@@ -466,7 +476,40 @@ def _prove_input_synchroniser(
         bit_drivers=ctx.bit_drivers,
         srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
     )
-    return depth, cell_name in ctx.user_syncs
+    return depth, cell_name in ctx.user_syncs, _chain_exit(sub, head, clock, depth, ctx)
+
+
+def _chain_exit(
+    sub: Module, head: Flop, clock: str, depth: int, ctx: _RuleContext
+) -> tuple[str, int] | None:
+    """The output-port bit the chain from ``head`` ends on, if it does.
+
+    The chain's last stage must drive the port directly and have no other
+    reader, the condition :func:`_sync_chain_depth` puts on every link, so
+    the parent extends the chain exactly as a flat walk would. A packed
+    shift-register head (the whole chain in one cell) does not qualify.
+    """
+    chain = _sync_chain_flops(
+        sub,
+        head,
+        clock,
+        domains=ctx.domains,
+        reader_counts=ctx.reader_counts,
+        d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
+    )
+    if len(chain) != depth:
+        return None
+    tail = chain[-1]
+    if len(tail.q) != 1 or not isinstance(tail.q[0], int):
+        return None
+    bit = tail.q[0]
+    if ctx.reader_counts.get(bit, 0) != 1 or ctx.bit_consumers.get(bit):
+        return None
+    for port in sub.ports.values():
+        if port.direction == "output" and bit in port.bits:
+            return port.name, port.bits.index(bit)
+    return None
 
 
 def _output_facts(

@@ -111,6 +111,11 @@ class PortBoundary:
     # the user's explicit promise, honoured the same way the flat rules
     # honour ``(* cdc_sync *)`` on a destination flop.
     user_synchronised: bool = False
+    # rtl-buddy-cdc#405: for an input, the output port (and bit) the
+    # proven chain's last stage drives and nothing else reads, so the
+    # parent can carry the chain on through whatever it hangs on that
+    # output, as a flat walk would.
+    chain_exit: tuple[str, int] | None = None
 
 
 @dataclass(frozen=True)

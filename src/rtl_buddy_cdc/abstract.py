@@ -550,6 +550,7 @@ def _summarise_single_clock(
                 user_synchronised=(
                     facts.user_synchronised if facts is not None else False
                 ),
+                chain_exit=facts.chain_exit if facts is not None else None,
             )
     return BoundarySummary(
         module=sub.name,
@@ -622,6 +623,7 @@ def _summarise_multi_clock(
                 width=len(port.bits),
                 sync_depth=facts.sync_depth,
                 user_synchronised=facts.user_synchronised,
+                chain_exit=facts.chain_exit,
             )
     return BoundarySummary(
         module=sub.name,
