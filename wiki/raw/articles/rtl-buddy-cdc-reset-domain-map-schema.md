@@ -47,9 +47,10 @@ envelope so a consumer joining the two artefacts can rely on
 ## `reset_sources`
 
 One entry per distinct upstream reset observed across the design,
-keyed by `(name, source)`, over every reset pin: each flop's reset and
-every asynchronous control (a set / clear flop's `SET` too, since
-rtl-buddy-cdc#390). Sorted by `(source, name)`.
+keyed by `(name, source)`, over every reset pin: each flop's reset (each
+lane reset of a register whose lanes are reset differently, since
+rtl-buddy-cdc#398) and every asynchronous control (a set / clear flop's
+`SET` too, since rtl-buddy-cdc#390). Sorted by `(source, name)`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -83,16 +84,29 @@ backward-compatible v1.x extension if a consumer needs it.
 ## `flop_resets`
 
 One entry per flop with a reset (flops without one are omitted — this
-section is the reset inventory, not the flop inventory). Sorted by
-`instance_path`. A reset is a reset pin, or, on a flop without one, a
-synchronous reset that the `proc` netlist form leaves as constant-leg
-muxes on `D` where `opt_dff` would fold it into `SRST`, read when every
-lane of the register is reset by the same selects (rtl-buddy-cdc#394;
-several selects classify as `"comb"`, as the `$reduce_or` `opt_dff`
-adds for them does). The `proc` and `opt_dff` forms of one design, and
-the Yosys and slang frontends, then list the same resets. A register
-whose lanes have different resets is sliced by `opt_dff` into cells the
-`proc` form's one cell cannot match; that flop has no entry.
+section is the reset inventory, not the flop inventory), or one per
+reset for a register whose lanes are reset differently (below). Sorted
+by `(instance_path, lanes)`. A reset is a reset pin, or, on a flop
+without one, a synchronous reset that the `proc` netlist form leaves as
+constant-leg muxes on `D` where `opt_dff` would fold it into `SRST`
+(rtl-buddy-cdc#394). Several selects classify as `"comb"`, as the cell
+`opt_dff` adds to combine them does: `$reduce_and`, active low, when
+every select is active low, else `$reduce_or`, active high. An `$sdff*`
+whose `D` still carries such a mux — the slang frontend folds the first
+select of `if (a) … else if (b)` into `SRST` and leaves the second on
+`D` — reads as both selects, where `opt_dff` would fold the mux into
+that pin: not under the enable of a reset-over-enable `$sdffe`, and
+only on lanes whose constant is the `SRST_VALUE` bit (rtl-buddy-cdc#398).
+
+A register whose lanes have different resets is sliced by `opt_dff`
+into one cell per reset (and one with none, for lanes never reset). The
+`proc` form's one cell then has one entry per reset, each with the
+`lanes` it resets (rtl-buddy-cdc#398), so the `proc` and `opt_dff`
+forms of one design, and the Yosys and slang frontends, list the same
+resets. Known residual: slang writes `else if (!b)` as an active-high
+mux behind a `$logic_not` where `proc` swaps the mux legs, so a
+combination of active-low selects reads `"comb"` active high on slang
+and active low on Yosys.
 
 | Field | Type | Description |
 |---|---|---|
@@ -102,16 +116,19 @@ whose lanes have different resets is sliced by `opt_dff` into cells the
 | `reset_kind` | enum | `source` of that reset (`"port"` / `"inferred"` / `"constant"` / `"comb"`). |
 | `polarity` | enum | Polarity the reset signal acts with (`"high"` / `"low"`): the flop pin's, except where Yosys's encoding of the pin inverts it — an active-low clear / set of a set / clear flop, written by `proc` as an inverter in front of an active-high `CLR` / `SET` (rtl-buddy-cdc#394). |
 | `type` | enum | `"sync"` or `"async"`. |
+| `lanes` | array of int (optional) | Present only on the entries of a register whose lanes are reset differently: the lanes (bit offsets into the flop's `Q`, ascending) this reset acts on. Absent: the reset acts on the whole flop. Added in rtl-buddy-cdc#398 (additive). |
 | `location` | object (optional) | Yosys-derived source location: `{file, start_line, start_column, end_line, end_column}` — column/end fields present when Yosys emitted them. |
 
 ## `reset_crossings`
 
 Structural reset crossings the RDC rule pack would flag, one per reset
 pin: a set / clear flop whose `CLR` and `SET` both cross has two
-entries (rtl-buddy-cdc#390). Each kind reads the pins its rule reads:
-`async-deassert` and `comb-driven` every asynchronous control,
-`sync-crossing` the `SRST` pin, `polarity-mismatch` the flop's reset
-(`flop_resets[].reset`). Sorted by `(instance_path, kind, pin)`.
+entries (rtl-buddy-cdc#390), a register whose lanes are reset
+differently one per lane reset (rtl-buddy-cdc#398). Each kind reads the
+pins its rule reads: `async-deassert` and `comb-driven` every
+asynchronous control, `sync-crossing` the `SRST` pin (each lane reset),
+`polarity-mismatch` the flop's reset (`flop_resets[].reset`, each of
+them). Sorted by `(instance_path, kind, pin, lanes)`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -123,6 +140,7 @@ entries (rtl-buddy-cdc#390). Each kind reads the pins its rule reads:
 | `polarity` | enum | The polarity the reset acts with on that pin (as `flop_resets[].polarity`). |
 | `type` | enum | `"sync"` or `"async"`. |
 | `pin` | string | The flop pin the reset arrives on, by its coarse name: `"ARST"`, `"ALOAD"`, `"CLR"`, `"SET"` or `"SRST"` (gate-level `R` / `L` / `S` read as the pin they stand for). Added in rtl-buddy-cdc#390 (additive). |
+| `lanes` | array of int (optional) | As `flop_resets[].lanes`: present only on the record of a reset that acts on some lanes of the flop. Added in rtl-buddy-cdc#398 (additive). |
 | `location` | object (optional) | Flop's source location. |
 
 Rule `severity`, waiver suppression, and the user-facing message

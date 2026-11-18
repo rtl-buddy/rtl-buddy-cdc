@@ -349,22 +349,32 @@ def test_reset_domain_maps_agree_across_forms(
 def test_slang_frontend_lists_the_same_sync_resets() -> None:
     """The ``lint`` path never runs ``opt_dff``: the Yosys frontend's map
     now lists the sync resets the slang frontend's ``$sdff*`` carry.
-    ``q_two`` differs by design of the two lowerings: slang folds the
-    first of its two selects into ``SRST`` and leaves the second on
-    ``D``, ``opt_dff`` folds both into one ``$reduce_or``."""
+    ``q_two`` included: slang folds the first of its two selects into
+    ``SRST`` and leaves the second on ``D``, where ``opt_dff`` folds both
+    into one ``$reduce_or``; the classification reads the ``$sdff`` with
+    the reset mux still on its ``D`` as both selects (rtl-buddy-cdc#398)."""
     from rtl_buddy_cdc.frontends import slang as slang_fe
 
     module, _ = slang_fe.elaborate_with_blackboxes([FIX / SR / f"{SR}.sv"], SR)
-    got = _reset_table(module)
-    assert got.pop("q_two") == ("r", "port", "high", "sync")
-    expected = dict(_SR_EXPECTED)
-    del expected["q_two"]
-    assert got == expected
+    q_two = next(
+        c
+        for c in module.cells.values()
+        if c.type == "$sdff" and _reg(module, c.name) == "q_two"
+    )
+    # One select on the pin, the other a reset mux on D.
+    d_drivers = {
+        c.type
+        for c in module.cells.values()
+        if set(c.connections.get("Y", ())) & set(q_two.connections["D"])
+    }
+    assert d_drivers == {"$mux"}
+    assert _reset_table(module) == _SR_EXPECTED
 
 
 def test_partly_reset_register_keeps_no_reset() -> None:
     """A register whose lanes are reset differently is sliced by
-    ``opt_dff``; the ``proc`` form's one cell keeps ``reset = None``."""
+    ``opt_dff``; the ``proc`` form's one cell keeps ``reset = None`` and
+    lists the reset of the lanes that have one (rtl-buddy-cdc#398)."""
     module = netlist.load(FIX / SR / f"{SR}.json")
     ctx = _build_context(module, None)
     flop = next(f for f in ctx.flops if _reg(module, f.cell.name) == "q_hi")
@@ -386,7 +396,11 @@ def test_partly_reset_register_keeps_no_reset() -> None:
     sliced = Module(
         name=module.name, ports=module.ports, cells=cells, netnames=module.netnames
     )
-    assert assign_reset_domains(sliced)[cell.name].reset is None
+    rd = assign_reset_domains(sliced)[cell.name]
+    assert rd.reset is None
+    ((lanes, reset),) = [(g.lanes, g.reset) for g in rd.reset_groups()]
+    assert lanes == tuple(range(1, len(flop.d)))
+    assert (reset.name, reset.source, reset.type) == ("r", "port", "sync")
 
 
 # --- item 5: the documented regeneration command --------------------------

@@ -406,6 +406,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reset analysis: RDC-008's message, per-lane sync resets, a reset mux
+  left on an `$sdff`'s `D`** (rtl-buddy-cdc#398, items 3, 6, 7). No
+  committed fixture or integration golden changes verdict (per-rule
+  counts), and the committed reset-domain-map golden is unchanged.
+  - **RDC-008 says which shape it found.** It fires on ≥2 flops that take
+    a reset port raw in a clock domain, once the port has a reset
+    synchroniser somewhere; that domain may or may not be the one with
+    the synchroniser. The message always said "no reset-synchroniser
+    chain in that clock domain", and the docstring and README described
+    only that case. Which designs fire is unchanged. The message now
+    tells the two apart: no chain for the port in this domain (it names
+    the domains that have one, and asks for a chain here; the old text
+    is kept, with "(there is one for it in <clk>)" added), or a chain in
+    this domain that these flops bypass (it names the chain's tail, the
+    reset they should take). New fixture
+    `bad_primary_reset_bypassed_sync` has one of each.
+  - **Per-lane sync resets in the reset-domain map.** A register whose
+    lanes have different sync resets is one `$dff` in the `proc` form
+    and one `$sdff` per reset after `opt_dff`; the `proc` form listed no
+    reset for it. `ResetDomain` gains `lane_resets` (one `LaneReset(lanes,
+    reset)` per distinct reset; `reset` stays `None`) and
+    `reset_groups()`, and the map's `flop_resets` lists one entry per lane
+    reset with an additive `lanes` field, as `reset_crossings` and
+    `find_reset_crossings` (new `ResetCrossing.lanes`) do. `reset_sources`
+    includes them. RDC-003 already read every lane's reset muxes: a
+    foreign sync reset on some lanes is one finding in either form. New
+    fixtures `good_sync_reset_lanes` and `bad_sync_reset_lane_crossing`.
+    Of the committed fixtures, only `good_sync_reset_mux_folds` (a
+    one-lane reset) gains a `flop_resets` entry.
+  - **`if (a) … else if (b)` classifies alike on both frontends.** slang
+    folds `a` into `SRST` and leaves `b` as a reset mux on `D`, so its map
+    said "port `a`" where `opt_dff` says `"comb"` (`a | b`). An `$sdff` or
+    `$sdffce` whose `D` still carries a mux `opt_dff` would fold into its
+    `SRST` (a constant equal to that lane's `SRST_VALUE` bit, not under the
+    enable of a reset-over-enable `$sdffe`) now reads as both selects.
+  - **A `"comb"` sync reset of several active-low selects is active low**,
+    as the `$reduce_and` `opt_dff` builds for it is; the `proc` form said
+    active high. Residual: slang writes `else if (!b)` through a
+    `$logic_not` and an active-high mux, so on slang such a combination
+    still reads active high.
+
 - **Reset analysis: set / clear polarity, resets outside an enable,
   `proc`-form sync resets** (rtl-buddy-cdc#394, items 1, 2, 3, 5). No
   committed fixture or integration golden changes verdict (per-rule

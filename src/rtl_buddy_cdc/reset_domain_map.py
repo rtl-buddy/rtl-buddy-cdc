@@ -104,15 +104,16 @@ def _serialize_reset_sources(
     surfaces as a ``polarity-mismatch`` crossing).
     """
     seen: dict[tuple[str, str], dict[str, Any]] = {}
-    # Each flop's ``reset`` first, so an entry's ``polarity`` / ``type``
-    # are read from the same consumer as before; then the sources seen
-    # only on another async control (a set / clear flop's ``SET``,
-    # rtl-buddy-cdc#390), which a ``reset_crossings`` record can name.
-    sources = [rd.reset for rd in reset_domains.values()] + [
-        c.source for rd in reset_domains.values() for c in rd.controls
-    ]
+    # Each flop's ``reset`` (or, on a register whose lanes are reset
+    # differently, each lane reset, rtl-buddy-cdc#398) first, so an
+    # entry's ``polarity`` / ``type`` are read from the same consumer as
+    # before; then the sources seen only on another async control (a set /
+    # clear flop's ``SET``, rtl-buddy-cdc#390), which a ``reset_crossings``
+    # record can name.
+    sources = [g.reset for rd in reset_domains.values() for g in rd.reset_groups()]
+    sources += [c.source for rd in reset_domains.values() for c in rd.controls]
     for rsrc in sources:
-        if rsrc is None or rsrc.source == "comb":
+        if rsrc.source == "comb":
             continue
         key = (rsrc.name, rsrc.source)
         if key in seen:
@@ -183,24 +184,34 @@ def _serialize_flop_resets(
     Plain ``$dff`` / ``$dffe`` cells (no reset pin) are omitted — the
     section is the *reset* inventory, not a flop inventory; consumers
     that need every flop can use the clock-domain map.
+
+    A register whose lanes have different synchronous resets
+    (:attr:`ResetDomain.lane_resets`) has one entry per reset, each with
+    the ``lanes`` it resets (additive, rtl-buddy-cdc#398): the entries
+    ``opt_dff`` gives the cells it slices that register into.
     """
     out: list[dict[str, Any]] = []
     for name, rd in reset_domains.items():
-        if rd.reset is None:
+        groups = rd.reset_groups()
+        if not groups:
             continue
-        entry: dict[str, Any] = {
-            "instance_path": _hier_path(module, name),
-            "clock": clock_domains.get(name),
-            "reset": rd.reset.name,
-            "reset_kind": rd.reset.source,
-            "polarity": rd.reset.polarity,
-            "type": rd.reset.type,
-        }
+        path = _hier_path(module, name)
         loc = _source_location(module, name)
-        if loc is not None:
-            entry["location"] = loc
-        out.append(entry)
-    out.sort(key=lambda e: str(e["instance_path"]))
+        for g in groups:
+            entry: dict[str, Any] = {
+                "instance_path": path,
+                "clock": clock_domains.get(name),
+                "reset": g.reset.name,
+                "reset_kind": g.reset.source,
+                "polarity": g.reset.polarity,
+                "type": g.reset.type,
+            }
+            if g.lanes:
+                entry["lanes"] = list(g.lanes)
+            if loc is not None:
+                entry["location"] = loc
+            out.append(entry)
+    out.sort(key=lambda e: (str(e["instance_path"]), e.get("lanes", [])))
     return out
 
 
@@ -216,7 +227,8 @@ def _serialize_reset_crossings(
     intentionally not emitted here; they live in the analyzer's normal
     findings report. ``pin`` (additive, rtl-buddy-cdc#390) names the flop
     pin the reset arrives on; a set / clear flop can have a record per
-    pin.
+    pin. ``lanes`` (additive, rtl-buddy-cdc#398) is present on the record
+    of a reset that acts on some lanes of the flop only.
     """
     out: list[dict[str, Any]] = []
     for c in crossings:
@@ -230,11 +242,20 @@ def _serialize_reset_crossings(
             "type": c.reset.type,
             "pin": c.pin,
         }
+        if c.lanes:
+            entry["lanes"] = list(c.lanes)
         loc = _source_location(module, c.flop)
         if loc is not None:
             entry["location"] = loc
         out.append(entry)
-    out.sort(key=lambda e: (str(e["instance_path"]), str(e["kind"]), str(e["pin"])))
+    out.sort(
+        key=lambda e: (
+            str(e["instance_path"]),
+            str(e["kind"]),
+            str(e["pin"]),
+            e.get("lanes", []),
+        )
+    )
     return out
 
 
