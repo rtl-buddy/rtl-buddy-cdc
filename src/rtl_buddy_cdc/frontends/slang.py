@@ -4765,8 +4765,43 @@ class _ModuleBuilder:
             name = getattr(expr, "subroutineName", "")
             if name in {"$signed", "$unsigned"} and len(args) == 1:
                 return self._bits_of_expression(args[0])
+            if name in self._BIT_COUNT_CALLS and len(args) == 1:
+                return self._lower_bit_count(name, args[0], expr)
             return None
         return self._inline_function(expr)
+
+    # Bit-counting system functions lowered to logic (rtl-buddy-cdc#405:
+    # each was an opaque driver; Yosys lowers them to an adder chain).
+    _BIT_COUNT_CALLS = frozenset({"$countones", "$onehot", "$onehot0", "$isunknown"})
+
+    def _lower_bit_count(
+        self, name: str, arg: Any, expr: Any
+    ) -> tuple[Bit, ...] | None:
+        """``$countones(a)`` as a chain of ``$add`` of ``a``'s bits;
+        ``$onehot`` / ``$onehot0`` as that count ``== 1`` / ``<= 1``.
+        ``$isunknown`` is ``0``: a netlist value has no ``x`` / ``z``."""
+        width = self._expr_width(expr) or 1
+        if name == "$isunknown":
+            return self._resize_bits(("0",), width)
+        bits = self._bits_of_expression(arg)
+        if bits is None:
+            return None
+        cw = max(len(bits).bit_length(), 1)
+        count: tuple[Bit, ...] = self._resize_bits(bits[:1], cw)
+        for bit in bits[1:]:
+            count = self._emit_comb_cell(
+                "$add",
+                {"A": count, "B": self._resize_bits((bit,), cw)},
+                output_width=cw,
+                src_node=expr,
+            )
+        if name == "$countones":
+            return self._resize_bits(count, width)
+        one = self._resize_bits(("1",), cw)
+        cell = "$eq" if name == "$onehot" else "$le"
+        return self._emit_comb_cell(
+            cell, {"A": count, "B": one}, output_width=1, src_node=expr
+        )
 
     def _constant_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """LSB-first bits of ``expr``'s elaboration-time value, sized to its

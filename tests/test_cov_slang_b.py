@@ -239,7 +239,7 @@ def test_streaming_lhs_is_one_register(tmp_path: Path, caplog) -> None:
 
 
 def test_case_on_unlowerable_expr_compares_an_opaque_value(tmp_path: Path) -> None:
-    """``case ($countones(sel))`` — the case expression does not lower,
+    """``case ($clog2(sel))`` — the case expression does not lower,
     so it becomes a reported opaque value the arms' ``$eq`` enables
     compare against (rtl-buddy-cdc#377: every arm used to be walked as
     if unconditional). The ``q`` writes still surface as one flop."""
@@ -252,7 +252,7 @@ def test_case_on_unlowerable_expr_compares_an_opaque_value(tmp_path: Path) -> No
     );
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
-            else case ($countones(sel))
+            else case ($clog2(sel))
                 2'd0:    q <= d;
                 default: q <= 4'd0;
             endcase
@@ -292,7 +292,7 @@ def test_case_match_function_call_walks_item_without_enable(tmp_path: Path) -> N
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n) q <= 4'd0;
             else case (sel)
-                $countones(d): q <= d;
+                $clog2(d): q <= d;
                 default:  ;
             endcase
         end

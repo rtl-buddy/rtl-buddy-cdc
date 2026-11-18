@@ -452,19 +452,19 @@ def test_unary_plus_is_identity_no_cell(tmp_path: Path) -> None:
 
 
 def test_continuous_assign_unmodelled_rhs_is_opaque(tmp_path: Path, caplog) -> None:
-    """``assign y = $countones(a);`` where the RHS isn't modelled: ``y``
+    """``assign y = $clog2(a);`` where the RHS isn't modelled: ``y``
     is driven by a reported ``$_UNKNOWN_`` cell (rtl-buddy-cdc#377; it
     used to be left silently undriven)."""
     src = """
     module m (input logic [3:0] a, output logic [3:0] y);
-        assign y = $countones(a);
+        assign y = $clog2(a);
     endmodule
     """
     with caplog.at_level(logging.WARNING):
         mod = _elaborate(tmp_path, src)
     (unknown,) = [c for c in mod.cells.values() if c.type == "$_UNKNOWN_"]
     assert mod.ports["y"].bits == unknown.connections["Y"]
-    assert any("$countones(a)" in r.getMessage() for r in caplog.records)
+    assert any("$clog2(a)" in r.getMessage() for r in caplog.records)
 
 
 def test_arithmetic_shift_left_emits_sshl(tmp_path: Path) -> None:
@@ -585,7 +585,7 @@ def test_unmodelled_rhs_becomes_unknown_driver(tmp_path: Path) -> None:
     reach D."""
     src = """
     module m (input logic clk, input logic [3:0] d, output logic [3:0] q);
-        always_ff @(posedge clk) q <= $countones(d);
+        always_ff @(posedge clk) q <= $clog2(d);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -717,7 +717,7 @@ def test_comb_if_with_unlowerable_selector_is_reported(tmp_path: Path, caplog) -
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
         logic [3:0] y;
         always_comb begin
-            if ($countones(a)) y = a;
+            if ($clog2(a)) y = a;
             else      y = b;
         end
         always_ff @(posedge clk) q <= y;

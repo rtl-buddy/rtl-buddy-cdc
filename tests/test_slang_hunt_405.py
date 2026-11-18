@@ -115,6 +115,8 @@ def _cell_value(cell: Cell, num: Callable[[tuple[Bit, ...]], int]) -> int:
         "$logic_or": lambda: int(ua != 0 or ub != 0),
         "$eq": lambda: int(a == b),
         "$ne": lambda: int(a != b),
+        "$eqx": lambda: int(a == b),
+        "$nex": lambda: int(a != b),
         "$lt": lambda: int(a < b),
         "$le": lambda: int(a <= b),
         "$gt": lambda: int(a > b),
@@ -655,3 +657,40 @@ def test_return_break_continue_and_task_calls(
                 "u": b & 3,
                 "v": c if b & 1 else c ^ b,
             }, (a, b, c)
+
+
+# --- bit-count system functions (were opaque) --------------------------------------
+
+_BITCOUNT = """module m (input [4:0] a, output [2:0] o, output p, output q, output r);
+    assign o = $countones(a);
+    assign p = $onehot(a);
+    assign q = $onehot0(a);
+    assign r = $isunknown(a);
+endmodule
+"""
+
+
+def test_bit_count_functions(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """``$countones`` / ``$onehot`` / ``$onehot0`` are an adder chain over
+    the operand's bits and a compare of the count, as Yosys lowers them
+    (each was an opaque driver); ``$isunknown`` of a netlist value is 0.
+    Every output matches the SystemVerilog value, and Yosys' (``$isunknown``
+    aside: Yosys builds it from ``$eqx`` against ``x``)."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _check(
+            tmp_path,
+            _BITCOUNT.replace("    assign r = $isunknown(a);\n", ""),
+            ("a",),
+            ("o", "p", "q"),
+            lambda a: {
+                "o": bin(a).count("1"),
+                "p": int(bin(a).count("1") == 1),
+                "q": int(bin(a).count("1") <= 1),
+            },
+        )
+        # A new directory: pyslang caches a source file by its path.
+        (tmp_path / "full").mkdir()
+        full = _slang(tmp_path / "full", _BITCOUNT)
+    assert _warnings(caplog) == []
+    assert full.ports["r"].bits == ("0",)
+    assert module.ports["o"].bits != ("0", "0", "0")

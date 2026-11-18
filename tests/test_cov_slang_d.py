@@ -416,7 +416,7 @@ def test_binary_with_unmodelled_operand_is_unknown(tmp_path: Path) -> None:
     ``_lower_binary`` bails (``a_bits or b_bits is None``)."""
     src = """
     module m (input logic clk, input logic [3:0] a, b, output logic [3:0] q);
-        always_ff @(posedge clk) q <= a & $countones(b);
+        always_ff @(posedge clk) q <= a & $clog2(b);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -429,7 +429,7 @@ def test_unary_with_unmodelled_operand_is_unknown(tmp_path: Path) -> None:
     """``~f(a)`` — the operand doesn't lower, so ``_lower_unary`` bails."""
     src = """
     module m (input logic clk, input logic [3:0] a, output logic [3:0] q);
-        always_ff @(posedge clk) q <= ~$countones(a);
+        always_ff @(posedge clk) q <= ~$clog2(a);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -441,7 +441,7 @@ def test_concat_with_unmodelled_operand_is_unknown(tmp_path: Path) -> None:
     ``_lower_concatenation`` return ``None``."""
     src = """
     module m (input logic clk, input logic [1:0] a, b, output logic [3:0] q);
-        always_ff @(posedge clk) q <= {a, 2'($countones(b))};
+        always_ff @(posedge clk) q <= {a, 2'($clog2(b))};
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -453,7 +453,7 @@ def test_conditional_with_unmodelled_arm_is_unknown(tmp_path: Path) -> None:
     ``_lower_conditional`` bails."""
     src = """
     module m (input logic clk, sel, input logic [3:0] a, b, output logic [3:0] q);
-        always_ff @(posedge clk) q <= sel ? a : $countones(b);
+        always_ff @(posedge clk) q <= sel ? a : $clog2(b);
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -580,7 +580,7 @@ def test_alwaysff_unlowerable_if_no_else_walks_only_true_arm(tmp_path: Path) -> 
     the ``None`` else arm — the loop-continue branch."""
     src = """
     module m (input logic clk, input logic [3:0] sel, input logic d, output logic q);
-        always_ff @(posedge clk) if ($countones(sel)) q <= d;
+        always_ff @(posedge clk) if ($clog2(sel)) q <= d;
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -613,13 +613,13 @@ def test_alwaysff_const_case_no_match_no_default_emits_no_flop(tmp_path: Path) -
 
 
 def test_alwaysff_dynamic_case_unlowerable_expr_no_default(tmp_path: Path) -> None:
-    """``case ($countones(sel)) 2'd0: q <= a; endcase`` (no default): the case
+    """``case ($clog2(sel)) 2'd0: q <= a; endcase`` (no default): the case
     expr doesn't lower, so the item's ``$eq`` compares a reported opaque
     value (rtl-buddy-cdc#377) and the (absent) default is skipped."""
     src = """
     module m (input logic clk, input logic [3:0] sel, input logic a, output logic q);
         always_ff @(posedge clk)
-            case ($countones(sel))
+            case ($clog2(sel))
                 2'd0: q <= a;
             endcase
     endmodule
@@ -652,13 +652,13 @@ def test_alwaysff_dynamic_case_lowerable_no_default_builds_eq(tmp_path: Path) ->
 
 
 def test_comb_case_unlowerable_selector_is_reported(tmp_path: Path, caplog) -> None:
-    """``always_comb case ($countones(sel)) ...`` with an unlowerable selector:
+    """``always_comb case ($clog2(sel)) ...`` with an unlowerable selector:
     ``_walk_case_statement`` compares a reported opaque value
     (rtl-buddy-cdc#377; it used to walk every arm as unconditional)."""
     src = """
     module m (input logic [3:0] sel, input logic a, b, output logic y);
         always_comb begin
-            case ($countones(sel))
+            case ($clog2(sel))
                 2'd0:    y = a;
                 default: y = b;
             endcase
@@ -800,7 +800,7 @@ def test_latch_unmodelled_rhs_emits_dlatch_with_unknown_d(tmp_path: Path) -> Non
     src = """
     module m (input logic en, input logic [3:0] d, output logic [3:0] q);
         always_latch begin
-            if (en) q = $countones(d);
+            if (en) q = $clog2(d);
         end
     endmodule
     """
@@ -855,7 +855,7 @@ def test_indexed_assign_unlowerable_selector_ignored(tmp_path: Path) -> None:
     module m (input logic [1:0] i, output logic [3:0] base);
         always_comb begin
             base = '0;
-            base[$countones(i)] = 1'b1;
+            base[$clog2(i)] = 1'b1;
         end
     endmodule
     """
@@ -864,14 +864,14 @@ def test_indexed_assign_unlowerable_selector_ignored(tmp_path: Path) -> None:
 
 
 def test_indexed_assign_unlowerable_rhs_is_opaque(tmp_path: Path) -> None:
-    """``base[i] = $countones(v)`` — the RHS doesn't lower, so the one-hot
+    """``base[i] = $clog2(v)`` — the RHS doesn't lower, so the one-hot
     shift takes a reported opaque operand (rtl-buddy-cdc#377; ``base``
     used to be left as it was)."""
     src = """
     module m (input logic [1:0] i, input logic [3:0] v, output logic [3:0] base);
         always_comb begin
             base = '0;
-            base[i] = $countones(v);
+            base[i] = $clog2(v);
         end
     endmodule
     """
@@ -1040,7 +1040,7 @@ def test_replication_unlowerable_pattern_is_unknown(tmp_path: Path) -> None:
     opaque driver."""
     src = """
     module m (input logic clk, input logic [1:0] x, output logic [3:0] q);
-        always_ff @(posedge clk) q <= {2{2'($countones(x))}};
+        always_ff @(posedge clk) q <= {2{2'($clog2(x))}};
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -1055,7 +1055,7 @@ def test_net_initializer_unlowerable_rhs_emits_no_cell(tmp_path: Path) -> None:
     so no cell is emitted for the initializer."""
     src = """
     module m (input logic [3:0] x, output logic [3:0] y);
-        logic [3:0] w = $countones(x);
+        logic [3:0] w = $clog2(x);
         assign y = w;
     endmodule
     """
