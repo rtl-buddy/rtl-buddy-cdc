@@ -106,6 +106,31 @@ class DriverFacts:
 
 
 @dataclass(frozen=True)
+class ResetPinFact:
+    """A flop inside an abstracted block whose reset an input pin drives.
+
+    Published per input pin by the greybox pass (rtl-buddy-cdc#405) so
+    the parent's reset rules can judge what drives the pin, as a flat
+    run judges what drives the flop's reset. ``pin`` is the reset pin
+    (``ARST`` / ``CLR`` / ``SET`` / ``ALOAD`` / ``SRST``), ``clock`` the
+    flop's domain, ``exempt`` whether it is a reset-synchroniser stage
+    RDC-001 exempts, ``reset_sync`` whether it is any recognised
+    reset-synchroniser stage (RDC-004 skips those), and ``comb`` whether a
+    combinational gate sits between the block's pin and the flop's reset
+    (RDC-004's shape) and ``mux`` whether that gate is a mux selecting
+    between live signals (RDC-005's exemption).
+    """
+
+    pin: str
+    flop: str
+    clock: str
+    exempt: bool = False
+    comb: bool = False
+    reset_sync: bool = False
+    mux: bool = False
+
+
+@dataclass(frozen=True)
 class PortBoundary:
     """CDC summary of one port of a blackboxed subtree.
 
@@ -155,6 +180,8 @@ class PortBoundary:
     # rtl-buddy-cdc#405: for a proven input, the stage a comb cell after a
     # depth-1 first stage feeds (CDC-014's shape).
     inter_stage: str | None = None
+    # rtl-buddy-cdc#405: the registers launching a comb-driven output.
+    launchers: tuple[str, ...] = ()
     # rtl-buddy-cdc#405: the register driving an output pin directly.
     driver: DriverFacts | None = None
 
@@ -210,9 +237,7 @@ class BoundarySummary:
     # parent's reset rules can judge what drives the pin. A pin that
     # reaches flops only through asynchronous controls is no data capture
     # and gets no entry in ``input_ports``.
-    reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]] = field(
-        default_factory=dict
-    )
+    reset_pins: dict[str, tuple[ResetPinFact, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

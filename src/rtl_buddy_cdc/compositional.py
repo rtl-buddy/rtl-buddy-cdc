@@ -64,7 +64,7 @@ from rtl_buddy_cdc.flops import (
     is_ff_cell,
     is_latch_cell,
 )
-from rtl_buddy_cdc.netlist import Bit, DriverFacts, Module
+from rtl_buddy_cdc.netlist import Bit, DriverFacts, Module, ResetPinFact
 from rtl_buddy_cdc.pulse import classify_toggle_d_pin
 from rtl_buddy_cdc.rules import (
     Violation,
@@ -75,6 +75,7 @@ from rtl_buddy_cdc.rules import (
     _chain_has_inter_stage_comb,
     _deasserting_reset_sync_members,
     _folded_srst_selects,
+    _live_mux_driver,
     _forward_reachable_cells,
     _is_gray_encoded_source,
     _own_srst_data_leg,
@@ -102,6 +103,12 @@ from rtl_buddy_cdc.sdc import Clock, ClockSpec
 #   port*. A reset arriving on a module pin is by construction exactly
 #   that; the flattened design sees the same structure as a flop-sourced
 #   reset and reports it under RDC-001 instead.
+# - **RDC-005** flags an async reset that is a gate over two or more
+#   *top-level reset ports*. Two reset pins of a module are hierarchy pins;
+#   whether they are two top-level ports, one, or registers is the
+#   parent's to know. The parent re-raises it (and RDC-004, the
+#   registered shape) from the reset facts the pass publishes
+#   (rtl-buddy-cdc#405).
 # - **CDC-025** flags a top-level *output* with no ``set_output_delay``
 #   contract. No subtree pin is ever typed, so its single-domain shape is
 #   already gated off here; its asynchronous-merge shape would still fire
@@ -125,7 +132,7 @@ from rtl_buddy_cdc.sdc import Clock, ClockSpec
 # CDC-010 / CDC-021 / CDC-023) see a coherent SDC rather than an
 # undeclared-everything one.
 INTERNAL_RULE_EXCLUSIONS: frozenset[str] = frozenset(
-    {"CDC-006", "CDC-011", "CDC-025", "RDC-008"}
+    {"CDC-006", "CDC-011", "CDC-025", "RDC-005", "RDC-008"}
 )
 
 
@@ -176,14 +183,16 @@ class PortFacts:
     # comb cells between the pin and the chain's first stage.
     comb_hops: int | None = None
     latch: tuple[str, str] | None = None
+    # Outputs with comb cells inside (``comb_hops`` > 0): the registers
+    # launching them, which a flat run names one CDC-003 each.
+    launchers: tuple[str, ...] = ()
     # Inputs only (rtl-buddy-cdc#405): the flops whose reset this pin
-    # drives, each ``(pin label, flop, clock, exempt)`` — ``ARST`` / ``CLR``
-    # / ``SET`` / ``ALOAD`` / ``SRST``, the flop's domain, and whether it is
-    # a reset-synchroniser stage RDC-001 exempts — so the parent's RDC-001
-    # / RDC-003 / CDC-015 can judge what drives the pin. ``async_only``:
+    # drives (:class:`~rtl_buddy_cdc.netlist.ResetPinFact`), so the
+    # parent's RDC-001 / RDC-003 / RDC-004 / CDC-015 can judge what drives
+    # the pin. ``async_only``:
     # the pin reaches flops only through asynchronous controls, so it is
     # no data capture (a flat crossing walk finds none there).
-    resets: tuple[tuple[str, str, str, bool], ...] = ()
+    resets: tuple[ResetPinFact, ...] = ()
     async_only: bool = False
     # Inputs only: the stage a comb cell after a depth-1 first stage
     # feeds — CDC-014's shape, which CDC-001 defers to (rtl-buddy-cdc#405).
@@ -431,28 +440,43 @@ def _attach_resets(
     RDC-003 read) — through comb cells to the module's input ports.
     """
     exempt = _deasserting_reset_sync_members(ctx)
-    found: dict[str, list[tuple[str, str, str, bool]]] = {}
+    found: dict[str, list[ResetPinFact]] = {}
     async_pins: dict[str, set[Bit]] = {}
     for f in ctx.flops:
         clock = domains.get(f.cell.name)
         if clock is None:
             continue
-        reached: list[tuple[str, tuple[Bit, ...]]] = [
-            (_ASYNC_PIN_LABEL[pin.role], pin.bits)
-            for pin in flop_async_controls(f.cell)
+        rd = ctx.reset_domains.get(f.cell.name)
+        reached: list[tuple[str, tuple[Bit, ...], bool, bool]] = [
+            (
+                _ASYNC_PIN_LABEL[ctl.pin.role],
+                ctl.bits,
+                ctl.source.source == "comb",
+                _live_mux_driver(sub, ctl.bits[0], ctx.bit_drivers) is not None,
+            )
+            for ctl in (rd.controls if rd is not None else ())
+            if ctl.bits
         ]
-        async_bits = {b for _l, bits in reached for b in bits}
+        async_bits = {b for pin in flop_async_controls(f.cell) for b in pin.bits}
         srst = flop_reset_bits(f.cell, "srst") + _folded_srst_selects(
             f, sub, ctx.bit_drivers, ctx.reader_counts
         )
         if srst:
-            reached.append(("SRST", srst))
-        for label, bits in reached:
+            reached.append(("SRST", srst, False, False))
+        for label, bits, comb, mux in reached:
             _flops, in_ports = _backward_fanin(sub, bits, ctx.bit_drivers)
             for name in in_ports:
                 if name not in ports:
                     continue
-                entry = (label, f.cell.name, clock, f.cell.name in exempt)
+                entry = ResetPinFact(
+                    label,
+                    f.cell.name,
+                    clock,
+                    exempt=f.cell.name in exempt,
+                    comb=comb,
+                    reset_sync=f.cell.name in ctx.reset_synchronizers,
+                    mux=mux,
+                )
                 if entry not in found.setdefault(name, []):
                     found[name].append(entry)
         for b in async_bits:
@@ -463,7 +487,11 @@ def _attach_resets(
         only = facts.direction == "input" and not _reaches_capture(
             sub, sub.ports[name].bits, ctx, async_pins
         )
-        ports[name] = replace(facts, resets=tuple(sorted(entries)), async_only=only)
+        ports[name] = replace(
+            facts,
+            resets=tuple(sorted(entries, key=lambda e: (e.flop, e.pin))),
+            async_only=only,
+        )
 
 
 def _reaches_capture(
@@ -740,6 +768,9 @@ def _output_facts(
         user_synchronised=user,
         comb_hops=hops,
         latch=latch,
+        launchers=(
+            tuple(sorted(n for n in launchers if n in flop_by_name)) if hops else ()
+        ),
     )
 
 

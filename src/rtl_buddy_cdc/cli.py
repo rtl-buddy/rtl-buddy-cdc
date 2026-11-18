@@ -1196,15 +1196,15 @@ def _analyze_module_and_report(
         boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] = {}
         boundary_sink_comb_hops: dict[str, int] = {}
         boundary_inter_stage: dict[str, str] = {}
-        boundary_reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]] = {}
+        boundary_reset_pins: dict[str, tuple[netlist.ResetPinFact, ...]] = {}
         boundary_sources: dict[netlist.Bit, BoundarySource] = {}
         for inst_name, summary in boundaries.items():
             if summary.reconvergent_inputs:
                 boundary_reconvergence[inst_name] = summary.reconvergent_inputs
             for port_name, entries in summary.reset_pins.items():
                 boundary_reset_pins[f"{inst_name}.{port_name}"] = tuple(
-                    (label, f"{inst_name}.{flop}", clock, exempt)
-                    for label, flop, clock, exempt in entries
+                    dataclasses.replace(e, flop=f"{inst_name}.{e.flop}")
+                    for e in entries
                 )
             # The output pins, as the sources the parent's backward walks
             # stop at (rtl-buddy-cdc#405).
@@ -1217,6 +1217,7 @@ def _analyze_module_and_report(
                     comb_hops=pb.comb_hops,
                     latch=pb.latch,
                     driver=pb.driver,
+                    launchers=tuple(f"{inst_name}.{n}" for n in pb.launchers),
                 )
                 for b in conn:
                     if isinstance(b, int):

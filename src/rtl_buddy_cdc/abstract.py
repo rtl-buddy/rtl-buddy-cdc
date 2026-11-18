@@ -43,7 +43,14 @@ from rtl_buddy_cdc.domain import (
     trace_clock_root,
 )
 from rtl_buddy_cdc.flops import find_flops, flop_clk_pin, is_ff_cell
-from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, PortBoundary
+from rtl_buddy_cdc.netlist import (
+    Bit,
+    BoundarySummary,
+    Cell,
+    Module,
+    PortBoundary,
+    ResetPinFact,
+)
 from rtl_buddy_cdc.primitives import clock_pin_role, port_domain
 from rtl_buddy_cdc.sdc import ClockSpec
 
@@ -537,6 +544,7 @@ def _summarise_single_clock(
                 comb_hops=facts.comb_hops if facts is not None else None,
                 latch=facts.latch if facts is not None else None,
                 driver=facts.driver if facts is not None else None,
+                launchers=facts.launchers if facts is not None else (),
             )
         if facts is not None and facts.async_only:
             # A reset pin and nothing else: no data capture to seed
@@ -577,7 +585,7 @@ def _summarise_single_clock(
 
 def _reset_pins(
     analysis: "ModuleAnalysis | None",
-) -> dict[str, tuple[tuple[str, str, str, bool], ...]]:
+) -> dict[str, tuple[ResetPinFact, ...]]:
     """:attr:`BoundarySummary.reset_pins` from a greybox analysis."""
     if analysis is None:
         return {}
@@ -628,6 +636,7 @@ def _summarise_multi_clock(
                 comb_hops=facts.comb_hops,
                 latch=facts.latch,
                 driver=facts.driver,
+                launchers=facts.launchers,
             )
         if port.direction in ("input", "inout"):
             if facts.async_only:

@@ -40,7 +40,14 @@ from rtl_buddy_cdc.flops import (
 )
 from rtl_buddy_cdc.gate_eval import cone_tables
 from rtl_buddy_cdc.memory import MemPort, find_memories
-from rtl_buddy_cdc.netlist import Bit, Cell, DriverFacts, Module, Port
+from rtl_buddy_cdc.netlist import (
+    Bit,
+    Cell,
+    DriverFacts,
+    Module,
+    Port,
+    ResetPinFact,
+)
 from rtl_buddy_cdc.primitives import (
     is_sync_primitive,
     is_xpm_primitive,
@@ -112,6 +119,7 @@ class BoundarySource:
     comb_hops: int | None = None
     latch: tuple[str, str] | None = None
     driver: DriverFacts | None = None
+    launchers: tuple[str, ...] = ()  # instance-qualified
 
 
 @dataclass(frozen=True)
@@ -260,7 +268,7 @@ class _RuleContext:
     # inside whose reset it drives: ``(pin label, instance-qualified flop,
     # clock, reset-synchroniser stage)`` (rtl-buddy-cdc#405). RDC-001 /
     # RDC-003 / CDC-015 read them as the flat run reads those flops.
-    boundary_reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]] = field(
+    boundary_reset_pins: dict[str, tuple[ResetPinFact, ...]] = field(
         default_factory=dict
     )
     # Each parent bit an abstracted block's output drives, as the source
@@ -412,8 +420,7 @@ def _build_context(
     boundary_sources: dict[Bit, BoundarySource] | None = None,
     boundary_sink_comb_hops: dict[str, int] | None = None,
     boundary_inter_stage: dict[str, str] | None = None,
-    boundary_reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]]
-    | None = None,
+    boundary_reset_pins: dict[str, tuple[ResetPinFact, ...]] | None = None,
     max_depth: int = 16,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
@@ -1282,31 +1289,35 @@ def _boundary_source_of(c: Crossing, ctx: _RuleContext) -> BoundarySource | None
     return ctx.boundary_source_by_label.get(".".join(c.src_boundary))
 
 
+# What :func:`_backward_sources` returns: name -> (clock, is_boundary).
+_Sources = dict[str, tuple[str | None, bool]]
+
+
 def _boundary_reset_arrivals(
     module: Module, ctx: _RuleContext, labels: frozenset[str]
-) -> list[tuple[str, str, str, bool, dict[str, tuple[str | None, bool]]]]:
+) -> list[tuple[ResetPinFact, Bit, _Sources]]:
     """Resets arriving at flops inside abstracted blocks (rtl-buddy-cdc#405).
 
-    One ``(pin label, flop, flop clock, exempt, sources)`` per entry of
+    One ``(fact, pin bit, sources)`` per entry of
     ``ctx.boundary_reset_pins`` whose pin label is in ``labels``, with
     ``sources`` what :func:`_backward_sources` finds behind the block's
     input pin in the parent — the walk a flat run takes from the flop's
     reset pin, joined at the boundary.
     """
-    out: list[tuple[str, str, str, bool, dict[str, tuple[str | None, bool]]]] = []
+    out: list[tuple[ResetPinFact, Bit, _Sources]] = []
     for pin_label_full, entries in sorted(ctx.boundary_reset_pins.items()):
         inst, _, port = pin_label_full.rpartition(".")
         cell = module.cells.get(inst)
         bits = cell.connections.get(port, ()) if cell is not None else ()
         if not bits:
             continue
-        sources: dict[str, tuple[str | None, bool]] | None = None
-        for label, flop, clock, exempt in entries:
-            if label not in labels:
+        sources: _Sources | None = None
+        for fact in entries:
+            if fact.pin not in labels:
                 continue
             if sources is None:
                 sources = _backward_sources(module, tuple(bits), ctx)
-            out.append((label, flop, clock, exempt, sources))
+            out.append((fact, bits[0], sources))
     return out
 
 
@@ -2351,10 +2362,13 @@ def check_cdc_003(
         # block's output pin are on the path a flat walk counts
         # (rtl-buddy-cdc#405).
         inside = ctx.boundary_sink_comb_hops.get(c.dst_flop.cell.name, 0)
+        src_names = [c.src_name]
         if c.src_boundary is not None:
             src = ctx.boundary_source_by_label.get(".".join(c.src_boundary))
             if src is not None and src.width == 1 and src.comb_hops:
                 inside += src.comb_hops
+                # One finding per register behind the gate, as flat.
+                src_names = list(src.launchers) or src_names
         hops = c.min_hops + inside
         if hops < 1:
             continue
@@ -2376,7 +2390,7 @@ def check_cdc_003(
         if depth < 2:
             # CDC-001 covers this crossing already; don't double-fire.
             continue
-        violations.append(
+        violations.extend(
             Violation(
                 rule_id="CDC-003",
                 severity="error",
@@ -2384,12 +2398,13 @@ def check_cdc_003(
                     f"combinational logic between source flop and "
                     f"synchronizer on {c.src_clock} → {c.dst_clock} "
                     f"crossing: {hops} cell(s) on path "
-                    f"(src: {c.src_name}, "
+                    f"(src: {src_name}, "
                     f"sync first stage: {c.dst_flop.name})"
                 ),
                 crossing=c,
                 cell_name=c.dst_flop.cell.name,
             )
+            for src_name in src_names
         )
     return violations
 
@@ -4223,11 +4238,10 @@ def check_rdc_001(
                 edge_pins[(src_name, src_clk, my_clk)].add(_ASYNC_PIN_LABEL[pin.role])
     # Flops inside an abstracted block whose async reset arrives on one of
     # its input pins (rtl-buddy-cdc#405).
-    for label, flop, my_clk, flop_exempt, sources in _boundary_reset_arrivals(
-        module, ctx, _ASYNC_LABELS
-    ):
-        if flop_exempt:
+    for fact, _bit, sources in _boundary_reset_arrivals(module, ctx, _ASYNC_LABELS):
+        if fact.exempt:
             continue
+        label, flop, my_clk = fact.pin, fact.flop, fact.clock
         for src_name, (src_clk, is_boundary) in sources.items():
             if src_clk is None or src_clk == my_clk or not _async(my_clk, src_clk):
                 continue
@@ -4413,9 +4427,10 @@ def check_rdc_003(
                 via_mux[key] |= is_mux
     # Flops inside an abstracted block whose sync reset arrives on one of
     # its input pins (rtl-buddy-cdc#405).
-    for _label, flop, my_clk, _ex, sources in _boundary_reset_arrivals(
+    for fact, _bit, sources in _boundary_reset_arrivals(
         module, ctx, frozenset({"SRST"})
     ):
+        flop, my_clk = fact.flop, fact.clock
         for src_name, (src_clk, is_boundary) in sources.items():
             if src_clk is None or src_clk == my_clk or not _async(my_clk, src_clk):
                 continue
@@ -4576,7 +4591,59 @@ def check_rdc_004(
                 cell_name=f.cell.name,
             )
         )
+    # Flops inside an abstracted block whose async reset arrives on one of
+    # its pins through a gate — inside the block, or in front of the pin
+    # (rtl-buddy-cdc#405) — with registers behind it in the parent.
+    by_flop: dict[str, tuple[set[str], set[str]]] = {}
+    for fact, bit, sources in _boundary_reset_arrivals(module, ctx, _ASYNC_LABELS):
+        if fact.reset_sync or not sources:
+            continue
+        if not (fact.comb or _comb_in_front(bit, module, ctx)):
+            continue
+        seen_pins, srcs = by_flop.setdefault(fact.flop, (set(), set()))
+        seen_pins.add(fact.pin)
+        srcs.update(sources)
+    for flop, (pins_seen, srcs) in sorted(by_flop.items()):
+        listed = sorted(srcs)[:3]
+        flop_desc = ", ".join(listed) + ("..." if len(srcs) > 3 else "")
+        pin_desc = "/".join(sorted(pins_seen))
+        violations.append(
+            Violation(
+                rule_id="RDC-004",
+                severity="error",
+                message=(
+                    f"reset driven by combinational logic: flop "
+                    f"{flop}'s {pin_desc} pin is the output of "
+                    f"combinational gate(s) fed by flop(s) "
+                    f"{flop_desc}. Comb-gate outputs can glitch when "
+                    f"inputs transition asynchronously, causing "
+                    f"spurious reset assertions. Register the comb "
+                    f"output on the consumer's clock before using as "
+                    f"a reset."
+                ),
+                cell_name=flop.rpartition(".")[0] or flop,
+            )
+        )
     return violations
+
+
+def _comb_in_front(bit: Bit, module: Module, ctx: _RuleContext) -> bool:
+    """True iff a combinational gate drives ``bit``, looking through
+    single-input buffers / inverters (which only rename a reset)."""
+    seen: set[Bit] = set()
+    while isinstance(bit, int) and bit not in seen:
+        seen.add(bit)
+        drv = ctx.bit_drivers.get(bit)
+        if drv is None or drv[1] == "Q":
+            return False
+        cell = module.cells[drv[0]]
+        if cell.type not in _CDC_006_WIRE_TYPES:
+            return True
+        a = cell.connections.get("A", ())
+        if len(a) != 1:
+            return True
+        bit = a[0]
+    return False
 
 
 def check_rdc_005(
@@ -4669,6 +4736,48 @@ def check_rdc_005(
                     "clock so the reset edge is at least glitch-free."
                 ),
                 cell_name=f.cell.name,
+            )
+        )
+    # A flop inside an abstracted block whose async reset is a gate over
+    # its pins (or a gate in front of one): the compositional pass leaves
+    # this rule to the parent, which sees the ports behind the pins
+    # (rtl-buddy-cdc#405).
+    gated: dict[str, set[str]] = {}
+    for fact, bit, sources in _boundary_reset_arrivals(module, ctx, _ASYNC_LABELS):
+        if fact.reset_sync or sources:
+            continue  # registers behind it: RDC-004's
+        in_front = not fact.comb and _comb_in_front(bit, module, ctx)
+        if not (fact.comb or in_front):
+            continue
+        if fact.mux or (
+            in_front and _live_mux_driver(module, bit, ctx.bit_drivers) is not None
+        ):
+            continue
+        gated.setdefault(fact.flop, set()).update(
+            _backward_port_fanin(module, (bit,), ctx.bit_drivers)
+        )
+    for flop, fanin_ports in sorted(gated.items()):
+        if len(fanin_ports) < 2:
+            continue
+        port_list = sorted(fanin_ports)
+        violations.append(
+            Violation(
+                rule_id="RDC-005",
+                severity="warning",
+                message=(
+                    f"multiple reset sources converging without muxing: "
+                    f"flop {flop}'s reset pin is the comb-AND/OR "
+                    f"of {len(fanin_ports)} top-level reset ports "
+                    f"({', '.join(port_list[:3])}"
+                    + ("..." if len(port_list) > 3 else "")
+                    + "). "
+                    "Both sources are active simultaneously and the "
+                    "user has no control over which dominates. Add a "
+                    "$mux selecting between them on a control signal, "
+                    "or register the combined signal on the local "
+                    "clock so the reset edge is at least glitch-free."
+                ),
+                cell_name=flop.rpartition(".")[0] or flop,
             )
         )
     return violations
@@ -6338,9 +6447,7 @@ def check_cdc_015(
         # clock named after another clock's port to the wrong clock.
         return clock_spec.are_async(a, b)
 
-    inside: (
-        list[tuple[str, str, str, bool, dict[str, tuple[str | None, bool]]]] | None
-    ) = None
+    inside: list[tuple[ResetPinFact, Bit, _Sources]] | None = None
     for c in crossings:
         if c.width != 1:
             continue
@@ -6363,9 +6470,10 @@ def check_cdc_015(
         if inside is None:
             inside = _boundary_reset_arrivals(module, ctx, _ASYNC_LABELS)
         names = set(stages)
-        for label, flop, _clk, _ex, sources in inside:
-            if flop not in names:
+        for fact, _bit, sources in inside:
+            if fact.flop not in names:
                 continue
+            label = fact.pin
             for src_name, (src_clk, _bnd) in sources.items():
                 if src_clk is None or src_clk == c.dst_clock:
                     continue
@@ -8598,8 +8706,7 @@ def run_all(
     boundary_sources: dict[Bit, BoundarySource] | None = None,
     boundary_sink_comb_hops: dict[str, int] | None = None,
     boundary_inter_stage: dict[str, str] | None = None,
-    boundary_reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]]
-    | None = None,
+    boundary_reset_pins: dict[str, tuple[ResetPinFact, ...]] | None = None,
     max_depth: int = 16,
     sync_primitives: frozenset[str] = frozenset(),
     ignore_scan_mode: bool = False,
