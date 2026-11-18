@@ -518,8 +518,9 @@ endmodule
     "func",
     [
         # (An early ``return`` is inlined since rtl-buddy-cdc#405.)
-        # An output argument.
-        "function automatic [3:0] f(input [3:0] x, output [3:0] o);"
+        # A ``ref`` argument (an ``output`` one is written back since
+        # rtl-buddy-cdc#408).
+        "function automatic [3:0] f(input [3:0] x, ref logic [3:0] o);"
         " o = x; f = x; endfunction",
         # A write to a module variable.
         "function automatic [3:0] f(input [3:0] x); side = x; f = x; endfunction",
@@ -528,12 +529,12 @@ endmodule
         "function automatic [3:0] f(input [3:0] x);"
         " begin : blk f = x; if (x[0]) disable blk; f = 0; end endfunction",
     ],
-    ids=["output_arg", "side_effect", "disable"],
+    ids=["ref_arg", "side_effect", "disable"],
 )
 def test_function_not_inlined_stays_opaque(tmp_path: Path, func: str) -> None:
     """A function body outside the inlined shapes is not half-lowered:
     the call stays an opaque ``$_UNKNOWN_`` driver."""
-    call = "f(a, o)" if "output" in func else "f(a)"
+    call = "f(a, o)" if "ref" in func else "f(a)"
     src = f"""module m (input clk, input [3:0] a, output reg [3:0] q);
     reg [3:0] side, o;
     {func}

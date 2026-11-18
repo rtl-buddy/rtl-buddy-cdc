@@ -5541,8 +5541,19 @@ class _ModuleBuilder:
         sub = getattr(expr, "subroutine", None)
         if str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] != "Function":
             return None
-        inlined = self._inline_subroutine(expr, outputs=False)
-        return None if inlined is None else inlined[0]
+        # ``output`` / ``inout`` arguments are written back by the walk in
+        # progress, as a call statement's are (rtl-buddy-cdc#408: such a
+        # call in an expression was an opaque driver).
+        writer = self._expr_writer
+        inlined = self._inline_subroutine(expr, outputs=writer is not None)
+        if inlined is None or inlined[0] is None:
+            return None
+        result, outs = inlined
+        if outs:
+            assert writer is not None
+            for target, bits in outs:
+                writer(_Assign(target, _Bits(bits, expr), expr))
+        return result
 
     def _inline_call_statement(self, expr: Any) -> bool:
         """A task or function called as a statement in a combinational body
