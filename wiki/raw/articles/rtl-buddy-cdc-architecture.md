@@ -3392,7 +3392,16 @@ two implementations agreeing, and the mux exclusion, the same-clock
 (#166) exclusion, and the sentinel exclusion are all inherited for
 free.
 
-The cost is one extra clock-root pass over the flop list. It is skipped
+A leg that reaches a declared clock only through a flop's `Q` (the
+divider clause) is not a second clock when another leg is a declared
+clock: the walk re-reads the legs without the divider clause before
+declining, and such a gate resolves to its clock with the flop's leg as
+an enable — CDC-010's finding, not CDC-023's (rtl-buddy-cdc#408).
+
+The cost is one extra clock-root pass over the flop list, shared with
+CDC-010, which reads the same walk's control events
+(`domain.clock_network_events`, cached on the rule context;
+rtl-buddy-cdc#408). It is skipped
 outright when fewer than two clock identities are declared (no SDC, or
 a single-clock design), which is the case where an extra walk would buy
 nothing.

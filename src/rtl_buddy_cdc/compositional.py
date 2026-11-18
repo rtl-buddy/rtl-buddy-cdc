@@ -210,8 +210,10 @@ class PortFacts:
     # Outputs only: what the register driving the pin directly looks like
     # (rtl-buddy-cdc#405) — see :class:`~rtl_buddy_cdc.netlist.DriverFacts`.
     driver: DriverFacts | None = None
-    # Inputs only: what the body does with the pin besides a flop capture
-    # (rtl-buddy-cdc#408) — see :class:`~rtl_buddy_cdc.netlist.PinFacts`.
+    # What the body does with the pin besides a flop capture or launch
+    # (rtl-buddy-cdc#408) — see :class:`~rtl_buddy_cdc.netlist.PinFacts`:
+    # clock controls, latch feeds, gating and no-capture for an input, the
+    # clock pins it carries for an output.
     pin: PinFacts | None = None
     # Outputs only: the input pins with a combinational path to the pin
     # (rtl-buddy-cdc#408), so the parent's output-cone walk carries on
@@ -559,6 +561,7 @@ def _attach_pin_facts(
 ) -> None:
     """Fill :attr:`PortFacts.pin` on the data input ports
     (rtl-buddy-cdc#408): see :class:`~rtl_buddy_cdc.netlist.PinFacts`.
+    (An output's ``clock_out`` is set by :func:`_output_facts`.)
 
     The clock controls are CDC-010's own reading of the body — the
     clock-network cells and their control pins
