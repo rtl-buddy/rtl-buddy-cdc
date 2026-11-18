@@ -385,13 +385,14 @@ def test_const_int_unary_arithmetic_folds(op, operand, expected) -> None:
 
 
 def test_operator_not_in_binop_table_is_unknown(tmp_path: Path) -> None:
-    """``==?`` (wildcard equality) is outside ``_BINOP_CELL`` —
+    """``->`` (logical implication) is outside ``_BINOP_CELL`` —
     ``_lower_binary`` returns ``None`` and the write degrades to a
     ``$_UNKNOWN_`` driver rather than a wrong cell. (``**`` was the example
-    here until rtl-buddy-cdc#377 lowered it to ``$pow``.)"""
+    here until rtl-buddy-cdc#377 lowered it to ``$pow``, then ``==?`` until
+    rtl-buddy-cdc#405 lowered it.)"""
     src = """
     module m (input logic clk, input logic [3:0] a, b, output logic q);
-        always_ff @(posedge clk) q <= a ==? b;
+        always_ff @(posedge clk) q <= a -> b;
     endmodule
     """
     mod = _elaborate(tmp_path, src)
@@ -774,15 +775,16 @@ def test_latch_struct_member_lvalue(tmp_path: Path) -> None:
 
 
 def test_latch_unresolvable_lvalue_drops_latch(tmp_path: Path, caplog) -> None:
-    """``always_latch if (en) {>>{y}} = d;`` — a streaming target has no
-    lowering: the latch is dropped, with a WARNING."""
+    """``always_latch if (en) {>>{y with [0 +: 2]}} = d;`` — a streaming
+    target with a ``with`` range has no lowering: the latch is dropped,
+    with a WARNING."""
     src = """
-    module m (input logic en, input logic [1:0] d, output logic [1:0] q);
-        logic [1:0] y;
+    module m (input logic en, input logic [1:0] d, output logic q);
+        logic y [4];
         always_latch begin
-            if (en) {>>{y}} = d;
+            if (en) {>>{y with [0 +: 2]}} = d;
         end
-        assign q = y;
+        assign q = y[0];
     endmodule
     """
     with caplog.at_level("WARNING", logger="rtl_buddy_cdc.frontends.slang"):

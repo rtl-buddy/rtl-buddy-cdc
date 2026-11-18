@@ -468,9 +468,15 @@ endmodule
 @pytest.mark.parametrize(
     ("decl", "stmt", "reason"),
     [
-        ("reg [7:0] y;", "always @(posedge clk_b) {>>{y}} <= x;", "streaming"),
-        ("reg [7:0] y;", "always_comb {>>{y}} = x;", "streaming"),
-        ("wire [7:0] y;", "assign {>>{y}} = x;", "streaming"),
+        # A ``with`` range (a plain streaming target is lowered,
+        # rtl-buddy-cdc#405).
+        (
+            "reg [1:0] y [8];",
+            "always @(posedge clk_b) {>>{y with [0 +: 4]}} <= x;",
+            "streaming",
+        ),
+        ("reg [1:0] y [8];", "always_comb {>>{y with [0 +: 4]}} = x;", "streaming"),
+        ("wire [1:0] y [8];", "assign {>>{y with [0 +: 4]}} = x;", "streaming"),
         # A row of a two-dimensional array at a run-time index (a run-time
         # element or bit is lowered, rtl-buddy-cdc#402).
         (

@@ -418,7 +418,7 @@ def test_unlowerable_condition_warns(tmp_path: Path, caplog) -> None:
     and muxed on an opaque select (item 4), not walked as if both arms
     were unconditional."""
     src = """module m (input [3:0] a, input [3:0] b, output reg [3:0] y);
-    always @* begin y = b; if (a ==? 4'b1z0x) y = a; end
+    always @* begin y = b; if (a[0] -> b[0]) y = a; end
 endmodule
 """
     with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
