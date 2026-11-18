@@ -406,6 +406,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **slang frontend: constructs that were opaque or dropped now lower**
+  (rtl-buddy-cdc#408, item 11). Each is checked by simulating the netlist
+  against the SystemVerilog semantics (`tests/test_slang_constructs_408.py`).
+  - Unpacked-struct members are read and written: nested structs, member
+    arrays, arrays of structs at constant and run-time indices,
+    assignment patterns, struct parameters and ports. The struct is laid
+    out first member most significant, as Yosys stores it.
+  - `while` / `do … while` / `forever` loops unroll while the variables
+    they test and write fold to constants; a run-time condition ends the
+    loop where it is false (`while (i < 8 && !a[i]) i++;`). A loop whose
+    trip count is not known at elaboration time is undone and reported.
+  - `break` / `continue` in a clocked loop gate the rest of the loop (a
+    clocked `break` was reported once per unrolled iteration and dropped,
+    so every later write was unconditional). A statement reported inside
+    an unrolled loop is reported once.
+  - `->` / `<->`; `t++` / `++t` / `t--` / `--t` and assignments used as
+    values; enum `next()` / `prev()` (`first()` / `last()` / `num()`
+    fold); array `sum()` / `product()` / `and()` / `or()` / `xor()`;
+    `inside` an unpacked array (as a `case … inside` label its bits were
+    compared as one value, a silently wrong match); a function with
+    `output` / `inout` arguments called in an expression; run-time
+    `$clog2` and `$countbits`.
+  - A nonblocking run-time bit write to a register the block already
+    wrote (`p <= o; p[k] <= b;`) loaded the register's own value into
+    every other bit, overriding the earlier write. Found by the construct
+    sweep, with an `inside` list of signed array elements compared
+    zero-extended (now sign-extended).
+  - Still reported, not lowered: a loop with no elaboration-time trip
+    count, a write inside an operand evaluated only on some condition
+    (`c && t++`), a `ref` argument, enum `name()`, an array method with
+    a `with` clause, `$countbits` with a run-time control bit, an
+    unpacked-union member, an element of an unpacked array inside a
+    struct written at a run-time index. No committed fixture or
+    integration verdict changes.
+
 - **Abstracted runs agree with the flat run on the data-path and reset
   rules** (rtl-buddy-cdc#405, items 1, 3, 4).
   - **CDC-018 under `--greybox`.** The per-module pass proved the depth

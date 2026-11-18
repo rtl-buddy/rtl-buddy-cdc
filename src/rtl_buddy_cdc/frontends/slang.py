@@ -112,6 +112,18 @@ What currently works
   non-wildcard bits; parameters, enum values and ``x`` / ``z`` literals
   are constants; gate primitives lower to ``$and`` / ``$or`` / ``$xor``
   / ``$not`` (rtl-buddy-cdc#377).
+- Since rtl-buddy-cdc#408: ``while`` / ``do … while`` / ``forever``
+  loops are unrolled while the variables they test and write fold to
+  constants (a run-time condition ends the loop where it is false; one
+  that cannot end at elaboration time is undone and reported, see
+  :meth:`_ModuleBuilder._unroll_while`); ``break`` / ``continue`` work in
+  clocked loops too; unpacked-struct members are read and written (the
+  struct laid out first member most significant, as Yosys stores it);
+  ``->`` / ``<->``; ``t++`` / ``--t`` and assignments used as values;
+  enum ``next()`` / ``prev()``; array ``sum()`` / ``product()`` /
+  ``and()`` / ``or()`` / ``xor()``; ``inside`` an unpacked array; a
+  function with ``output`` / ``inout`` arguments called in an
+  expression; run-time ``$clog2`` / ``$countbits``.
 - Blackbox boundaries (rtl-buddy-cdc#345): ``(* blackbox *)`` modules
   and ``--blackbox`` / ``--greybox`` names stay as one cell per
   instance, with a sibling module — see :func:`elaborate_with_blackboxes`.
@@ -168,8 +180,10 @@ What currently works
   (:meth:`_splice_assign`). Every assignment's RHS is sized to its target.
 - An assignment target this frontend cannot lower — a streaming
   concatenation with a ``with`` range, a run-time index outside the
-  memory-write and ``$shl``-decoder shapes, an unpacked-struct member, a
-  hierarchical reference into a blackbox — is reported once per location with a ``WARNING`` (see
+  memory-write and ``$shl``-decoder shapes (an element of an unpacked
+  array inside a struct at a run-time index, ...), an unpacked-union
+  member, a hierarchical reference into a blackbox — is reported once
+  per location with a ``WARNING`` (see
   :meth:`_ModuleBuilder._warn_lvalue_dropped`), never dropped silently.
 - A right-hand side, condition or statement the frontend cannot lower
   is reported with a ``WARNING`` and modelled as an opaque ``$_UNKNOWN_``
@@ -194,12 +208,21 @@ What currently works
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- ``while`` / ``do … while`` loops, ``break`` / ``continue`` in a
-  clocked loop, a function with an ``output`` argument called in an
-  expression, tristate gates, switches and user-defined primitives:
-  reported, not lowered. (``repeat`` / ``foreach`` loops, an early
-  ``return``, combinational ``break`` / ``continue`` and task / ``void``
-  function calls are lowered since rtl-buddy-cdc#405.)
+- Reported, not lowered: a ``while`` / ``do … while`` / ``forever``
+  loop whose trip count is not known at elaboration time (its counter
+  depends on run-time values, or it is still running after
+  :data:`_ModuleBuilder._ITER_CAP` iterations) or whose condition does
+  not lower, and one in a reset arm; a write inside an operand evaluated
+  only on some condition (``c && t++``, ``c ? t++ : t--``, an ``output``
+  argument of a call on the right of ``||``) — the expression is opaque
+  and its write is missing; a function with a ``ref`` argument; enum
+  ``name()``, ``next(N)`` with a run-time ``N``; an array method with a
+  ``with`` clause; ``$countbits`` with a run-time control bit; an
+  unpacked-union member; tristate gates, switches and user-defined
+  primitives. (``repeat`` / ``foreach`` loops, an early ``return``,
+  combinational ``break`` / ``continue`` and task / ``void`` function
+  calls are lowered since rtl-buddy-cdc#405; the constructs listed above
+  under rtl-buddy-cdc#408 since that issue.)
 - (was: ``CLK_POLARITY = "0"`` for negedge-clocked flops — landed
   in rtl-buddy-cdc#221 to close the CDC-016 cross-frontend parity
   gap. ``_analyse_event_list`` now reports the clock edge alongside
@@ -3046,7 +3069,7 @@ class _ModuleBuilder:
                 target = n.operand
             while type(target).__name__ in self._SELECT_KINDS:
                 target = getattr(target, "value", None)
-            if type(target).__name__ in self._NAME_KINDS:
+            if target is not None and type(target).__name__ in self._NAME_KINDS:
                 names.add(self._canonical_var(target.symbol))
             return visit_action.Advance
 
@@ -4569,15 +4592,16 @@ class _ModuleBuilder:
             # an unpacked struct (rtl-buddy-cdc#408): see
             # :meth:`_member_span`.
             value = getattr(expr, "value", None)
-            span = self._member_span(expr)
-            if value is None or span is None:
+            member_span = self._member_span(expr)
+            if value is None or member_span is None:
                 return None, (), 0, 0
             inner_sym, inner_bits, inner_offset, _inner_stride = (
                 self._resolve_select_chain(value)
             )
             if inner_sym is None:
                 return None, (), 0, 0
-            return inner_sym, inner_bits, inner_offset + span[0], span[1]
+            offset, width = member_span
+            return inner_sym, inner_bits, inner_offset + offset, width
         return None, (), 0, 0
 
     @staticmethod
@@ -5140,8 +5164,8 @@ class _ModuleBuilder:
         - :class:`MemberAccessExpression` on a packed struct / union —
           the field's bits (rtl-buddy-cdc#370).
 
-        Anything else (function call, unpacked-struct member access,
-        …) returns ``None``; the caller substitutes an ``$_UNKNOWN_``
+        Anything else (a system function with no lowering, an
+        unpacked-union member, …) returns ``None``; the caller substitutes an ``$_UNKNOWN_``
         driver so the rule pack treats the upstream as opaque rather
         than crashing.
         """
@@ -5441,7 +5465,7 @@ class _ModuleBuilder:
         as slang evaluates it (rtl-buddy-cdc#408: an opaque driver).
         ``None`` for a run-time ``N`` or a value that does not lower."""
         etype = getattr(getattr(args[0], "type", None), "canonicalType", None)
-        if not getattr(etype, "isEnum", False):
+        if etype is None or not getattr(etype, "isEnum", False):
             return None
         count = 1 if len(args) < 2 else self._const_int(args[1])
         width = self._expr_width(expr)
@@ -6170,7 +6194,8 @@ class _ModuleBuilder:
         the type stores them — a packed value's first element is its MSB,
         an unpacked array's first element its left-bound index
         (rtl-buddy-cdc#405: an opaque driver unless slang folded it to a
-        constant). ``None`` for any other type (an unpacked struct, ...)."""
+        constant), and of an unpacked struct (rtl-buddy-cdc#408). ``None``
+        for any other type (an unpacked union, ...)."""
         constant = self._constant_bits(expr)
         if constant is not None:
             return constant
@@ -7405,10 +7430,10 @@ class _ModuleBuilder:
     def _other_statement(self, stmt: Any, where: str) -> None:
         """A statement the procedural walkers have no dedicated lowering
         for. Increments / decrements (``n++``) are writes; a system task
-        (``$display``) and an assertion have no logic; anything else (a
-        task call, a ``while`` / ``repeat`` / ``foreach`` loop, an event
-        control inside the body, ``disable``, …) is reported rather than
-        skipped silently (rtl-buddy-cdc#377)."""
+        (``$display``) and an assertion have no logic; anything else (an
+        event control inside the body, ``disable``, a ``while`` loop in a
+        reset arm, …) is reported rather than
+        skipped silently (rtl-buddy-cdc#377), once per location."""
         kind = self._kind_name(stmt)
         if kind in self._NO_LOGIC_STATEMENTS:
             return
