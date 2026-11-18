@@ -20,7 +20,10 @@ from rtl_buddy_cdc import (
     sdc_objects,
     waivers as waivers_mod,
 )
-from rtl_buddy_cdc.abstract import body_clock_pins, instance_clock_pins
+from rtl_buddy_cdc.abstract import (
+    blackbox_clock_pins_by_module,
+    body_clock_pin_fanout,
+)
 from rtl_buddy_cdc.domain import (
     Crossing,
     DepthCut,
@@ -71,6 +74,7 @@ from rtl_buddy_cdc.reset_hints import (
     load as load_reset_hints,
 )
 from rtl_buddy_cdc.rules import (
+    BoundarySource,
     Violation,
     _build_context as build_rule_context,
     run_all as run_all_rules,
@@ -902,6 +906,9 @@ def _analyze_module_and_report(
     # ``--no-findings``) — the domain map says "not checked" otherwise.
     rules_ran = False
     rule_ctx_kwargs: dict[str, Any] = {"max_depth": clock_trace_depth}
+    # Abstracted instances' clock pins as clock sinks, with the flops each
+    # stands for (rtl-buddy-cdc#405); filled when the SDC branch runs.
+    clock_pin_weights: dict[str, tuple[netlist.Bit, int]] = {}
     # Paths a --crossing-depth cap stopped short of a capture pin
     # (rtl-buddy-cdc#347): reported, never silent. Always empty uncapped.
     depth_cuts: list[DepthCut] = []
@@ -969,29 +976,34 @@ def _analyze_module_and_report(
         # from them too (rtl-buddy-cdc#402). A greybox body adds the input
         # ports that clock its own flops, which the parent-side trace
         # cannot prove when the port feeding one has no create_clock.
+        # A pin is a clock pin of the module TYPE once any one instance
+        # proves it (the #273 union): a bodyless stub instance whose pin is
+        # driven from an undeclared port is recognised through a sibling
+        # instance driven from a declared clock (rtl-buddy-cdc#405).
         boundary_clock_pins: dict[str, frozenset[str]] = {}
+        # Flops each greybox body clocks from each input pin.
+        body_fanout: dict[str, dict[str, int]] = {}
         if blackboxes:
             # One driver map for every instance (issue #320).
             drivers = _bit_drivers(module)
-            body_pins: dict[str, frozenset[str]] = {}
+            type_pins = blackbox_clock_pins_by_module(
+                module,
+                blackboxes,
+                spec=spec,
+                pin_clocks=spec.pin_clocks,
+                max_depth=clock_trace_depth,
+                drivers=drivers,
+            )
             for inst_name, cell in module.cells.items():
                 sub = blackboxes.get(cell.type)
                 if sub is None:
                     continue
-                if cell.type not in body_pins:
-                    body_pins[cell.type] = body_clock_pins(
+                if cell.type not in body_fanout:
+                    body_fanout[cell.type] = body_clock_pin_fanout(
                         sub, max_depth=clock_trace_depth
                     )
-                boundary_clock_pins[inst_name] = body_pins[
-                    cell.type
-                ] | instance_clock_pins(
-                    module,
-                    cell,
-                    sub,
-                    spec=spec,
-                    pin_clocks=spec.pin_clocks,
-                    max_depth=clock_trace_depth,
-                    drivers=drivers,
+                boundary_clock_pins[inst_name] = (
+                    frozenset(body_fanout[cell.type]) | type_pins[cell.type]
                 )
         # DFT scan structures in the clock network (#45). Computed off
         # the same clock-root walk that assigned the domains above, and
@@ -1001,6 +1013,16 @@ def _analyze_module_and_report(
         # explicit decision below. An abstracted instance's steered clock
         # pin tags the boundary sinks it captures (rtl-buddy-cdc#402).
         clock_pin_sinks = boundary_clock_sinks(module, boundary_clock_pins)
+        # The same pins for the clock views that count flops — the
+        # inferred-clock advisory and the domain map's clock-network
+        # edges (rtl-buddy-cdc#405) — each weighed by the flops it clocks
+        # inside a greybox body (1 for a stub).
+        for inst_name, pins in boundary_clock_pins.items():
+            fanout = body_fanout.get(module.cells[inst_name].type, {})
+            for pin in pins:
+                one = boundary_clock_sinks(module, {inst_name: frozenset({pin})})
+                for sink_name, bit in one.items():
+                    clock_pin_weights[sink_name] = (bit, fanout.get(pin, 1))
         scan_mode_flops = _boundary_scan_sinks(
             module,
             scan_mode_clock_select_flops(
@@ -1165,17 +1187,64 @@ def _analyze_module_and_report(
         # ever answer 1); ``boundary_user_syncs`` marks a sink whose first
         # internal stage the user tagged, honoured exactly as the flat
         # rules honour ``(* cdc_sync *)``; ``boundary_reconvergence``
-        # carries the internal recombination CDC-005 re-raises.
+        # carries the internal recombination CDC-005 re-raises. The sink
+        # clocks and chain exits let a chain that runs across the boundary
+        # be measured whole (rtl-buddy-cdc#405).
         boundary_sync_depth: dict[str, int] = {}
         boundary_user_syncs: set[str] = set()
         boundary_reconvergence: dict[str, frozenset[frozenset[str]]] = {}
+        boundary_sink_clocks: dict[str, str | None] = {}
+        boundary_chain_exits: dict[str, netlist.Bit] = {}
+        boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] = {}
+        boundary_sink_comb_hops: dict[str, int] = {}
+        boundary_inter_stage: dict[str, str] = {}
+        boundary_reset_pins: dict[str, tuple[netlist.ResetPinFact, ...]] = {}
+        boundary_sources: dict[netlist.Bit, BoundarySource] = {}
         for inst_name, summary in boundaries.items():
             if summary.reconvergent_inputs:
                 boundary_reconvergence[inst_name] = summary.reconvergent_inputs
+            for port_name, entries in summary.reset_pins.items():
+                boundary_reset_pins[f"{inst_name}.{port_name}"] = tuple(
+                    dataclasses.replace(e, flop=f"{inst_name}.{e.flop}")
+                    for e in entries
+                )
+            # The output pins, as the sources the parent's backward walks
+            # stop at (rtl-buddy-cdc#405).
+            for port_name, pb in summary.ports.items():
+                conn = module.cells[inst_name].connections.get(port_name, ())
+                source = BoundarySource(
+                    label=f"{inst_name}.{port_name}",
+                    clock=pb.src_clock,
+                    width=len(conn),
+                    comb_hops=pb.comb_hops,
+                    latch=pb.latch,
+                    driver=pb.driver,
+                    launchers=tuple(f"{inst_name}.{n}" for n in pb.launchers),
+                )
+                for b in conn:
+                    if isinstance(b, int):
+                        boundary_sources[b] = source
             for port_name, pb in summary.input_ports.items():
                 sink = f"{inst_name}.{port_name}"
                 if pb.sync_depth is not None:
                     boundary_sync_depth[sink] = pb.sync_depth
+                    boundary_sink_clocks[sink] = (
+                        pb.src_clock if pb.src_clock is not None else summary.clock
+                    )
+                    if pb.comb_hops:
+                        boundary_sink_comb_hops[sink] = pb.comb_hops
+                    if pb.inter_stage is not None:
+                        boundary_inter_stage[sink] = f"{inst_name}.{pb.inter_stage}"
+                    if pb.chain_stages:
+                        boundary_chain_stages[sink] = tuple(
+                            (f"{inst_name}.{name}", edge)
+                            for name, edge in pb.chain_stages
+                        )
+                    if pb.chain_exit is not None:
+                        out_port, idx = pb.chain_exit
+                        conn = module.cells[inst_name].connections.get(out_port, ())
+                        if idx < len(conn) and isinstance(conn[idx], int):
+                            boundary_chain_exits[sink] = conn[idx]
                 if pb.user_synchronised:
                     boundary_user_syncs.add(sink)
         async_crossings = _filter_async(crossings, spec)
@@ -1207,6 +1276,13 @@ def _analyze_module_and_report(
             "boundary_sync_depth": boundary_sync_depth,
             "boundary_reconvergence": boundary_reconvergence,
             "boundary_user_syncs": frozenset(boundary_user_syncs),
+            "boundary_sink_clocks": boundary_sink_clocks,
+            "boundary_chain_exits": boundary_chain_exits,
+            "boundary_chain_stages": boundary_chain_stages,
+            "boundary_sources": boundary_sources,
+            "boundary_sink_comb_hops": boundary_sink_comb_hops,
+            "boundary_inter_stage": boundary_inter_stage,
+            "boundary_reset_pins": boundary_reset_pins,
             "max_depth": clock_trace_depth,
         }
         if not no_findings:
@@ -1326,6 +1402,7 @@ def _analyze_module_and_report(
         module,
         pin_clocks=spec.pin_clocks if spec is not None else None,
         clock_for_port=spec.clock_for_port if spec is not None else None,
+        extra_sinks=clock_pin_weights,
     )
 
     result = AnalysisResult(
@@ -1353,6 +1430,7 @@ def _analyze_module_and_report(
             clock_for_port=spec.clock_for_port if spec is not None else None,
             use_heuristic=not cdc_010_no_heuristic,
             max_depth=clock_trace_depth,
+            extra_sinks={name: bit for name, (bit, _n) in clock_pin_weights.items()},
         )
         payload = build_domain_map(
             module,

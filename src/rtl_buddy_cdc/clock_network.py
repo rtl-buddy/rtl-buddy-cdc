@@ -20,14 +20,14 @@ See issue #168 for the design discussion.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
 from rtl_buddy_cdc.cells import MUX_PINS
 from rtl_buddy_cdc.domain import assign_domains
 from rtl_buddy_cdc.flops import Flop, find_flops
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.netlist import Bit, Cell, Module
 from rtl_buddy_cdc.rules import (
     _backward_flop_fanin,
     _clock_network_cells,
@@ -37,6 +37,10 @@ from rtl_buddy_cdc.rules import (
 from rtl_buddy_cdc.sdc import ClockSpec, PortTyping
 
 ControlKind = Literal["mux-select", "gate-enable"]
+
+# Cell type of the stand-in destination for an abstracted instance's
+# clock pin (rtl-buddy-cdc#405).
+_PIN_SINK_TYPE = "$boundary_clock_pin"
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,11 @@ class ClockNetworkCrossing:
     control_cell_type: str
     control_pin: str
     control_kind: ControlKind
+    # ``(instance, port)`` when the destination is an abstracted
+    # instance's clock pin rather than a flop (rtl-buddy-cdc#405): the
+    # flops it clocks are inside the block, where a flat run lists them.
+    # ``dst_flop`` is then a stand-in named ``"<instance>.<port>"``.
+    dst_boundary: tuple[str, str] | None = None
 
 
 def find_clock_network_crossings(
@@ -71,6 +80,7 @@ def find_clock_network_crossings(
     clock_for_port: Callable[[str], str | None] | None = None,
     use_heuristic: bool = True,
     max_depth: int = 16,
+    extra_sinks: Mapping[str, Bit] | None = None,
 ) -> list[ClockNetworkCrossing]:
     """Enumerate every clock-network-driven async flop→flop pair.
 
@@ -97,6 +107,12 @@ def find_clock_network_crossings(
     as ``--clock-trace-depth``). It must match the budget the main
     crossing walk uses so this clock-network view of per-flop domains
     agrees with the crossings list at any depth. See issue #263.
+
+    ``extra_sinks`` are the clock pins of abstracted instances, named
+    ``"<instance>.<port>"`` (:func:`~rtl_buddy_cdc.domain.boundary_clock_sinks`):
+    destinations as a flop ``CLK`` is, so a clock gate or mux in front of
+    an abstracted block keeps its edges (rtl-buddy-cdc#405). Each is
+    reported with ``dst_boundary`` set.
     """
     pin_clocks = clock_spec.pin_clocks if clock_spec is not None else None
     flop_domains = assign_domains(
@@ -114,10 +130,23 @@ def find_clock_network_crossings(
     domain_by_name = {fd.flop.cell.name: fd.clock for fd in flop_domains}
 
     drivers = _bit_drivers_with_idx(module)
-    clock_net_cells = _clock_network_cells(module, drivers)
+    pin_sinks = dict(extra_sinks or {})
+    clock_net_cells = _clock_network_cells(
+        module, drivers, extra_clock_bits=pin_sinks.values()
+    )
     if not clock_net_cells:
         return []
-    cell_to_dst_flops = _cell_to_downstream_flops(module, drivers)
+    cell_to_dst_flops = _cell_to_downstream_flops(module, drivers, pin_sinks)
+    pin_boundary: dict[str, tuple[str, str]] = {}
+    for name, bit in pin_sinks.items():
+        inst, _, port = name.rpartition(".")
+        pin_boundary[name] = (inst, port)
+        flop_by_name[name] = Flop(
+            cell=Cell(name=name, type=_PIN_SINK_TYPE, connections={"CLK": (bit,)}),
+            clk=bit,
+            d=(),
+            q=(),
+        )
 
     def _resolve(name: str) -> str:
         if clock_for_port is None:
@@ -196,6 +225,7 @@ def find_clock_network_crossings(
                             control_cell_type=cell.type,
                             control_pin=ctrl_port,
                             control_kind=kind,
+                            dst_boundary=pin_boundary.get(dst_flop_name),
                         )
                     )
 
@@ -230,16 +260,20 @@ def _bit_drivers_with_idx(
 def _cell_to_downstream_flops(
     module: Module,
     drivers: dict[Bit, tuple[str, str, int]],
+    pin_sinks: Mapping[str, Bit] | None = None,
 ) -> dict[str, set[str]]:
     """Inverse of :func:`_clock_network_cells`: for each clock-network
     cell, the set of flop cell-names whose CLK pin is reached when
-    walking back from the flop through that cell."""
+    walking back from the flop through that cell. ``pin_sinks`` (an
+    abstracted instance's clock pins, by name) are sinks too."""
     out: dict[str, set[str]] = defaultdict(set)
-    for f in find_flops(module):
-        if not isinstance(f.clk, int):
+    sinks: list[tuple[str, Bit]] = [(f.cell.name, f.clk) for f in find_flops(module)]
+    sinks.extend((pin_sinks or {}).items())
+    for sink_name, clk in sinks:
+        if not isinstance(clk, int):
             continue
         seen_bits: set[Bit] = set()
-        frontier: list[Bit] = [f.clk]
+        frontier: list[Bit] = [clk]
         while frontier:
             nxt: list[Bit] = []
             for bit in frontier:
@@ -250,7 +284,7 @@ def _cell_to_downstream_flops(
                 if drv is None:
                     continue
                 cell_name = drv[0]
-                out[cell_name].add(f.cell.name)
+                out[cell_name].add(sink_name)
                 cell = module.cells[cell_name]
                 for in_port, in_bits in cell.connections.items():
                     if in_port in _OUTPUT_PINS:

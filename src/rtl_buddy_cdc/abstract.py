@@ -43,7 +43,14 @@ from rtl_buddy_cdc.domain import (
     trace_clock_root,
 )
 from rtl_buddy_cdc.flops import find_flops, flop_clk_pin, is_ff_cell
-from rtl_buddy_cdc.netlist import Bit, BoundarySummary, Cell, Module, PortBoundary
+from rtl_buddy_cdc.netlist import (
+    Bit,
+    BoundarySummary,
+    Cell,
+    Module,
+    PortBoundary,
+    ResetPinFact,
+)
 from rtl_buddy_cdc.primitives import clock_pin_role, port_domain
 from rtl_buddy_cdc.sdc import ClockSpec
 
@@ -534,7 +541,15 @@ def _summarise_single_clock(
                 user_synchronised=(
                     facts.user_synchronised if facts is not None else False
                 ),
+                comb_hops=facts.comb_hops if facts is not None else None,
+                latch=facts.latch if facts is not None else None,
+                driver=facts.driver if facts is not None else None,
+                launchers=facts.launchers if facts is not None else (),
             )
+        if facts is not None and facts.async_only:
+            # A reset pin and nothing else: no data capture to seed
+            # (rtl-buddy-cdc#405); its reset facts travel in ``reset_pins``.
+            continue
         if port.direction in ("input", "inout") and port.name not in ic.clock_pins:
             # Clock pins are excluded by the *traced* determination (FIX
             # 1), not just the name allow-list: they carry distribution
@@ -550,6 +565,10 @@ def _summarise_single_clock(
                 user_synchronised=(
                     facts.user_synchronised if facts is not None else False
                 ),
+                chain_exit=facts.chain_exit if facts is not None else None,
+                chain_stages=facts.chain_stages if facts is not None else (),
+                comb_hops=facts.comb_hops if facts is not None else None,
+                inter_stage=facts.inter_stage if facts is not None else None,
             )
     return BoundarySummary(
         module=sub.name,
@@ -560,7 +579,17 @@ def _summarise_single_clock(
         reconvergent_inputs=(
             analysis.reconvergent_inputs if analysis is not None else frozenset()
         ),
+        reset_pins=_reset_pins(analysis),
     )
+
+
+def _reset_pins(
+    analysis: "ModuleAnalysis | None",
+) -> dict[str, tuple[ResetPinFact, ...]]:
+    """:attr:`BoundarySummary.reset_pins` from a greybox analysis."""
+    if analysis is None:
+        return {}
+    return {name: f.resets for name, f in analysis.ports.items() if f.resets}
 
 
 def _summarise_multi_clock(
@@ -604,8 +633,14 @@ def _summarise_multi_clock(
                 width=len(port.bits),
                 sync_depth=facts.sync_depth,
                 user_synchronised=facts.user_synchronised,
+                comb_hops=facts.comb_hops,
+                latch=facts.latch,
+                driver=facts.driver,
+                launchers=facts.launchers,
             )
         if port.direction in ("input", "inout"):
+            if facts.async_only:
+                continue
             if facts.ambiguous:
                 return None
             if facts.clock is None:
@@ -622,6 +657,10 @@ def _summarise_multi_clock(
                 width=len(port.bits),
                 sync_depth=facts.sync_depth,
                 user_synchronised=facts.user_synchronised,
+                chain_exit=facts.chain_exit,
+                chain_stages=facts.chain_stages,
+                comb_hops=facts.comb_hops,
+                inter_stage=facts.inter_stage,
             )
     return BoundarySummary(
         module=sub.name,
@@ -630,6 +669,7 @@ def _summarise_multi_clock(
         input_ports=input_ports,
         internal_analysed=True,
         reconvergent_inputs=analysis.reconvergent_inputs,
+        reset_pins=_reset_pins(analysis),
     )
 
 
@@ -808,6 +848,27 @@ def instance_clock_pins(
     ).clock_pins
 
 
+def body_clock_pin_fanout(sub: Module, *, max_depth: int = 16) -> dict[str, int]:
+    """Per input port of a greybox body, the number of its flops it clocks.
+
+    :func:`body_clock_pins` with the count each pin stands for: in a flat
+    run those flops are clock sinks of the parent net, so a fanout view
+    (the inferred-clock advisory) weighs the pin by them
+    (rtl-buddy-cdc#405). Empty for a bodyless stub.
+    """
+    if not sub.cells:
+        return {}
+    root_of = clock_root_resolver(sub, max_depth=max_depth)
+    inputs = {p.name for p in sub.ports.values() if p.direction in ("input", "inout")}
+    out: dict[str, int] = {}
+    for f in find_flops(sub):
+        root = root_of(f.clk)
+        if root in inputs:
+            assert root is not None
+            out[root] = out.get(root, 0) + 1
+    return out
+
+
 def body_clock_pins(sub: Module, *, max_depth: int = 16) -> frozenset[str]:
     """Input ports of a greybox body that clock one of its own flops.
 
@@ -819,13 +880,7 @@ def body_clock_pins(sub: Module, *, max_depth: int = 16) -> frozenset[str]:
     no declared clock to trace to — which is exactly the pin CDC-021
     must see (rtl-buddy-cdc#402). Empty for a bodyless stub.
     """
-    if not sub.cells:
-        return frozenset()
-    root_of = clock_root_resolver(sub, max_depth=max_depth)
-    inputs = {p.name for p in sub.ports.values() if p.direction in ("input", "inout")}
-    return frozenset(
-        root for f in find_flops(sub) if (root := root_of(f.clk)) in inputs
-    )
+    return frozenset(body_clock_pin_fanout(sub, max_depth=max_depth))
 
 
 def _bit_consumers(parent: Module) -> dict[Bit, list[tuple[str, str]]]:
