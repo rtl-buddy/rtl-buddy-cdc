@@ -3895,11 +3895,20 @@ class _ModuleBuilder:
             stream = [t for chunk in reversed(chunks) for t in chunk]
         return stream or None
 
-    @staticmethod
-    def _streaming_op(expr: Any) -> str:
-        """``"<<"`` or ``">>"``: a streaming concatenation's direction."""
+    def _streaming_op(self, expr: Any) -> str:
+        """``"<<"`` or ``">>"``: a streaming concatenation's direction, from
+        its syntax, or (pyslang 11 leaves ``syntax`` empty on one wrapped
+        in a conversion) from the source text it starts at."""
         token = getattr(getattr(expr, "syntax", None), "operatorToken", None)
-        return str(getattr(token, "valueText", "") or "").strip()
+        op = str(getattr(token, "valueText", "") or "").strip()
+        if op:
+            return op
+        try:
+            start = expr.sourceRange.start
+            text = str(self.comp.sourceManager.getSourceText(start.buffer))
+        except Exception:
+            return ""
+        return text[start.offset :].lstrip("{ \t\r\n")[:2]
 
     @staticmethod
     def _group_parts(
