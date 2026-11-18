@@ -283,3 +283,73 @@ def test_feedthrough_reaches_a_contracted_output(tmp_path: Path) -> None:
     assert _rules(reports["greybox"])["CDC-024"] == 1
     (msg,) = _messages(reports["greybox"], "CDC-024")
     assert "slow (flop" in msg
+
+
+# --- item 4: a block output port literally named Q or Y -----------------------
+
+
+def _q_reset(name: str) -> str:
+    return f"""\
+module blk (input clk, input d, output logic {name});
+    always_ff @(posedge clk) {name} <= d;
+endmodule
+module top (input fast, input slow, input d, input e, output logic o);
+    logic w;
+    blk u (.clk(slow), .d(d), .{name}(w));
+    always_ff @(posedge fast or posedge w) if (w) o <= 1'b0; else o <= e;
+endmodule
+"""
+
+
+def _y_gate(name: str) -> str:
+    return f"""\
+module blk (input clk, input d, input e, output logic {name});
+    logic a, b;
+    always_ff @(posedge clk) begin a <= d; b <= e; end
+    assign {name} = a & b;
+endmodule
+module top (input fast, input slow, input d, input e,
+            output o1, output logic o2, output o3);
+    logic w, s1, s2;
+    blk u (.clk(slow), .d(d), .e(e), .{name}(w));
+    always_ff @(posedge fast) begin s1 <= w; s2 <= s1; end
+    assign o2 = s2;
+    assign o1 = w;
+    assign o3 = w ^ s2;
+endmodule
+"""
+
+
+_Y_SDC = (
+    _SDC
+    + _typed("slow", "d", "e")
+    + "set_output_delay -clock fast 1 [get_ports o1]\n"
+    + "set_output_delay -clock fast 1 [get_ports o2]\n"
+)
+
+
+@needs_slang
+@pytest.mark.parametrize("name", ["rst_q", "Q"])
+def test_block_output_named_q_is_a_pin_not_a_register(
+    tmp_path: Path, name: str
+) -> None:
+    """A pin named ``Q`` read as a flop's ``Q``: the reset walk stopped at
+    a nameless register with no domain and RDC-001 was lost."""
+    sdc = _SDC + _typed("slow", "d") + _typed("fast", "e")
+    reports = _views(tmp_path, _q_reset(name), sdc)
+    for view in ("flat", "greybox", "blackbox"):
+        assert _rules(reports[view]) == Counter({"RDC-001": 1}), view
+
+
+@needs_slang
+@pytest.mark.parametrize("name", ["z", "Y"])
+def test_block_output_named_y_is_a_pin_not_a_gate(tmp_path: Path, name: str) -> None:
+    """A pin named ``Y`` read as a gate's ``Y``: backward walks went on
+    through the block's inputs — a spurious CDC-006 on the ports behind
+    it, and CDC-025 lost to the block's clock pin in the cone."""
+    reports = _views(tmp_path, _y_gate(name), _Y_SDC)
+    flat = _rules(reports["flat"])
+    assert flat == Counter({"CDC-003": 2, "CDC-024": 1, "CDC-025": 1})
+    assert _rules(reports["greybox"]) == flat
+    # A stub cannot show the gate behind its pin (no CDC-003).
+    assert _rules(reports["blackbox"]) == Counter({"CDC-024": 1, "CDC-025": 1})

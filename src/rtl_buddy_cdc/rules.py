@@ -484,6 +484,20 @@ def _build_context(
     flops = tuple(find_flops(module))
     flops_by_d = _index_flops_by_d(flops)
     bit_drivers = _bit_drivers(module)
+    abstracted = boundary_modules | blackbox_modules
+    if abstracted:
+        # An abstracted block's output pin is not a cell output the walks
+        # know: one literally named ``Q`` or ``Y`` would read as a flop's
+        # ``Q`` or a gate's ``Y`` and a backward walk would stop at a
+        # nameless "register", or walk on through every input of the block,
+        # clock pins included (rtl-buddy-cdc#408). Left undriven, the bit
+        # is where the walks stop and look up the pin's
+        # ``boundary_sources`` entry, as for any other pin name.
+        bit_drivers = {
+            b: drv
+            for b, drv in bit_drivers.items()
+            if module.cells[drv[0]].type not in abstracted
+        }
     # One trace per flop gives both views: the raw root (CDC-021 needs
     # the port name of an undeclared clock) and, through the same
     # ``clock_for_port`` the crossing walk applies, the domain.

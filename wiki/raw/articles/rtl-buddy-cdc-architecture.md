@@ -1184,6 +1184,13 @@ the parent's rule reach the verdict the flat run reaches
   summarised output pin, stub or greybox, carries its launch clock, so
   RDC-001 / RDC-003 / CDC-015 / CDC-024 / CDC-025 / CDC-005 / CDC-018
   treat a block output as the register behind it.
+- **The pin is where the walks stop, whatever it is called
+  (rtl-buddy-cdc#408).** `_RuleContext.bit_drivers` leaves out the
+  output pins of abstracted instances (types in `boundary_modules` /
+  `blackbox_modules`): the driver map otherwise keys on the `Q` / `Y`
+  pin names, and a block pin named `Q` would read as a register with no
+  domain, one named `Y` as a gate to walk on through. Undriven, the bit
+  is looked up in `boundary_sources` like any other pin.
 - **Payload hold (outputs, CDC-012; rtl-buddy-cdc#408).** For an output
   one multi-bit register drives whole, where CDC-012's acknowledge walk
   goes from that register's load / hold control inside the block

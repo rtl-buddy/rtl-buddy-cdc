@@ -421,6 +421,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bad_clock_gating_async_enable` reports CDC-010 (error) instead of
   CDC-023, and its gated flop resolves to `clk_a`.
 
+- **An abstracted block's output pin named `Q` or `Y` is a pin, not a
+  cell output** (rtl-buddy-cdc#408, item 4). The rule context's driver
+  map took any cell's `Q` / `Y` connection as a flop or gate output, so
+  under `--greybox` / `--blackbox` a block pin literally named `Q` read
+  as a register with no domain (RDC-001 from a block-launched reset was
+  lost), and one named `Y` as a gate the backward walks went on through,
+  block inputs and clock pin included (a spurious CDC-006 on the ports
+  behind the block; CDC-025 lost to the clock pin in the output cone).
+  Abstracted instances' pins are left out of the driver map, so every
+  pin name reaches the pin's published facts.
+
 - **CDC-012 and CDC-025 across abstracted block boundaries**
   (rtl-buddy-cdc#408, items 2, 3).
   - **CDC-012 behind a block output.** A gated bus captured from an
