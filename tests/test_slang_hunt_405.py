@@ -414,3 +414,94 @@ def test_second_continuous_driver_keeps_both(
             "q": v["e"] | v["f"],
             "r": v["a"] | v["d"],
         }, v
+
+
+# --- inside, wildcard equality, streaming (were opaque; Yosys rejects them) ------
+
+_SET_OPS = """module m (input [3:0] a, input [3:0] b, output o, output p, output q,
+          output logic [1:0] c);
+    assign o = a inside {1, 3, [8:10], b};
+    assign p = a ==? 4'b1?0?;
+    assign q = a !=? b;
+    always_comb case (a) inside
+        [0:3]: c = 0;
+        4, 6, [12:$]: c = 1;
+        4'b1?11: c = 2;
+        default: c = 3;
+    endcase
+endmodule
+"""
+
+
+def test_inside_and_wildcard_equality(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``inside`` (values, ranges, an open range, a signal), ``==?`` /
+    ``!=?`` and ``case … inside`` ranges are lowered (they were opaque
+    drivers, so ``a`` and ``b`` had no fan-in to the outputs). Every output
+    matches the SystemVerilog value for every input. Yosys' Verilog
+    frontend does not parse these operators."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _SET_OPS)
+    assert _warnings(caplog) == []
+    assert not [c for c in module.cells.values() if c.type == "$_UNKNOWN_"]
+    for a in range(16):
+        for b in range(16):
+            if a <= 3:
+                c = 0
+            elif a in (4, 6) or a >= 12:
+                c = 1
+            elif a & 0b1011 == 0b1011:
+                c = 2
+            else:
+                c = 3
+            assert _outputs(module, {"a": a, "b": b}, ("o", "p", "q", "c")) == {
+                "o": int(a in (1, 3, 8, 9, 10, b)),
+                "p": int(a & 0b1010 == 0b1000),
+                "q": int(a != b),
+                "c": c,
+            }, (a, b)
+
+
+_STREAM = """module m (input [3:0] a, input [3:0] b, output [7:0] r, output [7:0] s,
+          output [7:0] t, output logic [7:0] u, output [3:0] v, output [3:0] w);
+    assign r = {<<{a, b}};
+    assign s = {<<2{a, b}};
+    assign t = {>>4{b, a}};
+    always_comb {<<{u}} = {a, b};
+    assign {<<2{v, w}} = {b, a};
+endmodule
+"""
+
+
+def _rev(value: int, width: int, size: int) -> int:
+    chunks = [(value >> k) & ((1 << size) - 1) for k in range(0, width, size)]
+    out = 0
+    for chunk in chunks:
+        out = (out << size) | chunk
+    return out
+
+
+def test_streaming_concatenation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``{<<{..}}`` / ``{<<N{..}}`` / ``{>>N{..}}`` read and written (in a
+    combinational block and a continuous assignment) are bit permutations
+    (IEEE 1800-2017 11.4.14); they were opaque drivers and dropped writes."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _STREAM)
+    assert _warnings(caplog) == []
+    for a in range(16):
+        for b in range(16):
+            ab, ba = (a << 4) | b, (b << 4) | a
+            vw = _rev(ba, 8, 2)
+            assert _outputs(
+                module, {"a": a, "b": b}, ("r", "s", "t", "u", "v", "w")
+            ) == {
+                "r": _rev(ab, 8, 1),
+                "s": _rev(ab, 8, 2),
+                "t": ba,
+                "u": _rev(ab, 8, 1),
+                "v": vw >> 4,
+                "w": vw & 0xF,
+            }, (a, b)

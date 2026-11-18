@@ -2653,7 +2653,7 @@ class _ModuleBuilder:
             return False, None
         for item in getattr(stmt, "items", []) or []:
             for label in getattr(item, "expressions", []) or []:
-                if self._kind_name(label) == "RangeExpression":
+                if self._kind_name(label) == "ValueRangeExpression":
                     return False, None
                 if not self._is_plain_constant(label):
                     return False, None
@@ -2693,10 +2693,12 @@ class _ModuleBuilder:
         literal ``z`` / ``x`` values, and such a label used to drop its
         arm). A label that does not lower (a ``case inside`` range, …) is
         a reported opaque match."""
-        if self._kind_name(label) == "RangeExpression" or label is None:
-            return self._opaque(
-                label if label is not None else stmt, 1, "`case` label"
-            )[0]
+        if label is None:
+            return self._opaque(stmt, 1, "`case` label")[0]
+        if self._kind_name(label) == "ValueRangeExpression":
+            # ``case … inside`` ``[lo:hi]`` (rtl-buddy-cdc#405: opaque).
+            hit = self._range_match(sel_bits, label)
+            return hit if hit is not None else self._opaque(label, 1, "`case` label")[0]
         bits = self._bits_of_expression(label)
         if not bits:
             return self._opaque(label, 1, "`case` label")[0]
@@ -3762,6 +3764,8 @@ class _ModuleBuilder:
         if self._is_named(expr):
             sym = self._canonical_var(expr.symbol)
             return [(sym, 0, len(self._alloc_bits(sym)))]
+        if kind == "StreamingConcatenationExpression":
+            return self._streaming_targets(expr)
         if kind in {"ElementSelectExpression", "MemberAccessExpression"}:
             sym, bits, start, width = self._resolve_select_chain(expr)
         elif kind == "RangeSelectExpression":
@@ -3774,6 +3778,35 @@ class _ModuleBuilder:
         if sym is None or width < 1 or start < 0 or start + width > len(bits):
             return None
         return [(self._canonical_var(sym), start, width)]
+
+    def _streaming_targets(self, expr: Any) -> list[tuple[Any, int, int]] | None:
+        """A streaming-concatenation target (``{<<{o}} = a``,
+        ``{<<4{x, y}} <= d``): its operands' bits, one target per bit,
+        in the order :meth:`_lower_streaming` reads them, so the source's
+        MSB lands in the stream's first bit (rtl-buddy-cdc#405: dropped
+        and reported). ``None`` for a ``with`` range or a dynamic size."""
+        if not getattr(expr, "isFixedSize", False):
+            return None
+        stream: list[tuple[Any, int, int]] = []  # MSB first
+        for st in getattr(expr, "streams", None) or []:
+            if getattr(st, "withExpr", None) is not None:
+                return None
+            sub = self._lvalue_targets(st.operand)
+            if sub is None:
+                return None
+            for sym, start, width in sub:
+                stream.extend((sym, start + k, 1) for k in reversed(range(width)))
+        if self._streaming_op(expr) == "<<":
+            size = int(getattr(expr, "sliceSize", 0) or 0) or 1
+            chunks = [stream[i : i + size] for i in range(0, len(stream), size)]
+            stream = [t for chunk in reversed(chunks) for t in chunk]
+        return stream or None
+
+    @staticmethod
+    def _streaming_op(expr: Any) -> str:
+        """``"<<"`` or ``">>"``: a streaming concatenation's direction."""
+        token = getattr(getattr(expr, "syntax", None), "operatorToken", None)
+        return str(getattr(token, "valueText", "") or "").strip()
 
     @staticmethod
     def _group_parts(
@@ -4452,6 +4485,10 @@ class _ModuleBuilder:
             return self._lower_concatenation(expr)
         if kind == "ReplicationExpression":
             return self._lower_replication(expr)
+        if kind == "InsideExpression":
+            return self._lower_inside(expr)
+        if kind == "StreamingConcatenationExpression":
+            return self._lower_streaming(expr)
         if kind == "CallExpression":
             return self._lower_call(expr)
         if kind == "_Bits":
@@ -4870,6 +4907,15 @@ class _ModuleBuilder:
 
     def _lower_binary(self, expr: Any) -> tuple[Bit, ...] | None:
         op_name = str(expr.op).rsplit(".", 1)[-1]
+        if op_name in ("WildcardEquality", "WildcardInequality"):
+            a_bits = self._bits_of_expression(expr.left)
+            b_bits = self._bits_of_expression(expr.right)
+            if a_bits is None or b_bits is None:
+                return None
+            hit = self._wildcard_match(a_bits, b_bits, expr)
+            if op_name == "WildcardInequality":
+                hit = self._lower_not(hit)
+            return (hit,)
         cell_type = self._BINOP_CELL.get(op_name)
         if cell_type is None:
             return None  # unmodelled op → unknown driver
@@ -4957,6 +5003,114 @@ class _ModuleBuilder:
             else:
                 out.append("0")
         return tuple(out)
+
+    def _wildcard_match(
+        self, a_bits: tuple[Bit, ...], b_bits: tuple[Bit, ...], node: Any
+    ) -> Bit:
+        """``a ==? b``: equal on every bit where ``b`` is not ``x`` / ``z``
+        (IEEE 1800-2017 11.4.6), the ``$eq`` of those lanes; ``"1"`` when
+        every bit of ``b`` is a wildcard."""
+        width = max(len(a_bits), len(b_bits))
+        a = self._resize_bits(a_bits, width)
+        b = self._resize_bits(b_bits, width)
+        lanes = [i for i in range(width) if b[i] not in ("x", "z")]
+        if not lanes:
+            return "1"
+        return self._emit_comb_cell(
+            "$eq",
+            {"A": tuple(a[i] for i in lanes), "B": tuple(b[i] for i in lanes)},
+            output_width=1,
+            src_node=node,
+        )[0]
+
+    def _range_match(self, value_bits: tuple[Bit, ...], rng: Any) -> Bit | None:
+        """``value`` lies in the ``[lo:hi]`` of an ``inside`` list or a
+        ``case … inside`` label: ``$ge`` and ``$le`` (``$`` leaves a side
+        open). ``None`` when a bound does not lower."""
+        hit: Bit = "1"
+        for bound, cell in ((rng.left, "$ge"), (rng.right, "$le")):
+            inner = bound
+            while self._kind_name(inner) == "ConversionExpression":
+                inner = getattr(inner, "operand", None)
+            if self._kind_name(inner) == "UnboundedLiteral":
+                continue
+            bits = self._bits_of_expression(bound)
+            if not bits:
+                return None
+            width = max(len(bits), len(value_bits))
+            # slang converts the value and the bounds to their common
+            # type, so a signed bound means a signed comparison.
+            signed = bool(getattr(getattr(bound, "type", None), "isSigned", False))
+            hit = self._and_bit(
+                hit,
+                self._emit_comb_cell(
+                    cell,
+                    {
+                        "A": self._resize_bits(value_bits, width),
+                        "B": self._resize_bits(bits, width),
+                    },
+                    output_width=1,
+                    src_node=bound,
+                    parameters={
+                        "A_SIGNED": _param_int32(int(signed)),
+                        "B_SIGNED": _param_int32(int(signed)),
+                    },
+                )[0],
+            )
+        return hit
+
+    def _lower_inside(self, expr: Any) -> tuple[Bit, ...] | None:
+        """``a inside {v, [lo:hi], …}``: the OR of ``a ==? v`` and the
+        range checks (rtl-buddy-cdc#405: an opaque driver). ``None`` for an
+        item that does not lower (an unpacked array to search, …)."""
+        left = self._bits_of_expression(expr.left)
+        if left is None:
+            return None
+        hits: list[Bit] = []
+        for item in getattr(expr, "rangeList", None) or []:
+            if self._kind_name(item) == "ValueRangeExpression":
+                hit = self._range_match(left, item)
+            else:
+                itype = getattr(item, "type", None)
+                if not getattr(itype, "isIntegral", False):
+                    return None
+                bits = self._bits_of_expression(item)
+                hit = None if bits is None else self._wildcard_match(left, bits, item)
+            if hit is None:
+                return None
+            hits.append(hit)
+        result = self._or_bits(hits)
+        return (result if result is not None else "0",)
+
+    def _lower_streaming(self, expr: Any) -> tuple[Bit, ...] | None:
+        """A streaming concatenation read (``{<<{a}}``, ``{<<4{a, b}}``,
+        ``{>>{a, b}}``): the operands' bits packed MSB first and, for
+        ``<<``, the slices of ``sliceSize`` bits (1 by default) taken in
+        reverse order (IEEE 1800-2017 11.4.14), left-aligned in the
+        target as slang sizes it. Pure rewiring (rtl-buddy-cdc#405: an
+        opaque driver). ``None`` for a ``with`` range or a dynamic size."""
+        stream: list[Bit] = []  # MSB first
+        for st in getattr(expr, "streams", None) or []:
+            if getattr(st, "withExpr", None) is not None:
+                return None
+            bits = self._bits_of_expression(st.operand)
+            if bits is None:
+                return None
+            stream.extend(reversed(bits))
+        if not getattr(expr, "isFixedSize", False):
+            return None
+        if self._streaming_op(expr) == "<<":
+            size = int(getattr(expr, "sliceSize", 0) or 0) or 1
+            chunks = [stream[i : i + size] for i in range(0, len(stream), size)]
+            stream = [b for chunk in reversed(chunks) for b in chunk]
+        width = self._expr_width(expr) or len(stream)
+        # Left-aligned: the stream's MSB is the target's MSB, zero-filled
+        # below (a wider target) or its trailing bits dropped (narrower).
+        if width >= len(stream):
+            msb_first = stream + ["0"] * (width - len(stream))
+        else:
+            msb_first = stream[:width]
+        return tuple(reversed(msb_first))
 
     def _lower_unary(self, expr: Any) -> tuple[Bit, ...] | None:
         op_name = str(expr.op).rsplit(".", 1)[-1]
