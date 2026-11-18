@@ -828,11 +828,16 @@ class _ModuleBuilder:
         self._driver_index: dict[int, tuple[str, int]] = {}
         self._driver_indexed: set[str] = set()
         self._fold_depth = 0
+        self._fold_budget = 0
         # How the procedural walk in progress lowers a write made inside an
         # expression (``o = t++``, ``o = (t += 2)``, rtl-buddy-cdc#408): a
         # blocking write of the combinational or clocked walk; ``None``
         # outside one (a continuous assign, a reset arm).
         self._expr_writer: Callable[[Any], None] | None = None
+        # How many operands evaluated only on some condition (the right of
+        # ``&&`` / ``||`` / ``->``, an arm of ``?:``) enclose the expression
+        # being lowered: a write inside one is not modelled (reported).
+        self._conditional_depth = 0
 
     # -- public ----------------------------------------------------------
 
@@ -2821,7 +2826,9 @@ class _ModuleBuilder:
         if getattr(ltype, "isUnpackedArray", False):
             # ``case … inside`` an unpacked array: any of its elements
             # (rtl-buddy-cdc#408: its bits were compared as one value).
-            hits = self._array_inside_hits(sel_bits, label, ltype)
+            hits = self._array_inside_hits(
+                sel_bits, label, ltype, self._is_signed(getattr(stmt, "expr", None))
+            )
             hit = None if hits is None else self._or_bits(hits)
             return hit if hit is not None else self._opaque(label, 1, "`case` label")[0]
         bits = self._bits_of_expression(label)
@@ -2977,6 +2984,7 @@ class _ModuleBuilder:
         reason = None
         try:
             count = 0
+            stalled = 0
             while True:
                 # The condition is tested only where no iteration so far
                 # ended the loop.
@@ -2993,10 +3001,13 @@ class _ModuleBuilder:
                         break
                     if go != "1":
                         self._exit_where_false(go)
-                if count >= self._ITER_CAP:
+                # Nothing the loop counts with folds any more (it depends
+                # on run-time values): it cannot end at elaboration time.
+                stalled = stalled + 1 if not self._folded_state(names) else 0
+                if count >= self._ITER_CAP or stalled > self._STALL_CAP:
                     reason = (
                         "its trip count is not known at elaboration time: "
-                        f"still running after {self._ITER_CAP} iterations"
+                        f"still running after {count} iterations"
                     )
                     break
                 count += 1
@@ -3047,6 +3058,19 @@ class _ModuleBuilder:
             body.visit(written)
         return names
 
+    # Iterations a ``while`` loop may run with none of its state folding.
+    _STALL_CAP = 4
+
+    def _folded_state(self, names: set[Any]) -> bool:
+        """Some bit of a ``while`` loop's state variables folds to a
+        constant."""
+        memo: dict[str, int | None] = {}
+        for sym in names:
+            for bit in self._var_bits.get(sym, ()):
+                if self._fold_bit(bit, memo) is not None:
+                    return True
+        return False
+
     def _loop_condition_bit(self, cond: Any) -> Bit | None:
         """A loop condition as one bit, folded to ``"0"`` / ``"1"`` when it
         is a constant; ``None`` when it does not lower. ``&&`` / ``||``
@@ -3064,7 +3088,11 @@ class _ModuleBuilder:
             left = self._loop_condition_bit(inner.left)
             if left == stop:
                 return stop
-            right = self._loop_condition_bit(inner.right)
+            self._conditional_depth += 1
+            try:
+                right = self._loop_condition_bit(inner.right)
+            finally:
+                self._conditional_depth -= 1
             if right == stop or left is None or right is None:
                 return right if right == stop else None
             if left != stop and left in ("0", "1"):
@@ -4918,8 +4946,10 @@ class _ModuleBuilder:
             value |= v << i
         return value
 
-    # How deep :meth:`_fold_bit` follows a cone of cells.
+    # How deep :meth:`_fold_bit` follows a cone of cells, and how many cells
+    # one fold evaluates at most.
     _FOLD_DEPTH_CAP = 200
+    _FOLD_BUDGET = 2000
 
     def _assume(self, bit: Bit, value: int, depth: int = 0) -> None:
         """Record that ``bit`` is ``value`` wherever the code being walked
@@ -4985,8 +5015,11 @@ class _ModuleBuilder:
         cell, pos = found
         if cell.name not in memo:
             memo[cell.name] = None  # a combinational loop folds to nothing
-            if self._fold_depth < self._FOLD_DEPTH_CAP:
+            if self._fold_depth == 0:
+                self._fold_budget = self._FOLD_BUDGET
+            if self._fold_depth < self._FOLD_DEPTH_CAP and self._fold_budget > 0:
                 self._fold_depth += 1
+                self._fold_budget -= 1
                 try:
                     memo[cell.name] = self._fold_cell(cell, memo)
                 finally:
@@ -5613,7 +5646,7 @@ class _ModuleBuilder:
         # ``output`` / ``inout`` arguments are written back by the walk in
         # progress, as a call statement's are (rtl-buddy-cdc#408: such a
         # call in an expression was an opaque driver).
-        writer = self._expr_writer
+        writer = None if self._conditional_depth else self._expr_writer
         inlined = self._inline_subroutine(expr, outputs=writer is not None)
         if inlined is None or inlined[0] is None:
             return None
@@ -5728,10 +5761,14 @@ class _ModuleBuilder:
                 if maybe is not None:
                     self._var_bits[formal] = maybe
             self._inline_returns.append(ret)
+            # The body's own writes are to its locals, whatever evaluates
+            # the call; the caller writes the outputs back.
+            depth, self._conditional_depth = self._conditional_depth, 0
             try:
                 self._with_flag("return", lambda: self._walk_comb_statement(body))
             finally:
                 self._inline_returns.pop()
+                self._conditional_depth = depth
             result = (
                 self._var_bits.get(ret) if is_function and ret is not None else None
             )
@@ -5944,7 +5981,10 @@ class _ModuleBuilder:
         if cell_type is None:
             return None  # unmodelled op → unknown driver
         a_bits = self._bits_of_expression(expr.left)
-        b_bits = self._bits_of_expression(expr.right)
+        if op_name in ("LogicalAnd", "LogicalOr"):
+            b_bits = self._conditional_operand(expr.right)
+        else:
+            b_bits = self._bits_of_expression(expr.right)
         if a_bits is None or b_bits is None:
             # ``1 || x`` / ``0 && x`` is decided by the constant whatever the
             # other operand is (an out-of-range ``a[i]`` of an unrolled
@@ -5994,7 +6034,10 @@ class _ModuleBuilder:
         into ``$eq``), IEEE 1800-2017 11.4.7 (rtl-buddy-cdc#408: an opaque
         driver)."""
         a_bits = self._bits_of_expression(expr.left)
-        b_bits = self._bits_of_expression(expr.right)
+        if equivalence:
+            b_bits = self._bits_of_expression(expr.right)
+        else:
+            b_bits = self._conditional_operand(expr.right)
         if not a_bits or not b_bits:
             return None
         if equivalence:
@@ -6189,7 +6232,9 @@ class _ModuleBuilder:
                 if getattr(itype, "isUnpackedArray", False):
                     # An unpacked array stands for its elements
                     # (rtl-buddy-cdc#408: an opaque driver).
-                    elements = self._array_inside_hits(left, item, itype)
+                    elements = self._array_inside_hits(
+                        left, item, itype, self._is_signed(expr.left)
+                    )
                     if elements is None:
                         return None
                     hits.extend(elements)
@@ -6205,11 +6250,12 @@ class _ModuleBuilder:
         return (result if result is not None else "0",)
 
     def _array_inside_hits(
-        self, left: tuple[Bit, ...], item: Any, itype: Any
+        self, left: tuple[Bit, ...], item: Any, itype: Any, left_signed: bool
     ) -> list[Bit] | None:
         """``left ==? element`` for every (innermost) element of the
         unpacked array ``item`` of an ``inside`` list (IEEE 1800-2017
-        11.4.13); ``None`` when it does not lower."""
+        11.4.13), both sign-extended to the wider width when both are
+        signed; ``None`` when it does not lower."""
         leaf = itype
         while getattr(leaf, "isUnpackedArray", False):
             leaf = getattr(leaf, "elementType", None)
@@ -6223,10 +6269,20 @@ class _ModuleBuilder:
             or len(bits) % width
         ):
             return None
+        signed = left_signed and bool(getattr(leaf, "isSigned", False))
+        size = max(width, len(left))
+        left = self._resize_bits(left, size, signed)
         return [
-            self._wildcard_match(left, bits[k : k + width], item)
+            self._wildcard_match(
+                left, self._resize_bits(bits[k : k + width], size, signed), item
+            )
             for k in range(0, len(bits), width)
         ]
+
+    @staticmethod
+    def _is_signed(expr: Any) -> bool:
+        """``expr`` has a signed type."""
+        return bool(getattr(getattr(expr, "type", None), "isSigned", False))
 
     def _lower_streaming(self, expr: Any) -> tuple[Bit, ...] | None:
         """A streaming concatenation read (``{<<{a}}``, ``{<<4{a, b}}``,
@@ -6290,7 +6346,7 @@ class _ModuleBuilder:
         (:attr:`_expr_writer`), and the value before it (post-) or after
         it (pre-) (rtl-buddy-cdc#408: an opaque driver). ``None`` outside a
         procedural walk."""
-        if self._expr_writer is None:
+        if self._expr_writer is None or self._conditional_depth:
             return None
         write = self._as_assignment(expr)
         if write is None:
@@ -6307,10 +6363,25 @@ class _ModuleBuilder:
         (:attr:`_expr_writer`), and the target's value after it
         (rtl-buddy-cdc#408). ``None`` outside a procedural walk or for a
         nonblocking write."""
-        if self._expr_writer is None or getattr(expr, "isNonBlocking", False):
+        if (
+            self._expr_writer is None
+            or self._conditional_depth
+            or getattr(expr, "isNonBlocking", False)
+        ):
             return None
         self._expr_writer(expr)
         return self._bits_of_expression(expr.left)
+
+    def _conditional_operand(self, expr: Any) -> tuple[Bit, ...] | None:
+        """:meth:`_bits_of_expression` of an operand SystemVerilog evaluates
+        only on some condition (the right of ``&&`` / ``||`` / ``->``, an
+        arm of ``?:``): a write it makes (``c && t++``) would happen
+        whatever the condition, so it is not lowered (reported)."""
+        self._conditional_depth += 1
+        try:
+            return self._bits_of_expression(expr)
+        finally:
+            self._conditional_depth -= 1
 
     def _lower_conditional(self, expr: Any) -> tuple[Bit, ...] | None:
         # pyslang ConditionalExpression has ``conditions`` (a list) and
@@ -6333,8 +6404,8 @@ class _ModuleBuilder:
         sel_bits = None if sel is None else (sel,)
         # pyslang names the branches from source order: ``left`` is the
         # TRUE branch of ``s ? left : right``, ``right`` the FALSE one.
-        true_bits = self._bits_of_expression(expr.left)
-        false_bits = self._bits_of_expression(expr.right)
+        true_bits = self._conditional_operand(expr.left)
+        false_bits = self._conditional_operand(expr.right)
         if sel_bits is None or true_bits is None or false_bits is None:
             return None
         width = self._expr_width(expr) or max(len(true_bits), len(false_bits))
@@ -7639,10 +7710,15 @@ class _ModuleBuilder:
             return None
         sym = self._canonical_var(e.symbol)
         sym_type = getattr(sym, "type", None)
+        sym_type = getattr(sym_type, "canonicalType", None) or sym_type
         if (
             self._is_constant_name(sym)
             or self._unpacked_ranges(sym) is not None
-            or not getattr(sym_type, "isIntegral", False)
+            or not (
+                getattr(sym_type, "isIntegral", False)
+                # A member of an unpacked struct (rtl-buddy-cdc#408).
+                or getattr(sym_type, "isUnpackedStruct", False)
+            )
         ):
             return None
         width = len(self._alloc_bits(sym))
