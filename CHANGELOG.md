@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reset under enable, run-time index reads), and two gate-level allowlist
   rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
   CDC-020 fires on its capture).
+
 - **SDC-variety and multi-clock fixtures** (rtl-buddy-cdc#331) —
   *test-only, no output change.* 27 new fixtures, checked end to end
   through `analyze` on both SDC backends by
@@ -50,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   acknowledge relayed through a third domain, and CDC-006 fires on a
   typed input port wired straight into a 2FF synchroniser. All 27 agree
   across the gate-level legs (no new allowlist rows).
+
 - **Gate-level fixture corpus** (#331) — *test-only, no output change.*
   `tests/test_gate_level_corpus.py` rebuilds every fixture through two
   Yosys gate flows (`techmap`, and `opt_dff; techmap; abc`) and asserts
@@ -63,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strict allowlist; the analyzer gaps behind them (reset pin `R`,
   `$_DFF_NN0_` clock polarity, `$_MUX_`, gate-level clock gating,
   bit-blasted buses) are tracked separately.
+
 - **`set_max_delay -datapath_only` is read as CDC intent** (#325) — the
   constraint that bounds an intentional async crossing's datapath was
   dropped as STA noise, so a pair related only by it looked synchronous
@@ -76,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (warning; object resolution is #328's job); `-through` is not
   interpreted (warning). Plain `set_max_delay` stays ignored exactly as
   before. Both SDC backends.
+
 - **`set_case_analysis` resolves clock muxes** (#325) — a clock mux
   whose select is a case-analysed mode port still presented both clocks
   to the tracer, which took the first resolving leg, so flops behind it
@@ -92,12 +96,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets naming no input port are reported and ignored. CDC-010 is
   unaffected: a port-driven select never fired it. Narrow by design —
   no general constant propagation.
+
 - **Domain map schema 1.3** (#325), additive: top-level
   `datapath_only_pairs` (sorted clock pairs, same shape as
   `false_path_pairs`), `max_delay_datapath_only` (every
   datapath-only record: `from_clocks`, `to_clocks`, `from_objects` /
   `to_objects` as `{kind, name}`, `value`, `clock_pair`) and
   `case_analysis` (`{port, value}` per `set_case_analysis` target).
+
 - **Object-scoped and `-through` `set_false_path` are interpreted**
   (#328) — `set_false_path -from [get_cells u_cfg/mode_q_reg*]`, the
   usual way to constrain a quasi-static configuration register, was
@@ -125,6 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Domain map (schema 1.3, additive): top-level `false_path_exceptions`,
   and per-crossing `sdc_exceptions` / `sdc_acknowledged` on covered
   crossings only. Both SDC backends.
+
 - **`set_max_delay -datapath_only` is read as CDC intent** (#325) — the
   constraint that bounds an intentional async crossing's datapath was
   dropped as STA noise, so a pair related only by it looked synchronous
@@ -138,6 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   see above); `-through` is not
   interpreted (warning). Plain `set_max_delay` stays ignored exactly as
   before. Both SDC backends.
+
 - **CDC-024 — top-level output launched asynchronously to its
   `set_output_delay` contract** (#323). `set_output_delay -clock C
   [get_ports o]` declares that the receiver outside the design captures
@@ -177,6 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `domain.flop_domain_resolver` is the per-flop domain function
   `assign_domains` now delegates to, so the rule resolves only the
   launching registers without re-tracing the whole design.
+
 - **CDC-024 — top-level output launched asynchronously to its
   `set_output_delay` contract** (#323). `set_output_delay -clock C
   [get_ports o]` declares that the receiver outside the design captures
@@ -217,6 +226,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `domain.flop_domain_resolver` is the per-flop domain function
   `assign_domains` now delegates to, so the rule resolves only the
   launching registers without re-tracing the whole design.
+
 - **CDC-025 — top-level output from clocked logic with no
   `set_output_delay` contract** (#329). The output-side mirror of
   CDC-011: CDC-024 can only check an output that has a contract, so an
@@ -260,6 +270,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before. New fixtures `bad_output_async_merge` /
   `good_output_async_merge_synced` and `bad_output_missing_contract` /
   `good_output_contracts_complete`.
+
 - **Instance-scoped waivers** (#327) — a waiver line can carry an
   `inst:<regex>` scope, alone (`waive CDC-002 inst:^u_ip(/|$) signed
   off`) or after the object regex (`waive CDC-001 .*q.* inst:^u_a$`).
@@ -272,6 +283,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an `inst_regex` key (`null` without a scope); nothing else in the
   output changes. Existing waiver lines keep their meaning, except one
   whose object regex or reason starts with a literal `inst:`.
+
 - **Dual-port memory crossings: CDC-026** (#326) — *minor: new rule,
   new report content on designs with inferred RAMs only.* Inferred
   memories (Yosys `$memwr_v2` / `$memrd` / `$memrd_v2` after `proc`,
@@ -288,12 +300,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synchronised into the read domain gating the read pointer) is
   recognised and silent. The `unsupported_dualport_ram_crossing`
   sentinel (#176) is now the `bad_dualport_ram_crossing` fixture.
+
 - **Domain map: `memory_crossings`** (#326) — one entry per memory
   write-clock → read-clock path with its `control` crossings,
   `synchronizer` (new scheme value `"fifo"`) and `findings`. Additive:
   the key is present only when the design has memory cells, so
   memory-free maps are byte-identical and the schema version is
   unchanged.
+
 - **Simulation oracle for CDC-004 and CDC-005** (rtl-buddy-cdc#331) — *test-only,
   no output change.* `tests/sim/test_multibit_oracle.py` adds seven
   DUTs, each checked on one source file by both the analyzer and an
@@ -309,6 +323,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configurations per DUT. The analyzer half reads committed netlists
   (built with plain-flop stand-ins, `meta_flop_synth.sv`), so it runs
   without Yosys or Icarus. Analyzer and simulation agree on all seven.
+
 - **Open-source integration corpus** (rtl-buddy-cdc#331) — *test-only, no output
   change.* `tests/integration/` runs the analyzer on seven real
   multi-clock designs written by other people (three async FIFOs, two
@@ -327,6 +342,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validates the manifest and never touches the network. CI runs them
   in a separate `integration.yml` workflow (after merges to `main`,
   weekly, and on demand), not on pull requests.
+
 - **Cell-variety fixtures** (rtl-buddy-cdc#331) — *test-only, no output
   change.* Four fixtures put the Yosys cells the corpus lacked on real
   crossings, checked by `tests/test_cell_variety_fixtures.py`:
@@ -344,6 +360,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reset under enable, run-time index reads), and two gate-level allowlist
   rows (a W-bit `$dffsr` / `$dffsre` is not regrouped at gate level, so
   CDC-020 fires on its capture).
+
 - **Cell-variety fixtures** (rtl-buddy-cdc#331) — *test-only, no output
   change.* Four fixtures put the Yosys cells the corpus lacked on real
   crossings, checked by `tests/test_cell_variety_fixtures.py`:
@@ -378,6 +395,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     now a dict lookup built once per module.
   - The JSON and SARIF reports are serialised with `json.dumps`, which
     can use the C encoder, instead of `json.dump`.
+
 - **RDC-008 honours a reset port the SDC types to the consumers' clock**
   (rtl-buddy-cdc#378). `set_input_delay -clock C [get_ports rst_n]`
   states that the integrator times the reset against `C`, so its
@@ -442,6 +460,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `bbx_residual_declines` gains the CDC-021 on `strobe` that its flat
     view always reported. Message changes: the CDC-011, CDC-021 and
     CDC-025 hint text, as above.
+
 - **Reset analysis: RDC-008's message, per-lane sync resets, a reset mux
   left on an `$sdff`'s `D`** (rtl-buddy-cdc#398, items 3, 6, 7). No
   committed fixture or integration golden changes verdict (per-rule
@@ -482,6 +501,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     active high. Residual: slang writes `else if (!b)` through a
     `$logic_not` and an active-high mux, so on slang such a combination
     still reads active high.
+
 - **Reset analysis: set / clear polarity, resets outside an enable,
   `proc`-form sync resets** (rtl-buddy-cdc#394, items 1, 2, 3, 5). No
   committed fixture or integration golden changes verdict (per-rule
@@ -536,6 +556,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New fixtures `bad_set_clear_reset_polarity`,
     `bad_sync_reset_over_enable_capture` and `good_sync_reset_forms`,
     checked by `tests/test_reset_analyzer_394.py`.
+
 - **SDC clock collections are evaluated, not read as names**
   (rtl-buddy-cdc#390). No committed fixture or integration golden changes
   verdict.
@@ -588,6 +609,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and is not done here), but now says so: the warning names the port,
     the removed pattern and the clock the removed bits are typed to. It
     used to be silent.
+
 - **Sync resets and set / clear pins read the same in every netlist
   form** (rtl-buddy-cdc#383, rtl-buddy-cdc#378). The `proc` form of a
   design (reset and enable muxes on `D`, a set / clear flop's `CLR` and
@@ -633,6 +655,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     corpus gains `test_verdict_invariant_under_opt_dff`: every fixture's
     `proc` and `opt_dff` builds agree, except the two whose stuck-at
     flop `opt_dff` removes.
+
 - **Crossings behind more than 4 combinational cells were dropped
   silently** (rtl-buddy-cdc#347). `find_crossings` stopped its walk at
   `max_hops=4` and the CLI never changed it, so a deeper path from one
@@ -658,6 +681,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - No committed fixture or integration-corpus verdict changes. New
     fixture `bad_deep_comb_crossing` (a port- and a flop-sourced path
     six cells deep, RTL / gate-level / greybox netlists).
+
 - **A crossing through a flop's enable or sync-reset pin was not found
   after `opt_dff`** (rtl-buddy-cdc#375). `find_crossings` ended its walk
   on flop `D` pins only. After `proc` a flop's enable is a hold mux and
@@ -684,6 +708,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `proc`, `opt_dff` and gate-level forms) and a gate-level corpus check,
     `test_crossings_invariant_under_opt_dff`, that every fixture keeps
     the same register-to-register crossings after `opt_dff`.
+
 - **slang frontend dropped assignments to a concatenation**
   (rtl-buddy-cdc#370). `always @(posedge clk_b) {q, meta} <= {meta,
   a_q};` (a packed-shift synchroniser) lowered to no flops and no
@@ -723,6 +748,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `slang-incomplete-comb-block` (an `always @*` that leaves one
     variable unassigned on some path is dropped whole). No committed
     fixture changes verdict on either frontend.
+
 - **`set_input_delay` / `set_output_delay` silently ignored a typo'd
   clock and glob port targets** (rtl-buddy-cdc#357).
   - A `-clock` naming no `create_clock` / `create_generated_clock` now
@@ -743,6 +769,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     targets as written); `sdc_objects.resolve_port_delays` rewrites
     `port_clock`, and the CLI calls it right after parsing. No
     committed fixture changes verdict.
+
 - **Text report printed an empty title for 13 rules** (rtl-buddy-cdc#355).
   `CDC-009` … `CDC-013`, `CDC-018` … `CDC-021`, `RDC-006` … `RDC-008`
   and `CDC-BBX` had no entry in the reporter's rule-title table, so the
@@ -750,6 +777,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shortDescription` fell back to the bare rule id. Every rule now has
   a one-line title in the README's wording, and a test fails if a rule
   is registered without one.
+
 - **RDC-006 fired on a constant-leg mux driving an async reset**
   (rtl-buddy-cdc#354). A `$mux` / `$_MUX_` (or `$pmux`) whose data legs
   are all constants, such as the `rst_n ? 1'b0 : 1'b1` Yosys builds for
@@ -761,6 +789,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its select converge as they would through the inverter. Verdict
   change: `flop_zoo_crossing` loses its RDC-006 (now 5 × CDC-001 only),
   and its gate-level allowlist row is removed.
+
 - **CDC-001 missed a synchroniser stage exported straight to an output
   port** (rtl-buddy-cdc#344). The single-reader test behind the synchroniser-chain
   walk counted cell input pins only, so a first stage whose `Q` drove a
@@ -769,10 +798,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exported stage ends the chain and CDC-001 fires — the same verdict as
   when the tap goes through a gate. The last stage of a synchroniser
   still drives outputs freely.
+
 - **CDC-018 over-counted a cascade behind an exported stage** (rtl-buddy-cdc#344).
   Same cause: a 2FF synchroniser whose output is exported and also
   pipelined was reported as a 4-or-more-flop cascade. The tap now ends
   the chain at the synchroniser.
+
 - **CDC-008 reported a blackbox's clock output pin as clock-as-data**
   (rtl-buddy-cdc#344). When a blackbox's forwarded clock clocked a flop in the
   parent, the stub's own `clk_out` pin — the clock's driver — was
@@ -780,17 +811,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `port_directions`, so output pins are never readers (CDC-008, and the
   reader counts above). The CDC-BBX finding for the clock output is
   unchanged.
+
 - **CDC-019 missed a one-hot decoder that Yosys lowers to a ROM**
   (rtl-buddy-cdc#344). `proc` turns a full constant `case` table into an
   asynchronous `$memrd_v2`; the rule only accepted a comb cell's `Y` as
   the shared driver. An asynchronous memory read port's `DATA` is now
   accepted too, matching the slang frontend, which keeps the mux.
+
 - **`--sync-primitive` decline now says why** (rtl-buddy-cdc#344). A registered
   module whose destination clock pin cannot be identified (two or more
   clock pins, none named `dest` / `dst`) is still declined, which is the
   safe outcome, but the CDC-BBX message now names that cause instead of
   the generic "not provably single-clock", and the option's help text
   says a destination pin hint is needed.
+
 - **Gate-level netlists: reset pins, clock edge, `$_MUX_` and gate-cell
   clock gating are read** (#336). On a netlist after `techmap` /
   `abc` the analyzer misread information the netlist carries:
@@ -816,6 +850,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flops the same way, and the rules go through them. 43 of the 99
   gate-level corpus allowlist rows are gone. No RTL-level fixture
   verdict changes.
+
 - **A clock gate's domain no longer depends on which input carries the
   clock** (found via #336). The rule context traced flop clocks without
   the SDC's clock set, so in `en & clk` first-leg-wins picked the
@@ -824,6 +859,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `create_clock` ports. It does this for leg choice only; root names
   are not normalised, so CDC-021 still sees raw port names.
   `set_input_delay`-typed data ports never count as clocks.
+
 - **Gate-level netlists: bit-blasted buses are regrouped into their
   registers** (#337). After `techmap` / `abc` a W-bit register is W
   one-bit `$_DFF_*` cells, so every bus rule lost the bus:
@@ -849,6 +885,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes. All 53 bit-blast / decoder rows of the gate-level corpus
   allowlist are gone, and three more committed gate netlists cover the
   regrouping in the default CI job.
+
 - **CDC-013 recognises a toggle folded into an enable flop** (#338).
   `opt_dff` (so any synthesis-shaped flow) turns `if (en) q <= ~q;`
   into an enable flop with `D = ~Q` and `en` on the enable pin, instead
@@ -860,6 +897,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cells and either enable polarity. `D = ~Q` without an enable (or
   with a constant one) is a divider, not a toggle, and stays silent.
   The slang frontend never emits enable flops, so it was not affected.
+
 - **Verdicts no longer depend on dead cells** (#338). Without
   `opt_clean` in the netlist flow, an unloaded `$not` of a clock fired
   CDC-008, and the `for`-loop counter register `proc` leaves in a reset
@@ -871,6 +909,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are never dropped, and a module with no observation point at all is
   analysed whole. The design summary's cell count is the observable
   count. No committed fixture verdict changes.
+
 - **slang frontend: plain `always` blocks and blackbox instances**
   (#345) — two gaps that made `lint --frontend slang` report nothing
   where the Yosys frontend reports findings.
@@ -902,6 +941,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     families and `fuzz_cdc023_clock_combine_and_s1_v2001` (24 cases).
     The slang fuzz cache now pickles `(module, blackboxes)` under a new
     file suffix.
+
 - **Several clocks on one port (`create_clock -add`)** (#330) — `-add`
   was parsed and ignored: with or without it, both clocks stayed on the
   port, the flops behind it took the first-declared clock (on both SDC
@@ -928,6 +968,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `-master_clock` disambiguates; the master is still never inferred
     from `-source`.
   Reports on SDCs without such a port are unchanged.
+
 - **slang frontend: memories and forward-referenced assigns** (#326) —
   a run-time-indexed write to an unpacked array was silently dropped
   and the read became an opaque `$_UNKNOWN_`; they now lower to the
@@ -936,6 +977,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its continuous `assign` (the usual position of async-FIFO
   `empty` / `full` flags) read undriven placeholder bits; it now reads
   the assign's driver.
+
 - **slang frontend: arrays of instances** (rtl-buddy-cdc#353) —
   `sync2 u_sync[1:0] (...)` produced no cells at all on the pyslang
   path, so the instances, their flops and every crossing through them
@@ -973,6 +1015,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     with their source location instead of vanishing.
   - New fuzz template `inst_array_sync` (both range directions, 1- and
     2-stage elements) runs through the cross-frontend oracle.
+
 - **A correct synchroniser read as depth 1 when the rule context and the
   crossing walk named its clock differently** (rtl-buddy-cdc#358). The
   rule context traced every flop's clock without the SDC's
@@ -990,6 +1033,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the clock-network and boundary clock-pin walks — is now built from one
   bundle, `ClockSpec.clock_root_inputs()`. CDC-021 still names the
   undeclared port, from the same walk's raw root.
+
 - **An ICG whose enable is typed to a foreign clock was a "two-clock
   combine"** (rtl-buddy-cdc#358). The crossing walk counted a
   `set_input_delay -clock`-typed data port as a clock when choosing a
@@ -999,6 +1043,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ClockSpec.declared_clock_for_port`), as they already did in the rule
   context; the boundary clock-pin walk also makes the same leg choice
   and names a pin's clock canonically.
+
 - **CDC-012 took any destination signal reaching the payload for an
   acknowledge** (rtl-buddy-cdc#369). A destination-domain bit
   synchronised into the source and feeding only the payload's value
@@ -1012,6 +1057,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CDC-012 good fixture keeps its verdict. The domain map's `"handshake"`
   verdict uses the same walk, so a relayed acknowledge now reads
   `"handshake"` there too.
+
 - **CDC-006 fired on a typed input wired straight into a synchroniser**
   (rtl-buddy-cdc#360). Any foreign-clock port in the first stage's `D`
   fanin was reported as a "combinational source", including a port that
@@ -1021,6 +1067,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single-input buffers / inverters and the stage's own constant-leg
   synchronous-reset `$mux` don't count. Comb logic of ports before a
   synchroniser still fires.
+
 - **CDC-012 missed an acknowledge relayed through a third clock domain**
   (rtl-buddy-cdc#359). The handshake-feedback walk stayed inside the
   source domain, so a payload held until an ack that travels
@@ -1033,6 +1080,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synchronisers, so a shared reset or a free-running third-domain
   register is not an acknowledge). Whether each relay hop is
   synchronised stays CDC-001's job.
+
 - **CDC-001 fired on a single bit captured under a handshake enable**
   (rtl-buddy-cdc#368). An 8-bit payload captured under a toggle
   handshake's synchronised enable was accepted as a gated bus, but a
@@ -1056,6 +1104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (hold-mux, `$dffe` and gate-level netlists) and
   `bad_handshake_single_bit`. No other committed fixture changes
   verdict.
+
 - **RDC-001 fired on a reset synchroniser's own flops**
   (rtl-buddy-cdc#367). A reset generated by a register in another clock
   domain must be synchronised into the destination, and the
@@ -1069,6 +1118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported on, only those flops. New fixtures
   `good_reset_sync_foreign_reg` and `bad_reset_sync_foreign_reg`. No
   other committed fixture changes verdict.
+
 - **CDC-004 missed a gray pointer into a synchroniser with a synchronous
   reset** (rtl-buddy-cdc#366). `if (rst) begin meta <= '0; q <= '0; end`
   leaves, after `proc`, a constant-leg `$mux` between the stages, and
@@ -1083,6 +1133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `opt_dff` form (`$sdff`) already matched. New fixture
   `good_gray_bus_sync_srst` (both netlist forms). No other committed
   fixture changes verdict.
+
 - **CDC-004 missed a gray encoder written `(b >> 1) ^ b`**
   (rtl-buddy-cdc#365). The structural gray detector
   (`_is_gray_encoded_source`) accepted the `$xor` only with the
@@ -1093,6 +1144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate-level truth-table fallback compares functions and was already
   order-free. New fixture `good_gray_xor_swapped`. No other committed
   fixture changes verdict.
+
 - **A synchronous-reset mux was misread in `proc`-form netlists**
   (rtl-buddy-cdc#376). `if (rst) q <= '0; else q <= x;` leaves, after
   `proc`, a constant-leg `$mux` in front of `D`; `opt_dff` folds it
@@ -1115,6 +1167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as the gate. New fixtures `bad_bus_sync_local_srst` and
   `good_pulse_synchronizer_srst`, each in both netlist forms. No other
   committed fixture changes verdict.
+
 - **`[all_inputs]` / `[all_outputs]` in `set_input_delay` /
   `set_output_delay` typed nothing, silently** (rtl-buddy-cdc#378). The
   collection is now read as every port of the command's direction, the
@@ -1123,6 +1176,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set_output_delay`) selects nothing that command can type and is
   reported as an SDC warning. `remove_from_collection` is still not
   interpreted. No committed fixture changes verdict.
+
 - **A clock-named blackbox pin fed by a typed data port read as a clock**
   (rtl-buddy-cdc#378). The boundary classifier decides whether a
   non-allow-listed, clock-named blackbox input (`aux_clk`) is a clock pin
@@ -1133,6 +1187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the clock-identity question `declared_clock_for_port` answers, on the
   trace root before the typed-port renaming. No committed fixture
   changes verdict.
+
 - **Rules renamed canonical clock names a second time**
   (rtl-buddy-cdc#378). Since rtl-buddy-cdc#358 the rule context's
   domains are canonical clock names, but CDC-006, CDC-010, CDC-015,
@@ -1143,6 +1198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typed port in the synchroniser's own clock fired CDC-006, and a reset
   between two synchronous clocks fired RDC-001. The rules now compare the
   domain names as they are. No committed fixture changes verdict.
+
 - **slang frontend: silent drops and Yosys-parity gaps**
   (rtl-buddy-cdc#377).
   - A value computed by an `always @*` / `always_comb` block, or by a
@@ -1261,6 +1317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the prior value kept a temporary's register alive (`rd_ptr_temp` /
     `wr_ptr_temp` in the corpus' `axis_async_fifo`); every corpus design
     now has the same flop bits on both paths.
+
 - **CDC-020 on full-width gated captures** (rtl-buddy-cdc#386, item 2).
   CDC-020 (sliced-bus reconvergence) counted every destination of a
   multi-bit source, whatever the crossing's width, so two 8-bit captures
@@ -1272,6 +1329,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `good_gated_bus_double_capture`. No committed fixture changes verdict;
   the two that report CDC-020 (`bad_sliced_bus_reconvergence`,
   `bad_comb_ops_before_sync`) still do.
+
 - **Gate level: a multi-bit `$dffsr` / `$dffsre` was never regrouped**
   (rtl-buddy-cdc#386, item 1). `proc` builds a W-bit `$dffsr`'s `SET` /
   `CLR` from W-bit muxes, so after `techmap` each `$_DFFSR_` /
@@ -1286,6 +1344,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixtures for this cause are gone (`bad_flop_variety_handshake`'s synth
   leg keeps its row for the constant-leg `CLR` mux). RTL netlists are
   untouched, so no committed fixture or integration verdict changes.
+
 - **SDC: bus-glob delay targets left unresolved on the API path**
   (rtl-buddy-cdc#386, item 3). A `set_*_delay` target written as a bus
   index or glob (`[get_ports {src_a[*] src_b[*]}]`, `{d[3]}`, `d*`) is
@@ -1297,6 +1356,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `synthesize_unconstrained_inputs` and `_build_context` now resolve the
   targets first (warnings on `spec.partial_warnings`), once per spec and
   netlist, so both paths type the same ports. CLI output is unchanged.
+
 - **SDC: a constraint applied to the port it meant to remove**
   (rtl-buddy-cdc#382). On the Tcl backend the reader's `unknown` handler
   returned the *last argument* of any command the safe interpreter does
@@ -1321,6 +1381,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PortDelay.line` no longer takes part in equality, like
   `DatapathOnlyDelay.line`. No committed fixture or integration verdict
   changes.
+
 - **slang frontend: a sync reset under an enable is an `$sdffce`**
   (rtl-buddy-cdc#384). `if (en) if (srst) q <= 0; else q <= d;` became a
   `$dff` behind a load mux selected by `en & ~srst`: the reset was no
@@ -1333,6 +1394,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   findings on the slang path; their slang `xfail`s are gone and a
   structural test (crossing pairs, flop families and pins, findings per
   register) holds them there.
+
 - **slang frontend: a second async control builds a `$dffsr`**
   (rtl-buddy-cdc#384). Only the first two events of an edge-triggered
   block were read, so in `@(posedge clk or negedge rst_n or negedge
@@ -1345,6 +1407,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holding its value for a register no control writes). A body whose
   leading `if` / `else if` chain does not test each control once is
   reported. `good_flop_variety_handshake`'s slang verdict now matches.
+
 - **slang frontend: an async load of a value is an `$aldff`**
   (rtl-buddy-cdc#384). `if (aload) q <= ad` in an edge-triggered block
   lowered as an `$adff` resetting to 0, with no warning: `ad` and its
@@ -1353,6 +1416,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`AD` the value, `ALOAD` the control, `ALOAD_POLARITY` its edge). A
   statement in a reset / async-load arm other than an assignment (a nested
   `if`, a `case`) is now reported instead of skipped silently.
+
 - **slang frontend: run-time index reads lower to `$shiftx`**
   (rtl-buddy-cdc#384). `a_q[idx_q]`, `a[i +: W]` and `a[i -: W]` on a
   packed value were reported and modelled as an opaque driver, so the
@@ -1363,6 +1427,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`$sub` / `$mul`, signed `B` when the position can be negative). A
   run-time index into an unpacked array that is not a memory is still
   reported. The two fixtures' slang `xfail`s are removed.
+
 - **slang frontend: overlapping `case` labels in a clocked block resolve
   first-match** (rtl-buddy-cdc#384). Each item's enable was its own label
   match, and a later write overrides an earlier one, so a value matching
@@ -1370,6 +1435,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the first (IEEE 1800-2017 12.5). An item's enable now also
   carries "no earlier item matched" whenever two items can match the same
   value; distinct constant labels are lowered as before.
+
 - **slang frontend: wires get a netname** (rtl-buddy-cdc#384). Only
   variables were named on the slang path, so a waiver, an SDC `get_nets`
   or a declaration attribute naming a `wire` (or a port declared as one)
@@ -1377,6 +1443,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clock net) gave the driver cell's name instead. Nets are now named like
   variables, `inst.wire` inside an instance, as Yosys `flatten` names
   them.
+
 - **slang frontend: a register the reset arm leaves alone holds under
   the reset** (rtl-buddy-cdc#390, item 10). A register, or some bits of
   one, written in the data branch of a reset block but not in its reset
@@ -1391,6 +1458,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports. A `for` loop in a reset arm is unrolled like the data
   branch's; a run-time `if` / `case` there stays reported, each bit it
   writes taking the one constant every write loads, else 0.
+
 - **slang frontend: a register only a reset arm writes gets its flop**
   (rtl-buddy-cdc#390, item 11). A register written in a reset (or
   async-control) arm but never in the data branch got no flop, and a reset
@@ -1400,6 +1468,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`D` = `Q`), the reset bits of a register the data branch also writes in
   that register's `$aldff`, the `proc` reset mux on a `$dff` for a sync
   reset, a `$dffsr` for one of several async controls.
+
 - **slang frontend: netnames carry the declared range** (rtl-buddy-cdc#390,
   item 12). Slang netnames never set `offset` / `upto`, so a bit-indexed
   name on a `[7:4]` or `[0:7]` vector (`get_nets w[5]`, `get_ports s[4]`,
@@ -1411,6 +1480,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[N-1:0]`, as on Yosys), and keep them when a netname's bits are
   re-pointed. `netlist.py` and `sdc_objects.py` already read both
   frontends' fields the same way.
+
 - **One control bit on every lane of a register is a single-bit
   crossing, not a bus** (rtl-buddy-cdc#390). A 1-bit foreign reset,
   enable or mux select shared by a W-bit register's lanes was a W-bit
@@ -1444,6 +1514,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     only, no longer also CDC-004.
   A waiver written for CDC-004 / CDC-012 on such a crossing needs to name
   CDC-001 instead.
+
 - **A sync reset is looked through where `opt_dff` folds it**
   (rtl-buddy-cdc#390). The rules step over a flop's own sync-reset mux
   (synchroniser chain walks, packed shift registers, CDC-003, multi-bit
@@ -1460,6 +1531,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same selects, the case `opt_dff` keeps as one cell. New fixture
   `good_sync_reset_mux_folds` (`proc` and `opt_dff` forms). No committed
   fixture changes verdict.
+
 - **`find_reset_crossings` and the reset-domain map read every reset
   pin** (rtl-buddy-cdc#390). They read only `ResetDomain.reset` (one pin
   per flop, `CLR` on a set / clear flop), so a `SET` driven from another
@@ -1474,6 +1546,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only on such a pin. Schema stays 1.0 (additive); the
   `bad_marked_reset_polarity` golden gains `"pin": "ARST"`. No rule
   verdict changes.
+
 - **CDC-015 reads every asynchronous control pin** (rtl-buddy-cdc#390).
   It read only `ARST`, so a synchroniser stage set, cleared or
   async-loaded by another domain's register (`$dffsr` `SET` / `CLR`,
@@ -1482,6 +1555,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the signal it acts on (`ResetDomain.controls`), and names them in the
   message. New fixture `bad_sync_chain_foreign_set` (`proc` and
   gate-level forms). No committed fixture changes verdict.
+
 - **Port typing is per bit** (rtl-buddy-cdc#394, item 4). A
   `set_input_delay` / `set_output_delay` whose target selects only some
   bits of a bus port — `[get_ports {d[0] d[1]}]`, an unbraced
@@ -1509,6 +1583,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crossings and entries are unchanged. New fixture
   `bad_partial_bus_port_typing`. No committed fixture or integration
   golden changes verdict.
+
 - **slang frontend: clocked `if` / `else if` muxes in `proc` order**
   (rtl-buddy-cdc#394, item 6). The clocked walker ANDed each write's
   enclosing conditions into one enable and chained the writes' hold muxes
@@ -1525,6 +1600,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and holds included. The case is back in
   `tests/test_slang_parity_390.py`'s enable-form parity matrix; no
   committed fixture or integration golden changes verdict.
+
 - **slang frontend: unpacked-array elements are netnames of their own**
   (rtl-buddy-cdc#394, item 7). `logic [7:4] a [0:1]` was one 8-bit
   netname `a`, so `get_nets a[1]` / `get_cells a_reg[1]` named bit 1 of
@@ -1535,6 +1611,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`m[1][0]` of `m [1:0][2:0]` is `m[0]`), each with its element's
   `offset` / `upto` and the declaration's attributes; an array written at
   a run-time address (a memory, no netname on Yosys) gets none.
+
 - **SDC bit selections: per-bit clocked flops, fix hints, element bits,
   unbraced-index warnings** (rtl-buddy-cdc#398, items 4, 5, 8, 9). No
   committed fixture or integration golden changes verdict.
@@ -1565,6 +1642,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     on the Tcl backend ran command substitution without the "unbraced
     bus index" warning `d[3]` gets. Every index form now warns, on every
     command; the resolved targets are unchanged.
+
 - **slang frontend: unpacked arrays are memories or registers as Yosys
   decides, and every read of one is lowered** (rtl-buddy-cdc#398, items
   1 and 2). The frontend now makes Yosys' `mem2reg` decision per array,
@@ -1600,6 +1678,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside a concatenation target are still reported, not lowered. No
   committed fixture or integration golden changes verdict; three unit
   tests that pinned the old shapes now assert the new ones.
+
 - **slang frontend: loop-variable selects, run-time index writes, negated
   sync selects, memory names** (rtl-buddy-cdc#402, items 1, 2, 3, 4, 8,
   9). Checked against Yosys 0.64's `lint` netlist by simulation and on
@@ -1662,6 +1741,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and on each fixture's `opt_dff`, `techmap` and `abc` rebuilds (866
   netlists; five of them exercise it). CDC-011 reads the crossings
   alone.
+
 - **`bad_gray_phase_break`'s header misdescribed the design**
   (rtl-buddy-cdc#378) — *test-only, no output change.* It said
   re-registering a gray code in the source clock breaks the
@@ -1672,6 +1752,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   intermediate register is an unconditional delay), with
   `(* cdc_gray *)` as the escape. Line numbers are unchanged, so the
   committed netlist stands.
+
 - **Fixture READMEs regenerated and drift-checked in CI**
   (rtl-buddy-cdc#356). Thirteen generated fixture READMEs were stale or
   missing (header comments, netlists and companion gate netlists had
@@ -1683,6 +1764,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elaborate (and whose READMEs depend on its cell naming); without the
   flag they are also skipped, with a clear message, when `yosys` is not
   on PATH.
+
 - **Fuzz templates for CDC-018…023, RDC-007/008 and CDC-BBX** (#331,
   work item 2) — *test-only: no analyzer change.* CDC-022, CDC-023 and
   CDC-BBX had no fuzz template; CDC-018/019/020/021 and RDC-007/008 had
@@ -1708,6 +1790,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `proc` lowers an 8-way `case` decoder to a ROM.
   - Seven cases pin verdicts believed wrong, each with a `gap_note`. The
     list is in `wiki/concepts/cdc-testing-strategy.md`.
+
 - **The local slang fuzz cache is keyed by the frontend code**
   (rtl-buddy-cdc#384) — *test-only.* `tests/fuzz/slang_cache.py` keyed
   its pickles by case content and pyslang version only, so a local
@@ -1715,6 +1798,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   netlist of the old frontend. The key now also carries a hash of
   `frontends/slang.py` and `netlist.py`. CI starts from an empty cache
   and was not affected.
+
 - **slang enables stay hold muxes on `D`** (rtl-buddy-cdc#390, item 13)
   — *test-only, no output change.* The `lint` recipe runs `proc; flatten;
   opt_clean` and no `opt_dff`, so on the Yosys path an enable is a hold
@@ -1730,6 +1814,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an `if` / `else if` chain's muxes in a different order from `proc` (the
   later arm's mux outermost, selected by `~c1 & c2`), not because of the
   enable lowering.
+
 - **slang active-low sync resets keep `SRST = srst_n`** (rtl-buddy-cdc#390,
   item 14) — *test-only, no output change.* On Yosys 0.64 `proc`'s
   trailing `opt_expr` folds the `$logic_not` of `if (!srst_n)` into the
