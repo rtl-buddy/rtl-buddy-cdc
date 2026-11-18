@@ -16,11 +16,14 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, Sequence
 
 from rtl_buddy_cdc.domain import (
+    ClockCombine,
     Crossing,
+    _GATE_TYPES,
     _lane_targets,
     bit_clock_resolver,
     boundary_clock_sinks,
     clock_root_resolver,
+    clock_network_events,
     find_clock_combines,
     find_scan_mode_flops,
     flop_domain_resolver,
@@ -388,6 +391,23 @@ class _RuleContext:
             if len(bits) == 1 and isinstance(bits[0], int):
                 out[bits[0]] = sink
         return out
+
+    @cached_property
+    def clock_network_events(
+        self,
+    ) -> tuple[list[ClockCombine], dict[str, frozenset[Bit]]]:
+        """:func:`~rtl_buddy_cdc.domain.clock_network_events` for this
+        context's spec and hop budget, with the abstracted instances'
+        clock pins as sinks: CDC-023 reads the combines, CDC-010 the
+        controls; one walk serves both."""
+        if self.clock_spec is None:
+            return [], {}
+        return clock_network_events(
+            self.module,
+            max_depth=self.max_depth,
+            extra_sinks=self.boundary_clock_sinks,
+            **self.clock_spec.clock_root_inputs(),
+        )
 
     @cached_property
     def clock_network_cells(self) -> frozenset[str]:
@@ -4050,10 +4070,28 @@ def check_cdc_010(
 
     clock_net_cells = ctx.clock_network_cells
     seen: set[tuple[str, str, str]] = set()
+    # The clock walk's own reading of which legs of a gate / latch are
+    # controls (rtl-buddy-cdc#408): a raw ``$and`` gate has no named
+    # control pin, and a latch ICG takes its enable on ``D`` with the
+    # clock on ``EN``.
+    traced_controls = (
+        ctx.clock_network_events[1]
+        if clock_spec is not None and ctx.clock_spec is clock_spec
+        else {}
+    )
 
     for cell_name in sorted(clock_net_cells):
         cell = module.cells[cell_name]
         control_ports = _control_pins_for(cell, use_heuristic=use_heuristic)
+        if cell.type in _GATE_TYPES or is_latch_cell(cell.type):
+            traced = traced_controls.get(cell_name)
+            if traced:
+                control_ports = frozenset(
+                    port
+                    for port, bits in cell.connections.items()
+                    if not cell.is_output_pin(port)
+                    and any(b in traced for b in bits)
+                )
         if not control_ports:
             continue
         cell_clock_domains: set[str] | None = None
@@ -7566,12 +7604,16 @@ def check_cdc_023(
     # them would be when flattened (rtl-buddy-cdc#402).
     pin_sinks = ctx.boundary_clock_sinks if ctx is not None else {}
     violations: list[Violation] = []
-    for combine in find_clock_combines(
-        module,
-        max_depth=max_depth,
-        extra_sinks=pin_sinks,
-        **clock_spec.clock_root_inputs(),
-    ):
+    if ctx is not None and ctx.clock_spec is clock_spec:
+        combines = ctx.clock_network_events[0]
+    else:
+        combines = find_clock_combines(
+            module,
+            max_depth=max_depth,
+            extra_sinks=pin_sinks,
+            **clock_spec.clock_root_inputs(),
+        )
+    for combine in combines:
         shown = combine.sinks[:_CDC_023_SINK_SAMPLE]
         sample = ", ".join(f"`{name}`" for name in shown)
         extra = len(combine.sinks) - len(shown)

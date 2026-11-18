@@ -406,6 +406,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A clock gate with a foreign-domain enable flop is CDC-010, not
+  CDC-023** (rtl-buddy-cdc#408, item 1). On `clk_a & en_q` (or a latch
+  ICG whose enable is `en_q`) with `en_q` a flop clocked by an
+  asynchronous `clk_b`, the clock-root walk followed `en_q` back to
+  `clk_b` as a divided clock, declined the gate as a combine of two
+  clocks (CDC-023, warning) and left every gated flop domain-unknown.
+  A gate / latch leg that reaches a declared clock only through a
+  flop's `Q` is now read as an enable when another leg is a declared
+  clock, and CDC-010 checks the legs the walk reads as controls, so a
+  raw `$and` gate and a latch ICG with the enable on `D` are covered.
+  A divided clock declared with `create_generated_clock` still
+  combines. Verdict change on a committed fixture:
+  `bad_clock_gating_async_enable` reports CDC-010 (error) instead of
+  CDC-023, and its gated flop resolves to `clk_a`.
+
 - **Abstracted runs agree with the flat run on the data-path and reset
   rules** (rtl-buddy-cdc#405, items 1, 3, 4).
   - **CDC-018 under `--greybox`.** The per-module pass proved the depth

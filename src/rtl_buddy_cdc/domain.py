@@ -909,6 +909,7 @@ def _trace(
     on_clock_control: ClockControlSink | None = None,
     case_bits: Mapping[Bit, int] | None = None,
     port_root: PortRoot | None = None,
+    ff_divider: bool = True,
 ) -> str | None:
     if not isinstance(bit, int) or depth <= 0 or bit in seen:
         return None
@@ -945,12 +946,68 @@ def _trace(
             on_clock_control=on_clock_control,
             case_bits=case_bits,
             port_root=port_root,
+            ff_divider=ff_divider,
         )
 
     def _record(clocks: frozenset[str]) -> None:
         """Forward this cell's decline to the recorder, if any."""
         if on_combine is not None:
             on_combine(cell.name, ctype, bit, clocks)
+
+    def _combine(legs: list[tuple[Bit, str | None]]) -> str | None:
+        """Resolve a gate's / latch's legs to one clock root, or decline.
+
+        A leg that reaches a declared clock only through the divider
+        clause is a flop's ``Q``: an enable launched by that flop, not a
+        second clock (rtl-buddy-cdc#408). When the legs' roots would
+        decline as a combine, the legs are re-read without the divider
+        clause; if exactly one declared clock then remains, it is the
+        cell's clock and every other leg is a control — CDC-010's shape,
+        not CDC-023's. A divided clock declared with
+        ``create_generated_clock`` stops the walk at its own pin before
+        the divider clause, so it stays a clock and still combines.
+        """
+        roots = [r for _, r in legs if r is not None]
+        if clock_identity is not None and ff_divider and len(roots) >= 2:
+            ids = {clock_identity(r) for r in roots} - {None}
+            if len(ids) >= 2:
+                direct: list[tuple[Bit, str | None]] = [
+                    (
+                        b,
+                        _trace(
+                            module,
+                            b,
+                            drivers,
+                            set(seen),
+                            depth - 1,
+                            bit_to_clock,
+                            allow_divider=allow_divider,
+                            clock_identity=clock_identity,
+                            case_bits=case_bits,
+                            port_root=port_root,
+                            ff_divider=False,
+                        )
+                        if r is not None
+                        else None,
+                    )
+                    for b, r in legs
+                ]
+                clock_legs = [
+                    (b, r)
+                    for b, r in direct
+                    if r is not None and clock_identity(r) is not None
+                ]
+                if len({clock_identity(r) for _, r in clock_legs}) == 1:
+                    picked = clock_legs[0][1]
+                    clock_bits = {b for b, _ in clock_legs}
+                    _record_control(tuple(b for b, _ in legs if b not in clock_bits))
+                    return picked
+        picked = _pick_combining_root(roots, clock_identity, _record)
+        if picked is not None:
+            # Every leg that is NOT the clock the cell resolved to is,
+            # by the ICG reading, an enable — i.e. a control input.
+            _record_control(tuple(b for b, r in legs if r != picked))
+        return picked
 
     def _record_control(control_bits: tuple[Bit, ...]) -> None:
         """Forward this cell's steering inputs to the recorder, if any.
@@ -978,6 +1035,7 @@ def _trace(
                 on_clock_control=on_clock_control,
                 case_bits=case_bits,
                 port_root=port_root,
+                ff_divider=ff_divider,
             )
         return None
 
@@ -989,22 +1047,12 @@ def _trace(
     # (``_pick_combining_root`` returns None), surfacing the flop as
     # under-resolved rather than silently asserting one leg (#263).
     if ctype in _GATE_TYPES:
-        roots: list[str] = []
         legs: list[tuple[Bit, str | None]] = []
         for in_port in GATE_LOGIC_INPUTS:
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
-                r = _leg(in_bits[0])
-                legs.append((in_bits[0], r))
-                if r is not None:
-                    roots.append(r)
-        picked = _pick_combining_root(roots, clock_identity, _record)
-        if picked is not None:
-            # Every leg that is NOT the clock the gate resolved to is,
-            # by the ICG reading this clause already takes, an enable —
-            # i.e. a control input. Report those bits.
-            _record_control(tuple(b for b, r in legs if r != picked))
-        return picked
+                legs.append((in_bits[0], _leg(in_bits[0])))
+        return _combine(legs)
 
     # Clock mux with a case-analysed select (#325): the mode fixes S, so
     # only the selected leg reaches the flop. Checked before the
@@ -1025,6 +1073,7 @@ def _trace(
                 on_clock_control=on_clock_control,
                 case_bits=case_bits,
                 port_root=port_root,
+                ff_divider=ff_divider,
             )
 
     # Clock mux — return whichever side resolves. A mux *selects* one of
@@ -1056,7 +1105,7 @@ def _trace(
     # otherwise resolve to that flop's clock and be misread as a clock
     # net — the FIX-1 clock-pin classifier of a non-allow-listed
     # blackbox port must not make that mistake.
-    if allow_divider and is_ff_cell(ctype) and out_port == "Q":
+    if allow_divider and ff_divider and is_ff_cell(ctype) and out_port == "Q":
         clk_bits = flop_clk_pin(cell)
         if clk_bits:
             return _trace(
@@ -1072,6 +1121,7 @@ def _trace(
                 on_clock_control=on_clock_control,
                 case_bits=case_bits,
                 port_root=port_root,
+                ff_divider=ff_divider,
             )
 
     # Clock-path transparent latch — a latch-based ICG (or any clock
@@ -1093,19 +1143,12 @@ def _trace(
     # clock-pin classifier, a *data* net latched by a $dlatch must not
     # resolve to a clock and be misread as a clock net.
     if allow_divider and is_latch_cell(ctype) and out_port == "Q":
-        roots = []
         legs = []
         for in_port in ("D", "EN", "E"):
             in_bits = cell.connections.get(in_port, ())
             if in_bits:
-                r = _leg(in_bits[0])
-                legs.append((in_bits[0], r))
-                if r is not None:
-                    roots.append(r)
-        picked = _pick_combining_root(roots, clock_identity, _record)
-        if picked is not None:
-            _record_control(tuple(b for b, r in legs if r != picked))
-        return picked
+                legs.append((in_bits[0], _leg(in_bits[0])))
+        return _combine(legs)
 
     return None
 
@@ -1633,7 +1676,7 @@ def _bit_net_names(module: Module) -> dict[Bit, str]:
     return out
 
 
-def find_clock_combines(
+def clock_network_events(
     module: Module,
     pin_clocks: dict[str, str] | None = None,
     *,
@@ -1642,8 +1685,17 @@ def find_clock_combines(
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
     extra_sinks: Mapping[str, Bit] | None = None,
-) -> list[ClockCombine]:
-    """Report every clock-network node the tracer *declined* on (#269).
+) -> tuple[list[ClockCombine], dict[str, frozenset[Bit]]]:
+    """Every clock-network node the tracer *declined* on (#269), and the
+    control inputs of every gate / mux / latch it resolved through.
+
+    Returns ``(combines, controls)``. ``controls`` maps a clock-network
+    cell to the bits the walk read as its *control* — a mux's select, a
+    gate's or latch's non-clock leg (:data:`ClockControlSink`). CDC-010
+    reads it for the cells whose control pin is not fixed by the cell
+    type: a raw ``$and`` clock gate, or a latch ICG whose enable enters
+    on ``D`` (rtl-buddy-cdc#408). One walk feeds both, so CDC-010's and
+    CDC-023's readings of a cell cannot disagree.
 
     Runs the ordinary per-flop clock-root walk — same
     :func:`trace_clock_root`, same ``max_depth``, same
@@ -1668,9 +1720,9 @@ def find_clock_combines(
     real design smell either way, which is why the report is keyed on
     the node rather than on the unresolved flop.
 
-    Returns ``[]`` when fewer than two clocks are declared — with at most
-    one clock identity in play no combine is possible, so the walk is
-    skipped entirely.
+    Returns ``([], {})`` when fewer than two clocks are declared — with at
+    most one clock identity in play no combine is possible and no control
+    can be in a foreign domain, so the walk is skipped entirely.
 
     ``extra_sinks`` names clock pins that are not flops' — an abstracted
     instance's clock pins, ``"u_ip.clk" -> bit`` (rtl-buddy-cdc#402) — and
@@ -1686,7 +1738,7 @@ def find_clock_combines(
     declared = {c for c in (clock_identity(p) for p in ports) if c is not None}
     declared |= set(bit_to_clock.values())
     if len(declared) < 2:
-        return []
+        return [], {}
 
     drivers = _bit_drivers(module)
     case_bits = _build_case_bits(module, case_analysis)
@@ -1694,6 +1746,10 @@ def find_clock_combines(
     clocks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
     sinks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
     types_at: dict[tuple[str, Bit], str] = {}
+    controls: dict[str, set[Bit]] = defaultdict(set)
+
+    def record_control(cell: str, _cell_type: str, bits: tuple[Bit, ...]) -> None:
+        controls[cell].update(bits)
 
     for sink_name, clk in _clock_sinks(module, extra_sinks):
 
@@ -1717,6 +1773,7 @@ def find_clock_combines(
             bit_to_clock=bit_to_clock,
             clock_identity=clock_identity,
             on_combine=record,
+            on_clock_control=record_control,
             case_bits=case_bits,
             port_root=port_root,
         )
@@ -1735,7 +1792,30 @@ def find_clock_combines(
     # Stable order: net name, then cell — the report must not depend on
     # netlist dict ordering.
     out.sort(key=lambda c: (c.net, c.cell))
-    return out
+    return out, {cell: frozenset(bits) for cell, bits in controls.items()}
+
+
+def find_clock_combines(
+    module: Module,
+    pin_clocks: dict[str, str] | None = None,
+    *,
+    clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
+    case_analysis: Mapping[str, str] | None = None,
+    extra_sinks: Mapping[str, Bit] | None = None,
+) -> list[ClockCombine]:
+    """Report every clock-network node the tracer *declined* on (#269):
+    the ``combines`` half of :func:`clock_network_events`."""
+    return clock_network_events(
+        module,
+        pin_clocks,
+        clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_for_port,
+        max_depth=max_depth,
+        case_analysis=case_analysis,
+        extra_sinks=extra_sinks,
+    )[0]
 
 
 def find_scan_mode_flops(

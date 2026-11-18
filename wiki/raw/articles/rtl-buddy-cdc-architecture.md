@@ -1385,7 +1385,7 @@ Cell-type categories the walker recognizes:
 
 | Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor`, and the gate-level `cells.GATE_LOGIC_TYPES` (`$_AND_`, `$_OR_`, `$_NAND_`, `$_NOR_`, `$_XOR_`, `$_XNOR_`, `$_ANDNOT_`, `$_ORNOT_`, `$_AOI3_`, `$_OAI3_`, `$_AOI4_`, `$_OAI4_`; rtl-buddy-cdc#336) | Trace every input (`A`/`B`, plus `C`/`D` on the AOI/OAI cells). The leg choice depends on the legs' clocks, not their order: every walk passes `declared_clock_for_port` (`ClockSpec.declared_clock_for_port`, `create_clock` ports only — a `set_input_delay`-typed data port is not a clock; rtl-buddy-cdc#358), so `en & clk` and `clk & en` resolve alike, and an enable typed to a foreign clock is not a second clock; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline and are reported as CDC-023 (see below) |
 | Mux | `cells.MUX_PINS`: `$mux`, `$pmux`, and gate-level `$_MUX_`, `$_NMUX_`, `$_MUX4_`, `$_MUX8_`, `$_MUX16_` (rtl-buddy-cdc#336) | Trace each candidate data input (`A`/`B`, or `A`…`P` on the wide gate muxes); every select pin (`S`, plus `T`/`U`/`V`) is reported as the mux's control; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline, and never produces a CDC-023 finding |
-| FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root |
+| FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root. On a gate / latch leg this reading is the weaker one (rtl-buddy-cdc#408): when the legs would decline as a combine, they are re-read without the divider clause, and if exactly one declared clock then remains, that leg is the clock and a leg that reached another clock only through a flop's `Q` is an **enable launched by that flop** — CDC-010's shape (async control on a clock gate), not CDC-023's. A divided clock declared with `create_generated_clock` stops the walk at its own pin first, so it stays a clock and still combines; two legs that are both undeclared dividers still combine |
 | Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline and are reported as CDC-023 (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
 
 The walker maintains a per-call `seen` set keyed on bit ID and a
@@ -2532,7 +2532,17 @@ infrastructure:
 1. Enumerate clock-network cells with `_clock_network_cells`
    (same set CDC-008 *exempts*).
 2. For each cell, look up its control pins via `_control_pins_for`
-   — Yosys-primitive only: `$mux.S`, `$dffe.EN`, `$dlatch.EN`.
+   — Yosys-primitive only: `$mux.S`, `$dffe.EN`, `$dlatch.EN`. For a
+   gate (`$and` / `$or` / … / gate-level `$_AND_` …) or a latch the
+   clock-root walk resolved through, the control pins are instead the
+   legs the walk read as **not** the clock (`ctx.clock_network_events`,
+   the `on_clock_control` events of the same walk CDC-023's combines
+   come from; rtl-buddy-cdc#408). That covers the raw `$and` clock gate,
+   which has no named control pin, and the latch ICG
+   `always_latch if (!clk) en_l = en;`, whose enable enters on `D`
+   with the clock on `EN`. Needs an SDC with two or more declared
+   clocks: without clock identities the walk cannot tell the clock
+   leg from the enable.
 3. Backward-walk each control pin's fanin with
    `_backward_flop_fanin` (same helper RDC-001 uses on `ARST`).
 4. Classify the cell's *non-control* inputs by source clock domain
