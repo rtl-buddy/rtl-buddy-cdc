@@ -638,6 +638,18 @@ class _ArrayAccess(NamedTuple):
     packed: list[Any]  # selects applied to that element, innermost first
 
 
+class _Flag:
+    """A control-flow flag of a combinational walk (rtl-buddy-cdc#405): set
+    by a ``return`` / ``break`` / ``continue``; while set, the statements
+    after it keep the values from before them. Kept in ``_var_bits`` as a
+    one-bit value while its function call or loop is being lowered."""
+
+    __slots__ = ("kind",)
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+
+
 class _ModuleBuilder:
     """Translate a pyslang elaborated :class:`InstanceSymbol` into a
     :class:`netlist.Module`.
@@ -777,6 +789,9 @@ class _ModuleBuilder:
         # not add to.
         self._inline_depth = 0
         self._inline_returns: list[Any] = []
+        # The control flags of the inlined calls and unrolled loops being
+        # walked, innermost last (:class:`_Flag`).
+        self._flags: list[_Flag] = []
         # Target of each compound assignment (``x += 1``) whose right-hand
         # side is being lowered: what its ``LValueReferenceExpression``
         # reads.
@@ -2741,7 +2756,7 @@ class _ModuleBuilder:
 
         self._unroll_for(stmt, walk)
 
-    def _unroll_for(self, stmt: Any, walk: Any) -> None:
+    def _unroll_for(self, stmt: Any, walk: Any, *, control: bool = False) -> None:
         """Walk ``stmt``'s body once per iteration (``walk(body)``) with the
         loop variable bound in :attr:`_loop_bindings`, so element selects
         like ``chain[i]`` / ``chain[i-1]`` fold to per-iteration bits, as
@@ -2762,11 +2777,19 @@ class _ModuleBuilder:
             )
             self._warn_dropped(stmt, *what)
             return
+        body = getattr(stmt, "body", None)
         for binding in iterations:
             prev = {var: self._loop_bindings.pop(var, _SENTINEL) for var in binding}
             self._loop_bindings.update(binding)
             try:
-                walk(getattr(stmt, "body", None))
+                if not control:
+                    walk(body)
+                elif not self._gated_walk(
+                    # A ``continue`` ends this iteration only.
+                    lambda: self._with_flag("continue", lambda: walk(body)),
+                    stmt,
+                ):
+                    break
             finally:
                 for var, old in prev.items():
                     if old is _SENTINEL:
@@ -4760,22 +4783,56 @@ class _ModuleBuilder:
         """Inline a call to a combinational user-defined function, as
         Yosys' frontend does: bind each formal argument to its actual
         argument's bits, walk the body as a combinational block, and read
-        the result off the function's return variable.
+        the result off the function's return variable
+        (:meth:`_inline_subroutine`). ``None`` (the caller then treats the
+        call as unlowered) for a task or void function, an ``output`` /
+        ``inout`` / ``ref`` argument, or whatever the inliner cannot
+        lower."""
+        sub = getattr(expr, "subroutine", None)
+        if str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] != "Function":
+            return None
+        inlined = self._inline_subroutine(expr, outputs=False)
+        return None if inlined is None else inlined[0]
+
+    def _inline_call_statement(self, expr: Any) -> bool:
+        """A task or function called as a statement in a combinational body
+        (``addt(a, b, o);``, a ``void`` function): its body inlined, then
+        each ``output`` / ``inout`` argument written to its actual
+        (rtl-buddy-cdc#405: the statement was reported and dropped).
+        ``False`` when it cannot be lowered."""
+        if self._kind_name(expr) != "CallExpression" or getattr(
+            expr, "isSystemCall", False
+        ):
+            return False
+        inlined = self._inline_subroutine(expr, outputs=True)
+        if inlined is None:
+            return False
+        for target, bits in inlined[1]:
+            self._alias_assign(_Assign(target, _Bits(bits, expr), expr))
+        return True
+
+    def _inline_subroutine(
+        self, expr: Any, *, outputs: bool
+    ) -> tuple[tuple[Bit, ...] | None, list[tuple[Any, tuple[Bit, ...]]]] | None:
+        """Walk the body of the subroutine ``expr`` calls with each formal
+        bound to its actual's bits; ``(return value, [(output actual, its
+        value)])``.
 
         Locals (formals, the return variable, declared variables) start
         as ``x``, are visible only during the walk, and are removed
-        afterwards, so two calls never share a value. ``None`` (the
-        caller then treats the call as unlowered) for a task or void
-        function, an ``output`` / ``inout`` / ``ref`` argument, a ``return``
-        anywhere but at the end of the body, a write to a variable outside
-        the function, a statement or target the walker cannot lower,
-        recursion deeper than :data:`_INLINE_DEPTH_CAP`.
-        """
+        afterwards, so two calls never share a value. A ``return`` (also
+        early, or in a loop) ends the walk through a control flag
+        (:meth:`_with_flag`). ``outputs`` allows ``output`` / ``inout``
+        arguments (written back by the caller). ``None`` for a ``ref``
+        argument (or an ``output`` one without ``outputs``), a write to a
+        variable outside the subroutine, a statement or target the walker
+        cannot lower, recursion deeper than :data:`_INLINE_DEPTH_CAP`."""
         sub = getattr(expr, "subroutine", None)
         if sub is None or self._inline_depth >= self._INLINE_DEPTH_CAP:
             return None
-        if str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] != "Function":
-            return None
+        is_function = (
+            str(getattr(sub, "subroutineKind", "")).rsplit(".", 1)[-1] == "Function"
+        )
         ret = getattr(sub, "returnValVar", None)
         locals_: list[Any] = []
         for member in sub:
@@ -4793,35 +4850,53 @@ class _ModuleBuilder:
                 ret = member
         formals = list(getattr(sub, "arguments", None) or [])
         actuals = list(getattr(expr, "arguments", None) or [])
-        if ret is None or len(formals) != len(actuals):
+        if len(formals) != len(actuals) or (ret is None and not outputs):
             return None
-        if any(
-            str(getattr(f, "direction", "")).rsplit(".", 1)[-1] != "In" for f in formals
-        ):
-            return None
-        body = getattr(sub, "body", None)
-        if not self._returns_only_at_end(body, top=True):
-            return None
-        arg_bits: list[tuple[Bit, ...]] = []
+        arg_bits: list[tuple[Bit, ...] | None] = []
+        writes: list[tuple[Any, Any]] = []
         for formal, actual in zip(formals, actuals):
-            bits = self._sized_rhs_bits(actual, self._width_of(formal))
-            if bits is None:
+            direction = str(getattr(formal, "direction", "")).rsplit(".", 1)[-1]
+            if direction == "In":
+                bits = self._sized_rhs_bits(actual, self._width_of(formal))
+            elif direction in ("Out", "InOut") and outputs:
+                target = getattr(actual, "left", None)
+                if target is None:
+                    return None
+                writes.append((formal, target))
+                bits = None
+                if direction == "InOut":
+                    current = self._bits_of_expression(target)
+                    bits = (
+                        None
+                        if current is None
+                        else self._resize_bits(current, self._width_of(formal))
+                    )
+                    if bits is None:
+                        return None
+            else:
+                return None
+            if direction == "In" and bits is None:
                 return None
             arg_bits.append(bits)
+        body = getattr(sub, "body", None)
         saved = dict(self._var_bits)
         failures = self._lowering_failures
         self._inline_depth += 1
         try:
             for local in locals_:
                 self._var_bits[local] = ("x",) * self._width_of(local)
-            for formal, bits in zip(formals, arg_bits):
-                self._var_bits[formal] = bits
+            for formal, maybe in zip(formals, arg_bits):
+                if maybe is not None:
+                    self._var_bits[formal] = maybe
             self._inline_returns.append(ret)
             try:
-                self._walk_comb_statement(body)
+                self._with_flag("return", lambda: self._walk_comb_statement(body))
             finally:
                 self._inline_returns.pop()
-            result = self._var_bits.get(ret)
+            result = (
+                self._var_bits.get(ret) if is_function and ret is not None else None
+            )
+            outs = [(target, self._var_bits[formal]) for formal, target in writes]
             local_set = set(locals_)
             clean = self._lowering_failures == failures and all(
                 self._var_bits.get(k) == v
@@ -4831,34 +4906,60 @@ class _ModuleBuilder:
         finally:
             self._inline_depth -= 1
             self._var_bits = saved
-        return result if clean else None
+        return (result, outs) if clean else None
 
-    def _returns_only_at_end(self, stmt: Any, *, top: bool) -> bool:
-        """``return`` appears in ``stmt`` only as the last statement of the
-        function body's top-level list (the shape inlining supports)."""
-        if stmt is None:
+    def _with_flag(self, kind: str, walk: Callable[[], None]) -> None:
+        """Run ``walk`` with a fresh, clear ``kind`` flag in scope."""
+        flag = _Flag(kind)
+        self._flags.append(flag)
+        self._var_bits[flag] = ("0",)
+        try:
+            walk()
+        finally:
+            self._flags.pop()
+            self._var_bits.pop(flag, None)
+
+    def _skip_bit(self) -> Bit:
+        """One bit: a flag in scope is set, so the next statement does not
+        run (``"0"`` with none in scope)."""
+        bits = [
+            v[0]
+            for f in self._flags
+            if (v := self._var_bits.get(f)) is not None and v[0] != "0"
+        ]
+        if "1" in bits:
+            return "1"
+        return self._or_bits(bits) or "0"
+
+    def _gated_walk(self, walk: Callable[[], None], node: Any) -> bool:
+        """Run ``walk`` unless a flag in scope is set: a set flag known at
+        elaboration time skips it, a run-time one muxes every value it
+        changes back to the one before it (``$mux(S=skip, A=new,
+        B=old)``). ``False`` when it was skipped outright."""
+        skip = self._skip_bit()
+        if skip == "1":
+            return False
+        if skip == "0":
+            walk()
             return True
-        kind = self._kind_name(stmt)
-        if kind == "ReturnStatement":
-            return top
-        if kind == "BlockStatement":
-            return self._returns_only_at_end(stmt.body, top=top)
-        if kind in {"StatementList", "ListStatement"}:
-            items = list(getattr(stmt, "list", []) or [])
-            return all(
-                self._returns_only_at_end(s, top=top and i == len(items) - 1)
-                for i, s in enumerate(items)
-            )
-        found = False
+        base = dict(self._var_bits)
+        walk()
+        for var, value in list(self._var_bits.items()):
+            old = base.get(var)
+            if old is not None and value != old:
+                self._var_bits[var] = self._branch_mux(skip, value, old, node)
+        return True
 
-        def visit(node: Any) -> bool:
-            nonlocal found
-            if type(node).__name__ == "ReturnStatement":
-                found = True
-            return not found
-
-        stmt.visit(visit)
-        return not found
+    def _set_flag(self, kind: str) -> bool:
+        """Set the innermost ``kind`` flag in scope; ``False`` without one
+        (a ``break`` outside an unrolled loop, ...)."""
+        for flag in reversed(self._flags):
+            if flag.kind == kind:
+                self._var_bits[flag] = ("1",)
+                return True
+            if flag.kind == "return":
+                return False  # no loop of this call's own encloses it
+        return False
 
     def _lower_concatenation(self, expr: Any) -> tuple[Bit, ...] | None:
         """``{a, b, c}`` — return a single LSB-first bit tuple.
@@ -6180,12 +6281,22 @@ class _ModuleBuilder:
             return
         if kind in {"StatementList", "ListStatement"}:
             for s in getattr(stmt, "list", []) or []:
-                self._walk_comb_statement(s)
+                if not self._flags:
+                    self._walk_comb_statement(s)
+                elif not self._gated_walk(
+                    functools.partial(self._walk_comb_statement, s), s
+                ):
+                    break
+            return
+        if kind in ("BreakStatement", "ContinueStatement") and self._set_flag(
+            "break" if kind == "BreakStatement" else "continue"
+        ):
             return
         if kind == "ExpressionStatement":
             write = self._as_assignment(stmt.expr)
             if write is None:
-                self._other_statement(stmt, "combinational block")
+                if not self._inline_call_statement(stmt.expr):
+                    self._other_statement(stmt, "combinational block")
                 return
             self._alias_assign(write)
             return
@@ -6196,21 +6307,28 @@ class _ModuleBuilder:
             self._walk_case_statement(stmt)
             return
         if kind == "ReturnStatement" and self._inline_returns:
-            # ``return expr;`` ending an inlined function body.
+            # ``return expr;`` (or a bare ``return;`` of a task / void
+            # function) in an inlined body: the value, then the flag that
+            # skips the rest of the body.
             ret = self._inline_returns[-1]
             value = getattr(stmt, "expr", None)
-            bits = (
-                self._sized_rhs_bits(value, self._width_of(ret))
-                if value is not None
-                else None
-            )
-            if bits is None:
-                self._lowering_failures += 1
-            else:
-                self._var_bits[ret] = bits
+            if value is not None:
+                bits = (
+                    self._sized_rhs_bits(value, self._width_of(ret))
+                    if ret is not None
+                    else None
+                )
+                if bits is None:
+                    self._lowering_failures += 1
+                else:
+                    self._var_bits[ret] = bits
+            self._set_flag("return")
             return
         if kind in self._LOOP_KINDS:
-            self._unroll_for(stmt, self._walk_comb_statement)
+            self._with_flag(
+                "break",
+                lambda: self._unroll_for(stmt, self._walk_comb_statement, control=True),
+            )
             return
         if kind == "VariableDeclStatement":
             self._declare_local(stmt, clocked=False)

@@ -584,3 +584,74 @@ def test_repeat_and_foreach_unroll(
             "p": p,
             "r": r,
         }, a
+
+
+# --- early return, break, continue, tasks (were opaque / dropped) -------------------
+
+_CONTROL = """module m (input [7:0] a, input [3:0] b, input [3:0] c, output [3:0] f,
+          output [3:0] g, output logic [3:0] h, output logic [3:0] k,
+          output logic [3:0] t, output logic [3:0] u, output logic [3:0] v);
+    function automatic logic [3:0] early(input logic [3:0] x, input logic [3:0] y);
+        if (x == 0) return y;
+        if (x[3]) return ~y;
+        return x ^ y;
+    endfunction
+    function automatic logic [3:0] first1(input logic [7:0] w);
+        for (int i = 0; i < 8; i++) if (w[i]) return i;
+        return 4'hf;
+    endfunction
+    task automatic addt(input logic [3:0] x, input logic [3:0] y, output logic [3:0] z);
+        z = x + y;
+    endtask
+    function automatic void split(input logic [3:0] x, output logic [3:0] lo,
+                                  inout logic [3:0] io);
+        lo = x & 4'h3;
+        if (x[0]) return;
+        io = io ^ x;
+    endfunction
+    assign f = early(b, c);
+    assign g = first1(a);
+    always_comb begin
+        h = 4'hf;
+        for (int i = 0; i < 8; i++) if (a[i]) begin h = i; break; end
+    end
+    always_comb begin
+        k = 0;
+        for (int i = 0; i < 8; i++) begin if (!a[i]) continue; k = k + 1; end
+    end
+    always_comb addt(b, c, t);
+    always_comb begin v = c; split(b, u, v); end
+endmodule
+"""
+
+
+def _first1(a: int) -> int:
+    return next((i for i in range(8) if a >> i & 1), 15)
+
+
+def test_return_break_continue_and_task_calls(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An early ``return`` (also inside a loop), ``break`` and
+    ``continue`` in an unrolled loop, a task and a ``void`` function with
+    ``output`` / ``inout`` arguments called as statements: each was an
+    opaque driver or a reported, dropped statement. Every output matches
+    the SystemVerilog value for every input. (Yosys' Verilog frontend
+    rejects each of these shapes.)"""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _CONTROL)
+    assert _warnings(caplog) == []
+    assert not [c for c in module.cells.values() if c.type == "$_UNKNOWN_"]
+    outs = ("f", "g", "h", "k", "t", "u", "v")
+    for a in range(256):
+        for b, c in ((a & 0xF, a >> 4), (0, a & 0xF), (a >> 4 | 8, a & 0xF)):
+            early = c if b == 0 else (~c & 0xF) if b & 8 else b ^ c
+            assert _outputs(module, {"a": a, "b": b, "c": c}, outs) == {
+                "f": early,
+                "g": _first1(a),
+                "h": _first1(a),
+                "k": bin(a).count("1") & 0xF,
+                "t": (b + c) & 0xF,
+                "u": b & 3,
+                "v": c if b & 1 else c ^ b,
+            }, (a, b, c)

@@ -517,9 +517,7 @@ endmodule
 @pytest.mark.parametrize(
     "func",
     [
-        # A ``return`` before the end of the body.
-        "function automatic [3:0] f(input [3:0] x); if (x[0]) return x;"
-        " return ~x; endfunction",
+        # (An early ``return`` is inlined since rtl-buddy-cdc#405.)
         # An output argument.
         "function automatic [3:0] f(input [3:0] x, output [3:0] o);"
         " o = x; f = x; endfunction",
@@ -529,7 +527,7 @@ endmodule
         "function automatic [3:0] f(input [3:0] x); f = x;"
         " while (f[0]) f = f >> 1; endfunction",
     ],
-    ids=["early_return", "output_arg", "side_effect", "while_loop"],
+    ids=["output_arg", "side_effect", "while_loop"],
 )
 def test_function_not_inlined_stays_opaque(tmp_path: Path, func: str) -> None:
     """A function body outside the inlined shapes is not half-lowered:
@@ -817,7 +815,7 @@ def test_unmodelled_statements_warn(
     tmp_path: Path, caplog, body: str, needle: str, kw: str
 ) -> None:
     src = f"""module m (input clk, input [1:0] n, input a, output logic [3:0] q);
-    task automatic t(output logic [3:0] o); o = 4'd1; endtask
+    task automatic t(output logic [3:0] o); #1 o = 4'd1; endtask
     {kw} begin {body} end
 endmodule
 """
