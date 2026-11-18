@@ -472,7 +472,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     A greybox output now carries the input pins that reach it
     combinationally and the output-cone walk continues through them;
     CDC-025 counts a block output as a launch in its clock, as CDC-024
-    already did. A stub shows no feed-through (documented).
+    already did. A stub shows no feed-through (documented). Verdict
+    change on a committed fixture: `bbx_residual_declines`' greybox
+    netlist now reports the CDC-025 on `y_thru` its flat netlist reports.
 
 - **Abstracted runs agree with the flat run on the data-path and reset
   rules** (rtl-buddy-cdc#405, items 1, 3, 4).
