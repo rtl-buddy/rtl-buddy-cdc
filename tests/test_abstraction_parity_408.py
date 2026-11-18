@@ -567,3 +567,69 @@ def test_greybox_decline_is_per_instance(tmp_path: Path) -> None:
     assert _rules(grey) == Counter({"CDC-021": 1, "CDC-BBX": 1})
     (bbx,) = [v for v in grey["violations"] if v["rule_id"] == "CDC-BBX"]
     assert bbx["cell_name"] == "u2"
+
+
+# --- clean counterparts at the pin --------------------------------------------
+
+
+@needs_slang
+def test_synchronised_clock_select_on_a_pin_is_clean(tmp_path: Path) -> None:
+    """The select pin is driven from the cell's own clock domain."""
+    sv = _CLOCK_MUX_SELECT_PIN.replace(
+        "always_ff @(posedge slow) x <= e;",
+        "logic x1;\n    always_ff @(posedge fast) begin x1 <= e; x <= x1; end",
+    )
+    sdc = _SDC + _typed("fast", "e", "d")
+    reports = _views(tmp_path, sv, sdc)
+    for view in ("flat", "greybox"):
+        assert _rules(reports[view]) == Counter(), view
+
+
+@needs_slang
+def test_same_domain_latch_behind_a_pin_is_clean(tmp_path: Path) -> None:
+    sv = _LATCH_BEFORE_SYNC.replace("posedge slow", "posedge fast")
+    sdc = _SDC + _typed("fast", "d", "e")
+    reports = _views(tmp_path, sv, sdc)
+    for view in ("flat", "greybox"):
+        assert _rules(reports[view])["CDC-017"] == 0, view
+
+
+@needs_slang
+def test_gray_tagged_payload_behind_a_block_output_is_exempt(tmp_path: Path) -> None:
+    sv = _HOLD_BEHIND_OUTPUT.replace(
+        "output logic [7:0] data);", "(* cdc_gray *) output logic [7:0] data);"
+    ).replace(
+        "always_ff @(posedge clk) begin req <= go; data <= d; end",
+        "(* cdc_gray *) logic [7:0] g;\n"
+        "    always_ff @(posedge clk) begin req <= go; g <= d; end\n"
+        "    assign data = g;",
+    )
+    sdc = _SDC + _typed("slow", "go", "d")
+    reports = _views(tmp_path, sv, sdc)
+    for view in ("flat", "greybox"):
+        assert _rules(reports[view])["CDC-012"] == 0, view
+
+
+@needs_slang
+def test_ungated_bus_from_a_block_output_stays_cdc004(tmp_path: Path) -> None:
+    sv = """\
+module blk (input clk, input [7:0] d, output logic [7:0] q);
+    always_ff @(posedge clk) q <= d;
+endmodule
+module top (input fast, input slow, input [7:0] d, output logic [7:0] o);
+    logic [7:0] x;
+    blk u (.clk(slow), .d(d), .q(x));
+    always_ff @(posedge fast) o <= x;
+endmodule
+"""
+    reports = _views(tmp_path, sv, _SDC + _typed("slow", "d"))
+    for view in ("flat", "greybox", "blackbox"):
+        assert _rules(reports[view]) == Counter({"CDC-004": 1}), view
+
+
+def test_clock_network_events_needs_an_sdc() -> None:
+    from rtl_buddy_cdc.netlist import Module
+    from rtl_buddy_cdc.rules import _build_context
+
+    module = Module(name="m", ports={}, cells={}, netnames={})
+    assert _build_context(module, None).clock_network_events == ([], {})

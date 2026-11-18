@@ -3783,10 +3783,7 @@ def check_cdc_008(
         if not facts.clock_out:
             continue
         inst, _, pin = label.rpartition(".")
-        inst_cell = module.cells.get(inst)
-        if inst_cell is None:
-            continue
-        for b in inst_cell.connections.get(pin, ()):
+        for b in module.cells[inst].connections.get(pin, ()):
             if isinstance(b, int):
                 clock_bits.add(b)
                 clock_out_labels[b] = (
@@ -4245,23 +4242,25 @@ def _cdc_010_boundary(
         if not facts.clock_controls:
             continue
         inst, _, pin = label.rpartition(".")
-        cell = module.cells.get(inst)
-        if cell is None:
-            continue
-        bits = tuple(b for b in cell.connections.get(pin, ()) if isinstance(b, int))
+        bits = tuple(
+            b for b in module.cells[inst].connections.get(pin, ()) if isinstance(b, int)
+        )
         if ctx.user_glitchless_mux_bits and any(
             b in ctx.user_glitchless_mux_bits for b in bits
         ):
             continue
-        fanin = _backward_flop_fanin(module, bits, ctx.bit_drivers) if bits else set()
+        fanin = _backward_flop_fanin(module, bits, ctx.bit_drivers)
         for inner, clock_domains in facts.clock_controls:
-            if not clock_domains:
-                continue
             for src_flop in sorted(fanin):
                 src_clk = ctx.domains.get(src_flop)
-                if src_clk is None or src_clk in clock_domains:
-                    continue
-                if not all(is_async(src_clk, d) for d in clock_domains):
+                # An unclassifiable cell (no clock-input domain) stays
+                # silent, as the flat rule does.
+                if (
+                    src_clk is None
+                    or not clock_domains
+                    or src_clk in clock_domains
+                    or not all(is_async(src_clk, d) for d in clock_domains)
+                ):
                     continue
                 out.append(
                     Violation(
@@ -6437,8 +6436,12 @@ def _ack_walk(
                 continue
             if relay_hops >= max_relay_hops:
                 continue
-            bits = _flop_functional_fanin_bits(f)
-            if (stop_at is None or boundary_sources) and bits:
+            bits = (
+                _flop_functional_fanin_bits(f)
+                if stop_at is None or boundary_sources
+                else ()
+            )
+            if bits:
                 # The pins behind each register: what an exhaustive walk
                 # publishes, and where an abstracted block's pin answers.
                 behind: set[Bit] = set()
@@ -6655,9 +6658,7 @@ def _cdc_012_boundary(
     if drv is not None and (drv.gray or drv.marks & {"gray", "handshake"}):
         return None
     inst = c.src_boundary[0]
-    cell = module.cells.get(inst)
-    if cell is None:
-        return None
+    cell = module.cells[inst]
     if drv is not None and drv.width > 1:
         if c.dst_clock in drv.hold_domains:
             return None
@@ -7133,14 +7134,9 @@ def check_cdc_017(
         if not facts.latch_feeds:
             continue
         inst, _, pin = label.rpartition(".")
-        inst_cell = module.cells.get(inst)
-        if inst_cell is None:
-            continue
         bits = tuple(
-            b for b in inst_cell.connections.get(pin, ()) if isinstance(b, int)
+            b for b in module.cells[inst].connections.get(pin, ()) if isinstance(b, int)
         )
-        if not bits:
-            continue
         sources = _backward_sources(module, bits, ctx)
         for latch_name, dst_name, dst_clk in facts.latch_feeds:
             for src_name, (src_clk, _bnd) in sorted(sources.items()):

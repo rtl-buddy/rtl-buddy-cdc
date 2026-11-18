@@ -582,8 +582,6 @@ def _attach_pin_facts(
             if isinstance(b, int)
         )
         _flops, in_ports = _backward_fanin(sub, bits, ctx.bit_drivers)
-        if not in_ports:
-            continue
         doms = tuple(sorted(_clock_input_domains_for(sub, cell, ctx, spec, ctrl_ports)))
         for name in in_ports:
             if name in ports:
@@ -657,8 +655,6 @@ def _pin_reach(
                     if pin != "D":
                         continue
                     for q in cell.connections.get("Q", ()):
-                        if not isinstance(q, int):
-                            continue
                         dst = ctx.d_bit_to_single_bit_flop.get(q)
                         clock = domains.get(dst.cell.name) if dst is not None else None
                         if dst is not None and clock is not None:
