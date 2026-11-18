@@ -32,11 +32,13 @@ from rtl_buddy_cdc.flops import (
 )
 from rtl_buddy_cdc.memory import crossing_view, find_memories
 from rtl_buddy_cdc.netlist import (
+    MULTI_INDEX_RE,
     Bit,
     BoundarySummary,
     Cell,
     Module,
     Port,
+    flat_index_advice,
     format_bit_select,
 )
 from rtl_buddy_cdc.sdc import port_bit_clocks
@@ -605,6 +607,14 @@ def _case_target_bits(module: Module, target: str) -> tuple[Bit, ...] | str:
     if port is None:
         m = _BUS_BIT_RE.match(target)
         if m is None or m["base"] not in module.ports:
+            multi = MULTI_INDEX_RE.match(target)
+            if (
+                multi is not None
+                and multi["base"] in module.ports
+                and multi["base"] + multi["first"] not in module.ports
+            ):
+                # A packed 2-D port indexed twice (rtl-buddy-cdc#402).
+                return "no such top-level port: " + flat_index_advice(multi["base"])
             return "no such top-level port"
         port = module.ports[m["base"]]
         idx = int(m["idx"])
@@ -1321,6 +1331,39 @@ def flop_clock_root_resolver(
     is used here only as the fallback identity source (see
     :func:`_identity_source`).
     """
+    root_of = clock_root_resolver(
+        module,
+        pin_clocks,
+        clock_for_port=clock_for_port,
+        declared_clock_for_port=declared_clock_for_port,
+        max_depth=max_depth,
+        drivers=drivers,
+        case_analysis=case_analysis,
+    )
+
+    def resolve(f: Flop) -> str | None:
+        return root_of(f.clk)
+
+    return resolve
+
+
+def clock_root_resolver(
+    module: Module,
+    pin_clocks: dict[str, str] | None = None,
+    *,
+    clock_for_port: Callable[[str], str | None] | None = None,
+    declared_clock_for_port: Callable[[str], str | None] | None = None,
+    max_depth: int = 16,
+    drivers: dict[Bit, tuple[str, str]] | None = None,
+    case_analysis: Mapping[str, str] | None = None,
+) -> Callable[[Bit], str | None]:
+    """The *raw* clock root of any clock-pin bit, by the walk
+    :func:`flop_clock_root_resolver` applies to a flop's ``CLK``.
+
+    For a clock pin that is not a flop's: the clock pin of an abstracted
+    instance (rtl-buddy-cdc#402), which must root exactly where the flops
+    behind it root in the flattened design.
+    """
     if drivers is None:
         drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
@@ -1331,10 +1374,10 @@ def flop_clock_root_resolver(
     case_bits = _build_case_bits(module, case_analysis)
     port_root = port_root_fn(module, clock_for_port, declared_clock_for_port)
 
-    def resolve(f: Flop) -> str | None:
+    def resolve(bit: Bit) -> str | None:
         return trace_clock_root(
             module,
-            f.clk,
+            bit,
             drivers,
             max_depth=max_depth,
             bit_to_clock=bit_to_clock,
@@ -1584,6 +1627,7 @@ def find_clock_combines(
     declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
+    extra_sinks: Mapping[str, Bit] | None = None,
 ) -> list[ClockCombine]:
     """Report every clock-network node the tracer *declined* on (#269).
 
@@ -1613,6 +1657,11 @@ def find_clock_combines(
     Returns ``[]`` when fewer than two clocks are declared — with at most
     one clock identity in play no combine is possible, so the walk is
     skipped entirely.
+
+    ``extra_sinks`` names clock pins that are not flops' — an abstracted
+    instance's clock pins, ``"u_ip.clk" -> bit`` (rtl-buddy-cdc#402) — and
+    walks them as it walks a flop's ``CLK``, so a combine in front of a
+    blackbox is reported as it is in the flattened design.
     """
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
     clock_identity = _clock_identity_fn(
@@ -1632,8 +1681,7 @@ def find_clock_combines(
     sinks_at: dict[tuple[str, Bit], set[str]] = defaultdict(set)
     types_at: dict[tuple[str, Bit], str] = {}
 
-    for f in find_flops(module):
-        sink_name = f.cell.name
+    for sink_name, clk in _clock_sinks(module, extra_sinks):
 
         def record(
             cell: str,
@@ -1649,7 +1697,7 @@ def find_clock_combines(
 
         trace_clock_root(
             module,
-            f.clk,
+            clk,
             drivers,
             max_depth=max_depth,
             bit_to_clock=bit_to_clock,
@@ -1685,6 +1733,7 @@ def find_scan_mode_flops(
     declared_clock_for_port: Callable[[str], str | None] | None = None,
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
+    extra_sinks: Mapping[str, Bit] | None = None,
 ) -> set[str]:
     """Cell names of flops clocked through a DFT scan structure (#45).
 
@@ -1720,6 +1769,10 @@ def find_scan_mode_flops(
     enclosing gate later declines on can still be recorded. That can
     only ever mark MORE crossings as scan-related, never fewer, and the
     tag alone suppresses nothing.
+
+    ``extra_sinks`` are walked like a flop's ``CLK`` and their names
+    returned like a flop's: an abstracted instance's clock pins
+    (rtl-buddy-cdc#402), see :func:`find_clock_combines`.
     """
     drivers = _bit_drivers(module)
     bit_to_clock = _build_bit_to_clock(module, pin_clocks)
@@ -1731,7 +1784,7 @@ def find_scan_mode_flops(
     port_root = port_root_fn(module, clock_for_port, declared_clock_for_port)
 
     out: set[str] = set()
-    for f in find_flops(module):
+    for sink_name, clk in _clock_sinks(module, extra_sinks):
         hits: list[tuple[Bit, ...]] = []
 
         def record(
@@ -1744,7 +1797,7 @@ def find_scan_mode_flops(
 
         trace_clock_root(
             module,
-            f.clk,
+            clk,
             drivers,
             max_depth=max_depth,
             bit_to_clock=bit_to_clock,
@@ -1754,7 +1807,46 @@ def find_scan_mode_flops(
             port_root=port_root,
         )
         if any(is_scan_control(bits) for bits in hits):
-            out.add(f.cell.name)
+            out.add(sink_name)
+    return out
+
+
+def _clock_sinks(
+    module: Module, extra_sinks: Mapping[str, Bit] | None
+) -> list[tuple[str, Bit]]:
+    """Every flop's ``(name, CLK bit)``, then ``extra_sinks``'."""
+    sinks = [(f.cell.name, f.clk) for f in find_flops(module)]
+    if extra_sinks:
+        sinks.extend(extra_sinks.items())
+    return sinks
+
+
+def boundary_clock_sinks(
+    module: Module, clock_pins: Mapping[str, frozenset[str]]
+) -> dict[str, Bit]:
+    """The clock pins of abstracted instances, as named clock sinks.
+
+    ``clock_pins`` maps an instance to the port names determined to be
+    its clock pins (:func:`rtl_buddy_cdc.abstract.instance_clock_pins`).
+    Each connected bit is one sink, named ``"<instance>.<pin>"`` (with a
+    ``[i]`` suffix on a multi-bit pin). In the flattened design those
+    bits are the ``CLK`` of the flops inside; under ``--blackbox`` /
+    ``--greybox`` they are where the parent's clock network ends, so
+    every view that walks the clock network from its sinks — CDC-021's
+    clock roots, the clock-network cells CDC-008 / CDC-010 read, CDC-023's
+    combines, the scan-mode tags — must start from them too
+    (rtl-buddy-cdc#402).
+    """
+    out: dict[str, Bit] = {}
+    for inst in sorted(clock_pins):
+        cell = module.cells.get(inst)
+        if cell is None:
+            continue
+        for pin in sorted(clock_pins[inst]):
+            bits = cell.connections.get(pin, ())
+            for i, b in enumerate(bits):
+                if isinstance(b, int):
+                    out[f"{inst}.{pin}" if len(bits) == 1 else f"{inst}.{pin}[{i}]"] = b
     return out
 
 

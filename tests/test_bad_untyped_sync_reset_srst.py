@@ -92,7 +92,7 @@ def test_cdc_011_fires_on_the_untyped_sync_reset(srst_case) -> None:
     assert srst_v.severity == "warning", (
         f"single destination domain → warning; got {srst_v.severity}"
     )
-    assert "set_input_delay -clock clk [get_ports srst]" in srst_v.message
+    assert "`set_input_delay -clock clk 0.0 [get_ports srst]`" in srst_v.message
     assert srst_v.cell_name is not None
 
 

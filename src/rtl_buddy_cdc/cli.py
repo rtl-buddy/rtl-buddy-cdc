@@ -20,12 +20,14 @@ from rtl_buddy_cdc import (
     sdc_objects,
     waivers as waivers_mod,
 )
-from rtl_buddy_cdc.abstract import instance_clock_pins
+from rtl_buddy_cdc.abstract import body_clock_pins, instance_clock_pins
 from rtl_buddy_cdc.domain import (
     Crossing,
     DepthCut,
     _bit_drivers,
     assign_domains,
+    bit_clock_resolver,
+    boundary_clock_sinks,
     case_analysis_warnings,
     filter_async as domain_filter_async,
     filter_async_cuts,
@@ -959,16 +961,58 @@ def _analyze_module_and_report(
             sync_primitives=sync_primitives,
             crossing_depth=crossing_depth,
         )
+        # FIX 4: per-instance clock-pin map for CDC-008's clock-as-data
+        # exemption — exempt only a blackbox instance's CLOCK pins, not
+        # the whole cell, so a clock wired into a genuine DATA input of a
+        # blackbox still fires. The same pins are where the parent's clock
+        # network ends: every rule view seeded from flop clocks is seeded
+        # from them too (rtl-buddy-cdc#402). A greybox body adds the input
+        # ports that clock its own flops, which the parent-side trace
+        # cannot prove when the port feeding one has no create_clock.
+        boundary_clock_pins: dict[str, frozenset[str]] = {}
+        if blackboxes:
+            # One driver map for every instance (issue #320).
+            drivers = _bit_drivers(module)
+            body_pins: dict[str, frozenset[str]] = {}
+            for inst_name, cell in module.cells.items():
+                sub = blackboxes.get(cell.type)
+                if sub is None:
+                    continue
+                if cell.type not in body_pins:
+                    body_pins[cell.type] = body_clock_pins(
+                        sub, max_depth=clock_trace_depth
+                    )
+                boundary_clock_pins[inst_name] = body_pins[
+                    cell.type
+                ] | instance_clock_pins(
+                    module,
+                    cell,
+                    sub,
+                    spec=spec,
+                    pin_clocks=spec.pin_clocks,
+                    max_depth=clock_trace_depth,
+                    drivers=drivers,
+                )
         # DFT scan structures in the clock network (#45). Computed off
         # the same clock-root walk that assigned the domains above, and
         # returns immediately when the design carries no scan-mode
         # attribute — which is every design that hasn't opted in. The
         # result only ever *tags* crossings; suppression is a separate,
-        # explicit decision below.
-        scan_mode_flops = frozenset(
+        # explicit decision below. An abstracted instance's steered clock
+        # pin tags the boundary sinks it captures (rtl-buddy-cdc#402).
+        clock_pin_sinks = boundary_clock_sinks(module, boundary_clock_pins)
+        scan_mode_flops = _boundary_scan_sinks(
+            module,
             scan_mode_clock_select_flops(
-                module, max_depth=clock_trace_depth, **spec.clock_root_inputs()
-            )
+                module,
+                max_depth=clock_trace_depth,
+                extra_sinks=clock_pin_sinks,
+                **spec.clock_root_inputs(),
+            ),
+            clock_pin_sinks,
+            boundaries,
+            spec,
+            clock_trace_depth,
         )
         flat_cuts: list[DepthCut] = []
         crossings = find_crossings(
@@ -1112,27 +1156,6 @@ def _analyze_module_and_report(
                         message=f"blackbox `{inst}` (`{cell.type}`) {reason}",
                         cell_name=inst,
                     )
-                )
-        # FIX 4: per-instance clock-pin map for CDC-008's clock-as-data
-        # exemption — exempt only a blackbox instance's CLOCK pins, not
-        # the whole cell, so a clock wired into a genuine DATA input of a
-        # blackbox still fires.
-        boundary_clock_pins: dict[str, frozenset[str]] = {}
-        if blackboxes:
-            # One driver map for every instance (issue #320).
-            drivers = _bit_drivers(module)
-            for inst_name, cell in module.cells.items():
-                sub = blackboxes.get(cell.type)
-                if sub is None:
-                    continue
-                boundary_clock_pins[inst_name] = instance_clock_pins(
-                    module,
-                    cell,
-                    sub,
-                    spec=spec,
-                    pin_clocks=spec.pin_clocks,
-                    max_depth=clock_trace_depth,
-                    drivers=drivers,
                 )
         # #261: the facts the compositional per-module pass proved about
         # each surviving boundary, projected onto the synthetic virtual
@@ -1477,6 +1500,45 @@ def _summarise_blackboxes(
         module, blackboxes, spec, max_depth=max_depth
     )
     return boundaries
+
+
+def _boundary_scan_sinks(
+    module: netlist.Module,
+    steered: set[str],
+    clock_pin_sinks: dict[str, netlist.Bit],
+    boundaries: dict[str, netlist.BoundarySummary],
+    spec: sdc_mod.ClockSpec,
+    max_depth: int,
+) -> frozenset[str]:
+    """``steered`` with each scan-steered abstracted-instance clock pin
+    replaced by the boundary sinks it clocks (rtl-buddy-cdc#402).
+
+    The crossing walk stamps ``scan_mode`` by destination name, and the
+    destination of a crossing into an abstracted instance is the virtual
+    sink ``<instance>.<port>``, not the clock pin. Flattened, the flops
+    behind that port are the steered ones, so the sinks of the pin's
+    domain take the tag: every sink of a single-clock-pin instance, and
+    on a multi-clock one the sinks captured in the steered pin's clock.
+    """
+    pins = {name for name in steered if name in clock_pin_sinks}
+    if not pins:
+        return frozenset(steered)
+    out = set(steered) - pins
+    domain_of = bit_clock_resolver(
+        module, max_depth=max_depth, **spec.clock_root_inputs()
+    )
+    for pin in pins:
+        inst = pin.rsplit(".", 1)[0]
+        summary = boundaries.get(inst) or boundaries.get(module.cells[inst].type)
+        if summary is None:
+            continue
+        single = len([n for n in clock_pin_sinks if n.rsplit(".", 1)[0] == inst]) == 1
+        domain = domain_of(clock_pin_sinks[pin])
+        for port, pb in summary.input_ports.items():
+            sink_clock = pb.src_clock if pb.src_clock is not None else summary.clock
+            if single or sink_clock == domain:
+                out.add(f"{inst}.{port}")
+    return frozenset(out)
 
 
 def _filter_async(

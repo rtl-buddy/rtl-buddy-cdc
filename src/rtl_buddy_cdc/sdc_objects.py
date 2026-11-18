@@ -74,7 +74,7 @@ from rtl_buddy_cdc.domain import (
     capture_control_pins,
 )
 from rtl_buddy_cdc.flops import Flop, find_flops, is_ff_cell
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.netlist import MULTI_INDEX_RE, Bit, Module, flat_index_advice
 from rtl_buddy_cdc.reporter import _instance_path
 from rtl_buddy_cdc.rules import Violation, _bit_drivers
 from rtl_buddy_cdc.sdc import (
@@ -434,6 +434,26 @@ class NameIndex:
         """Top-level port → selected bit positions."""
         return self._lookup("port", pattern, hierarchical)  # type: ignore[return-value]
 
+    def multi_index_hint(self, pattern: str, hierarchical: bool = False) -> str:
+        """Advice for a ``p[i][j]`` pattern that named nothing because
+        ``p`` is one vector (a packed multi-dimensional vector), or ``""``.
+
+        Empty when ``p[i]`` is itself a name (an unpacked-array element,
+        whose bits the pattern selects — if it named nothing the index is
+        just out of range) or ``p`` names nothing at all (a typo). Only
+        consulted for a pattern that already matched nothing.
+        """
+        m = MULTI_INDEX_RE.match(_normalise(pattern))
+        if m is None:
+            return ""
+        tables = (self._register_table(), self._port_table(), self._net_table())
+        base, first = m.group("base"), m.group("first")
+        if any(t.names(base + first, hierarchical=hierarchical) for t in tables):
+            return ""
+        if not any(t.names(base, hierarchical=hierarchical) for t in tables):
+            return ""
+        return flat_index_advice(pattern.split("[", 1)[0])
+
     def net_bits(self, pattern: str, hierarchical: bool = False) -> set[Bit]:
         """Every net bit the pattern selects."""
         out: set[Bit] = set()
@@ -551,7 +571,7 @@ def resolve(module: Module, spec: ClockSpec) -> Resolution:
             for obj in group:
                 got = _through_bits(index, obj)
                 if not got:
-                    warn(_no_match(where, obj, "-through"))
+                    warn(_no_match(where, obj, "-through", index))
                 bits.update(got)
             through.append(frozenset(bits))
         out.append(
@@ -672,9 +692,14 @@ def _resolve_port_delays(module: Module, spec: ClockSpec) -> list[str]:
                 if is_glob
                 else "no top-level port"
             )
+            hint = index.multi_index_hint(target)
             warnings.append(
-                f"{where}: port pattern {target!r} matches {what} — constraint "
-                f"typo? (it types nothing)"
+                f"{where}: port pattern {target!r} matches {what} — "
+                + (
+                    f"{hint} (it types nothing)"
+                    if hint
+                    else "constraint typo? (it types nothing)"
+                )
             )
             unmatched[target] = d.clock
             continue
@@ -757,11 +782,14 @@ def _remove_ports(
     return {name: bits for name, bits in left.items() if bits}
 
 
-def _no_match(where: str, obj: SdcObject, role: str) -> str:
+def _no_match(where: str, obj: SdcObject, role: str, index: NameIndex) -> str:
+    # A packed multi-dimensional vector indexed twice is not a typo, and
+    # the fix is a flat index (rtl-buddy-cdc#402).
+    hint = index.multi_index_hint(obj.name, obj.hierarchical)
     return (
         f"{where}: {role} {obj.kind if obj.kind != 'any' else 'object'} pattern "
-        f"{obj.name!r} matches nothing usable in the netlist — constraint typo? "
-        f"(the exception does not cover it)"
+        f"{obj.name!r} matches nothing usable in the netlist — "
+        f"{hint or 'constraint typo?'} (the exception does not cover it)"
     )
 
 
@@ -780,7 +808,7 @@ def _resolve_side(
     for obj in objects:
         got_f, got_p = _endpoint(index, obj, role)
         if not got_f and not got_p:
-            warn(_no_match(where, obj, f"-{role}"))
+            warn(_no_match(where, obj, f"-{role}", index))
         for k, v in got_f.items():
             flops[k].update(v)
         for k, v in got_p.items():

@@ -82,7 +82,8 @@ def test_messages_name_the_launch_domain() -> None:
     msgs = _by_port(violations)
     assert "`q_b` is launched from clk_b (flop `" in msgs["q_b"]
     assert "Other outputs in this SDC do carry contracts" in msgs["q_b"]
-    assert "set_output_delay -clock <receiving clock> [get_ports q_b]" in msgs["q_b"]
+    assert "`set_output_delay -clock clk_b 0.0 [get_ports q_b]`" in msgs["q_b"]
+    assert "0.0 delay a placeholder" in msgs["q_b"]
     assert "`q_bus` (4 of 4 bits) is launched from clk_a" in msgs["q_bus"]
     assert "clk_a (flop `" in msgs["q_pair"]
     assert ") and clk_b (flop `" in msgs["q_pair"]
