@@ -5376,8 +5376,107 @@ class _ModuleBuilder:
                 return self._bits_of_expression(args[0])
             if name in self._BIT_COUNT_CALLS and len(args) == 1:
                 return self._lower_bit_count(name, args[0], expr)
+            if name in self._ENUM_STEPS and args:
+                return self._lower_enum_step(expr, args, self._ENUM_STEPS[name])
+            if name in self._ARRAY_REDUCTIONS and len(args) == 1:
+                return self._lower_array_reduction(expr, args[0], name)
             return None
         return self._inline_function(expr)
+
+    # Enum methods stepping through the members (``first`` / ``last`` /
+    # ``num`` are constants slang folds).
+    _ENUM_STEPS = {"next": 1, "prev": -1}
+
+    def _lower_enum_step(
+        self, expr: Any, args: list[Any], step: int
+    ) -> tuple[Bit, ...] | None:
+        """``e.next(N)`` / ``e.prev(N)``: the member ``N`` (default 1)
+        places after / before ``e``'s value in declaration order, wrapping
+        around (IEEE 1800-2017 6.19.5), as a ``$pmux`` of one ``e ==
+        member`` compare per member; ``x`` for a value that is no member,
+        as slang evaluates it (rtl-buddy-cdc#408: an opaque driver).
+        ``None`` for a run-time ``N`` or a value that does not lower."""
+        etype = getattr(getattr(args[0], "type", None), "canonicalType", None)
+        if not getattr(etype, "isEnum", False):
+            return None
+        count = 1 if len(args) < 2 else self._const_int(args[1])
+        width = self._expr_width(expr)
+        current = self._bits_of_expression(args[0])
+        if count is None or width < 1 or not current:
+            return None
+        values: list[tuple[Bit, ...]] = []
+        for member in etype:
+            if self._kind_name(member) == "EnumValueSymbol":
+                bits = self._value_bits(getattr(member, "value", None), width)
+                if bits is None:
+                    return None
+                values.append(bits)
+        if not values:
+            return None
+        current = self._resize_bits(current, width)
+        selects: list[Bit] = []
+        words: list[Bit] = []
+        for k, value in enumerate(values):
+            selects.append(
+                self._emit_comb_cell(
+                    "$eq", {"A": current, "B": value}, 1, src_node=expr
+                )[0]
+            )
+            words.extend(values[(k + step * count) % len(values)])
+        return self._emit_comb_cell(
+            "$pmux",
+            {"A": ("x",) * width, "B": tuple(words), "S": tuple(selects)},
+            width,
+            src_node=expr,
+            parameters={
+                "WIDTH": _param_int32(width),
+                "S_WIDTH": _param_int32(len(values)),
+            },
+        )
+
+    # Array reduction methods without a ``with`` clause: each element
+    # combined into the next by one cell.
+    _ARRAY_REDUCTIONS = {
+        "sum": "$add",
+        "product": "$mul",
+        "and": "$and",
+        "or": "$or",
+        "xor": "$xor",
+    }
+
+    def _lower_array_reduction(
+        self, expr: Any, array: Any, name: str
+    ) -> tuple[Bit, ...] | None:
+        """``arr.sum()`` / ``.product()`` / ``.and()`` / ``.or()`` /
+        ``.xor()`` of an unpacked array of integral elements: a chain of
+        ``$add`` / ``$mul`` / ``$and`` / ``$or`` / ``$xor`` over its
+        elements, at the element width (IEEE 1800-2017 7.12.3,
+        rtl-buddy-cdc#408). ``None`` for anything else."""
+        atype = getattr(getattr(array, "type", None), "canonicalType", None)
+        rng = getattr(atype, "range", None)
+        if not getattr(atype, "isUnpackedArray", False) or rng is None:
+            return None
+        width = self._expr_width(expr)
+        stride = self._element_stride(atype)
+        bits = self._bits_of_expression(array)
+        count = abs(int(rng.left) - int(rng.right)) + 1
+        if bits is None or width < 1 or len(bits) != count * stride:
+            return None
+        if not getattr(getattr(atype, "elementType", None), "isIntegral", False):
+            return None
+        elements = [
+            self._resize_bits(bits[k * stride : (k + 1) * stride], width)
+            for k in range(count)
+        ]
+        result = elements[0]
+        for element in elements[1:]:
+            result = self._emit_comb_cell(
+                self._ARRAY_REDUCTIONS[name],
+                {"A": result, "B": element},
+                width,
+                src_node=expr,
+            )
+        return result
 
     # Bit-counting system functions lowered to logic (rtl-buddy-cdc#405:
     # each was an opaque driver; Yosys lowers them to an adder chain).
