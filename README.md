@@ -193,19 +193,26 @@ when proven. A tie-off, a comb bypass around the chain, a second load on
 the input, a multi-bit port, or a chain one stage short all fall back to
 the conservative answer.
 
-A few shapes are still judged on each side of the boundary separately and
-report a different rule from the flat run — never nothing at the site: a
-gated bus whose gating is inside the block (CDC-004 instead of CDC-012), a
-clock mux or gate inside the block whose select arrives on a pin, a latch
-or memory between a pin and the first stage, and a block output that
-carries a clock pin (CDC-001 / CDC-004 instead of CDC-010 / CDC-017 /
-CDC-026 / CDC-008). A source register's data hold behind a block output
-(CDC-012) and an asynchronous merge reaching a top-level output through a
-block's combinational feed-through (CDC-025 / CDC-024) are seen through a
-greybox as flat (rtl-buddy-cdc#408). A stub (`--blackbox`) has no body to
-show either: its outputs are one launch each in the block's clock (no
-feed-through, so such a merge is not seen), and its payload counts as held
-when an acknowledge from the destination enters the stub on any pin.
+Since rtl-buddy-cdc#408 a greybox also reports, at the block's pin, the
+rule the flat run reports at the cell behind it: a clock mux select or
+clock-gate enable on a pin (CDC-010), a latch between a pin and the first
+stage (CDC-017), a block output that carries a clock pin into parent data
+(CDC-008), a bus captured under an enable synchronised inside the block
+(CDC-012, not CDC-004), a source register's data hold behind a block output
+(CDC-012), and an asynchronous merge reaching a top-level output through a
+block's combinational feed-through (CDC-025 / CDC-024). A pin the body only
+steers a clock with, feeds a latch with, or does not use seeds no boundary
+sink, as no crossing ends behind it flat.
+
+One shape is still judged on each side separately and reports a different
+rule — never nothing at the site: a memory inside the block whose
+asynchronous read reaches the parent (CDC-004 at the read address pin and
+the read data, instead of CDC-026). A stub (`--blackbox`) has no body, so it
+keeps the pre-#408 readings: every non-clock pin is data (CDC-001 / CDC-004
+where the flat run says CDC-010 / CDC-017 / CDC-026), an output is one
+launch in the block's clock (no feed-through, so a merge through it is not
+seen, and a clock carried out is data), and its payload counts as held when
+an acknowledge from the destination enters the stub on any pin.
 
 **Clock pins of a stub.** A pin is a clock pin of a bodyless
 (`--blackbox`) module when its name is on the allow-list (`clk`, `CLK`,

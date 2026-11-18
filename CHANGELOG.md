@@ -432,6 +432,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Abstracted instances' pins are left out of the driver map, so every
   pin name reaches the pin's published facts.
 
+- **`--greybox` reports the flat rule at a block's pin**
+  (rtl-buddy-cdc#408, items 5, 6, 8, 9). The greybox pass publishes per
+  pin what the body does with it besides a flop capture, and the parent
+  raises the rule the flat run raises at the cell behind it: a clock mux
+  select or clock-gate enable on a pin is CDC-010 (was CDC-001), a latch
+  between a pin and the first stage is CDC-017 (was CDC-001), a block
+  output carrying the block's clock pin into parent data is CDC-008 (was
+  CDC-001 twice), and a bus captured under an enable synchronised inside
+  the block is gated — CDC-012 (warning) instead of CDC-004 (error). A pin
+  the body only steers a clock with, feeds a latch with, or does not use
+  seeds no boundary sink (no spurious CDC-001 on an unused pin). A body
+  of wires only (`assign q = clk;`) is analysed instead of read as a stub.
+  Still different, documented: a memory read asynchronously into the
+  parent (CDC-004 ×2 instead of CDC-026), and every stub reading.
+
 - **CDC-012 and CDC-025 across abstracted block boundaries**
   (rtl-buddy-cdc#408, items 2, 3).
   - **CDC-012 behind a block output.** A gated bus captured from an

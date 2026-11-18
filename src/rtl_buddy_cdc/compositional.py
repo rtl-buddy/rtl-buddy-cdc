@@ -52,7 +52,9 @@ from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 from rtl_buddy_cdc.domain import (
+    Crossing,
     DepthCut,
+    clock_network_events,
     filter_async,
     filter_async_cuts,
     find_crossings,
@@ -65,10 +67,13 @@ from rtl_buddy_cdc.flops import (
     is_ff_cell,
     is_latch_cell,
 )
-from rtl_buddy_cdc.netlist import Bit, DriverFacts, Module, ResetPinFact
+from rtl_buddy_cdc.netlist import Bit, DriverFacts, Module, PinFacts, ResetPinFact
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.rules import (
     _ack_walk,
+    _clock_control_cells,
+    _clock_input_domains_for,
+    _gated_capture_fanin,
     _ack_walk_excluded,
     _hold_control_bits,
     Violation,
@@ -205,6 +210,9 @@ class PortFacts:
     # Outputs only: what the register driving the pin directly looks like
     # (rtl-buddy-cdc#405) — see :class:`~rtl_buddy_cdc.netlist.DriverFacts`.
     driver: DriverFacts | None = None
+    # Inputs only: what the body does with the pin besides a flop capture
+    # (rtl-buddy-cdc#408) — see :class:`~rtl_buddy_cdc.netlist.PinFacts`.
+    pin: PinFacts | None = None
     # Outputs only: the input pins with a combinational path to the pin
     # (rtl-buddy-cdc#408), so the parent's output-cone walk carries on
     # through the block as a flat walk does.
@@ -362,7 +370,7 @@ def analyse_module(
     Returns ``None`` for a module with no cells — a stub blackbox, where
     there is nothing to analyse and the pre-#261 behaviour must stand.
     """
-    if not sub.cells:
+    if not sub.cells and not _wired_through(sub):
         return None
 
     sub_spec = derive_sub_spec(spec, clock_pin_roots)
@@ -421,6 +429,7 @@ def analyse_module(
             )
 
     _attach_resets(sub, ports, ctx, domains)
+    _attach_pin_facts(sub, ports, ctx, sub_spec, domains, max_depth)
     reconvergent = _reconvergent_input_ports(sub, ports, ctx, domains, flop_by_name)
 
     return ModuleAnalysis(
@@ -432,6 +441,26 @@ def analyse_module(
         violations=tuple(violations),
         crossings=len(async_crossings),
         depth_cuts=tuple(filter_async_cuts(cuts, sub_spec)),
+    )
+
+
+def _wired_through(sub: Module) -> bool:
+    """A body with no cells whose output ports share a net with an input
+    (``assign q = clk;``): a body to analyse, unlike a stub's, whose
+    ports are all distinct nets (rtl-buddy-cdc#408)."""
+    ins = {
+        b
+        for p in sub.ports.values()
+        if p.direction in ("input", "inout")
+        for b in p.bits
+        if isinstance(b, int)
+    }
+    return any(
+        b in ins
+        for p in sub.ports.values()
+        if p.direction == "output"
+        for b in p.bits
+        if isinstance(b, int)
     )
 
 
@@ -518,6 +547,154 @@ def _attach_resets(
             resets=tuple(sorted(entries, key=lambda e: (e.flop, e.pin))),
             async_only=only,
         )
+
+
+def _attach_pin_facts(
+    sub: Module,
+    ports: dict[str, PortFacts],
+    ctx: _RuleContext,
+    spec: ClockSpec,
+    domains: dict[str, str | None],
+    max_depth: int,
+) -> None:
+    """Fill :attr:`PortFacts.pin` on the data input ports
+    (rtl-buddy-cdc#408): see :class:`~rtl_buddy_cdc.netlist.PinFacts`.
+
+    The clock controls are CDC-010's own reading of the body — the
+    clock-network cells and their control pins
+    (:func:`~rtl_buddy_cdc.rules._clock_control_cells`, with the clock
+    walk's controls taken from one declared clock up, since the body's
+    one clock pin is all it has), each control traced back through comb
+    cells to the input pins, and the cell's clock-input domains.
+    """
+    _combines, traced = clock_network_events(
+        sub, max_depth=max_depth, min_clocks=1, **spec.clock_root_inputs()
+    )
+    controls: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+    for cell, ctrl_ports in _clock_control_cells(sub, ctx, traced):
+        bits = tuple(
+            b
+            for p in sorted(ctrl_ports)
+            for b in cell.connections.get(p, ())
+            if isinstance(b, int)
+        )
+        _flops, in_ports = _backward_fanin(sub, bits, ctx.bit_drivers)
+        if not in_ports:
+            continue
+        doms = tuple(sorted(_clock_input_domains_for(sub, cell, ctx, spec, ctrl_ports)))
+        for name in in_ports:
+            if name in ports:
+                controls.setdefault(name, []).append((cell.name, doms))
+    out_bits: set[Bit] = {
+        b
+        for p in sub.ports.values()
+        if p.direction in ("output", "inout")
+        for b in p.bits
+        if isinstance(b, int)
+    }
+    for name, facts in list(ports.items()):
+        if facts.direction not in ("input", "inout"):
+            continue
+        pin_bits = sub.ports[name].bits
+        captured, latch_feeds, heads = _pin_reach(sub, pin_bits, ctx, domains, out_bits)
+        gated = (
+            len(pin_bits) > 1
+            and bool(heads)
+            and all(_gated_head(sub, ctx, domains, h, len(pin_bits)) for h in heads)
+        )
+        pin = PinFacts(
+            no_capture=not captured and not facts.resets,
+            clock_controls=tuple(sorted(set(controls.get(name, ())))),
+            latch_feeds=latch_feeds,
+            gated=gated,
+        )
+        if pin != PinFacts():
+            ports[name] = replace(facts, pin=pin)
+
+
+def _pin_reach(
+    sub: Module,
+    bits: tuple[Bit, ...],
+    ctx: _RuleContext,
+    domains: dict[str, str | None],
+    out_bits: set[Bit],
+) -> tuple[bool, tuple[tuple[str, str, str], ...], set[str]]:
+    """Forward from an input pin, as the flat crossing walk goes:
+    through comb cells, stopping at flops (the captures), memories and
+    output ports (counted as captures too), and transparent latches (the
+    walk ends there; CDC-017 owns the shape). A clock pin is not a
+    consumer, so a clock mux select or gate enable reaches nothing.
+
+    Returns ``(captured, latch_feeds, heads)``: whether anything was
+    reached, the ``(latch, flop, clock)`` of each latch reached on its
+    ``D`` whose ``Q`` a single-bit flop reads, and the flops reached.
+    """
+    captured = False
+    feeds: set[tuple[str, str, str]] = set()
+    heads: set[str] = set()
+    seen: set[Bit] = set()
+    expanded: set[str] = set()
+    frontier: list[Bit] = [b for b in bits if isinstance(b, int)]
+    while frontier:
+        nxt: list[Bit] = []
+        for b in frontier:
+            if b in seen:
+                continue
+            seen.add(b)
+            if b in out_bits:
+                captured = True
+            for cell_name, pin, _idx in ctx.bit_consumers.get(b, ()):
+                cell = sub.cells[cell_name]
+                if is_ff_cell(cell.type):
+                    captured = True
+                    heads.add(cell_name)
+                    continue
+                if is_latch_cell(cell.type):
+                    if pin != "D":
+                        continue
+                    for q in cell.connections.get("Q", ()):
+                        if not isinstance(q, int):
+                            continue
+                        dst = ctx.d_bit_to_single_bit_flop.get(q)
+                        clock = domains.get(dst.cell.name) if dst is not None else None
+                        if dst is not None and clock is not None:
+                            feeds.add((cell_name, dst.cell.name, clock))
+                    continue
+                if cell.type.startswith("$mem"):
+                    captured = True
+                    continue
+                if cell_name in expanded:
+                    continue
+                expanded.add(cell_name)
+                for p, obits in cell.connections.items():
+                    if cell.is_output_pin(p):
+                        nxt.extend(x for x in obits if isinstance(x, int))
+        frontier = nxt
+    return captured, tuple(sorted(feeds)), heads
+
+
+def _gated_head(
+    sub: Module,
+    ctx: _RuleContext,
+    domains: dict[str, str | None],
+    head: str,
+    width: int,
+) -> bool:
+    """Does flop ``head`` load under an enable / hold mux driven only from
+    its own domain — the destination half of CDC-004's gated-bus test?"""
+    flop = next((f for f in ctx.flops if f.cell.name == head), None)
+    clock = domains.get(head)
+    if flop is None or clock is None:
+        return False
+    probe = Crossing(
+        src_clock="", dst_flop=flop, dst_clock=clock, min_hops=0, width=width
+    )
+    return (
+        _gated_capture_fanin(
+            sub, probe, domains, ctx.bit_drivers, reader_counts=ctx.reader_counts
+        )
+        is not None
+    )
 
 
 def _reaches_capture(
@@ -780,6 +957,14 @@ def _output_facts(
     launchers = _backward_flop_fanin(sub, port.bits, ctx.bit_drivers, undriven=undriven)
     clock, ambiguous = _single_domain({domains.get(f) for f in launchers})
     user = _prove_output_synchroniser(sub, name, ctx, domains, flop_by_name)
+    clock_out = tuple(
+        sorted(
+            c
+            for c in clock_pins
+            if c in sub.ports and any(b in undriven for b in sub.ports[c].bits)
+        )
+    )
+    pin = PinFacts(clock_out=clock_out) if clock_out else None
     hops: int | None = None
     latch: tuple[str, str] | None = None
     if len(port.bits) == 1 and isinstance(port.bits[0], int):
@@ -808,6 +993,7 @@ def _output_facts(
                 and any(b in undriven for b in p.bits)
             )
         ),
+        pin=pin,
     )
 
 

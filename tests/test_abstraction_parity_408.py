@@ -353,3 +353,187 @@ def test_block_output_named_y_is_a_pin_not_a_gate(tmp_path: Path, name: str) -> 
     assert _rules(reports["greybox"]) == flat
     # A stub cannot show the gate behind its pin (no CDC-003).
     assert _rules(reports["blackbox"]) == Counter({"CDC-024": 1, "CDC-025": 1})
+
+
+# --- items 5-9: the rule the flat run reports, at the block's pin -------------
+
+_CLOCK_MUX_SELECT_PIN = """\
+module blk (input clk, input clk2, input s, input a, output logic q);
+    wire g = s ? clk2 : clk;
+    always_ff @(posedge g) q <= a;
+endmodule
+module top (input fast, input slow, input e, input d, output q);
+    logic x;
+    always_ff @(posedge slow) x <= e;
+    blk u (.clk(fast), .clk2(fast), .s(x), .a(d), .q(q));
+endmodule
+"""
+
+_ICG_ENABLE_PIN = """\
+module blk (input clk, input en, input a, output logic q);
+    logic el;
+    always_latch if (!clk) el = en;
+    wire g = clk & el;
+    always_ff @(posedge g) q <= a;
+endmodule
+module top (input fast, input slow, input e, input d, output q);
+    logic x;
+    always_ff @(posedge slow) x <= e;
+    blk u (.clk(fast), .en(x), .a(d), .q(q));
+endmodule
+"""
+
+_LATCH_BEFORE_SYNC = """\
+module blk (input clk, input en, input a, output q);
+    logic l, s1, s2;
+    always_latch if (en) l = a;
+    always_ff @(posedge clk) begin s1 <= l; s2 <= s1; end
+    assign q = s2;
+endmodule
+module top (input fast, input slow, input d, input e, output q);
+    logic x;
+    always_ff @(posedge slow) x <= d;
+    blk u (.clk(fast), .en(e), .a(x), .q(q));
+endmodule
+"""
+
+_MEM_ASYNC_READ = """\
+module blk (input clk, input [1:0] wa, input [7:0] wd, input we, input [1:0] ra,
+            output logic [7:0] q);
+    logic [7:0] mem [4];
+    always_ff @(posedge clk) if (we) mem[wa] <= wd;
+    assign q = mem[ra];
+endmodule
+module top (input fast, input slow, input [1:0] a, input [7:0] d, input w,
+            input [1:0] b, output logic [7:0] q);
+    logic [7:0] o;
+    blk u (.clk(fast), .wa(a), .wd(d), .we(w), .ra(b), .q(o));
+    always_ff @(posedge slow) q <= o;
+endmodule
+"""
+
+_CLOCK_OUT_AS_DATA = """\
+module blk (input clk, input d, output q);
+    assign q = clk;
+endmodule
+module top (input fast, input slow, input d, output logic q);
+    logic o;
+    blk u (.clk(fast), .d(d), .q(o));
+    always_ff @(posedge slow) q <= o;
+endmodule
+"""
+
+_GATED_INSIDE = """\
+module blk (input clk, input req, input [7:0] d, output logic [7:0] q);
+    logic r1, r2;
+    always_ff @(posedge clk) begin r1 <= req; r2 <= r1; if (r2) q <= d; end
+endmodule
+module top (input fast, input slow, input go, input [7:0] d, output [7:0] q);
+    logic r;
+    logic [7:0] x;
+    always_ff @(posedge slow) begin r <= go; x <= d; end
+    blk u (.clk(fast), .req(r), .d(x), .q(q));
+endmodule
+"""
+
+# The same, with the acknowledge leaving the block and holding the payload.
+_GATED_INSIDE_ACKED = """\
+module blk (input clk, input req, input [7:0] d, output logic [7:0] q,
+            output logic ack);
+    logic r1, r2;
+    always_ff @(posedge clk) begin r1 <= req; r2 <= r1; ack <= r2; if (r2) q <= d; end
+endmodule
+module top (input fast, input slow, input go, input [7:0] d, output [7:0] q);
+    logic r, a1, a2, ack;
+    logic [7:0] x;
+    always_ff @(posedge slow) begin
+        a1 <= ack; a2 <= a1;
+        r <= go;
+        if (a2) x <= d;
+    end
+    blk u (.clk(fast), .req(r), .d(x), .q(q), .ack(ack));
+endmodule
+"""
+
+
+@needs_slang
+@pytest.mark.parametrize(
+    ("sv", "cell"),
+    [(_CLOCK_MUX_SELECT_PIN, "$mux"), (_ICG_ENABLE_PIN, "$dlatch")],
+    ids=["clock-mux-select", "latch-icg-enable"],
+)
+def test_clock_control_on_a_pin_is_cdc010(tmp_path: Path, sv: str, cell: str) -> None:
+    """Item 5: the pin only steers a clock mux / gate inside the block.
+    It seeds no data sink; CDC-010 is raised at the pin from the parent
+    flop driving it."""
+    sdc = _SDC + _typed("slow", "e") + _typed("fast", "d")
+    reports = _views(tmp_path, sv, sdc)
+    assert _rules(reports["flat"]) == Counter({"CDC-010": 1})
+    assert _rules(reports["greybox"]) == Counter({"CDC-010": 1})
+    (msg,) = _messages(reports["greybox"], "CDC-010")
+    assert "inside abstracted block u" in msg and "in domain slow" in msg
+    (flat_msg,) = _messages(reports["flat"], "CDC-010")
+    assert f"({cell})" in flat_msg
+    # A stub reads every non-clock pin as data (documented).
+    assert _rules(reports["blackbox"]) == Counter({"CDC-001": 1})
+
+
+@needs_slang
+def test_latch_between_pin_and_sync_is_cdc017(tmp_path: Path) -> None:
+    """Item 6: the crossing walk stops at a latch flat; at the boundary
+    the pin seeds no sink and CDC-017 is raised from the latch fact."""
+    sdc = _SDC + _typed("slow", "d") + _typed("fast", "e")
+    reports = _views(tmp_path, _LATCH_BEFORE_SYNC, sdc)
+    assert _rules(reports["flat"]) == Counter({"CDC-017": 1})
+    assert _rules(reports["greybox"]) == Counter({"CDC-017": 1})
+    (msg,) = _messages(reports["greybox"], "CDC-017")
+    assert "inside abstracted block u, fed from its input u.a" in msg
+    assert _rules(reports["blackbox"]) == Counter({"CDC-001": 1})
+
+
+@needs_slang
+def test_memory_async_read_through_a_block_is_a_documented_limit(
+    tmp_path: Path,
+) -> None:
+    """Item 7, documented limit (architecture spec section 4.9): CDC-026
+    needs the crossings into the read address relative to the write
+    clock, and the read address is a combinational feed-through, which a
+    single-clock summary captures in the block's clock. The site is still
+    reported as an error, under CDC-004."""
+    sdc = _SDC + _typed("fast", "a", "d", "w") + _typed("slow", "b")
+    reports = _views(tmp_path, _MEM_ASYNC_READ, sdc)
+    assert _rules(reports["flat"]) == Counter({"CDC-026": 1})
+    assert _rules(reports["greybox"]) == Counter({"CDC-004": 2})
+    assert _rules(reports["blackbox"]) == Counter({"CDC-004": 2})
+
+
+@needs_slang
+def test_clock_carried_out_of_a_block_used_as_data_is_cdc008(tmp_path: Path) -> None:
+    """Item 8: the output carries the block's clock pin; it seeds no
+    source, and the parent reads it as that clock. The unused data pin
+    seeds no sink either (flat: nothing captures it)."""
+    reports = _views(tmp_path, _CLOCK_OUT_AS_DATA, _SDC + _typed("slow", "d"))
+    assert _rules(reports["flat"]) == Counter({"CDC-008": 1})
+    assert _rules(reports["greybox"]) == Counter({"CDC-008": 1})
+    (msg,) = _messages(reports["greybox"], "CDC-008")
+    assert "u.q (clock pin u.clk)" in msg
+    # A stub's output is data launched in its clock (documented).
+    assert _rules(reports["blackbox"]) == Counter({"CDC-001": 2})
+
+
+@needs_slang
+def test_gating_inside_a_block_is_cdc012(tmp_path: Path) -> None:
+    """Item 9: the bus into the block is captured under an enable
+    synchronised inside it — gated, so CDC-012's question, not CDC-004's."""
+    sdc = _SDC + _typed("slow", "go", "d")
+    reports = _views(tmp_path, _GATED_INSIDE, sdc)
+    assert _rules(reports["flat"]) == Counter({"CDC-012": 1})
+    assert _rules(reports["greybox"]) == Counter({"CDC-012": 1})
+
+
+@needs_slang
+def test_gating_inside_a_block_with_an_acknowledge_is_clean(tmp_path: Path) -> None:
+    sdc = _SDC + _typed("slow", "go", "d")
+    reports = _views(tmp_path, _GATED_INSIDE_ACKED, sdc)
+    assert _rules(reports["flat"])["CDC-012"] == 0
+    assert _rules(reports["greybox"]) == _rules(reports["flat"])

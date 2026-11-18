@@ -1684,6 +1684,7 @@ def clock_network_events(
     max_depth: int = 16,
     case_analysis: Mapping[str, str] | None = None,
     extra_sinks: Mapping[str, Bit] | None = None,
+    min_clocks: int = 2,
 ) -> tuple[list[ClockCombine], dict[str, frozenset[Bit]]]:
     """Every clock-network node the tracer *declined* on (#269), and the
     control inputs of every gate / mux / latch it resolved through.
@@ -1719,9 +1720,12 @@ def clock_network_events(
     real design smell either way, which is why the report is keyed on
     the node rather than on the unresolved flop.
 
-    Returns ``([], {})`` when fewer than two clocks are declared — with at
-    most one clock identity in play no combine is possible and no control
-    can be in a foreign domain, so the walk is skipped entirely.
+    Returns ``([], {})`` when fewer than ``min_clocks`` (default two)
+    clocks are declared — with at most one clock identity in play no
+    combine is possible and no control can be in a foreign domain, so the
+    walk is skipped entirely. A greybox body passes ``min_clocks=1``: its
+    one clock pin's controls can still be driven from a foreign domain in
+    the parent (rtl-buddy-cdc#408).
 
     ``extra_sinks`` names clock pins that are not flops' — an abstracted
     instance's clock pins, ``"u_ip.clk" -> bit`` (rtl-buddy-cdc#402) — and
@@ -1736,7 +1740,7 @@ def clock_network_events(
     ports = [p.name for p in module.ports.values() if p.direction == "input"]
     declared = {c for c in (clock_identity(p) for p in ports) if c is not None}
     declared |= set(bit_to_clock.values())
-    if len(declared) < 2:
+    if len(declared) < min_clocks:
         return [], {}
 
     drivers = _bit_drivers(module)

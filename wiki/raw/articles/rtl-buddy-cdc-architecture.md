@@ -1191,6 +1191,31 @@ the parent's rule reach the verdict the flat run reaches
   pin names, and a block pin named `Q` would read as a register with no
   domain, one named `Y` as a gate to walk on through. Undriven, the bit
   is looked up in `boundary_sources` like any other pin.
+- **Pin facts (`netlist.PinFacts`, rtl-buddy-cdc#408).** What the body
+  does with a pin besides a flop capture or launch, carried to the parent
+  in `BoundarySummary.pin_facts` / `_RuleContext.boundary_pin_facts`:
+  - *inputs* — the clock-network cells whose control the pin drives, with
+    each cell's clock-input domains (CDC-010's reading of the body:
+    `rules._clock_control_cells`, the clock walk's controls taken from one
+    declared clock up via `clock_network_events(min_clocks=1)`, each
+    control traced back to pins); the transparent latches it feeds on `D`
+    whose `Q` a single-bit flop reads (CDC-017); whether every flop
+    capturing a multi-bit pin loads it under an enable driven from its
+    own domain (`gated`: CDC-004's exemption, handing the crossing to
+    CDC-012, whose acknowledge walk in the parent now also stops at a
+    block output pin launched in the destination clock); and
+    `no_capture` — the forward walk the flat crossing walk takes (through
+    comb cells, stopping at latches; a clock pin is no consumer) reaches
+    no flop, memory or output. A `no_capture` pin seeds no boundary sink
+    in either summariser: flat, no crossing ends behind it.
+    `rules._cdc_010_boundary` and CDC-017's boundary pass raise the flat
+    rule at the pin from the parent flops driving it.
+  - *outputs* — `clock_out`, the clock pins reaching the output
+    combinationally. CDC-008 reads the parent bits as that clock; an
+    output with nothing else behind it seeds no source (a clock is no
+    crossing source flat). A body with no cells whose outputs share a net
+    with an input (`assign q = clk;`) is analysed, not taken for a stub
+    (`compositional._wired_through`).
 - **Payload hold (outputs, CDC-012; rtl-buddy-cdc#408).** For an output
   one multi-bit register drives whole, where CDC-012's acknowledge walk
   goes from that register's load / hold control inside the block
@@ -1310,20 +1335,29 @@ seeded as its own source — unconstrained when that output is a comb
 feed-through, so the path stays covered conservatively.
 
 **Residual imprecision, stated plainly.** Chain depth is joined across
-the boundary (above). What is still evaluated on each side separately,
-each reported by the audit of rtl-buddy-cdc#405 with a reproducer, and
-none of them silent at the site: a gated bus whose gating sits inside
-the block (the parent reports CDC-004 where the flat run reports
-CDC-012 — an over-report), a clock mux / gate inside the block whose
-select arrives on a pin (CDC-001 at the pin instead of CDC-010), a latch
-or a memory between a pin and the first stage (CDC-001 / CDC-004 instead
-of CDC-017 / CDC-026), a block output that carries a clock pin
-combinationally (CDC-001 instead of CDC-008). Under `--blackbox` only
-(rtl-buddy-cdc#408): an asynchronous merge that reaches a top-level
-output through a stub's combinational feed-through is not seen (CDC-025
-/ CDC-024 — the stub's output is one launch in its clock), and a stub's
-payload counts as held when any acknowledge from the destination enters
-the stub (CDC-012).
+the boundary (above), and the shapes the #405 audit listed as judged on
+each side separately are reported at the pin under the flat rule
+(rtl-buddy-cdc#408, the pin facts above). One remains, a documented
+limit pinned by `tests/test_abstraction_parity_408.py`, reported at the
+site under another rule:
+
+- **A memory inside the block read asynchronously into the parent**:
+  CDC-004 at the read-address pin (captured in the block's clock) and on
+  the read data, where the flat run reports CDC-026. CDC-026 asks whether
+  a crossing from the *write* clock reaches the read port's address /
+  enable, which spans both sides of the boundary, and the read address
+  is a combinational feed-through, which a single-clock summary captures
+  in the block's clock (the conservative feed-through rule at the top of
+  this section). A per-rule fact on the output pin cannot answer it
+  without the parent's crossing walk continuing through the block.
+
+Under `--blackbox` only, by construction (a stub has no body): every
+non-clock pin is data (CDC-001 / CDC-004 where flat reports CDC-010 /
+CDC-017 / CDC-026), an output is one launch in the block's clock (an
+asynchronous merge through a stub's feed-through is not seen — CDC-025 /
+CDC-024 — and a clock it carries out is data, CDC-001 where flat reports
+CDC-008), and a stub's payload counts as held when any acknowledge from
+the destination enters it (CDC-012).
 
 ### 4.10 Recognised CDC primitives (issue #275)
 
