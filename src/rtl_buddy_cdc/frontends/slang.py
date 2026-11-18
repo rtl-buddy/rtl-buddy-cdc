@@ -211,7 +211,6 @@ What is NOT yet implemented (next slices)
 from __future__ import annotations
 
 import functools
-import itertools
 import importlib.metadata
 import logging
 import math
@@ -524,6 +523,45 @@ def _encode_param(value: Any) -> str | None:
         return None
 
 
+def _fold_binary(op: str, left: int, right: int) -> int | None:
+    """``left <op> right`` for an elaboration-time fold of a loop-bound
+    expression (``i - 1``, ``k < 3``, ``k == N``), or ``None`` for an
+    operator this does not fold. Comparisons and bitwise operators are
+    folded only over non-negative operands, where Python's unbounded
+    integers agree with any SystemVerilog width and signedness."""
+    arith: dict[str, Callable[[], int | None]] = {
+        "Add": lambda: left + right,
+        "Subtract": lambda: left - right,
+        "Multiply": lambda: left * right,
+        "Divide": lambda: left // right if right else None,
+        "Mod": lambda: left % right if right else None,
+        "Power": lambda: left**right if right >= 0 else None,
+    }
+    if op in arith:
+        return arith[op]()
+    if left < 0 or right < 0:
+        return None
+    other: dict[str, Callable[[], int]] = {
+        "Equality": lambda: int(left == right),
+        "Inequality": lambda: int(left != right),
+        "CaseEquality": lambda: int(left == right),
+        "CaseInequality": lambda: int(left != right),
+        "LessThan": lambda: int(left < right),
+        "LessThanEqual": lambda: int(left <= right),
+        "GreaterThan": lambda: int(left > right),
+        "GreaterThanEqual": lambda: int(left >= right),
+        "LogicalAnd": lambda: int(bool(left) and bool(right)),
+        "LogicalOr": lambda: int(bool(left) or bool(right)),
+        "BinaryAnd": lambda: left & right,
+        "BinaryOr": lambda: left | right,
+        "BinaryXor": lambda: left ^ right,
+        "LogicalShiftLeft": lambda: left << min(right, 1024),
+        "LogicalShiftRight": lambda: left >> right,
+    }
+    fold = other.get(op)
+    return None if fold is None else fold()
+
+
 def _literal_base_binary() -> Any:
     import pyslang  # type: ignore[import-not-found]
 
@@ -710,6 +748,8 @@ class _ModuleBuilder:
         # list of registers (:meth:`_classify_arrays`, rtl-buddy-cdc#398).
         self._memories: set[Any] = set()
         self._memory_ids: set[str] = set()
+        # Each memory's ``MEMID`` (its declaration's hierarchical name).
+        self._memory_id_of: dict[Any, str] = {}
         # Clock of the clocked block being lowered: a memory write in its
         # reset arm (:meth:`_collect_reset_assignments`) is a port on it.
         self._proc_clk: Any = None
@@ -2210,6 +2250,16 @@ class _ModuleBuilder:
         # Sync-reset heuristic: the ifTrue arm assigns only constants.
         if not self._is_constant_only_assignment_tree(inner.ifTrue):
             return None
+        # ... and the condition is a one-bit value or its negation. ``if
+        # (!v)`` of a vector, or ``if (&v)``, is a ``$logic_not`` /
+        # ``$reduce_and`` select on ``D`` (Yosys ``proc``), not an
+        # ``SRST`` pin carrying the vector (rtl-buddy-cdc#402).
+        op = str(getattr(cond_expr, "op", "")).rsplit(".", 1)[-1]
+        if self._width_of(cond_sym) != 1 or (
+            type(cond_expr).__name__ == "UnaryExpression"
+            and op not in {"LogicalNot", "BitwiseNot"}
+        ):
+            return None
         # Polarity from the condition shape — same convention as the
         # async edge: ``!rst_n`` / ``~rst_n`` is active-low, bare
         # ``rst`` is active-high. ``_extract_condition_symbol`` already
@@ -2350,7 +2400,15 @@ class _ModuleBuilder:
             #
             # A condition that does not lower becomes an opaque select
             # (reported), never an unconditional walk of both arms.
-            cond_bit = self._condition_bit(statement)
+            #
+            # A negated one-bit condition (``if (!rb)``, ``if (~rb)``)
+            # selects on ``rb`` with the arms swapped, as Yosys ``proc``
+            # builds it (rtl-buddy-cdc#402: a ``$logic_not`` select read as
+            # an active-high reset where ``proc`` reads active low).
+            negated = self._negated_condition_bit(statement)
+            cond_bit = (
+                negated if negated is not None else self._condition_bit(statement)
+            )
 
             def walk(arm: Any) -> None:
                 self._emit_assignments_in(
@@ -2358,16 +2416,25 @@ class _ModuleBuilder:
                 )
 
             base = self._blocking_values()
+            not_cond = self._lazy_bit(lambda: self._lower_not(cond_bit))
+            true_on = not_cond if negated is not None else (lambda: cond_bit)
             true_state, true_case = self._clocked_arm(
-                lambda: cond_bit, statement.ifTrue, walk, base
+                true_on, statement.ifTrue, walk, base
             )
-            arms: list[tuple[Bit | None, _ProcCase]] = [(cond_bit, true_case)]
-            false_state = base
+            false_state, false_case = base, _ProcCase()
             if statement.ifFalse is not None:
-                not_cond = self._lazy_bit(lambda: self._lower_not(cond_bit))
+                false_on = (lambda: cond_bit) if negated is not None else not_cond
                 false_state, false_case = self._clocked_arm(
-                    not_cond, statement.ifFalse, walk, base
+                    false_on, statement.ifFalse, walk, base
                 )
+            if negated is not None:
+                self._proc_case.items.append(
+                    _ProcSwitch([(cond_bit, false_case), (None, true_case)])
+                )
+                self._merge_blocking(base, [(cond_bit, false_state)], true_state)
+                return
+            arms: list[tuple[Bit | None, _ProcCase]] = [(cond_bit, true_case)]
+            if statement.ifFalse is not None:
                 arms.append((None, false_case))
             self._proc_case.items.append(_ProcSwitch(arms))
             self._merge_blocking(base, [(cond_bit, true_state)], false_state)
@@ -2818,7 +2885,7 @@ class _ModuleBuilder:
                     self._warn_lvalue_dropped(expr, lhs)
                 return
             if any(self._const_int(sel) is None for sel in acc.selectors):
-                if not self._register_array_write(acc, expr):
+                if not self._indexed_clocked_write(lhs, expr):
                     self._warn_lvalue_dropped(expr, lhs)
                 return
         # Resolve the target to ``(variable, start, width)`` parts: a whole
@@ -2829,7 +2896,13 @@ class _ModuleBuilder:
         # concatenation, hierarchical reference, …) is reported.
         targets = self._lvalue_targets(lhs)
         if targets is None:
-            self._warn_lvalue_dropped(expr, lhs)
+            if type(lhs).__name__ == "ConcatenationExpression":
+                # A part with a run-time index (rtl-buddy-cdc#402).
+                for part in self._concat_part_writes(lhs, rhs, expr):
+                    self._clocked_write(part, clk_sym, src_node)
+            elif not self._indexed_clocked_write(lhs, expr):
+                # A run-time bit position (``v[j] <= b``, rtl-buddy-cdc#402).
+                self._warn_lvalue_dropped(expr, lhs)
             return
         total = sum(width for _sym, _start, width in targets)
         # An unlowerable RHS gets a reported $_UNKNOWN_ driver: the rule
@@ -3529,6 +3602,22 @@ class _ModuleBuilder:
         node = conds[0].expr if conds and len(conds) == 1 else stmt
         return self._opaque(node, 1, "`if` condition")[0]
 
+    def _negated_condition_bit(self, stmt: Any) -> Bit | None:
+        """The operand bit of an ``if`` condition that negates a one-bit
+        value (``!x``, ``~x``, ``!(a & b)``), or ``None``."""
+        conds = list(getattr(stmt, "conditions", None) or [])
+        expr = getattr(conds[0], "expr", None) if len(conds) == 1 else None
+        while type(expr).__name__ == "ConversionExpression":
+            expr = getattr(expr, "operand", None)
+        if type(expr).__name__ != "UnaryExpression":
+            return None
+        op = str(getattr(expr, "op", "")).rsplit(".", 1)[-1]
+        operand = getattr(expr, "operand", None)
+        if op not in {"LogicalNot", "BitwiseNot"} or self._expr_width(operand) != 1:
+            return None
+        bits = self._bits_of_expression(operand)
+        return bits[0] if bits is not None and len(bits) == 1 else None
+
     def _lower_condition_to_bit(self, conditions: Any) -> Bit | None:
         """Lower a ``ConditionalStatement``'s condition list to a
         single Yosys-shape bit suitable for use as a mux ``S`` input.
@@ -3839,6 +3928,14 @@ class _ModuleBuilder:
             if sym is None or self._canonical_var(sym) in self._memories:
                 # A memory's words are read and written through ports.
                 return None, (), 0, 0
+            if self._is_constant_name(sym):
+                # An unrolled loop's variable, a genvar or a parameter: a
+                # select of it reads its value's bits (rtl-buddy-cdc#402:
+                # ``k[0]`` read the variable's undriven placeholder).
+                value = self._bits_of_expression(expr)
+                if not value:
+                    return None, (), 0, 0
+                return sym, value, 0, len(value)
             bits = self._alloc_bits(sym)
             t = getattr(sym, "type", None)
             stride = int(
@@ -3898,6 +3995,14 @@ class _ModuleBuilder:
                 return None, (), 0, 0
             return inner_sym, inner_bits, inner_offset + int(offset), width
         return None, (), 0, 0
+
+    def _is_constant_name(self, sym: Any) -> bool:
+        """``sym`` reads as a value, not a net: a bound loop variable, a
+        parameter (a genvar inside its generate block is one) or an enum
+        value."""
+        return sym in self._loop_bindings or self._kind_name(sym) in (
+            self._CONSTANT_SYMBOLS
+        )
 
     @staticmethod
     def _element_stride(array_type: Any) -> int:
@@ -4105,19 +4210,7 @@ class _ModuleBuilder:
             right = self._const_int(getattr(expr, "right", None))
             if left is None or right is None:
                 return None
-            if op == "Add":
-                return left + right
-            if op == "Subtract":
-                return left - right
-            if op == "Multiply":
-                return left * right
-            if op == "Divide" and right != 0:
-                return left // right
-            if op == "Mod" and right != 0:
-                return left % right
-            if op == "Power" and right >= 0:
-                return left**right
-            return None
+            return _fold_binary(op, left, right)
         if kind == "UnaryExpression":
             op = str(getattr(expr, "op", "")).rsplit(".", 1)[-1]
             operand = self._const_int(getattr(expr, "operand", None))
@@ -4127,11 +4220,40 @@ class _ModuleBuilder:
                 return operand
             if op == "Minus":
                 return -operand
+            if op == "LogicalNot":
+                return int(operand == 0)
             return None
         if kind == "ConversionExpression":
             return self._const_int(getattr(expr, "operand", None))
+        if kind in ("ElementSelectExpression", "RangeSelectExpression"):
+            return self._const_select_int(expr)
 
         return None
+
+    def _const_select_int(self, expr: Any) -> int | None:
+        """A constant select of an unrolled loop variable, a genvar or a
+        parameter (``k[0]``, ``k[2:1]``) as an unsigned ``int``
+        (rtl-buddy-cdc#402); ``None`` for a select of anything else or at
+        a run-time position. Emits no cells."""
+        base = expr
+        while type(base).__name__ in (
+            "ElementSelectExpression",
+            "RangeSelectExpression",
+            "ConversionExpression",
+        ):
+            base = getattr(base, "value", None) or getattr(base, "operand", None)
+        sym = getattr(base, "symbol", None)
+        if type(base).__name__ != "NamedValueExpression" or sym is None:
+            return None
+        if not self._is_constant_name(sym):
+            return None
+        base_sym, bits, offset, width = self._resolve_select_chain(expr)
+        if base_sym is None or offset < 0 or offset + width > len(bits):
+            return None
+        picked = bits[offset : offset + width]
+        if any(b not in ("0", "1") for b in picked):
+            return None
+        return sum(1 << i for i, b in enumerate(picked) if b == "1")
 
     def _bits_of_expression(self, expr: Any) -> tuple[Bit, ...] | None:
         """Return the bit tuple for an RHS expression, or ``None`` if
@@ -4175,9 +4297,11 @@ class _ModuleBuilder:
             if self._kind_name(expr.symbol) in self._CONSTANT_SYMBOLS:
                 # A parameter / enum value is its value, not a net
                 # (rtl-buddy-cdc#377: it read as an undriven placeholder).
-                return self._value_bits(
-                    getattr(expr.symbol, "value", None), self._expr_width(expr)
-                )
+                param = getattr(expr.symbol, "value", None)
+                bits = self._value_bits(param, self._expr_width(expr))
+                if bits is None:
+                    bits = self._unpacked_value_bits(param, expr.symbol.type)
+                return bits
             return self._alloc_bits(expr.symbol)
         if kind == "ConversionExpression":
             inner = getattr(expr, "operand", None)
@@ -4361,6 +4485,29 @@ class _ModuleBuilder:
     # -- function calls (rtl-buddy-cdc#377) -------------------------------
 
     _INLINE_DEPTH_CAP = 16
+
+    def _unpacked_value_bits(self, value: Any, vtype: Any) -> tuple[Bit, ...] | None:
+        """The bits of an unpacked-array parameter's value (``P[0]`` lowest,
+        this frontend's layout of an unpacked array), so a select of it
+        reads its element (rtl-buddy-cdc#402); ``None`` for anything
+        else."""
+        t = getattr(vtype, "canonicalType", None) or vtype
+        if not getattr(t, "isUnpackedArray", False):
+            return self._value_bits(value, int(getattr(t, "bitWidth", 0) or 0))
+        items = getattr(value, "value", value)
+        rng = getattr(t, "range", None)
+        if not isinstance(items, list) or rng is None:
+            return None
+        left, right = int(rng.left), int(rng.right)
+        if len(items) != abs(left - right) + 1:
+            return None
+        out: list[Bit] = []
+        for item in reversed(items) if left > right else items:
+            bits = self._unpacked_value_bits(item, getattr(t, "elementType", None))
+            if bits is None:
+                return None
+            out.extend(bits)
+        return tuple(out)
 
     def _lower_call(self, expr: Any) -> tuple[Bit, ...] | None:
         """A function call on the right-hand side: its constant value when
@@ -4864,7 +5011,12 @@ class _ModuleBuilder:
             if "const" in seen and "var" not in seen:
                 continue
             self._memories.add(sym)
-            self._memory_ids.add(f"\\{prefix}{member.name}")
+            memid = f"\\{prefix}{member.name}"
+            self._memory_ids.add(memid)
+            # Named after the declaration's scope, not the scope of the
+            # process using it (rtl-buddy-cdc#402): ports of one memory in
+            # different generate blocks share one ``MEMID``, as in Yosys.
+            self._memory_id_of[sym] = memid
 
     def _edge_event_count(self, body: Any) -> int:
         """Number of edge events in a procedural block's leading event
@@ -5018,7 +5170,9 @@ class _ModuleBuilder:
     def _memory_params(self, acc: _ArrayAccess, abits: int) -> dict[str, str]:
         width = self._unpacked_element_width(acc.sym) or 1
         return {
-            "MEMID": f"\\{self._hier_stack[-1]}{acc.sym.name}",
+            "MEMID": self._memory_id_of.get(
+                acc.sym, f"\\{self._hier_stack[-1]}{acc.sym.name}"
+            ),
             "ABITS": _param_int32(abits),
             "WIDTH": _param_int32(width),
         }
@@ -5090,18 +5244,27 @@ class _ModuleBuilder:
         if acc.element is None:
             return False
         width = self._unpacked_element_width(acc.sym) or 1
-        sub = self._packed_subrange(acc.packed, width)
-        if sub is None:
+        write = self._word_write(acc.packed, width, rhs)
+        if write is None:
             return False
-        start, size = sub
+        start, size, written, mask = write
         addr = self._memory_address(acc, src_node)
         params = self._memory_params(acc, len(addr))
-        written = self._rhs_bits(rhs, size)
         enable = self._combine_enable_stack()
         en_bit: Bit = enable if enable is not None else "1"
+        lanes: tuple[Bit, ...] = (en_bit,) * size
+        if mask is not None:
+            # A run-time bit position in the word (``mem[i][j] <= b``,
+            # rtl-buddy-cdc#402): the shifted data under a shifted one-hot
+            # bit enable, as Yosys ``proc`` builds it.
+            lanes = mask()
+            if en_bit != "1":
+                lanes = self._emit_comb_cell(
+                    "$and", {"A": lanes, "B": (en_bit,) * size}, size
+                )
         tail = width - start - size
         data = ("x",) * start + written + ("x",) * tail
-        en = ("0",) * start + (en_bit,) * size + ("0",) * tail
+        en = ("0",) * start + lanes + ("0",) * tail
         portid = self._memory_write_ports.get(params["MEMID"], 0)
         self._memory_write_ports[params["MEMID"]] = portid + 1
         params.update(
@@ -5201,54 +5364,6 @@ class _ModuleBuilder:
                 "S_WIDTH": _param_int32(count),
             },
         )
-
-    def _register_array_write(self, acc: _ArrayAccess, expr: Any) -> bool:
-        """A clocked write to a register array at a run-time index: one
-        conditional write per element it can reach, as Yosys ``mem2reg``
-        rewrites it (``if (i == k) a[k] <= d`` for each ``k``), so each
-        element's ``D`` is ``mux(i == k, Q, d)``. ``False`` when the select
-        of the element is not constant."""
-        if acc.element is None:
-            return False
-        width = self._unpacked_element_width(acc.sym) or 1
-        sub = self._packed_subrange(acc.packed, width)
-        if sub is None:
-            return False
-        start, size = sub
-        choices: list[list[tuple[int, Bit | None]]] = []
-        sizes: list[int] = []
-        for (left, right), sel in zip(acc.dims, acc.selectors):
-            lo, count = min(left, right), abs(left - right) + 1
-            sizes.append(count)
-            c = self._const_int(sel)
-            if c is not None:
-                choices.append([(c - lo, None)] if 0 <= c - lo < count else [])
-                continue
-            idx = self._bits_of_expression(sel) or self._opaque(sel, 1, "array index")
-            choices.append(
-                [(p, self._index_match(idx, lo + p, sel)) for p in range(count)]
-            )
-        rhs_bits = self._rhs_bits(expr.right, size)
-        net = self._blocking_nets.get(acc.sym) or self._alloc_bits(acc.sym)
-        self._proc_regs.setdefault(acc.sym, net)
-        blocking = not getattr(expr, "isNonBlocking", False)
-        for combo in itertools.product(*choices):
-            pos = 0
-            for count, (p, _bit) in zip(sizes, combo):
-                pos = pos * count + p
-            conds = [b for _p, b in combo if b is not None]
-            cond = conds[0]
-            for b in conds[1:]:
-                cond = self._and_bit(cond, b)
-            lane = pos * width + start
-            case = _ProcCase()
-            case.items.append((acc.sym, lane, rhs_bits))
-            self._proc_case.items.append(_ProcSwitch([(cond, case)]))
-            if blocking:
-                current = self._var_bits.get(acc.sym, net)
-                held = self._build_hold_mux(cond, current[lane : lane + size], rhs_bits)
-                self._forward_blocking_write(acc.sym, net, lane, held)
-        return True
 
     def _rhs_bits(
         self, expr: Any, width: int, what: str = "right-hand side"
@@ -5864,12 +5979,14 @@ class _ModuleBuilder:
             rhs_bits = self._rhs_bits(expr.right, len(self._alloc_bits(lhs.symbol)))
             self._rewrite_aliased(lhs, rhs_bits)
             return
-        if (
-            lhs_kind == "ElementSelectExpression"
-            and self._const_int(getattr(lhs, "selector", None)) is None
-        ):
-            # Run-time index: the ``$shl`` decoder shape (CDC-019).
-            if not self._alias_indexed_assign(lhs, expr.right):
+        if self._lvalue_targets(lhs) is None:
+            if lhs_kind == "ConcatenationExpression":
+                # A part with a run-time index (rtl-buddy-cdc#402).
+                for part in self._concat_part_writes(lhs, expr.right, expr):
+                    self._comb_write(part)
+                return
+            # Run-time index or position (rtl-buddy-cdc#402).
+            if not self._indexed_comb_write(lhs, expr.right):
                 self._warn_lvalue_dropped(expr, lhs)
             return
         # Concatenation, constant bit / part select, struct member
@@ -5877,97 +5994,275 @@ class _ModuleBuilder:
         if not self._splice_assign(lhs, expr.right, continuous=False):
             self._warn_lvalue_dropped(expr, lhs)
 
-    def _alias_indexed_assign(self, lhs: Any, rhs: Any) -> bool:
-        """Lower ``base[idx] = rhs;`` in an ``always_comb`` body.
+    # -- writes at a run-time index or position (rtl-buddy-cdc#402) -------
 
-        Models the SV semantics ``base = base | (rhs << idx)`` (1-bit
-        rhs) — set bit ``idx`` of ``base`` to ``rhs`` while preserving
-        every other bit. When the prior alias of ``base`` is the
-        all-zero constant (the canonical ``base = '0; base[idx] = 1;``
-        decoder pattern from CDC-019), the ``base | …`` term collapses
-        to just ``rhs << idx`` and we emit a single ``$shl`` cell;
-        otherwise we OR the shift result onto the previous bits.
+    def _concat_part_writes(self, lhs: Any, rhs: Any, node: Any) -> list[Any]:
+        """``{a[i], b} = rhs`` as one write per part, each taking its slice
+        of ``rhs`` (sized to the concatenation first, read once), for a
+        target :meth:`_lvalue_targets` cannot resolve as a whole: a part
+        with a run-time index (rtl-buddy-cdc#402). Yosys writes each part
+        the same way."""
+        parts = list(getattr(lhs, "operands", None) or [])
+        widths = [self._expr_width(p) for p in parts]
+        rhs_bits = self._rhs_bits(rhs, sum(widths))
+        blocking = not getattr(node, "isNonBlocking", False)
+        out: list[Any] = []
+        low = 0
+        for part, width in reversed(list(zip(parts, widths))):
+            write = _Assign(part, _Bits(rhs_bits[low : low + width], node), node)
+            write.isNonBlocking = not blocking
+            out.append(write)
+            low += width
+        out.reverse()
+        return out
 
-        Closes the CDC-019 leg of the cross-frontend parity gap from
-        rtl-buddy-cdc#221 / #224. Yosys lowers the same pattern to a
-        ``$shift`` cell whose Y-bus drives every downstream flop; the
-        rule pack's one-hot-decode detector keys off "comb cell with
-        ≥2 Y-bits driving N≥2 src flops in the same dst clock," so
-        any multi-output comb cell with the right fan-out matches —
-        ``$shl`` and ``$shift`` are equivalent here.
+    def _indexed_targets(
+        self, lhs: Any
+    ) -> tuple[Any, int, list[tuple[int, Bit | None]], list[Any]] | None:
+        """Split a write target with a run-time index or position into
+        ``(variable, word width, words, packed selects)``: ``words`` the
+        ``(first bit, select)`` of every word it can reach (``select``
+        ``None`` for the one word of a constant index), ``packed selects``
+        (innermost first) what is written of the word.
 
-        Only a run-time index reaches here; a constant one is spliced
-        exactly by :meth:`_splice_assign`. Returns ``False`` for the
-        shapes not modelled — an LHS chain (``base[a].field[b] = …``),
-        a 1-bit base, an index that does not lower — and the caller
-        reports the assignment. A multi-bit RHS is zero-extended into
-        the shift as is.
-        """
-        base = getattr(lhs, "value", None)
-        if base is None or type(base).__name__ != "NamedValueExpression":
-            return False
-        base_sym = base.symbol
-        canonical = self._canonical_var(base_sym)
-        prev_bits = self._var_bits.get(canonical)
-        if prev_bits is None:
-            prev_bits = self._alloc_bits(base_sym)
-        width = len(prev_bits)
-        if width <= 1:
-            return False  # nothing to spread across; not a CDC-019 shape
+        For a register array the words are its elements, each selected by
+        its index compares (Yosys ``mem2reg`` turns ``a[i] = d`` into ``if
+        (i == k) a[k] = d`` for every ``k``); otherwise the word is the
+        whole variable. ``None`` for anything else (a memory, a slice of an
+        array, a hierarchical reference)."""
+        acc = self._array_access(lhs)
+        if acc is not None:
+            if acc.sym in self._memories or acc.element is None:
+                return None
+            width = self._unpacked_element_width(acc.sym) or 1
+            words: list[tuple[int, Bit | None]] = [(0, None)]
+            for (left, right), sel in zip(acc.dims, acc.selectors):
+                lo, count = min(left, right), abs(left - right) + 1
+                c = self._const_int(sel)
+                picks: list[tuple[int, Bit | None]]
+                if c is not None:
+                    picks = [(c - lo, None)] if 0 <= c - lo < count else []
+                else:
+                    idx = self._bits_of_expression(sel) or self._opaque(
+                        sel, 1, "array index"
+                    )
+                    picks = [
+                        (p, self._index_match(idx, lo + p, sel)) for p in range(count)
+                    ]
+                nxt: list[tuple[int, Bit | None]] = []
+                for pos, cond in words:
+                    for p, hit in picks:
+                        both = hit if cond is None else cond
+                        if cond is not None and hit is not None:
+                            both = self._and_bit(cond, hit)
+                        nxt.append((pos * count + p, both))
+                words = nxt
+            return acc.sym, width, [(p * width, c) for p, c in words], acc.packed
+        nodes: list[Any] = []
+        e = lhs
+        while type(e).__name__ in self._SELECT_KINDS:
+            nodes.append(e)
+            e = getattr(e, "value", None)
+        if type(e).__name__ != "NamedValueExpression" or not nodes:
+            return None
+        sym = self._canonical_var(e.symbol)
+        sym_type = getattr(sym, "type", None)
+        if (
+            self._is_constant_name(sym)
+            or self._unpacked_ranges(sym) is not None
+            or not getattr(sym_type, "isIntegral", False)
+        ):
+            return None
+        width = len(self._alloc_bits(sym))
+        return sym, width, [(0, None)], list(reversed(nodes))
 
-        selector = getattr(lhs, "selector", None)
-        if selector is None:
-            return False
-        idx_bits = self._bits_of_expression(selector)
-        if idx_bits is None:
-            return False
-        shift_bits = self._index_shift_bits(
-            getattr(base, "type", None) or getattr(base_sym, "type", None),
-            idx_bits,
-            lhs,
-        )
-
-        rhs_bits = self._bits_of_expression(rhs) or self._opaque(
-            rhs, self._expr_width(rhs), "right-hand side"
-        )
-        # Zero-extend rhs to base width so the shift operand and the
-        # ``base | shl(rhs, idx)`` widths line up.
-        a_bits: tuple[Bit, ...] = rhs_bits + ("0",) * (width - len(rhs_bits))
-        a_bits = a_bits[:width]
-        shl_y = self._emit_comb_cell(
-            cell_type="$shl",
-            inputs={"A": a_bits, "B": shift_bits},
-            output_width=width,
-            src_node=lhs,
-        )
-
-        # If the previous alias is the all-zero constant (canonical
-        # ``base = '0; base[idx] = 1;`` pattern), the shift result is
-        # the new value directly. Otherwise OR with the old bits.
-        if all(b == "0" for b in prev_bits):
-            new_bits = shl_y
+    def _word_write(
+        self, nodes: list[Any], width: int, rhs: Any
+    ) -> tuple[int, int, tuple[Bit, ...], Callable[[], tuple[Bit, ...]] | None] | None:
+        """What a write through packed selects ``nodes`` (innermost first)
+        does to a ``width``-bit word: ``(start, size, data, mask)`` over
+        bits ``[start, start + size)``. Constant selects give the written
+        bits as ``data`` and no ``mask``. A run-time position in the last
+        select (``w[j]``, ``w[j +: N]``, ``w[j -: N]``) gives ``data`` the
+        right-hand side shifted to that position and ``mask`` (built on
+        first call) the written bits, the ``$shl`` pair Yosys builds
+        (``$shift`` by the negated position when it can be negative).
+        ``None`` when a select is neither."""
+        sub = self._packed_subrange(nodes, width)
+        if sub is not None:
+            return sub[0], sub[1], self._rhs_bits(rhs, sub[1]), None
+        if not nodes:
+            return None
+        last = nodes[-1]
+        sub = self._packed_subrange(nodes[:-1], width)
+        vtype = getattr(getattr(last, "value", None), "type", None)
+        vtype = getattr(vtype, "canonicalType", None) or vtype
+        if (
+            sub is None
+            or vtype is None
+            or getattr(vtype, "isUnpackedArray", False)
+            or not getattr(vtype, "isIntegral", False)
+        ):
+            return None
+        kind = type(last).__name__
+        count, down = 1, False
+        if kind == "ElementSelectExpression":
+            start_expr = getattr(last, "selector", None)
+        elif kind == "RangeSelectExpression":
+            sel_kind = str(getattr(last, "selectionKind", "")).rsplit(".", 1)[-1]
+            start_expr = getattr(last, "left", None)
+            count = self._const_int(getattr(last, "right", None)) or 0
+            down = sel_kind == "IndexedDown"
+            if sel_kind not in {"IndexedUp", "IndexedDown"} or count < 1:
+                return None
         else:
-            new_bits = self._emit_comb_cell(
-                cell_type="$or",
-                inputs={"A": prev_bits, "B": shl_y},
-                output_width=width,
-                src_node=lhs,
-            )
-        self._merge_canonical_var(canonical, prev_bits, new_bits)
+            return None
+        if self._const_int(start_expr) is not None:
+            return None  # a constant select out of range
+        idx = self._bits_of_expression(start_expr)
+        if not idx:
+            return None
+        start, size = sub
+        pos, signed = self._position_bits(vtype, idx, last, count=count, down=down)
+        part = count * self._element_stride(vtype)
+        data = self._shift_into(self._rhs_bits(rhs, part), pos, signed, size, last)
+        memo: list[tuple[Bit, ...]] = []
+
+        def mask() -> tuple[Bit, ...]:
+            if not memo:
+                memo.append(self._shift_into(("1",) * part, pos, signed, size, last))
+            return memo[0]
+
+        return start, size, data, mask
+
+    def _shift_into(
+        self,
+        value: tuple[Bit, ...],
+        pos: tuple[Bit, ...],
+        signed: bool,
+        width: int,
+        node: Any,
+    ) -> tuple[Bit, ...]:
+        """``value`` moved up ``pos`` bits into a zero-filled ``width``-bit
+        vector: a ``$shl``, or, for a position that can be negative, the
+        ``$shift`` by ``-pos`` Yosys emits."""
+        if not signed:
+            return self._emit_comb_cell("$shl", {"A": value, "B": pos}, width, node)
+        neg = self._emit_comb_cell(
+            "$neg",
+            {"A": pos},
+            len(pos),
+            node,
+            parameters={"A_SIGNED": _param_int32(1)},
+        )
+        return self._emit_comb_cell(
+            "$shift",
+            {"A": value, "B": neg},
+            width,
+            node,
+            parameters={"A_SIGNED": _param_int32(0), "B_SIGNED": _param_int32(1)},
+        )
+
+    def _masked_update(
+        self,
+        old: tuple[Bit, ...],
+        data: tuple[Bit, ...],
+        mask: Callable[[], tuple[Bit, ...]] | None,
+        node: Any,
+    ) -> tuple[Bit, ...]:
+        """``old`` with the ``mask`` bits replaced by ``data``: ``(old &
+        ~mask) | data`` (``data`` is zero outside ``mask``), or just
+        ``data`` for a constant select or an all-zero ``old`` (the
+        ``base = '0; base[i] = 1;`` decoder stays one ``$shl``, the
+        CDC-019 shape)."""
+        if mask is None or all(b == "0" for b in old):
+            return data
+        width = len(old)
+        keep = self._emit_comb_cell("$not", {"A": mask()}, width, node)
+        kept = self._emit_comb_cell("$and", {"A": old, "B": keep}, width, node)
+        return self._emit_comb_cell("$or", {"A": kept, "B": data}, width, node)
+
+    def _indexed_comb_write(self, lhs: Any, rhs: Any) -> bool:
+        """Lower a combinational write with a run-time index or position:
+        ``v[i] = d`` of a packed vector, ``g[i] = d`` / ``g[i][j] = b`` of
+        a register array (rtl-buddy-cdc#402).
+
+        Each word the target can reach becomes ``mux(i == k, old, new)``
+        over the written bits, lane-aligned, as Yosys ``mem2reg`` + ``proc``
+        build it (it was a ``$shl`` by ``hi - i`` over the whole array, so
+        an ascending array's index ``i`` reached element ``hi - i``); a
+        run-time bit position inside the word is ``(old & ~mask) | data``
+        (:meth:`_word_write`; it was ``old | data``, so a 0 never cleared
+        a bit). ``False`` for a shape this does not model (the caller
+        reports it)."""
+        found = self._indexed_targets(lhs)
+        if found is None:
+            return False
+        sym, width, words, nodes = found
+        if all(c is None for _b, c in words) and (
+            self._packed_subrange(nodes, width) is not None
+        ):
+            return False  # nothing at a run-time position
+        write = self._word_write(nodes, width, rhs)
+        if write is None:
+            return False
+        start, size, data, mask = write
+        current = self._var_bits.get(sym)
+        if current is None:
+            current = self._alloc_bits(sym)
+        new = list(current)
+        for base, cond in words:
+            lo = base + start
+            old = tuple(current[lo : lo + size])
+            value = self._masked_update(old, data, mask, lhs)
+            if cond is not None:
+                value = self._build_hold_mux(cond, old, value)
+            new[lo : lo + size] = value
+        self._merge_canonical_var(sym, current, tuple(new))
         return True
 
-    def _index_shift_bits(
-        self, base_type: Any, idx_bits: tuple[Bit, ...], node: Any
-    ) -> tuple[Bit, ...]:
-        """The bit position a run-time index selects in a vector of
-        ``base_type``, LSB-first: ``idx - lo`` for a descending ``[hi:lo]``
-        range, ``hi - idx`` for an ascending ``[lo:hi]`` one (``$sub``
-        cells, as Yosys emits them), times the element width of a packed
-        array (rtl-buddy-cdc#377: the raw index was used, so ``v[i] = 1``
-        of ``logic [4:1] v`` set bit ``i`` instead of ``i - 1``, and an
-        ascending vector's bits came out reversed). See
-        :meth:`_position_bits`."""
-        return self._position_bits(base_type, idx_bits, node)[0]
+    def _indexed_clocked_write(self, lhs: Any, expr: Any) -> bool:
+        """A clocked write with a run-time index or position: one write
+        of each word the target can reach, under its index compare
+        (:meth:`_indexed_targets`), as Yosys ``mem2reg`` rewrites ``a[i]
+        <= d`` (``if (i == k) a[k] <= d`` for each ``k``), so each
+        element's ``D`` is ``mux(i == k, Q, d)``. A run-time bit position
+        inside the word (``a[i][j] <= b``, ``v[j] <= b``) writes ``(Q &
+        ~mask) | data`` over the word, as Yosys does (rtl-buddy-cdc#402:
+        it was reported and dropped). ``False`` for a shape this does not
+        model."""
+        found = self._indexed_targets(lhs)
+        if found is None:
+            return False
+        sym, width, words, nodes = found
+        if all(c is None for _b, c in words) and (
+            self._packed_subrange(nodes, width) is not None
+        ):
+            return False  # nothing at a run-time position
+        write = self._word_write(nodes, width, expr.right)
+        if write is None:
+            return False
+        start, size, data, mask = write
+        net = self._blocking_nets.get(sym) or self._alloc_bits(sym)
+        self._proc_regs.setdefault(sym, net)
+        blocking = not getattr(expr, "isNonBlocking", False)
+        for base, cond in words:
+            lane = base + start
+            current = self._var_bits.get(sym, net)
+            old = tuple(current[lane : lane + size])
+            value = self._masked_update(old, data, mask, lhs)
+            if cond is None:
+                self._proc_case.items.append((sym, lane, value))
+                if blocking:
+                    self._forward_blocking_write(sym, net, lane, value)
+                continue
+            case = _ProcCase()
+            case.items.append((sym, lane, value))
+            self._proc_case.items.append(_ProcSwitch([(cond, case)]))
+            if blocking:
+                held = self._build_hold_mux(cond, old, value)
+                self._forward_blocking_write(sym, net, lane, held)
+        return True
 
     def _position_bits(
         self,

@@ -344,7 +344,10 @@ def test_const_int_first_attr_uncoercible_falls_to_value_attr() -> None:
         ("Divide", 6, 0, None),  # guarded against zero-division → None
         ("Mod", 7, 3, 1),
         ("Mod", 7, 0, None),
-        ("LogicalAnd", 1, 1, None),  # op not in the fold table
+        ("LogicalAnd", 1, 1, 1),
+        ("LessThan", 1, 2, 1),
+        ("LessThan", -1, 2, None),  # comparisons fold non-negative only
+        ("WildcardEquality", 1, 1, None),  # op not in the fold table
     ],
 )
 def test_const_int_binary_arithmetic_folds(op, left, right, expected) -> None:
@@ -809,21 +812,24 @@ def test_latch_unmodelled_rhs_emits_dlatch_with_unknown_d(tmp_path: Path) -> Non
 # --- _alias_indexed_assign conservative bails -----------------------------
 
 
-def test_indexed_assign_two_dim_base_ignored(tmp_path: Path) -> None:
-    """``arr[i][j] = v`` — the indexed-assign base is itself a select
-    (not a bare ``NamedValueExpression``), so the one-hot lowering bails
-    (no ``$shl``)."""
+def test_indexed_assign_two_dim_base_is_lowered(tmp_path: Path) -> None:
+    """``arr[i][j] = v`` — a run-time bit of a register array's run-time
+    element — is lowered (rtl-buddy-cdc#402; it bailed): the bit is
+    shifted into place (``$shl``) and each element takes it under its
+    index compare (``$mux``)."""
     src = """
     module m (input logic [1:0] i, j, input logic v, output logic [3:0] o);
         logic [3:0] arr [2];
         always_comb begin
+            arr[0] = '0; arr[1] = '0;
             arr[i][j] = v;
         end
         assign o = arr[0];
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$shl" not in _cell_types(mod)
+    types = _cell_types(mod)
+    assert "$shl" in types and types.count("$mux") == 2
 
 
 def test_indexed_assign_single_bit_base_ignored(tmp_path: Path) -> None:
