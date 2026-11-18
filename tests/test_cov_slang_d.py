@@ -384,21 +384,20 @@ def test_const_int_unary_arithmetic_folds(op, operand, expected) -> None:
 # --- SV edge-case lowering: conservative ``return None`` legs --------------
 
 
-def test_operator_not_in_binop_table_is_unknown(tmp_path: Path) -> None:
-    """``->`` (logical implication) is outside ``_BINOP_CELL`` —
-    ``_lower_binary`` returns ``None`` and the write degrades to a
-    ``$_UNKNOWN_`` driver rather than a wrong cell. (``**`` was the example
-    here until rtl-buddy-cdc#377 lowered it to ``$pow``, then ``==?`` until
-    rtl-buddy-cdc#405 lowered it.)"""
+def test_implication_operators_lower(tmp_path: Path) -> None:
+    """``->`` / ``<->`` lower to logic (rtl-buddy-cdc#408: they were the
+    last binary operators outside ``_BINOP_CELL``, opaque drivers):
+    ``!a || b`` and ``(a != 0) == (b != 0)``."""
     src = """
-    module m (input logic clk, input logic [3:0] a, b, output logic q);
+    module m (input logic clk, input logic [3:0] a, b, output logic q, r);
         always_ff @(posedge clk) q <= a -> b;
+        always_ff @(posedge clk) r <= a <-> b;
     endmodule
     """
     mod = _elaborate(tmp_path, src)
-    assert "$_UNKNOWN_" in _cell_types(mod), (
-        f"an unmodelled operator should degrade to an opaque driver; got {_cell_types(mod)}"
-    )
+    types = _cell_types(mod)
+    assert "$_UNKNOWN_" not in types, types
+    assert {"$logic_not", "$logic_or", "$reduce_bool", "$eq"} <= set(types), types
 
 
 def test_power_operator_lowers_to_pow(tmp_path: Path) -> None:

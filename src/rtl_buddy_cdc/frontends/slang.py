@@ -828,6 +828,11 @@ class _ModuleBuilder:
         self._driver_index: dict[int, tuple[str, int]] = {}
         self._driver_indexed: set[str] = set()
         self._fold_depth = 0
+        # How the procedural walk in progress lowers a write made inside an
+        # expression (``o = t++``, ``o = (t += 2)``, rtl-buddy-cdc#408): a
+        # blocking write of the combinational or clocked walk; ``None``
+        # outside one (a continuous assign, a reset arm).
+        self._expr_writer: Callable[[Any], None] | None = None
 
     # -- public ----------------------------------------------------------
 
@@ -2081,6 +2086,17 @@ class _ModuleBuilder:
             return
         if into is None:
             into = self._proc_resets
+        prev_writer = self._expr_writer
+        self._expr_writer = None  # a write inside an expression: not modelled
+        try:
+            self._reset_statement(stmt, into)
+        finally:
+            self._expr_writer = prev_writer
+
+    def _reset_statement(
+        self, stmt: Any, into: dict[tuple[Bit, ...], tuple[Bit, ...]]
+    ) -> None:
+        """:meth:`_collect_reset_assignments` for one statement."""
         kind = self._kind_name(stmt)
         if kind == "BlockStatement":
             self._collect_reset_assignments(stmt.body, into)
@@ -2423,6 +2439,30 @@ class _ModuleBuilder:
         """
         if statement is None:
             return
+        prev_writer = self._expr_writer
+        self._expr_writer = functools.partial(
+            self._clocked_expr_write, clk_sym, src_node
+        )
+        try:
+            self._clocked_statement(
+                statement, clk_sym, reset_sym, reset_active_low, src_node
+            )
+        finally:
+            self._expr_writer = prev_writer
+
+    def _clocked_expr_write(self, clk_sym: Any, src_node: Any, write: Any) -> None:
+        """:attr:`_expr_writer` of a clocked walk: a blocking write."""
+        self._emit_assignment_expression(write, clk_sym, None, False, src_node)
+
+    def _clocked_statement(
+        self,
+        statement: Any,
+        clk_sym: Any,
+        reset_sym: Any | None,
+        reset_active_low: bool,
+        src_node: Any,
+    ) -> None:
+        """:meth:`_emit_assignments_in` for one statement."""
         kind = self._kind_name(statement)
         if kind == "BlockStatement":
             self._emit_assignments_in(
@@ -5117,6 +5157,8 @@ class _ModuleBuilder:
             return self._lower_streaming(expr)
         if kind == "CallExpression":
             return self._lower_call(expr)
+        if kind == "AssignmentExpression":
+            return self._lower_assignment_value(expr)
         if kind == "_Bits":
             return expr.bits
         if kind == "LValueReferenceExpression":
@@ -5710,6 +5752,8 @@ class _ModuleBuilder:
             if op_name == "WildcardInequality":
                 hit = self._lower_not(hit)
             return (hit,)
+        if op_name in ("LogicalImplication", "LogicalEquivalence"):
+            return self._lower_implication(expr, op_name == "LogicalEquivalence")
         cell_type = self._BINOP_CELL.get(op_name)
         if cell_type is None:
             return None  # unmodelled op → unknown driver
@@ -5754,6 +5798,26 @@ class _ModuleBuilder:
             output_width=width,
             src_node=expr,
             parameters=self._signedness(cell_type, expr.left, expr.right),
+        )
+
+    def _lower_implication(
+        self, expr: Any, equivalence: bool
+    ) -> tuple[Bit, ...] | None:
+        """``a -> b`` as ``!a || b`` (``$logic_not`` into ``$logic_or``) and
+        ``a <-> b`` as ``(a != 0) == (b != 0)`` (``$reduce_bool`` of each
+        into ``$eq``), IEEE 1800-2017 11.4.7 (rtl-buddy-cdc#408: an opaque
+        driver)."""
+        a_bits = self._bits_of_expression(expr.left)
+        b_bits = self._bits_of_expression(expr.right)
+        if not a_bits or not b_bits:
+            return None
+        if equivalence:
+            a1 = self._emit_comb_cell("$reduce_bool", {"A": a_bits}, 1, src_node=expr)
+            b1 = self._emit_comb_cell("$reduce_bool", {"A": b_bits}, 1, src_node=expr)
+            return self._emit_comb_cell("$eq", {"A": a1, "B": b1}, 1, src_node=expr)
+        not_a = self._emit_comb_cell("$logic_not", {"A": a_bits}, 1, src_node=expr)
+        return self._emit_comb_cell(
+            "$logic_or", {"A": not_a, "B": b_bits}, 1, src_node=expr
         )
 
     # Cells whose ``B`` (a shift amount) is unsigned whatever its type.
@@ -5977,6 +6041,8 @@ class _ModuleBuilder:
 
     def _lower_unary(self, expr: Any) -> tuple[Bit, ...] | None:
         op_name = str(expr.op).rsplit(".", 1)[-1]
+        if op_name in self._STEP_OPS:
+            return self._lower_step(expr, op_name)
         if op_name == "Plus":
             # Unary plus is identity in SV — peek through.
             return self._bits_of_expression(expr.operand)
@@ -5998,6 +6064,34 @@ class _ModuleBuilder:
         if op_name in self._INVERTED_REDUCTIONS:
             y = self._emit_comb_cell("$logic_not", {"A": y}, 1, src_node=expr)
         return y
+
+    def _lower_step(self, expr: Any, op_name: str) -> tuple[Bit, ...] | None:
+        """``t++`` / ``++t`` / ``t--`` / ``--t`` inside an expression: the
+        write ``t = t ± 1`` made by the walk in progress
+        (:attr:`_expr_writer`), and the value before it (post-) or after
+        it (pre-) (rtl-buddy-cdc#408: an opaque driver). ``None`` outside a
+        procedural walk."""
+        if self._expr_writer is None:
+            return None
+        write = self._as_assignment(expr)
+        if write is None:
+            return None
+        before = self._bits_of_expression(expr.operand)
+        if before is None:
+            return None
+        self._expr_writer(write)
+        return write.right.bits if op_name.startswith("Pre") else before
+
+    def _lower_assignment_value(self, expr: Any) -> tuple[Bit, ...] | None:
+        """An assignment used as an expression (``o = (t += 2)``,
+        ``if ((t = a) != 0)``): the write made by the walk in progress
+        (:attr:`_expr_writer`), and the target's value after it
+        (rtl-buddy-cdc#408). ``None`` outside a procedural walk or for a
+        nonblocking write."""
+        if self._expr_writer is None or getattr(expr, "isNonBlocking", False):
+            return None
+        self._expr_writer(expr)
+        return self._bits_of_expression(expr.left)
 
     def _lower_conditional(self, expr: Any) -> tuple[Bit, ...] | None:
         # pyslang ConditionalExpression has ``conditions`` (a list) and
@@ -6942,6 +7036,15 @@ class _ModuleBuilder:
         return self._emit_comb_cell("$and", {"A": (a,), "B": (b,)}, output_width=1)[0]
 
     def _walk_comb_statement(self, stmt: Any) -> None:
+        prev_writer = self._expr_writer
+        self._expr_writer = self._alias_assign
+        try:
+            self._comb_statement(stmt)
+        finally:
+            self._expr_writer = prev_writer
+
+    def _comb_statement(self, stmt: Any) -> None:
+        """:meth:`_walk_comb_statement` for one statement."""
         kind = self._kind_name(stmt)
         if kind == "BlockStatement":
             self._walk_comb_statement(stmt.body)
