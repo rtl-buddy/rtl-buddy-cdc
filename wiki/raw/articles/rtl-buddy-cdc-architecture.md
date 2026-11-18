@@ -261,8 +261,16 @@ that outermost select. An unpacked array is one netname per element,
 as `mem2reg` names them: `a[i]` by declared index for one dimension,
 the row-major position counted from each dimension's left bound for
 several (`m[1][0]` of `m [1:0][2:0]` is `m[0]`), each with its
-element's `offset` / `upto` and the declaration's attributes; an
-array written at a run-time address is a memory and has none.
+element's `offset` / `upto` and the declaration's attributes; a
+memory has none. Which arrays are memories is Yosys' `mem2reg`
+decision (#398): registers when the array is a net, written outside a
+process clocked by exactly one edge or by a continuous assignment, read
+after a blocking write in the same process, written whole or as a
+slice, or written only at constant indices (a `for` loop variable
+counts as constant); a memory otherwise, also when nothing writes it.
+A register array read at a run-time index is the `$pmux` Yosys builds
+(each element a case, selected by an index compare), and a run-time
+clocked write loads each element through `mux(i == k, Q, d)`.
 
 Blackbox boundaries (#345): an instance of a module with a truthy
 `(* blackbox *)` attribute, or one named by `lint --blackbox` /
@@ -2254,7 +2262,7 @@ fork):
 | `memory_dff` | the same, with an output register merged into a **clocked** `$memrd_v2` where it can be (`CLK_ENABLE=1`, `ARST` / `SRST` / `EN` / `CE_OVER_SRST` …) |
 | `memory_collect` / `memory -nomap` | one `$mem_v2` per memory, every per-port field packed side by side: `WR_CLK` / `RD_CLK` one bit per port, `WR_ADDR` / `RD_ADDR` `ABITS` per port, `WR_DATA` / `WR_EN` / `RD_DATA` `WIDTH` per port, `RD_EN` one bit per port, and per-port flags (`WR_CLK_ENABLE`, `RD_CLK_ENABLE`, …) as bit strings, port *i* the *i*-th character from the right |
 | `memory_map` | plain flops and muxes — ordinary flop crossings, out of CDC-026's scope |
-| slang frontend | mirrors `lint`: a run-time-indexed write to a one-dimensional unpacked array in `always_ff` lowers to `$memwr_v2` (`EN` = the enclosing conditions), a run-time-indexed read anywhere to an asynchronous `$memrd_v2`; constant-indexed selects stay bit selects. Before #326 the write was dropped and the read became an opaque `$_UNKNOWN_` |
+| slang frontend | mirrors `lint`: an array Yosys keeps a memory (`mem2reg`, #398) has every clocked write lowered to a `$memwr_v2` (`EN` = the enclosing conditions, a sync reset's included; a constant address is a 32-bit constant; several dimensions are flattened `i * N + j`) and every read, constant index included, to an asynchronous `$memrd_v2`. Before #326 the write was dropped and the read became an opaque `$_UNKNOWN_`; before #398 constant-indexed selects of a memory were bit selects of undriven placeholder bits |
 
 `memory.find_memories` decodes every form (v1 `$memwr` / `$memrd` /
 `$mem` too) into one `Memory` per `MEMID` with its `MemPort`s, in one

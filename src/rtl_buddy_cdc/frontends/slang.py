@@ -211,6 +211,7 @@ What is NOT yet implemented (next slices)
 from __future__ import annotations
 
 import functools
+import itertools
 import importlib.metadata
 import logging
 import math
@@ -218,7 +219,7 @@ import re
 from dataclasses import replace
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from rtl_buddy_cdc.netlist import Bit, Cell, Module, Netname, Port
 
@@ -587,6 +588,17 @@ class _ProcSwitch:
         self.writes: dict[Any, list[tuple[int, int]]] = {}
 
 
+class _ArrayAccess(NamedTuple):
+    """A select chain over an unpacked-array variable
+    (:meth:`_ModuleBuilder._array_access`, rtl-buddy-cdc#398)."""
+
+    sym: Any  # the array variable (canonical)
+    dims: list[tuple[int, int]]  # ``(left, right)`` per unpacked dimension
+    selectors: list[Any]  # index of each unpacked dimension selected
+    element: Any | None  # the select naming one whole element, if any
+    packed: list[Any]  # selects applied to that element, innermost first
+
+
 class _ModuleBuilder:
     """Translate a pyslang elaborated :class:`InstanceSymbol` into a
     :class:`netlist.Module`.
@@ -693,6 +705,14 @@ class _ModuleBuilder:
         # Next write-port index per memory (``MEMID``) — the ``PORTID``
         # parameter of each emitted ``$memwr_v2`` (#326).
         self._memory_write_ports: dict[str, int] = {}
+        # The unpacked arrays Yosys keeps as memories (canonical symbols)
+        # and their ``MEMID`` spellings; every other unpacked array is a
+        # list of registers (:meth:`_classify_arrays`, rtl-buddy-cdc#398).
+        self._memories: set[Any] = set()
+        self._memory_ids: set[str] = set()
+        # Clock of the clocked block being lowered: a memory write in its
+        # reset arm (:meth:`_collect_reset_assignments`) is a port on it.
+        self._proc_clk: Any = None
         # ``(location, reason)`` of every assignment already reported by
         # :meth:`_warn_lvalue_dropped` (rtl-buddy-cdc#370).
         self._lvalue_warned: set[tuple[str | None, str]] = set()
@@ -726,12 +746,11 @@ class _ModuleBuilder:
         # same flat namespace, hierarchically prefixed (``u_b0.q``).
         self._walk_instance(self.top, hier_prefix="", bound_internals=frozenset())
         self._apply_forward_renames()
-        # An array written through a memory write port is a memory, which
-        # Yosys keeps as such, with no netname (rtl-buddy-cdc#394).
-        for cell in self._cells.values():
-            if cell.type == "$memwr_v2":
-                for name in self._array_netnames.get(cell.parameters["MEMID"], ()):
-                    self._netnames.pop(name, None)
+        # A memory has no netname in Yosys' output (rtl-buddy-cdc#394,
+        # #398): only an array lowered to registers names its elements.
+        for memid in self._memory_ids:
+            for name in self._array_netnames.get(memid, ()):
+                self._netnames.pop(name, None)
         return Module(
             name=self.top.name,
             ports=self._ports,
@@ -772,6 +791,7 @@ class _ModuleBuilder:
             if hier_prefix == "":
                 for member in inst.body:
                     self._collect_port(member)
+            self._classify_arrays(inst, hier_prefix)
             for member, prefix in self._iter_scope(inst.body, hier_prefix):
                 # ``_fresh_cell_name`` reads ``_hier_stack[-1]`` when
                 # naming cells; for members inside a generate block
@@ -1552,6 +1572,8 @@ class _ModuleBuilder:
         # (an unusual but legal SV shape).
         prev_clk_negedge = getattr(self, "_clk_negedge", False)
         self._clk_negedge = clk_negedge
+        prev_proc_clk = self._proc_clk
+        self._proc_clk = clk_sym
         # Drill through the optional BlockStatement wrapper.
         inner = body.stmt
         if self._kind_name(inner) == "BlockStatement":
@@ -1602,16 +1624,30 @@ class _ModuleBuilder:
                 # ``$adff``'s ``ARST_VALUE`` / ``$sdff``'s ``SRST_VALUE``
                 # parameter (issues #40 / #86). With no ``else`` the
                 # registers the reset arm writes hold between resets
-                # (rtl-buddy-cdc#390: the block was skipped).
-                self._collect_reset_assignments(inner.ifTrue)
+                # (rtl-buddy-cdc#390: the block was skipped). A memory
+                # write port in either arm is enabled by its arm's
+                # condition (rtl-buddy-cdc#398); only a sync-reset block
+                # can write a memory.
+                reset_on = self._lazy_bit(lambda: self._condition_bit(inner))
+                self._enable_stack.append(reset_on)
+                try:
+                    self._collect_reset_assignments(inner.ifTrue)
+                finally:
+                    self._enable_stack.pop()
                 if inner.ifFalse is not None:
-                    self._emit_assignments_in(
-                        inner.ifFalse,
-                        clk_sym,
-                        block_reset_sym,
-                        block_reset_active_low,
-                        src_node,
+                    self._enable_stack.append(
+                        self._lazy_bit(lambda: self._lower_not(reset_on()))
                     )
+                    try:
+                        self._emit_assignments_in(
+                            inner.ifFalse,
+                            clk_sym,
+                            block_reset_sym,
+                            block_reset_active_low,
+                            src_node,
+                        )
+                    finally:
+                        self._enable_stack.pop()
             elif (
                 reset_sym is None
                 and (srst_ce := self._sync_reset_under_enable(inner)) is not None
@@ -1619,10 +1655,19 @@ class _ModuleBuilder:
                 # ``if (en) if (srst) <constants> else <data>``: the reset
                 # acts only while loading, an ``$sdffce`` (rtl-buddy-cdc#384).
                 enable_bit, srst_stmt, (srst_sym, _kind, srst_low) = srst_ce
-                self._collect_reset_assignments(srst_stmt.ifTrue)
-                self._emit_assignments_in(
-                    srst_stmt.ifFalse, clk_sym, srst_sym, srst_low, src_node
-                )
+                srst_on = self._lazy_bit(lambda: self._condition_bit(srst_stmt))
+                self._enable_stack.append(lambda: enable_bit)
+                self._enable_stack.append(srst_on)
+                try:
+                    self._collect_reset_assignments(srst_stmt.ifTrue)
+                    self._enable_stack[-1] = self._lazy_bit(
+                        lambda: self._lower_not(srst_on())
+                    )
+                    self._emit_assignments_in(
+                        srst_stmt.ifFalse, clk_sym, srst_sym, srst_low, src_node
+                    )
+                finally:
+                    del self._enable_stack[-2:]
                 self._drain_proc_writes(
                     clk_sym,
                     srst_sym,
@@ -1658,6 +1703,7 @@ class _ModuleBuilder:
             self._reset_proc_tree()
             self._proc_resets = {}
             self._clk_negedge = prev_clk_negedge
+            self._proc_clk = prev_proc_clk
 
     def _event_signals(self, timing: Any) -> list[tuple[Any, bool]] | None:
         """``(signal symbol, negedge)`` per event of an edge-triggered event
@@ -1940,6 +1986,13 @@ class _ModuleBuilder:
         expr = stmt.expr
         if type(expr).__name__ != "AssignmentExpression":
             self._other_statement(stmt, "reset / async-load arm")
+            return
+        acc = self._array_access(expr.left)
+        if acc is not None and acc.sym in self._memories:
+            # A memory word written in a sync-reset arm: a write port
+            # enabled by the reset (rtl-buddy-cdc#398).
+            if not self._emit_memory_write(acc, expr.right, self._proc_clk, stmt):
+                self._warn_lvalue_dropped(expr, expr.left)
             return
         val = self._const_int(expr.right)
         if type(expr.left).__name__ == "ConcatenationExpression":
@@ -2753,13 +2806,21 @@ class _ModuleBuilder:
         """:meth:`_emit_assignment_expression` for one write."""
         lhs = expr.left
         rhs = expr.right
-        # ``mem[addr] <= data`` with a run-time ``addr`` is a memory
-        # write port, not a flop (#326) — emitted immediately as the
-        # ``$memwr_v2`` Yosys' ``proc`` produces for the same source.
-        mem_select = self._memory_select(lhs)
-        if mem_select is not None:
-            self._emit_memory_write(*mem_select, rhs, clk_sym, src_node)
-            return
+        # A write to a memory's word is a memory write port, not a flop
+        # (#326) — emitted immediately as the ``$memwr_v2`` Yosys' ``proc``
+        # produces for the same source, at a constant address too
+        # (rtl-buddy-cdc#398). A register array's element at a run-time
+        # index is a conditional write of each element.
+        acc = self._array_access(lhs)
+        if acc is not None:
+            if acc.sym in self._memories:
+                if not self._emit_memory_write(acc, rhs, clk_sym, src_node):
+                    self._warn_lvalue_dropped(expr, lhs)
+                return
+            if any(self._const_int(sel) is None for sel in acc.selectors):
+                if not self._register_array_write(acc, expr):
+                    self._warn_lvalue_dropped(expr, lhs)
+                return
         # Resolve the target to ``(variable, start, width)`` parts: a whole
         # variable, a constant bit / part select, a packed-struct member,
         # or a concatenation of those (``{q, meta} <= {meta, d}``,
@@ -3775,7 +3836,8 @@ class _ModuleBuilder:
         kind = type(expr).__name__
         if kind == "NamedValueExpression":
             sym = getattr(expr, "symbol", None)
-            if sym is None:
+            if sym is None or self._canonical_var(sym) in self._memories:
+                # A memory's words are read and written through ports.
                 return None, (), 0, 0
             bits = self._alloc_bits(sym)
             t = getattr(sym, "type", None)
@@ -3891,6 +3953,18 @@ class _ModuleBuilder:
         )
         if base_sym is None:
             return None
+        offsets = self._range_offsets(expr)
+        if offsets is None:
+            return None
+        start = base_offset + offsets[0]
+        if start + offsets[1] > len(base_bits):
+            return None
+        return base_sym, base_bits, start, offsets[1]
+
+    def _range_offsets(self, expr: Any) -> tuple[int, int] | None:
+        """``(start, width)`` of a constant part-select within the bits of
+        the value it selects from (:meth:`_range_select_span`), or
+        ``None``."""
         left = self._const_int(getattr(expr, "left", None))
         right = self._const_int(getattr(expr, "right", None))
         if left is None or right is None:
@@ -3909,11 +3983,9 @@ class _ModuleBuilder:
         p_left = self._select_position(value_type, left)
         p_right = self._select_position(value_type, right)
         lo, hi = min(p_left, p_right), max(p_left, p_right)
-        start = base_offset + lo * stride
-        end = base_offset + (hi + 1) * stride
-        if lo < 0 or end > len(base_bits):
+        if lo < 0:
             return None
-        return base_sym, base_bits, start, end - start
+        return lo * stride, (hi - lo + 1) * stride
 
     def _range_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """``var[hi:lo]`` / ``var[i +: W]`` / ``var[i -: W]`` — return the
@@ -4121,21 +4193,8 @@ class _ModuleBuilder:
             return self._lower_unary(expr)
         if kind == "ConditionalExpression":
             return self._lower_conditional(expr)
-        if kind == "ElementSelectExpression":
-            bits = self._element_select_bits(expr)
-            if bits is None:
-                mem_select = self._memory_select(expr)
-                if mem_select is not None:
-                    return self._emit_memory_read(*mem_select, expr)
-                return self._lower_dynamic_select(expr)
-            return bits
-        if kind == "MemberAccessExpression":
-            return self._element_select_bits(expr)
-        if kind == "RangeSelectExpression":
-            bits = self._range_select_bits(expr)
-            if bits is None:
-                return self._lower_dynamic_select(expr)
-            return bits
+        if kind in self._SELECT_KINDS:
+            return self._lower_select(expr)
         if kind == "ConcatenationExpression":
             return self._lower_concatenation(expr)
         if kind == "ReplicationExpression":
@@ -4151,6 +4210,60 @@ class _ModuleBuilder:
             return None
         # Anything else slang folded at elaboration time (``$bits(x)``, …).
         return self._constant_bits(expr)
+
+    def _lower_select(self, expr: Any) -> tuple[Bit, ...] | None:
+        """An element / part / member select read.
+
+        A memory's word is its ``$memrd_v2`` port (at a constant address
+        too); a select resolvable to a variable's bits is those bits; a
+        register array's element at a run-time index is a ``$pmux``
+        (:meth:`_array_mux`); a packed value at a run-time position a
+        ``$shiftx`` (:meth:`_lower_dynamic_select`); a constant select of
+        any other value (a word read through a port or a mux:
+        ``mem[i][3:0]``, ``regs[i].f``) slices that value's bits
+        (rtl-buddy-cdc#398: those reads were opaque)."""
+        kind = type(expr).__name__
+        acc = self._array_access(expr)
+        if acc is not None and acc.sym in self._memories:
+            if acc.element is None:
+                return None  # a row or slice of a memory: not modelled
+            if not acc.packed:
+                return self._emit_memory_read(acc, expr)
+        else:
+            if kind == "RangeSelectExpression":
+                bits = self._range_select_bits(expr)
+            else:
+                bits = self._element_select_bits(expr)
+            if bits is not None:
+                return bits
+        if kind == "ElementSelectExpression":
+            if self._const_int(getattr(expr, "selector", None)) is None:
+                vtype = getattr(expr.value, "type", None)
+                vtype = getattr(vtype, "canonicalType", None) or vtype
+                if getattr(vtype, "isUnpackedArray", False):
+                    return self._array_mux(expr)
+                return self._lower_dynamic_select(expr)
+        elif kind == "RangeSelectExpression" and self._range_offsets(expr) is None:
+            return self._lower_dynamic_select(expr)
+        return self._slice_select(expr)
+
+    def _slice_select(self, expr: Any) -> tuple[Bit, ...] | None:
+        """A constant select of a computed value: its bits, sliced."""
+        value = getattr(expr, "value", None)
+        if value is None:
+            return None
+        vtype = getattr(value, "type", None)
+        kind = type(expr).__name__
+        if kind == "MemberAccessExpression" and not getattr(vtype, "isIntegral", False):
+            return None
+        base = self._bits_of_expression(value)
+        if base is None:
+            return None
+        sub = self._packed_subrange([expr], len(base))
+        if sub is None:
+            return None
+        start, size = sub
+        return tuple(base[start : start + size])
 
     def _lower_dynamic_select(self, expr: Any) -> tuple[Bit, ...] | None:
         """A read of a packed vector at a run-time position — ``a[i]``,
@@ -4641,43 +4754,271 @@ class _ModuleBuilder:
         )
         return y_bits
 
-    # -- inferred memories (#326) ---------------------------------------
+    # -- inferred memories (#326) and register arrays (#398) --------------
 
-    def _memory_select(self, expr: Any) -> tuple[Any, Any] | None:
-        """``mem[addr]`` with a run-time ``addr`` on a one-dimensional
-        unpacked array → ``(array_symbol, selector)``; else ``None``.
+    # Expressions that select part of a value.
+    _SELECT_KINDS = frozenset(
+        {"ElementSelectExpression", "RangeSelectExpression", "MemberAccessExpression"}
+    )
 
-        A constant (or loop-bound) selector is not a memory access —
-        ``_element_select_bits`` already lowers it to the element's
-        bits, which is what an unrolled sync chain (``chain[i]``) needs.
-        Multi-dimensional and packed selects stay unmodelled.
-        """
-        if type(expr).__name__ != "ElementSelectExpression":
-            return None
-        base = getattr(expr, "value", None)
-        if type(base).__name__ != "NamedValueExpression":
-            return None
-        sym = getattr(base, "symbol", None)
+    @staticmethod
+    def _unpacked_ranges(sym: Any) -> list[tuple[int, int]] | None:
+        """``(left, right)`` of each unpacked dimension of ``sym``'s type,
+        outermost first, when its element is an integral (packed) type;
+        ``None`` for anything else."""
         t = getattr(sym, "type", None)
-        if t is None or not getattr(t, "isUnpackedArray", False):
+        t = getattr(t, "canonicalType", None) or t
+        dims: list[tuple[int, int]] = []
+        while getattr(t, "isUnpackedArray", False):
+            rng = getattr(t, "range", None)
+            left = getattr(rng, "left", None)
+            right = getattr(rng, "right", None)
+            if left is None or right is None:
+                return None
+            dims.append((int(left), int(right)))
+            t = getattr(t, "elementType", None)
+            t = getattr(t, "canonicalType", None) or t
+        if not dims or not getattr(t, "isIntegral", False):
             return None
-        elem = getattr(t, "elementType", None)
-        if elem is None or getattr(elem, "isUnpackedArray", False):
-            return None
-        selector = getattr(expr, "selector", None)
-        if selector is None or self._const_int(selector) is not None:
-            return None
-        return sym, selector
+        return dims
 
-    def _memory_params(self, sym: Any, abits: int) -> dict[str, str]:
-        elem = sym.type.elementType
-        width = int(
-            getattr(elem, "selectableWidth", None)
-            or getattr(elem, "bitWidth", None)
-            or 1
+    def _array_access(self, expr: Any) -> _ArrayAccess | None:
+        """Split a select chain over an unpacked-array variable into the
+        array, the selectors of its unpacked dimensions and the selects
+        applied to the element (:class:`_ArrayAccess`); ``None`` when
+        ``expr`` is no such chain."""
+        nodes: list[Any] = []
+        e = expr
+        while type(e).__name__ in self._SELECT_KINDS:
+            nodes.append(e)
+            e = getattr(e, "value", None)
+        if type(e).__name__ != "NamedValueExpression" or not nodes:
+            return None
+        sym = self._canonical_var(e.symbol)
+        dims = self._unpacked_ranges(sym)
+        if dims is None:
+            return None
+        selectors: list[Any] = []
+        element = None
+        packed: list[Any] = []
+        for node in reversed(nodes):
+            if element is not None:
+                packed.append(node)
+            elif type(node).__name__ != "ElementSelectExpression":
+                break  # a slice of the array (or of a row): no element
+            else:
+                selectors.append(node.selector)
+                if len(selectors) == len(dims):
+                    element = node
+        return _ArrayAccess(sym, dims, selectors, element, packed)
+
+    def _classify_arrays(self, inst: Any, hier_prefix: str) -> None:
+        """Decide which unpacked arrays of ``inst`` are memories, as Yosys'
+        Verilog frontend does before ``proc`` (``mem2reg``), checked
+        against Yosys 0.64 for each case (rtl-buddy-cdc#398). An array is
+        a list of registers, named per element, when
+
+        - it is a net (``wire``), not a variable;
+        - any write to it is in a process that is not clocked by exactly
+          one edge (``always_comb``, ``always_latch``, ``always @*``, an
+          ``always_ff`` with an asynchronous reset) or in a continuous
+          assignment;
+        - a process reads it after writing it with a blocking assignment;
+        - a write targets the whole array or a slice of it; or
+        - every write (``initial`` blocks aside) selects its element with
+          constant indices, a ``for`` loop's variable counting as
+          constant (Yosys unrolls the loop first).
+
+        Anything else is a memory, also one nothing writes: every read of
+        it is a ``$memrd_v2``, every write a ``$memwr_v2``, at a constant
+        address too, and it has no netname. Arrays bound to ports stay
+        registers."""
+        flags: dict[Any, set[str]] = {}
+        arrays: list[tuple[Any, str]] = []
+        ports = {
+            self._canonical_var(m)
+            for m in inst.body
+            if self._kind_name(m) == "PortSymbol"
+            and getattr(m, "internalSymbol", None) is not None
+        }
+        for member, prefix in self._iter_scope(inst.body, hier_prefix):
+            kind = self._kind_name(member)
+            if kind == "VariableSymbol":
+                arrays.append((member, prefix))
+            elif kind == "ProceduralBlockSymbol":
+                proc = str(member.procedureKind).rsplit(".", 1)[-1]
+                if proc not in {"Initial", "Final"}:
+                    sync = self._edge_event_count(member.body) == 1
+                    self._scan_array_process(member.body, sync, flags)
+            elif kind == "ContinuousAssignSymbol":
+                assign = getattr(member, "assignment", None)
+                if assign is not None:
+                    self._scan_array_process(assign, False, flags)
+        for member, prefix in arrays:
+            sym = self._canonical_var(member)
+            if sym in ports or self._unpacked_ranges(sym) is None:
+                continue
+            seen = flags.get(sym, set())
+            if seen & {"async", "reread", "whole"}:
+                continue
+            if "const" in seen and "var" not in seen:
+                continue
+            self._memories.add(sym)
+            self._memory_ids.add(f"\\{prefix}{member.name}")
+
+    def _edge_event_count(self, body: Any) -> int:
+        """Number of edge events in a procedural block's leading event
+        control (``@(posedge clk or negedge rst_n)`` is 2)."""
+        if self._kind_name(body) != "TimedStatement":
+            return 0
+        timing = body.timing
+        events = getattr(timing, "events", None)
+        if events is None:
+            events = [timing]
+        return sum(
+            str(getattr(ev, "edge", "")).rsplit(".", 1)[-1] in {"PosEdge", "NegEdge"}
+            for ev in events
         )
+
+    def _scan_array_process(
+        self, node: Any, sync: bool, flags: dict[Any, set[str]]
+    ) -> None:
+        """Record in ``flags`` how one process (or continuous assignment)
+        writes and reads unpacked arrays, for :meth:`_classify_arrays`:
+        ``async`` (written outside a single-edge process), ``reread``
+        (read after a blocking write in the same process), ``whole`` (the
+        whole array or a slice written), ``const`` / ``var`` (an element
+        written at a constant / run-time index)."""
+        pyslang = self.pyslang
+        loop_vars: set[Any] = set()
+        blocking: set[Any] = set()
+
+        def static(sel: Any) -> bool:
+            if self._const_int(sel) is not None:
+                return True
+            names: list[Any] = []
+
+            def name(n: Any) -> None:
+                if type(n).__name__ == "NamedValueExpression":
+                    names.append(n.symbol)
+
+            sel.visit(name)
+            return bool(names) and all(
+                s in loop_vars or self._kind_name(s) in self._CONSTANT_SYMBOLS
+                for s in names
+            )
+
+        # pyslang 11 moved VisitAction into ``pyslang.ast``.
+        visit_action = _pyslang_namespaces(pyslang)[0].VisitAction
+
+        def visit(n: Any) -> Any:
+            kind = type(n).__name__
+            if kind == "ForLoopStatement":
+                loop_vars.update(getattr(n, "loopVars", None) or [])
+                for init in getattr(n, "initializers", None) or []:
+                    target = getattr(init, "left", None)
+                    if type(target).__name__ == "NamedValueExpression":
+                        loop_vars.add(getattr(target, "symbol", None))
+            elif kind == "NamedValueExpression":
+                sym = self._canonical_var(n.symbol)
+                if sym in blocking:
+                    flags.setdefault(sym, set()).add("reread")
+            elif kind == "AssignmentExpression":
+                written = self._scan_array_writes(n.left, sync, static, flags, visit)
+                n.right.visit(visit)
+                if not getattr(n, "isNonBlocking", False):
+                    blocking.update(written)
+                return visit_action.Skip
+            return visit_action.Advance
+
+        node.visit(visit)
+
+    def _scan_array_writes(
+        self,
+        lhs: Any,
+        sync: bool,
+        static: Callable[[Any], bool],
+        flags: dict[Any, set[str]],
+        visit: Callable[[Any], Any],
+    ) -> list[Any]:
+        """:meth:`_scan_array_process` for one assignment target: flag the
+        arrays it writes (returned) and scan what it reads (indices)."""
+        if type(lhs).__name__ == "ConcatenationExpression":
+            out: list[Any] = []
+            for op in getattr(lhs, "operands", None) or []:
+                out += self._scan_array_writes(op, sync, static, flags, visit)
+            return out
+        acc = self._array_access(lhs)
+        if acc is None:
+            if type(lhs).__name__ == "NamedValueExpression":
+                sym = self._canonical_var(lhs.symbol)
+                if self._unpacked_ranges(sym) is not None:
+                    flags.setdefault(sym, set()).add("whole")
+                    return [sym]
+                return []
+            # Not an array element: what its selects read still counts.
+            for node in self._select_nodes(lhs):
+                self._visit_select_operands(node, visit)
+            return []
+        seen = flags.setdefault(acc.sym, set())
+        if not sync:
+            seen.add("async")
+        if acc.element is None:
+            seen.add("whole")
+        else:
+            seen.add("const" if all(static(s) for s in acc.selectors) else "var")
+        for node in self._select_nodes(lhs):
+            self._visit_select_operands(node, visit)
+        return [acc.sym]
+
+    def _select_nodes(self, expr: Any) -> list[Any]:
+        """The select expressions of a chain, outermost first."""
+        nodes: list[Any] = []
+        while type(expr).__name__ in self._SELECT_KINDS:
+            nodes.append(expr)
+            expr = getattr(expr, "value", None)
+        return nodes
+
+    @staticmethod
+    def _visit_select_operands(node: Any, visit: Callable[[Any], Any]) -> None:
+        """Visit the index / bound expressions of one select."""
+        for attr in ("selector", "left", "right"):
+            sub = getattr(node, attr, None)
+            if sub is not None:
+                sub.visit(visit)
+
+    def _memory_address(self, acc: _ArrayAccess, node: Any) -> tuple[Bit, ...]:
+        """The ``ADDR`` of a memory port for ``acc``, as Yosys builds it: a
+        constant index is a 32-bit constant; a run-time one its own bits;
+        several dimensions are flattened row-major (``i * N + j``, ``$mul``
+        / ``$add``)."""
+        consts = [self._const_int(s) for s in acc.selectors]
+        if all(c is not None for c in consts):
+            flat = 0
+            for (left, right), c in zip(acc.dims, consts):
+                flat = flat * (abs(left - right) + 1) + int(c or 0)
+            return self._int_bits(flat, 32)
+        parts: list[tuple[Bit, ...]] = []
+        for s, c in zip(acc.selectors, consts):
+            if c is not None:
+                parts.append(self._int_bits(c, 32))
+            else:
+                parts.append(
+                    self._bits_of_expression(s) or self._opaque(s, 1, "memory address")
+                )
+        if len(parts) == 1:
+            return parts[0]
+        addr = parts[0]
+        for (left, right), part in zip(acc.dims[1:], parts[1:]):
+            size = self._int_bits(abs(left - right) + 1, 32)
+            addr = self._emit_comb_cell("$mul", {"A": addr, "B": size}, 32, node)
+            addr = self._emit_comb_cell("$add", {"A": addr, "B": part}, 32, node)
+        return addr
+
+    def _memory_params(self, acc: _ArrayAccess, abits: int) -> dict[str, str]:
+        width = self._unpacked_element_width(acc.sym) or 1
         return {
-            "MEMID": f"\\{self._hier_stack[-1]}{sym.name}",
+            "MEMID": f"\\{self._hier_stack[-1]}{acc.sym.name}",
             "ABITS": _param_int32(abits),
             "WIDTH": _param_int32(width),
         }
@@ -4702,24 +5043,65 @@ class _ModuleBuilder:
             attributes=attrs,
         )
 
+    def _packed_subrange(self, nodes: list[Any], width: int) -> tuple[int, int] | None:
+        """``(start, width)`` of the bits constant selects ``nodes``
+        (innermost first) pick out of a ``width``-bit value; ``None`` when
+        one is not constant or falls outside it."""
+        start, size = 0, width
+        for node in nodes:
+            kind = type(node).__name__
+            vtype = getattr(getattr(node, "value", None), "type", None)
+            if kind == "ElementSelectExpression":
+                idx = self._const_int(getattr(node, "selector", None))
+                if idx is None:
+                    return None
+                size = self._element_stride(vtype)
+                start += self._select_position(vtype, idx) * size
+            elif kind == "RangeSelectExpression":
+                offsets = self._range_offsets(node)
+                if offsets is None:
+                    return None
+                start += offsets[0]
+                size = offsets[1]
+            else:
+                member = getattr(node, "member", None)
+                offset = getattr(member, "bitOffset", None)
+                size = int(getattr(getattr(member, "type", None), "bitWidth", 0) or 0)
+                if offset is None or size < 1:
+                    return None
+                start += int(offset)
+        if start < 0 or start + size > width:
+            return None
+        return start, size
+
     def _emit_memory_write(
-        self, sym: Any, selector: Any, rhs: Any, clk_sym: Any, src_node: Any
-    ) -> None:
-        """Emit a ``$memwr_v2`` for ``mem[addr] <= data`` in ``always_ff``.
+        self, acc: _ArrayAccess, rhs: Any, clk_sym: Any, src_node: Any
+    ) -> bool:
+        """Emit a ``$memwr_v2`` for ``mem[addr] <= data`` (or a constant
+        bit / part select of the word) in a clocked block; ``False`` when
+        the select of the word is not constant.
 
         Same shape as Yosys ``proc``: ``CLK`` the block's clock,
         ``CLK_ENABLE`` 1, ``EN`` the enclosing conditions (``_enable_stack``)
-        replicated per data bit. Unlowerable address / data expressions
-        get an ``$_UNKNOWN_`` driver, as for any other unmodelled RHS.
+        on the written lanes and 0 on the others. Unlowerable address /
+        data expressions get an ``$_UNKNOWN_`` driver, as for any other
+        unmodelled RHS.
         """
-        addr = self._bits_of_expression(selector) or self._opaque(
-            selector, 1, "memory address"
-        )
-        params = self._memory_params(sym, len(addr))
-        width = int(params["WIDTH"], 2)
-        data = self._rhs_bits(rhs, width)
+        if acc.element is None:
+            return False
+        width = self._unpacked_element_width(acc.sym) or 1
+        sub = self._packed_subrange(acc.packed, width)
+        if sub is None:
+            return False
+        start, size = sub
+        addr = self._memory_address(acc, src_node)
+        params = self._memory_params(acc, len(addr))
+        written = self._rhs_bits(rhs, size)
         enable = self._combine_enable_stack()
-        en: tuple[Bit, ...] = ((enable if enable is not None else "1"),) * width
+        en_bit: Bit = enable if enable is not None else "1"
+        tail = width - start - size
+        data = ("x",) * start + written + ("x",) * tail
+        en = ("0",) * start + (en_bit,) * size + ("0",) * tail
         portid = self._memory_write_ports.get(params["MEMID"], 0)
         self._memory_write_ports[params["MEMID"]] = portid + 1
         params.update(
@@ -4736,15 +5118,16 @@ class _ModuleBuilder:
             params,
             src_node,
         )
+        return True
 
-    def _emit_memory_read(self, sym: Any, selector: Any, node: Any) -> tuple[Bit, ...]:
-        """Emit an asynchronous ``$memrd_v2`` for an R-value ``mem[addr]``
-        and return its data bits — what Yosys ``proc`` leaves too; a
-        registered read is this port followed by the ordinary flop."""
-        addr = self._bits_of_expression(selector) or self._opaque(
-            selector, 1, "memory address"
-        )
-        params = self._memory_params(sym, len(addr))
+    def _emit_memory_read(self, acc: _ArrayAccess, node: Any) -> tuple[Bit, ...]:
+        """Emit an asynchronous ``$memrd_v2`` for an R-value ``mem[addr]``,
+        a constant ``addr`` too (rtl-buddy-cdc#398: ``mem[2]`` read the
+        array's undriven bits), and return its data bits — what Yosys
+        ``proc`` leaves too; a registered read is this port followed by the
+        ordinary flop."""
+        addr = self._memory_address(acc, node)
+        params = self._memory_params(acc, len(addr))
         width = int(params["WIDTH"], 2)
         data = self._alloc_anon_bits(width)
         params.update(
@@ -4773,6 +5156,99 @@ class _ModuleBuilder:
             node,
         )
         return data
+
+    def _index_match(self, idx: tuple[Bit, ...], index: int, node: Any) -> Bit:
+        """One bit: run-time index ``idx`` equals ``index`` (``$eq``, or
+        ``$logic_not`` for 0, as Yosys ``proc_mux`` compares)."""
+        if index == 0:
+            return self._emit_comb_cell("$logic_not", {"A": idx}, 1, node)[0]
+        width = max(len(idx), index.bit_length() + (1 if index < 0 else 0))
+        value = self._int_bits(index % (1 << width), width)
+        return self._emit_comb_cell("$eq", {"A": idx, "B": value}, 1, node)[0]
+
+    def _array_mux(self, expr: Any) -> tuple[Bit, ...] | None:
+        """A register array's element (or row) read at a run-time index:
+        the ``$pmux`` Yosys ``mem2reg`` + ``proc`` build, its cases every
+        element (highest index first), each selected by an index compare
+        (rtl-buddy-cdc#398: it was a ``$memrd_v2`` of a memory nothing
+        writes, so the read was cut off from the element registers)."""
+        value = expr.value
+        vtype = getattr(value, "type", None)
+        vtype = getattr(vtype, "canonicalType", None) or vtype
+        rng = getattr(vtype, "range", None)
+        if rng is None:
+            return None
+        base = self._bits_of_expression(value)
+        idx = self._bits_of_expression(expr.selector)
+        left, right = int(rng.left), int(rng.right)
+        count = abs(left - right) + 1
+        stride = self._element_stride(vtype)
+        if not idx or base is None or len(base) != count * stride:
+            return None
+        lo = min(left, right)
+        words: list[Bit] = []
+        selects: list[Bit] = []
+        for pos in reversed(range(count)):
+            words.extend(base[pos * stride : (pos + 1) * stride])
+            selects.append(self._index_match(idx, lo + pos, expr))
+        return self._emit_comb_cell(
+            "$pmux",
+            {"A": ("x",) * stride, "B": tuple(words), "S": tuple(selects)},
+            stride,
+            src_node=expr,
+            parameters={
+                "WIDTH": _param_int32(stride),
+                "S_WIDTH": _param_int32(count),
+            },
+        )
+
+    def _register_array_write(self, acc: _ArrayAccess, expr: Any) -> bool:
+        """A clocked write to a register array at a run-time index: one
+        conditional write per element it can reach, as Yosys ``mem2reg``
+        rewrites it (``if (i == k) a[k] <= d`` for each ``k``), so each
+        element's ``D`` is ``mux(i == k, Q, d)``. ``False`` when the select
+        of the element is not constant."""
+        if acc.element is None:
+            return False
+        width = self._unpacked_element_width(acc.sym) or 1
+        sub = self._packed_subrange(acc.packed, width)
+        if sub is None:
+            return False
+        start, size = sub
+        choices: list[list[tuple[int, Bit | None]]] = []
+        sizes: list[int] = []
+        for (left, right), sel in zip(acc.dims, acc.selectors):
+            lo, count = min(left, right), abs(left - right) + 1
+            sizes.append(count)
+            c = self._const_int(sel)
+            if c is not None:
+                choices.append([(c - lo, None)] if 0 <= c - lo < count else [])
+                continue
+            idx = self._bits_of_expression(sel) or self._opaque(sel, 1, "array index")
+            choices.append(
+                [(p, self._index_match(idx, lo + p, sel)) for p in range(count)]
+            )
+        rhs_bits = self._rhs_bits(expr.right, size)
+        net = self._blocking_nets.get(acc.sym) or self._alloc_bits(acc.sym)
+        self._proc_regs.setdefault(acc.sym, net)
+        blocking = not getattr(expr, "isNonBlocking", False)
+        for combo in itertools.product(*choices):
+            pos = 0
+            for count, (p, _bit) in zip(sizes, combo):
+                pos = pos * count + p
+            conds = [b for _p, b in combo if b is not None]
+            cond = conds[0]
+            for b in conds[1:]:
+                cond = self._and_bit(cond, b)
+            lane = pos * width + start
+            case = _ProcCase()
+            case.items.append((acc.sym, lane, rhs_bits))
+            self._proc_case.items.append(_ProcSwitch([(cond, case)]))
+            if blocking:
+                current = self._var_bits.get(acc.sym, net)
+                held = self._build_hold_mux(cond, current[lane : lane + size], rhs_bits)
+                self._forward_blocking_write(acc.sym, net, lane, held)
+        return True
 
     def _rhs_bits(
         self, expr: Any, width: int, what: str = "right-hand side"

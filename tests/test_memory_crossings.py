@@ -500,15 +500,18 @@ def test_slang_lowers_dynamic_unpacked_selects_to_memory_ports(tmp_path: Path) -
         "  logic [3:0] mem [4];\n"
         "  always_ff @(negedge clk) if (en) mem[a] <= d;\n"
         "  assign q = mem[a];\n"
-        "  assign k = mem[1];\n"  # constant index: a plain bit select
+        "  assign k = mem[1];\n"  # constant index: a port at address 1
         "endmodule\n"
     )
     module = elaborate([sv], "m", frontend=Frontend.slang)
     types = sorted(c.type for c in module.cells.values())
-    assert types == ["$memrd_v2", "$memwr_v2"]
+    assert types == ["$memrd_v2", "$memrd_v2", "$memwr_v2"]
     (mem,) = find_memories(module)
     (wp,) = mem.write_ports
-    (rp,) = mem.read_ports
+    rp, kp = sorted(mem.read_ports, key=lambda p: len(p.addr))
+    # rtl-buddy-cdc#398: ``mem[1]`` read the array's undriven bits.
+    assert kp.addr == ("1",) + ("0",) * 31
+    assert module.ports["k"].bits == kp.data
     assert mem.memid == "mem"
     assert wp.clocked and len(wp.addr) == 2 and len(wp.data) == 4
     assert len(set(wp.en)) == 1 and isinstance(wp.en[0], int)  # the `en` bit
