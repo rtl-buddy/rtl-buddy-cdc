@@ -406,68 +406,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **slang frontend: hierarchical references, and wrong-netlist gaps found
-  by a cross-frontend simulation sweep** (rtl-buddy-cdc#405, items 2 and
-  5). Small designs covering functions and tasks, `always_comb` forms,
-  `case` / `casez` / `case inside` / `unique` / `priority`, streaming and
-  replication, signed arithmetic, shifts, ternaries, packed structs and
-  unions, enums, typedef'd arrays, parameters and generate conditions,
-  interfaces, generate loops, delays, multiple drivers, `inout`, latches
-  and `always @*` were elaborated on both frontends and the netlists
-  simulated on the same stimulus. Checked in
-  `tests/test_slang_hier_refs_405.py` and `tests/test_slang_hunt_405.py`
-  against Yosys 0.64's `lint` netlist where Yosys parses the shape, and
-  against the SystemVerilog semantics otherwise.
-  - **Hierarchical references are lowered.** A dotted name whose target
-    is declared in an inlined instance reads and writes the target's own
-    bits, a memory through its ports: into a generate block (`gr.lm[ra]`,
-    `g[1].h.x`, `cs.y`), into a child instance (`u.q`, `ua[1].last`,
-    `u.mem[ra]`, `u.g[1].x`, a parameter `u.P`), and upward (`top.sig`).
-    Each read was an opaque driver and each write a reported, dropped
-    assignment, so a crossing through one was missed. Arrays are now
-    classified over the whole inlined design before lowering, so a
-    hierarchical write counts against the array it names. A name inside
-    a blackbox, or above a greybox body lowered on its own, is still
-    reported. Yosys resolves the generate-block names; for a child or
-    upward name it declares a new undriven one-bit wire, so there slang
-    now finds crossings Yosys misses.
-  - **A negated combinational condition swaps the mux legs** (item 5).
-    `if (!a) X else Y` in a level-sensitive body is `$mux(S=a, A=X, B=Y)`,
-    as Yosys `proc` builds it and the clocked walk already did; it was
-    `$mux(S=!a, A=Y, B=X)`. Not cosmetic: a clock mux written that way
-    traced to the other clock, putting the flops it clocks in another
-    domain than on Yosys (an extra crossing).
-  - **Signed operands.** A width conversion inside an expression was
-    ignored, so a signed operand widened by `s ? a : b` or `a * b` was
-    zero-extended and its MSB had no fan-in to the upper result bits;
-    every binary cell was unsigned, so `<`, `>>>` and `/` of signed
-    operands computed the unsigned result. Conversions now extend (sign
-    only from a signed operand into a signed type) or truncate wherever
-    they appear, and binary cells carry `A_SIGNED` / `B_SIGNED`.
-  - **`case (1'b1)` with signal labels**, and `casez` of a constant
-    against wildcard labels, were folded as decided at elaboration: the
-    labels were skipped and the `default` walked alone, so every arm's
-    fan-in was lost.
-  - **A second continuous driver of a net** renamed the first driver's
-    source net to its own, so `assign w = a; assign w = b;` made the
-    inputs `a` and `b` one net. A `wor` / `wand` net now resolves its
-    drivers by `$or` / `$and`; any other net is their `$or`, reported.
-  - **`c ? a : b` with a multi-bit `c`** selected on `c[0]` alone;
-    **`~&`, `~|`, `~^`** computed `&`, `|`, `^`.
-  - **Lowered instead of an opaque driver or a dropped statement:**
-    `inside` (values, ranges, `$`), `==?` / `!=?`, `case … inside`
-    ranges, streaming concatenations read or written, assignment
-    patterns (`'{default: '0}`, positional, keyed, replicated), `repeat`
-    and `foreach` loops, a `return` before the end of a function,
-    `break` / `continue` in a combinational loop, task and `void`
-    function calls with `output` / `inout` arguments (combinational and
-    clocked), and `$countones` / `$onehot` / `$onehot0` / `$isunknown`.
-  - Still reported, not lowered: `while` / `do … while`, `break` /
-    `continue` in a clocked loop, `->` / `<->`, `++` / `--` inside an
-    expression, enum methods, a streaming `with` range, `bufif` /
-    `notif` and switch primitives. No committed fixture, golden or
-    integration verdict changes; unit tests that pinned the old
-    reporting of now-lowered shapes use still-unlowered ones.
+- **Abstracted runs agree with the flat run on the data-path and reset
+  rules** (rtl-buddy-cdc#405, items 1, 3, 4).
+  - **CDC-018 under `--greybox`.** The per-module pass proved the depth
+    of a chain inside the block, but CDC-018 walked the boundary pin
+    structurally (depth 1) and needed a source flop, so a deep chain
+    inside a greybox, one launched from a block output, and one running
+    across the boundary were all lost. The rule context now joins a
+    chain across the boundary, which also clears a spurious CDC-001 on a
+    parent capture flop feeding a one-stage block (a two-stage
+    synchroniser flat).
+  - **Every rule audited flat vs `--greybox` vs `--blackbox`** with the
+    structure it reads put inside the abstracted block. The greybox pass
+    now publishes, and the parent's rules read, what the body hides: a
+    gate before or between the first stages (CDC-003 / CDC-006 /
+    CDC-014 — the greybox reported CDC-001, or nothing for a gate over
+    top-level ports in front of a block), opposite-edge stages (CDC-016,
+    was silent), the flops a reset pin drives (RDC-001 / RDC-002 /
+    RDC-003 / RDC-004 / CDC-015 — a foreign reset into a block was a
+    spurious CDC-001, or silent), and the register or latch behind an
+    output (CDC-003 one per register, CDC-009, CDC-013, CDC-017, CDC-019,
+    CDC-020, RDC-002 — all silent; a gray-coded register no longer fires
+    CDC-004). Every
+    summarised output, stub included, is a source in its launch clock
+    for RDC-001 / RDC-003 / CDC-015 (a reset launched inside a block was
+    silent), CDC-005, CDC-018 and CDC-024. RDC-005 moves from the
+    per-module pass to the parent, which knows whether two reset pins are
+    two top-level ports: the pass used to report it for any gate over
+    two pins. Remaining differences are listed in the README's
+    compositional-boundaries section; none is silent at the site.
+  - **A stub's clock pin is recognised through its module type.** A pin
+    one instance proves a clock pin (allow-listed, or clock-named and
+    traced to a declared clock) is a clock pin on every instance, so a
+    second instance clocked from an undeclared port gets CDC-021 under
+    `--blackbox` as it does flat. A pin no instance proves stays data —
+    the stub declares nothing about it and the tool does not guess from
+    names; that limit is documented and pinned by a test.
+  - **Clock views that counted flops count abstracted clock pins.**
+    Inferred-clock candidates weigh a pin by the flops it clocks inside a
+    greybox body (one for a stub), and the domain map's
+    `clock_network_crossings` end at an abstracted clock pin with an
+    additive `dst_boundary` object, so the flat and greyboxed runs list
+    the same forwarded clocks and clock-network sources.
 
 - **Abstraction keeps the clock-network findings; fix hints are SDC;
   double-indexed names warn with the flat index** (rtl-buddy-cdc#402,
@@ -1793,6 +1773,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     computes the position unsigned and writes nothing). A run-time bit of
     a plain vector inside a concatenation target (`{c, y[i]} = x`) is
     written; Yosys 0.64 drops that part without a warning.
+
+- **slang frontend: hierarchical references, and wrong-netlist gaps found
+  by a cross-frontend simulation sweep** (rtl-buddy-cdc#405, items 2 and
+  5). Small designs covering functions and tasks, `always_comb` forms,
+  `case` / `casez` / `case inside` / `unique` / `priority`, streaming and
+  replication, signed arithmetic, shifts, ternaries, packed structs and
+  unions, enums, typedef'd arrays, parameters and generate conditions,
+  interfaces, generate loops, delays, multiple drivers, `inout`, latches
+  and `always @*` were elaborated on both frontends and the netlists
+  simulated on the same stimulus. Checked in
+  `tests/test_slang_hier_refs_405.py` and `tests/test_slang_hunt_405.py`
+  against Yosys 0.64's `lint` netlist where Yosys parses the shape, and
+  against the SystemVerilog semantics otherwise.
+  - **Hierarchical references are lowered.** A dotted name whose target
+    is declared in an inlined instance reads and writes the target's own
+    bits, a memory through its ports: into a generate block (`gr.lm[ra]`,
+    `g[1].h.x`, `cs.y`), into a child instance (`u.q`, `ua[1].last`,
+    `u.mem[ra]`, `u.g[1].x`, a parameter `u.P`), and upward (`top.sig`).
+    Each read was an opaque driver and each write a reported, dropped
+    assignment, so a crossing through one was missed. Arrays are now
+    classified over the whole inlined design before lowering, so a
+    hierarchical write counts against the array it names. A name inside
+    a blackbox, or above a greybox body lowered on its own, is still
+    reported. Yosys resolves the generate-block names; for a child or
+    upward name it declares a new undriven one-bit wire, so there slang
+    now finds crossings Yosys misses.
+  - **A negated combinational condition swaps the mux legs** (item 5).
+    `if (!a) X else Y` in a level-sensitive body is `$mux(S=a, A=X, B=Y)`,
+    as Yosys `proc` builds it and the clocked walk already did; it was
+    `$mux(S=!a, A=Y, B=X)`. Not cosmetic: a clock mux written that way
+    traced to the other clock, putting the flops it clocks in another
+    domain than on Yosys (an extra crossing).
+  - **Signed operands.** A width conversion inside an expression was
+    ignored, so a signed operand widened by `s ? a : b` or `a * b` was
+    zero-extended and its MSB had no fan-in to the upper result bits;
+    every binary cell was unsigned, so `<`, `>>>` and `/` of signed
+    operands computed the unsigned result. Conversions now extend (sign
+    only from a signed operand into a signed type) or truncate wherever
+    they appear, and binary cells carry `A_SIGNED` / `B_SIGNED`.
+  - **`case (1'b1)` with signal labels**, and `casez` of a constant
+    against wildcard labels, were folded as decided at elaboration: the
+    labels were skipped and the `default` walked alone, so every arm's
+    fan-in was lost.
+  - **A second continuous driver of a net** renamed the first driver's
+    source net to its own, so `assign w = a; assign w = b;` made the
+    inputs `a` and `b` one net. A `wor` / `wand` net now resolves its
+    drivers by `$or` / `$and`; any other net is their `$or`, reported.
+  - **`c ? a : b` with a multi-bit `c`** selected on `c[0]` alone;
+    **`~&`, `~|`, `~^`** computed `&`, `|`, `^`.
+  - **Lowered instead of an opaque driver or a dropped statement:**
+    `inside` (values, ranges, `$`), `==?` / `!=?`, `case … inside`
+    ranges, streaming concatenations read or written, assignment
+    patterns (`'{default: '0}`, positional, keyed, replicated), `repeat`
+    and `foreach` loops, a `return` before the end of a function,
+    `break` / `continue` in a combinational loop, task and `void`
+    function calls with `output` / `inout` arguments (combinational and
+    clocked), and `$countones` / `$onehot` / `$onehot0` / `$isunknown`.
+  - Still reported, not lowered: `while` / `do … while`, `break` /
+    `continue` in a clocked loop, `->` / `<->`, `++` / `--` inside an
+    expression, enum methods, a streaming `with` range, `bufif` /
+    `notif` and switch primitives. No committed fixture, golden or
+    integration verdict changes; unit tests that pinned the old
+    reporting of now-lowered shapes use still-unlowered ones.
 
 ### Internal
 

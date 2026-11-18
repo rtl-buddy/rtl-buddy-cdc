@@ -48,7 +48,7 @@ either over-reporting or *proven*:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from rtl_buddy_cdc.domain import (
     DepthCut,
@@ -56,13 +56,31 @@ from rtl_buddy_cdc.domain import (
     filter_async_cuts,
     find_crossings,
 )
-from rtl_buddy_cdc.flops import Flop, is_ff_cell
-from rtl_buddy_cdc.netlist import Bit, Module
+from rtl_buddy_cdc.flops import (
+    Flop,
+    flop_async_controls,
+    flop_clk_polarity,
+    flop_reset_bits,
+    is_ff_cell,
+    is_latch_cell,
+)
+from rtl_buddy_cdc.netlist import Bit, DriverFacts, Module, ResetPinFact
+from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.rules import (
     Violation,
     _backward_flop_fanin,
+    _ASYNC_PIN_LABEL,
+    _backward_fanin,
     _build_context,
+    _chain_has_inter_stage_comb,
+    _decoder_group,
+    _deasserting_reset_sync_members,
+    _folded_srst_selects,
+    _live_mux_driver,
     _forward_reachable_cells,
+    _is_gray_encoded_source,
+    _own_srst_data_leg,
+    _producer_async_reset_value,
     _RuleContext,
     _sync_chain_depth,
     _sync_chain_flops,
@@ -86,6 +104,12 @@ from rtl_buddy_cdc.sdc import Clock, ClockSpec
 #   port*. A reset arriving on a module pin is by construction exactly
 #   that; the flattened design sees the same structure as a flop-sourced
 #   reset and reports it under RDC-001 instead.
+# - **RDC-005** flags an async reset that is a gate over two or more
+#   *top-level reset ports*. Two reset pins of a module are hierarchy pins;
+#   whether they are two top-level ports, one, or registers is the
+#   parent's to know. The parent re-raises it (and RDC-004, the
+#   registered shape) from the reset facts the pass publishes
+#   (rtl-buddy-cdc#405).
 # - **CDC-025** flags a top-level *output* with no ``set_output_delay``
 #   contract. No subtree pin is ever typed, so its single-domain shape is
 #   already gated off here; its asynchronous-merge shape would still fire
@@ -109,7 +133,7 @@ from rtl_buddy_cdc.sdc import Clock, ClockSpec
 # CDC-010 / CDC-021 / CDC-023) see a coherent SDC rather than an
 # undeclared-everything one.
 INTERNAL_RULE_EXCLUSIONS: frozenset[str] = frozenset(
-    {"CDC-006", "CDC-011", "CDC-025", "RDC-008"}
+    {"CDC-006", "CDC-011", "CDC-025", "RDC-005", "RDC-008"}
 )
 
 
@@ -140,6 +164,43 @@ class PortFacts:
     ambiguous: bool = False
     sync_depth: int | None = None
     user_synchronised: bool = False
+    # The output port, and the bit of it, the proven input chain's last
+    # stage drives and nothing else reads (rtl-buddy-cdc#405). A flat run
+    # sees the chain carry on into whatever the parent hangs on that
+    # output; the boundary hides that, so the parent rejoins the two
+    # halves through this fact. ``None`` when the chain ends inside.
+    chain_exit: tuple[str, int] | None = None
+    # The proven chain's stages, first to last, each with its clock edge
+    # (1 posedge, 0 negedge), so CDC-016 can check a chain the boundary
+    # hides (rtl-buddy-cdc#405). Empty when not proven stage by stage.
+    chain_stages: tuple[tuple[str, int], ...] = ()
+    # For an output, single-bit ports only (rtl-buddy-cdc#405): the fewest
+    # combinational cells between a launching register and the pin
+    # (``0`` for a register driving it directly; ``None`` when no
+    # register launches it, or a latch is on the way) — the part of a
+    # crossing's ``min_hops`` a flat walk counts inside the block — and,
+    # for a pin a transparent latch drives directly, the latch's name and
+    # the one clock its ``D`` is launched from. For a proven input, the
+    # comb cells between the pin and the chain's first stage.
+    comb_hops: int | None = None
+    latch: tuple[str, str] | None = None
+    # Outputs with comb cells inside (``comb_hops`` > 0): the registers
+    # launching them, which a flat run names one CDC-003 each.
+    launchers: tuple[str, ...] = ()
+    # Inputs only (rtl-buddy-cdc#405): the flops whose reset this pin
+    # drives (:class:`~rtl_buddy_cdc.netlist.ResetPinFact`), so the
+    # parent's RDC-001 / RDC-003 / RDC-004 / CDC-015 can judge what drives
+    # the pin. ``async_only``:
+    # the pin reaches flops only through asynchronous controls, so it is
+    # no data capture (a flat crossing walk finds none there).
+    resets: tuple[ResetPinFact, ...] = ()
+    async_only: bool = False
+    # Inputs only: the stage a comb cell after a depth-1 first stage
+    # feeds — CDC-014's shape, which CDC-001 defers to (rtl-buddy-cdc#405).
+    inter_stage: str | None = None
+    # Outputs only: what the register driving the pin directly looks like
+    # (rtl-buddy-cdc#405) — see :class:`~rtl_buddy_cdc.netlist.DriverFacts`.
+    driver: DriverFacts | None = None
 
     @property
     def synchronised(self) -> bool:
@@ -349,6 +410,7 @@ def analyse_module(
         else:
             ports[port.name] = _output_facts(sub, port.name, ctx, domains, flop_by_name)
 
+    _attach_resets(sub, ports, ctx, domains)
     reconvergent = _reconvergent_input_ports(sub, ports, ctx, domains, flop_by_name)
 
     return ModuleAnalysis(
@@ -364,6 +426,117 @@ def analyse_module(
 
 
 # --- port facts -------------------------------------------------------------
+
+
+def _attach_resets(
+    sub: Module,
+    ports: dict[str, PortFacts],
+    ctx: _RuleContext,
+    domains: dict[str, str | None],
+) -> None:
+    """Fill :attr:`PortFacts.resets` / ``async_only`` on the input ports.
+
+    Walks back from every flop's reset pins — each asynchronous control,
+    and the synchronous reset as ``opt_dff`` folds it (the pins RDC-001 /
+    RDC-003 read) — through comb cells to the module's input ports.
+    """
+    exempt = _deasserting_reset_sync_members(ctx)
+    found: dict[str, list[ResetPinFact]] = {}
+    async_pins: dict[str, set[Bit]] = {}
+    for f in ctx.flops:
+        clock = domains.get(f.cell.name)
+        if clock is None:
+            continue
+        rd = ctx.reset_domains.get(f.cell.name)
+        reached: list[tuple[str, tuple[Bit, ...], bool, bool]] = [
+            (
+                _ASYNC_PIN_LABEL[ctl.pin.role],
+                ctl.bits,
+                ctl.source.source == "comb",
+                _live_mux_driver(sub, ctl.bits[0], ctx.bit_drivers) is not None,
+            )
+            for ctl in (rd.controls if rd is not None else ())
+            if ctl.bits
+        ]
+        async_bits = {b for pin in flop_async_controls(f.cell) for b in pin.bits}
+        srst = flop_reset_bits(f.cell, "srst") + _folded_srst_selects(
+            f, sub, ctx.bit_drivers, ctx.reader_counts
+        )
+        if srst:
+            reached.append(("SRST", srst, False, False))
+        # RDC-002's subject: the main async reset, wired from a pin.
+        direct = (
+            rd.reset.name
+            if rd is not None
+            and rd.reset is not None
+            and rd.reset.type == "async"
+            and rd.reset.source == "port"
+            else None
+        )
+        polarity = (
+            ("1" if rd.reset.polarity == "high" else "0")
+            if direct is not None and rd is not None and rd.reset is not None
+            else None
+        )
+        for label, bits, comb, mux in reached:
+            _flops, in_ports = _backward_fanin(sub, bits, ctx.bit_drivers)
+            for name in in_ports:
+                if name not in ports:
+                    continue
+                entry = ResetPinFact(
+                    label,
+                    f.cell.name,
+                    clock,
+                    exempt=f.cell.name in exempt,
+                    comb=comb,
+                    reset_sync=f.cell.name in ctx.reset_synchronizers,
+                    mux=mux,
+                    polarity=polarity if name == direct and label != "SRST" else None,
+                )
+                if entry not in found.setdefault(name, []):
+                    found[name].append(entry)
+        for b in async_bits:
+            if isinstance(b, int):
+                async_pins.setdefault(f.cell.name, set()).add(b)
+    for name, entries in found.items():
+        facts = ports[name]
+        only = facts.direction == "input" and not _reaches_capture(
+            sub, sub.ports[name].bits, ctx, async_pins
+        )
+        ports[name] = replace(
+            facts,
+            resets=tuple(sorted(entries, key=lambda e: (e.flop, e.pin))),
+            async_only=only,
+        )
+
+
+def _reaches_capture(
+    sub: Module,
+    bits: tuple[Bit, ...],
+    ctx: _RuleContext,
+    async_pins: dict[str, set[Bit]],
+) -> bool:
+    """True iff ``bits`` reach a flop on a pin other than an async control
+    (``D``, an enable, a synchronous reset): a data capture."""
+    seen: set[Bit] = set()
+    frontier: list[Bit] = [b for b in bits if isinstance(b, int)]
+    while frontier:
+        nxt: list[Bit] = []
+        for b in frontier:
+            if b in seen:
+                continue
+            seen.add(b)
+            for cell_name, pin, _idx in ctx.bit_consumers.get(b, ()):
+                cell = sub.cells[cell_name]
+                if is_ff_cell(cell.type):
+                    if b not in async_pins.get(cell_name, ()) or pin == "D":
+                        return True
+                    continue
+                for p, out in cell.connections.items():
+                    if cell.is_output_pin(p):
+                        nxt.extend(x for x in out if isinstance(x, int))
+        frontier = nxt
+    return False
 
 
 def _capture_flops(sub: Module, bits: tuple[Bit, ...], ctx: _RuleContext) -> set[str]:
@@ -394,16 +567,41 @@ def _input_facts(
     port = sub.ports[name]
     heads = _capture_flops(sub, port.bits, ctx)
     clock, ambiguous = _single_domain({domains.get(h) for h in heads})
-    depth, user = _prove_input_synchroniser(sub, name, ctx, domains, flop_by_name)
+    proof = _prove_input_synchroniser(sub, name, ctx, domains, flop_by_name)
     return PortFacts(
         port=name,
         direction=port.direction,
         width=len(port.bits),
         clock=clock,
         ambiguous=ambiguous,
-        sync_depth=depth,
-        user_synchronised=user,
+        sync_depth=proof.depth,
+        user_synchronised=proof.user,
+        chain_exit=proof.exit,
+        chain_stages=proof.stages,
+        comb_hops=proof.comb_hops,
+        inter_stage=proof.inter_stage,
     )
+
+
+@dataclass(frozen=True)
+class _InputProof:
+    """What :func:`_prove_input_synchroniser` established about one input.
+
+    ``depth`` ``None`` means the proof failed and everything else is
+    empty. ``comb_hops`` is the comb cells between the pin and the first
+    stage; ``inter_stage`` the stage a comb cell after a depth-1 first
+    stage feeds (CDC-014's shape). See :class:`PortFacts` for the rest.
+    """
+
+    depth: int | None = None
+    user: bool = False
+    exit: tuple[str, int] | None = None
+    stages: tuple[tuple[str, int], ...] = ()
+    comb_hops: int | None = None
+    inter_stage: str | None = None
+
+
+_NO_PROOF = _InputProof()
 
 
 def _prove_input_synchroniser(
@@ -412,11 +610,11 @@ def _prove_input_synchroniser(
     ctx: _RuleContext,
     domains: dict[str, str | None],
     flop_by_name: dict[str, Flop],
-) -> tuple[int | None, bool]:
+) -> _InputProof:
     """Prove (or refuse to prove) that ``name`` lands on a synchroniser.
 
-    Returns ``(chain_depth, user_tagged)``; ``(None, False)`` whenever any
-    step of the proof fails. The refusals are the ones §4.9 demands —
+    Returns the :class:`_InputProof`; an empty one whenever any step of
+    the proof fails. The refusals are the ones §4.9 demands —
     each is a way a real design defeats the "the IP synchronises it"
     claim, and every one of them falls back to the conservative
     over-reporting default:
@@ -428,6 +626,11 @@ def _prove_input_synchroniser(
     - **tie-off / unconnected** — no reader, nothing to prove.
     - **comb bypass or extra load** — more than one reader of the port
       bit means the raw, unsynchronised value is used somewhere else too.
+      The pin may reach the first stage through single-output comb cells
+      (rtl-buddy-cdc#405), each read only on the way: the chain is still
+      proven, and the cells are published as ``comb_hops`` so CDC-003 /
+      CDC-006 report them as a flat run does. The first stage's own
+      synchronous-reset mux is part of the flop, not a hop.
     - **not a flop ``D`` pin** — landing on an enable / reset pin is not
       a synchroniser first stage.
     - **feed-through** — the port bit is also an output-port bit, so the
@@ -437,25 +640,23 @@ def _prove_input_synchroniser(
     """
     port = sub.ports[name]
     if len(port.bits) != 1:
-        return None, False
+        return _NO_PROOF
     bit = port.bits[0]
     if not isinstance(bit, int):
-        return None, False
+        return _NO_PROOF
     for other in sub.ports.values():
         if other.direction in ("output", "inout") and bit in other.bits:
-            return None, False
-    readers = ctx.bit_consumers.get(bit, ())
-    if len(readers) != 1:
-        return None, False
-    cell_name, pin, _idx = readers[0]
-    if not is_ff_cell(sub.cells[cell_name].type) or pin != "D":
-        return None, False
+            return _NO_PROOF
+    found = _first_stage(sub, bit, ctx)
+    if found is None:
+        return _NO_PROOF
+    cell_name, hops = found
     head = flop_by_name[cell_name]
     if len(head.d) != 1:
-        return None, False
+        return _NO_PROOF
     clock = domains.get(cell_name)
     if clock is None:
-        return None, False
+        return _NO_PROOF
     depth = _sync_chain_depth(
         sub,
         head,
@@ -466,7 +667,93 @@ def _prove_input_synchroniser(
         bit_drivers=ctx.bit_drivers,
         srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
     )
-    return depth, cell_name in ctx.user_syncs
+    exit_, stages = _chain_shape(sub, head, clock, depth, ctx)
+    nxt = _chain_has_inter_stage_comb(head, ctx) if depth < 2 else None
+    return _InputProof(
+        depth=depth,
+        user=cell_name in ctx.user_syncs,
+        exit=exit_,
+        stages=stages,
+        comb_hops=hops,
+        inter_stage=nxt.cell.name if nxt is not None else None,
+    )
+
+
+def _first_stage(sub: Module, bit: Bit, ctx: _RuleContext) -> tuple[str, int] | None:
+    """The flop whose ``D`` the pin bit reaches, and the comb cells on the way.
+
+    Each bit on the way has exactly one reader (a module output port
+    counts as one), each cell one output bit, and no latch; the walk
+    stops at the first flop, which must take the bit on ``D`` (directly
+    or through its own synchronous-reset mux).
+    """
+    hops = 0
+    while hops <= _COMB_HOP_LIMIT:
+        if ctx.reader_counts.get(bit, 0) != 1:
+            return None
+        behind = ctx.srst_mux_data_bit_to_single_bit_flop.get(bit)
+        if behind is not None:
+            return behind.cell.name, hops
+        readers = ctx.bit_consumers.get(bit, ())
+        if len(readers) != 1:
+            return None
+        cell_name, pin, _idx = readers[0]
+        cell = sub.cells[cell_name]
+        if is_ff_cell(cell.type):
+            return (cell_name, hops) if pin == "D" else None
+        if is_latch_cell(cell.type):
+            return None
+        outs = [
+            b
+            for p, bits in cell.connections.items()
+            if cell.is_output_pin(p)
+            for b in bits
+        ]
+        if len(outs) != 1 or not isinstance(outs[0], int):
+            return None
+        bit = outs[0]
+        hops += 1
+    return None
+
+
+# ``(chain_exit, chain_stages)`` of a proven input chain.
+_ChainShape = tuple[tuple[str, int] | None, tuple[tuple[str, int], ...]]
+_NO_SHAPE: _ChainShape = (None, ())
+
+
+def _chain_shape(
+    sub: Module, head: Flop, clock: str, depth: int, ctx: _RuleContext
+) -> _ChainShape:
+    """The chain's stages and the output-port bit it ends on, if it does.
+
+    The chain's last stage must drive the port directly and have no other
+    reader, the condition :func:`_sync_chain_depth` puts on every link, so
+    the parent extends the chain exactly as a flat walk would. A packed
+    shift-register head (the whole chain in one cell) has no stages to
+    list and no exit.
+    """
+    chain = _sync_chain_flops(
+        sub,
+        head,
+        clock,
+        domains=ctx.domains,
+        reader_counts=ctx.reader_counts,
+        d_bit_to_single_bit_flop=ctx.d_bit_to_single_bit_flop,
+        srst_mux_data_bit_to_single_bit_flop=ctx.srst_mux_data_bit_to_single_bit_flop,
+    )
+    if len(chain) != depth:
+        return _NO_SHAPE
+    stages = tuple((f.cell.name, flop_clk_polarity(f.cell)) for f in chain)
+    tail = chain[-1]
+    if len(tail.q) != 1 or not isinstance(tail.q[0], int):
+        return None, stages
+    bit = tail.q[0]
+    if ctx.reader_counts.get(bit, 0) != 1 or ctx.bit_consumers.get(bit):
+        return None, stages
+    for port in sub.ports.values():
+        if port.direction == "output" and bit in port.bits:
+            return (port.name, port.bits.index(bit)), stages
+    return None, stages
 
 
 def _output_facts(
@@ -481,7 +768,13 @@ def _output_facts(
     launchers = _backward_flop_fanin(sub, port.bits, ctx.bit_drivers)
     clock, ambiguous = _single_domain({domains.get(f) for f in launchers})
     user = _prove_output_synchroniser(sub, name, ctx, domains, flop_by_name)
+    hops: int | None = None
+    latch: tuple[str, str] | None = None
+    if len(port.bits) == 1 and isinstance(port.bits[0], int):
+        hops = _launch_comb_hops(sub, port.bits[0], ctx)
+        latch = _driving_latch(sub, port.bits[0], ctx, domains)
     return PortFacts(
+        driver=_driver_facts(sub, port.bits, ctx, flop_by_name),
         port=name,
         direction=port.direction,
         width=len(port.bits),
@@ -489,7 +782,139 @@ def _output_facts(
         ambiguous=ambiguous,
         sync_depth=2 if user else None,
         user_synchronised=user,
+        comb_hops=hops,
+        latch=latch,
+        launchers=(
+            tuple(sorted(n for n in launchers if n in flop_by_name)) if hops else ()
+        ),
     )
+
+
+def _driver_facts(
+    sub: Module,
+    bits: tuple[Bit, ...],
+    ctx: _RuleContext,
+    flop_by_name: dict[str, Flop],
+) -> DriverFacts | None:
+    """:class:`DriverFacts` when one register's ``Q`` drives ``bits``
+    directly, bit for bit and whole."""
+    drvs = {ctx.bit_drivers.get(b) for b in bits}
+    names = {d[0] for d in drvs if d is not None and d[1] == "Q"}
+    if len(names) != 1 or None in drvs:
+        return None
+    (name,) = names
+    flop = flop_by_name.get(name)
+    if flop is None or tuple(flop.q) != tuple(bits):
+        return None
+    marks = frozenset(
+        mark
+        for mark, tagged in (
+            ("gray", ctx.user_grays),
+            ("static", ctx.user_statics),
+            ("handshake", ctx.user_handshakes),
+            ("sync", ctx.user_syncs),
+        )
+        if name in tagged
+    )
+    if len(bits) != 1:
+        return DriverFacts(
+            width=len(bits),
+            marks=marks,
+            gray=_is_gray_encoded_source(sub, flop, ctx.bit_drivers),
+        )
+    reset_value = _producer_async_reset_value(flop.cell)
+    if reset_value is not None and name in ctx.reset_synchronizers:
+        reset_value = None
+    toggle = False
+    d_bits = flop.cell.connections.get("D", ())
+    if len(d_bits) == 1 and name not in ctx.user_handshakes:
+        clock = ctx.domains.get(name)
+        leg = _own_srst_data_leg(
+            sub, flop, clock, ctx.domains, ctx.bit_drivers, ctx.reader_counts
+        )
+        toggle = (
+            classify_toggle_d_pin(
+                leg[0] if leg is not None else d_bits[0],
+                bits[0],
+                sub,
+                ctx.bit_drivers,
+                flop=flop.cell,
+            )
+            == "toggle"
+        )
+    pulse = len(d_bits) == 1 and (
+        classify_d_pin_shape(
+            d_bits[0], ctx.domains.get(name) or "", sub, ctx.bit_drivers, ctx.domains
+        )
+        == "pulse"
+    )
+    return DriverFacts(
+        width=1,
+        marks=marks,
+        reset_value=reset_value,
+        toggle=toggle,
+        pulse=pulse,
+        decoder=_decoder_group(sub, flop, ctx, {}),
+    )
+
+
+def _launch_comb_hops(sub: Module, bit: Bit, ctx: _RuleContext) -> int | None:
+    """Fewest combinational cells between a register ``Q`` and ``bit``.
+
+    Breadth-first backward over the drivers, one level per cell, as the
+    crossing walk counts ``min_hops``. ``None`` when no register is
+    reached, or when the nearest storage on some path is a transparent
+    latch (the crossing walk stops there; CDC-017 owns that shape).
+    """
+    frontier: list[Bit] = [bit]
+    seen: set[Bit] = set()
+    for hops in range(_COMB_HOP_LIMIT):
+        nxt: list[Bit] = []
+        for b in frontier:
+            if b in seen:
+                continue
+            seen.add(b)
+            drv = ctx.bit_drivers.get(b)
+            if drv is None:
+                continue
+            cell = sub.cells[drv[0]]
+            if is_latch_cell(cell.type):
+                return None
+            if is_ff_cell(cell.type):
+                return hops
+            for pin, bits in cell.connections.items():
+                if pin == "CLK" or cell.is_output_pin(pin):
+                    continue
+                nxt.extend(x for x in bits if isinstance(x, int))
+        if not nxt:
+            return None
+        frontier = nxt
+    return None
+
+
+# Comb levels :func:`_launch_comb_hops` looks through before giving up —
+# the crossing walk's own default depth budget.
+_COMB_HOP_LIMIT = 64
+
+
+def _driving_latch(
+    sub: Module, bit: Bit, ctx: _RuleContext, domains: dict[str, str | None]
+) -> tuple[str, str] | None:
+    """``(latch, clock)`` when a transparent latch's ``Q`` drives ``bit``
+    and the registers behind its ``D`` all launch in that one clock."""
+    drv = ctx.bit_drivers.get(bit)
+    if drv is None or not is_latch_cell(sub.cells[drv[0]].type):
+        return None
+    latch = sub.cells[drv[0]]
+    d_bits = tuple(b for b in latch.connections.get("D", ()) if isinstance(b, int))
+    clocks = {
+        domains.get(f) for f in _backward_flop_fanin(sub, d_bits, ctx.bit_drivers)
+    }
+    if len(clocks) != 1 or None in clocks:
+        return None
+    (clock,) = clocks
+    assert clock is not None
+    return latch.name, clock
 
 
 def _prove_output_synchroniser(
