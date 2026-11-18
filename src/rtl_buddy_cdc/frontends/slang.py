@@ -2401,7 +2401,20 @@ class _ModuleBuilder:
         if kind == "ExpressionStatement":
             write = self._as_assignment(statement.expr)
             if write is None:
-                self._other_statement(statement, "clocked block")
+                outs = self._call_statement_outputs(statement.expr)
+                if outs is None:
+                    self._other_statement(statement, "clocked block")
+                    return
+                # A task / void-function call: its output arguments are
+                # blocking writes of the block (rtl-buddy-cdc#405).
+                for target, bits in outs:
+                    self._emit_assignment_expression(
+                        _Assign(target, _Bits(bits, statement.expr), statement.expr),
+                        clk_sym,
+                        reset_sym,
+                        reset_active_low,
+                        src_node=src_node,
+                    )
                 return
             self._emit_assignment_expression(
                 write,
@@ -2678,11 +2691,13 @@ class _ModuleBuilder:
         return True, getattr(stmt, "defaultCase", None)
 
     def _is_plain_constant(self, label: Any) -> bool:
-        """``label`` folds to a constant with no ``x`` / ``z`` digit."""
+        """``label`` folds to a constant with no ``x`` / ``z`` / ``?``
+        digit (``_const_int`` reads those digits as 0: ``casez (2'b10)
+        2'b1?:`` would miss its arm)."""
         if self._const_int(label) is None:
             return False
-        bits = self._constant_bits(label)
-        return bits is None or all(b in ("0", "1") for b in bits)
+        bits = self._bits_of_expression(label)
+        return bits is not None and all(b in ("0", "1") for b in bits)
 
     def _case_expr_bits(self, stmt: Any) -> tuple[Bit, ...]:
         """The bits of a ``case`` statement's expression, or a reported
@@ -4835,16 +4850,25 @@ class _ModuleBuilder:
         each ``output`` / ``inout`` argument written to its actual
         (rtl-buddy-cdc#405: the statement was reported and dropped).
         ``False`` when it cannot be lowered."""
+        outs = self._call_statement_outputs(expr)
+        if outs is None:
+            return False
+        for target, bits in outs:
+            self._alias_assign(_Assign(target, _Bits(bits, expr), expr))
+        return True
+
+    def _call_statement_outputs(
+        self, expr: Any
+    ) -> list[tuple[Any, tuple[Bit, ...]]] | None:
+        """``[(output actual, its value)]`` of a task / function call
+        statement inlined by :meth:`_inline_subroutine`; ``None`` when it
+        is no such call or cannot be lowered."""
         if self._kind_name(expr) != "CallExpression" or getattr(
             expr, "isSystemCall", False
         ):
-            return False
+            return None
         inlined = self._inline_subroutine(expr, outputs=True)
-        if inlined is None:
-            return False
-        for target, bits in inlined[1]:
-            self._alias_assign(_Assign(target, _Bits(bits, expr), expr))
-        return True
+        return None if inlined is None else inlined[1]
 
     def _inline_subroutine(
         self, expr: Any, *, outputs: bool

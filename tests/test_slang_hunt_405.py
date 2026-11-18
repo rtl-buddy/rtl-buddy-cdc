@@ -782,3 +782,49 @@ def test_negated_condition_swaps_comb_mux_legs(
     assert slang[2] == {"clk_a": 2}
     if _HAVE_YOSYS:
         assert _lint_verdict(tmp_path, _NEG_COND, "yosys") == slang
+
+
+# --- a constant case expression against wildcard labels; clocked task calls ------
+
+_CONST_CASEZ = """module m (input clk, input [3:0] d, input [3:0] b, output logic [3:0] o,
+          output logic [3:0] q);
+    localparam logic [1:0] K = 2'b10;
+    always_comb casez (K)
+        2'b0?: o = d;
+        2'b1?: o = ~d;
+        default: o = 0;
+    endcase
+    task automatic t(input logic [3:0] x, output logic [3:0] y);
+        y = x ^ b;
+    endtask
+    logic [3:0] tmp;
+    always_ff @(posedge clk) begin t(d, tmp); q <= tmp; end
+endmodule
+"""
+
+
+def test_constant_casez_and_clocked_task_call(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``casez (2'b10)`` matches ``2'b1?``: the constant-case shortcut read
+    the ``?`` digits as 0, matched nothing and walked the ``default`` (``o``
+    was the constant 0, with no fan-in from ``d``). A task called in a
+    clocked block loads its output into the block (it was reported and
+    dropped, so ``q`` had no driver)."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _check(
+            tmp_path,
+            _CONST_CASEZ,
+            ("d",),
+            ("o",),
+            lambda d: {"o": ~d & 0xF},
+        )
+    assert _warnings(caplog) == []
+    (ff,) = [
+        c
+        for c in module.cells.values()
+        if c.type == "$dff" and c.connections["Q"] == module.ports["q"].bits
+    ]
+    for d in range(16):
+        for b in (0, 5, 0xA):
+            assert _next_q(module, ff, {"d": d, "b": b}) == d ^ b, (d, b)
