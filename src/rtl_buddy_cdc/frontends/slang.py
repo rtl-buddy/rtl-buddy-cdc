@@ -2525,27 +2525,16 @@ class _ModuleBuilder:
           still emit; we just lose the gating-mux shape on this
           particular case.
         """
-        case_expr = getattr(statement, "expr", None)
         items = list(getattr(statement, "items", []) or [])
         default_arm = getattr(statement, "defaultCase", None)
 
         # #84: compile-time-constant case-expr — short-circuit to the
         # matching arm. ``_const_int`` already folds parameter refs
         # and arithmetic, so ``case (MODE)`` with a parameter-bound
-        # MODE resolves cleanly.
-        case_const = self._const_int(case_expr)
-        if case_const is not None:
-            live_arm: Any = None
-            for item in items:
-                for match_expr in getattr(item, "expressions", []) or []:
-                    match_const = self._const_int(match_expr)
-                    if match_const is not None and match_const == case_const:
-                        live_arm = getattr(item, "stmt", None)
-                        break
-                if live_arm is not None:
-                    break
-            if live_arm is None:
-                live_arm = default_arm
+        # MODE resolves cleanly (only while every label up to the match
+        # is a constant too: :meth:`_constant_case_arm`).
+        folded, live_arm = self._constant_case_arm(statement)
+        if folded:
             if live_arm is not None:
                 self._emit_assignments_in(
                     live_arm, clk_sym, reset_sym, reset_active_low, src_node
@@ -2647,6 +2636,35 @@ class _ModuleBuilder:
         return tuple(
             "1" if (value >> i) & 1 else "0" for i in range(value.bit_length())
         )
+
+    def _constant_case_arm(self, stmt: Any) -> tuple[bool, Any]:
+        """``(True, arm)`` when the ``case`` is decided at elaboration time:
+        its expression is a constant and so is every label up to the first
+        one equal to it (``arm`` that item's statement, else the
+        ``default``, else ``None``). ``(False, None)`` otherwise — a label
+        that is not a constant (``case (1'b1) a[3]: ..``), a range or a
+        wildcard comes first, so the match is a run-time one
+        (rtl-buddy-cdc#405: such labels were skipped, so ``case (1'b1)``
+        walked the ``default`` alone and every arm's fan-in was lost)."""
+        case_const = self._const_int(getattr(stmt, "expr", None))
+        if case_const is None:
+            return False, None
+        for item in getattr(stmt, "items", []) or []:
+            for label in getattr(item, "expressions", []) or []:
+                if self._kind_name(label) == "RangeExpression":
+                    return False, None
+                if not self._is_plain_constant(label):
+                    return False, None
+                if self._const_int(label) == case_const:
+                    return True, getattr(item, "stmt", None)
+        return True, getattr(stmt, "defaultCase", None)
+
+    def _is_plain_constant(self, label: Any) -> bool:
+        """``label`` folds to a constant with no ``x`` / ``z`` digit."""
+        if self._const_int(label) is None:
+            return False
+        bits = self._constant_bits(label)
+        return bits is None or all(b in ("0", "1") for b in bits)
 
     def _case_expr_bits(self, stmt: Any) -> tuple[Bit, ...]:
         """The bits of a ``case`` statement's expression, or a reported
@@ -3807,7 +3825,16 @@ class _ModuleBuilder:
             if inner is None:
                 return None
             width = self._expr_width(expr) or len(inner)
-            signed = bool(getattr(getattr(operand, "type", None), "isSigned", False))
+            # Sign extension needs a signed operand *and* a signed target:
+            # slang converts a signed operand of an unsigned expression
+            # (``a + b``, ``a`` signed, ``b`` not) straight to the
+            # unsigned type, which zero-extends (IEEE 1800-2017 11.8.2),
+            # and an assignment's signed right-hand side to its own signed
+            # type first, then to the target's.
+            signed = all(
+                getattr(getattr(e, "type", None), "isSigned", False)
+                for e in (operand, expr)
+            )
             return self._resize_bits(inner, width, signed)
         return self._bits_of_expression(expr)
 
@@ -4343,9 +4370,13 @@ class _ModuleBuilder:
                 return bits
             return self._alloc_bits(expr.symbol)
         if kind == "ConversionExpression":
-            inner = getattr(expr, "operand", None)
-            if inner is not None:
-                return self._bits_of_expression(inner)
+            # A width conversion slang inserts anywhere an operand meets a
+            # wider or narrower context: zero or sign extension (a signed
+            # operand's MSB fans out to the new bits), or truncation
+            # (rtl-buddy-cdc#405: only an assignment's outermost conversion
+            # was applied, so a signed operand of ``s ? a : b`` or ``a * b``
+            # was zero-extended and the MSB's fan-in to the upper bits lost).
+            return self._sized_bits(expr)
         if kind in {"IntegerLiteral", "UnbasedUnsizedIntegerLiteral"}:
             return self._value_bits(
                 getattr(expr, "value", None), self._expr_width(expr)
@@ -4767,13 +4798,16 @@ class _ModuleBuilder:
         "BitwiseAnd": "$reduce_and",
         "BitwiseOr": "$reduce_or",
         "BitwiseXor": "$reduce_xor",
-        "BitwiseNand": "$reduce_and",  # then invert; we don't model the
-        # inversion explicitly — the rule
-        # pack doesn't read the cell name
-        # beyond category membership.
+        # ``~&`` / ``~|`` are the reduction then a ``$logic_not``, as Yosys
+        # lowers them (rtl-buddy-cdc#405: the inversion was dropped, so
+        # ``~&a`` computed ``&a``); ``~^`` is ``$reduce_xnor``.
+        "BitwiseNand": "$reduce_and",
         "BitwiseNor": "$reduce_or",
-        "BitwiseXnor": "$reduce_xor",
+        "BitwiseXnor": "$reduce_xnor",
     }
+
+    # Reductions whose result is inverted by a following ``$logic_not``.
+    _INVERTED_REDUCTIONS = frozenset({"BitwiseNand", "BitwiseNor"})
 
     def _lower_binary(self, expr: Any) -> tuple[Bit, ...] | None:
         op_name = str(expr.op).rsplit(".", 1)[-1]
@@ -4807,8 +4841,32 @@ class _ModuleBuilder:
             if value is not None and width:
                 return tuple("1" if (value >> i) & 1 else "0" for i in range(width))
         return self._emit_comb_cell(
-            cell_type, {"A": a_bits, "B": b_bits}, output_width=width, src_node=expr
+            cell_type,
+            {"A": a_bits, "B": b_bits},
+            output_width=width,
+            src_node=expr,
+            parameters=self._signedness(cell_type, expr.left, expr.right),
         )
+
+    # Cells whose ``B`` (a shift amount) is unsigned whatever its type.
+    _UNSIGNED_B_CELLS = frozenset({"$shl", "$shr", "$sshl", "$sshr"})
+
+    def _signedness(self, cell_type: str, left: Any, right: Any) -> dict[str, str]:
+        """``A_SIGNED`` / ``B_SIGNED`` of a binary cell, as Yosys sets them:
+        an operand of a signed type (slang has already converted both
+        operands of a comparison or an arithmetic operator to the common
+        type, so they agree), a shift amount never (rtl-buddy-cdc#405:
+        every cell was unsigned, so ``a < b``, ``a >>> s``, ``a / b`` of
+        signed operands computed the unsigned result)."""
+
+        def signed(e: Any) -> bool:
+            return bool(getattr(getattr(e, "type", None), "isSigned", False))
+
+        b_signed = signed(right) and cell_type not in self._UNSIGNED_B_CELLS
+        return {
+            "A_SIGNED": _param_int32(1 if signed(left) else 0),
+            "B_SIGNED": _param_int32(1 if b_signed else 0),
+        }
 
     @staticmethod
     def _wire_route_shift(
@@ -4858,9 +4916,12 @@ class _ModuleBuilder:
             output_width = 1
         else:
             output_width = self._expr_width(expr) or len(a_bits)
-        return self._emit_comb_cell(
+        y = self._emit_comb_cell(
             cell_type, {"A": a_bits}, output_width=output_width, src_node=expr
         )
+        if op_name in self._INVERTED_REDUCTIONS:
+            y = self._emit_comb_cell("$logic_not", {"A": y}, 1, src_node=expr)
+        return y
 
     def _lower_conditional(self, expr: Any) -> tuple[Bit, ...] | None:
         # pyslang ConditionalExpression has ``conditions`` (a list) and
@@ -4876,7 +4937,11 @@ class _ModuleBuilder:
         const = self._const_int(conds[0].expr) if len(conds) == 1 else None
         if const is not None:
             return self._bits_of_expression(expr.left if const else expr.right)
-        sel_bits = self._bits_of_expression(conds[0].expr)
+        # A multi-bit condition is true when non-zero: the ``$reduce_bool``
+        # Yosys emits (rtl-buddy-cdc#405: ``S`` took bit 0 alone, so the
+        # other bits' fan-in was lost).
+        sel = self._lower_condition_to_bit(conds) if len(conds) == 1 else None
+        sel_bits = None if sel is None else (sel,)
         # pyslang names the branches from source order: ``left`` is the
         # TRUE branch of ``s ? left : right``, ``right`` the FALSE one.
         true_bits = self._bits_of_expression(expr.left)
@@ -4895,7 +4960,7 @@ class _ModuleBuilder:
         # selector.
         return self._emit_comb_cell(
             cell_type="$mux",
-            inputs={"A": false_bits, "B": true_bits, "S": sel_bits[:1]},
+            inputs={"A": false_bits, "B": true_bits, "S": sel_bits},
             output_width=width,
             src_node=expr,
         )
@@ -5973,14 +6038,8 @@ class _ModuleBuilder:
         """
         items = list(getattr(stmt, "items", []) or [])
         default_arm = getattr(stmt, "defaultCase", None)
-        case_const = self._const_int(stmt.expr)
-        if case_const is not None:
-            live: Any = default_arm
-            for item in items:
-                labels = [self._const_int(e) for e in item.expressions]
-                if case_const in labels:
-                    live = getattr(item, "stmt", None)
-                    break
+        folded, live = self._constant_case_arm(stmt)
+        if folded:
             if live is not None:
                 self._walk_comb_statement(live)
             return

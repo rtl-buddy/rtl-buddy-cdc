@@ -1,0 +1,363 @@
+"""slang frontend: wrong-netlist gaps found by a systematic cross-frontend
+simulation sweep (rtl-buddy-cdc#405).
+
+Small designs were elaborated on both frontends and the two netlists
+simulated on the same random stimulus. Each section here is one gap that
+lost or invented fan-in (or computed a different function) on slang,
+checked on the slang netlist alone by simulation against the
+SystemVerilog semantics and, where yosys is on PATH, against the
+``lint`` recipe's netlist. CI's pytest job has no yosys; there the
+slang-side assertions stand alone.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import itertools
+import logging
+import shutil
+import subprocess
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from rtl_buddy_cdc import netlist
+from rtl_buddy_cdc.netlist import Bit, Cell, Module
+
+if importlib.util.find_spec("pyslang") is None:
+    pytest.skip("pyslang not installed", allow_module_level=True)
+
+from rtl_buddy_cdc.frontends import slang as slang_fe  # noqa: E402
+
+_HAVE_YOSYS = shutil.which("yosys") is not None
+_SLANG_LOG = "rtl_buddy_cdc.frontends.slang"
+
+
+def _write(tmp_path: Path, src: str, name: str) -> Path:
+    sv = tmp_path / name
+    sv.write_text(src)
+    return sv
+
+
+def _slang(tmp_path: Path, src: str) -> Module:
+    module, _ = slang_fe.elaborate_with_blackboxes([_write(tmp_path, src, "s.sv")], "m")
+    return module
+
+
+def _yosys(tmp_path: Path, src: str) -> Module:
+    """The ``lint`` recipe, from a script file: CI's yosys 0.52 splits a
+    ``-p`` script at commas."""
+    sv = _write(tmp_path, src, "y.sv")
+    out = tmp_path / "y.json"
+    script = tmp_path / "y.ys"
+    script.write_text(
+        f"read_verilog -sv {sv}\nhierarchy -top m\nproc\nflatten\n"
+        f"opt_clean\nwrite_json {out}\n"
+    )
+    subprocess.run(["yosys", "-q", "-s", str(script)], check=True)
+    return netlist.load(out)
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == _SLANG_LOG]
+
+
+# --- a combinational netlist evaluator, signed operands included -------------
+
+
+def _flag(cell: Cell, name: str) -> bool:
+    return "1" in (cell.parameters.get(name) or "0")
+
+
+def _signed(value: int, width: int, signed: bool) -> int:
+    value &= (1 << width) - 1 if width else 0
+    if signed and width and value >> (width - 1):
+        value -= 1 << width
+    return value
+
+
+def _cell_value(cell: Cell, num: Callable[[tuple[Bit, ...]], int]) -> int:
+    """``Y`` of a combinational cell by the Yosys cell semantics."""
+    c = cell.connections
+    width = len(c["Y"])
+    mask = (1 << width) - 1
+    if cell.type == "$mux":
+        return num(c["B"] if num(c["S"]) else c["A"])
+    if cell.type == "$pmux":
+        for k, s in enumerate(c["S"]):
+            if num((s,)):
+                return num(c["B"][k * width : (k + 1) * width])
+        return num(c["A"])
+    a_bits, b_bits = c.get("A", ()), c.get("B", ())
+    ua, ub = num(a_bits), num(b_bits)
+    a_signed, b_signed = _flag(cell, "A_SIGNED"), _flag(cell, "B_SIGNED")
+    a = _signed(ua, len(a_bits), a_signed)
+    b = _signed(ub, len(b_bits), b_signed)
+    if cell.type in ("$lt", "$le", "$gt", "$ge", "$eq", "$ne", "$div", "$mod"):
+        if not (a_signed and b_signed):
+            a, b = ua, ub
+    full = max(len(a_bits), len(b_bits), width)
+    ops: dict[str, Callable[[], int]] = {
+        "$not": lambda: ~a,
+        "$neg": lambda: -a,
+        "$logic_not": lambda: int(ua == 0),
+        "$and": lambda: a & b,
+        "$or": lambda: a | b,
+        "$xor": lambda: a ^ b,
+        "$xnor": lambda: ~(a ^ b),
+        "$reduce_and": lambda: int(ua == (1 << len(a_bits)) - 1),
+        "$reduce_or": lambda: int(ua != 0),
+        "$reduce_bool": lambda: int(ua != 0),
+        "$reduce_xor": lambda: bin(ua).count("1") & 1,
+        "$reduce_xnor": lambda: 1 - (bin(ua).count("1") & 1),
+        "$logic_and": lambda: int(ua != 0 and ub != 0),
+        "$logic_or": lambda: int(ua != 0 or ub != 0),
+        "$eq": lambda: int(a == b),
+        "$ne": lambda: int(a != b),
+        "$lt": lambda: int(a < b),
+        "$le": lambda: int(a <= b),
+        "$gt": lambda: int(a > b),
+        "$ge": lambda: int(a >= b),
+        "$add": lambda: a + b,
+        "$sub": lambda: a - b,
+        "$mul": lambda: a * b,
+        "$div": lambda: (
+            0 if b == 0 else int(abs(a) // abs(b)) * (1 if (a < 0) == (b < 0) else -1)
+        ),
+        "$mod": lambda: 0 if b == 0 else (abs(a) % abs(b)) * (-1 if a < 0 else 1),
+        "$shl": lambda: a << ub,
+        "$sshl": lambda: a << ub,
+        "$shr": lambda: (a & ((1 << full) - 1)) >> ub,
+        "$sshr": lambda: a >> ub,
+    }
+    return ops[cell.type]() & mask
+
+
+def _outputs(module: Module, values: dict[str, int], names: tuple[str, ...]) -> dict:
+    env: dict[Bit, int] = {}
+    for name, value in values.items():
+        for k, bit in enumerate(module.ports[name].bits):
+            env[bit] = (value >> k) & 1
+    comb = {
+        bit: (c, k)
+        for c in module.cells.values()
+        if "Y" in c.connections
+        for k, bit in enumerate(c.connections["Y"])
+    }
+    memo: dict[str, int] = {}
+
+    def get(bit: Bit) -> int:
+        if isinstance(bit, str):
+            return int(bit == "1")
+        if bit in env:
+            return env[bit]
+        if bit not in comb:
+            return 0
+        cell, lane = comb[bit]
+        if cell.name not in memo:
+            memo[cell.name] = _cell_value(cell, num)
+        return (memo[cell.name] >> lane) & 1
+
+    def num(bits: tuple[Bit, ...]) -> int:
+        return sum(get(b) << k for k, b in enumerate(bits))
+
+    return {n: num(module.ports[n].bits) for n in names}
+
+
+def _check(
+    tmp_path: Path,
+    src: str,
+    inputs: tuple[str, ...],
+    outs: tuple[str, ...],
+    model: Callable[..., dict[str, int]],
+) -> Module:
+    """Every output equals ``model`` for every input combination, on the
+    slang netlist and (when available) the Yosys one."""
+    module = _slang(tmp_path, src)
+    y_mod = _yosys(tmp_path, src) if _HAVE_YOSYS else None
+    widths = [len(module.ports[n].bits) for n in inputs]
+    for combo in itertools.product(*(range(1 << w) for w in widths)):
+        values = dict(zip(inputs, combo))
+        want = model(**values)
+        assert _outputs(module, values, outs) == want, values
+        if y_mod is not None:
+            assert _outputs(y_mod, values, outs) == want, values
+    return module
+
+
+def _sx(value: int, width: int) -> int:
+    return _signed(value, width, True)
+
+
+# --- signed operands ---------------------------------------------------------
+
+_SIGNED = """module m (input signed [3:0] a, input signed [3:0] b, input [2:0] s,
+          output [7:0] o, output [7:0] p, output [7:0] q, output lt,
+          output ltu, output [7:0] sh, output [7:0] r, output [3:0] dv,
+          output [7:0] t);
+    assign o = a * b;
+    assign p = a + $unsigned(b);
+    assign q = s[0] ? a : 4'sd1;
+    assign lt = a < b;
+    assign ltu = a < $unsigned(b);
+    assign sh = (a + 8'sd0) >>> s;
+    assign r = a;
+    assign dv = b == 0 ? 4'sd0 : a / b;
+    assign t = {a, a} + a;
+endmodule
+"""
+
+
+def _signed_model(a: int, b: int, s: int) -> dict[str, int]:
+    sa, sb = _sx(a, 4), _sx(b, 4)
+    dv = 0
+    if sb:
+        dv = abs(sa) // abs(sb) * (1 if (sa < 0) == (sb < 0) else -1)
+    return {
+        "o": (sa * sb) & 0xFF,
+        "p": (a + b) & 0xFF,
+        "q": (sa if s & 1 else 1) & 0xFF,
+        "lt": int(sa < sb),
+        "ltu": int(a < b),
+        "sh": (sa >> s) & 0xFF,
+        "r": sa & 0xFF,
+        "dv": dv & 0xF,
+        "t": (((a << 4) | a) + a) & 0xFF,
+    }
+
+
+def test_signed_operands_extend_and_compare_signed(tmp_path: Path) -> None:
+    """A signed operand widened inside an expression (``a * b`` and
+    ``s ? a : 4'sd1`` into 8 bits) is sign-extended, so its MSB fans out
+    to the upper result bits (it was zero-extended); a signed operand of an
+    unsigned expression (``a + $unsigned(b)``, ``{a, a} + a``) is
+    zero-extended; ``<``, ``>>>`` and ``/`` of signed operands are signed
+    cells. Every output matches the SystemVerilog value for every input,
+    and the Yosys netlist's."""
+    module = _check(
+        tmp_path,
+        _SIGNED,
+        ("a", "b", "s"),
+        ("o", "p", "q", "lt", "ltu", "sh", "r", "dv", "t"),
+        _signed_model,
+    )
+    # The MSB of ``a`` reaches every upper bit of ``q`` through the mux.
+    (mux,) = [
+        c
+        for c in module.cells.values()
+        if c.type == "$mux" and c.connections["Y"] == module.ports["q"].bits
+    ]
+    a3 = module.ports["a"].bits[3]
+    assert mux.connections["B"][4:] == (a3,) * 4
+
+
+# --- reduction operators ----------------------------------------------------
+
+_REDUCE = """module m (input [3:0] a, output o1, output o2, output o3, output o4,
+          output o5, output o6);
+    assign o1 = &a; assign o2 = ~&a; assign o3 = |a;
+    assign o4 = ~|a; assign o5 = ^a; assign o6 = ~^a;
+endmodule
+"""
+
+
+def test_inverted_reductions_invert(tmp_path: Path) -> None:
+    """``~&a``, ``~|a`` and ``~^a`` are the inverted reductions; they
+    computed ``&a``, ``|a`` and ``^a``."""
+
+    def model(a: int) -> dict[str, int]:
+        par = bin(a).count("1") & 1
+        return {
+            "o1": int(a == 15),
+            "o2": int(a != 15),
+            "o3": int(a != 0),
+            "o4": int(a == 0),
+            "o5": par,
+            "o6": 1 - par,
+        }
+
+    _check(tmp_path, _REDUCE, ("a",), ("o1", "o2", "o3", "o4", "o5", "o6"), model)
+
+
+# --- a vector condition --------------------------------------------------------
+
+_VEC_COND = """module m (input [3:0] c, input [1:0] a, input [1:0] b, output [1:0] o);
+    assign o = c ? a : b;
+endmodule
+"""
+
+
+def test_vector_ternary_condition_reads_every_bit(tmp_path: Path) -> None:
+    """``c ? a : b`` with a 4-bit ``c`` selects on ``c != 0`` (a
+    ``$reduce_bool``, as Yosys builds it); it selected on ``c[0]``, so
+    ``c[3:1]`` had no fan-in to ``o``."""
+    module = _check(
+        tmp_path,
+        _VEC_COND,
+        ("c", "a", "b"),
+        ("o",),
+        lambda c, a, b: {"o": a if c else b},
+    )
+    (rb,) = [x for x in module.cells.values() if x.type == "$reduce_bool"]
+    assert rb.connections["A"] == module.ports["c"].bits
+
+
+# --- case labels that are not constants ------------------------------------------
+
+_CASE_TRUE = """module m (input clk, input [3:0] a, input [3:0] d, output logic [1:0] o,
+          output logic [3:0] q);
+    always_comb case (1'b1)
+        a[3]: o = 2'd3;
+        a[2]: o = 2'd2;
+        a[1]: o = 2'd1;
+        default: o = 2'd0;
+    endcase
+    always_ff @(posedge clk) case (1'b1)
+        a[0]: q <= d;
+        a[1]: q <= ~d;
+    endcase
+endmodule
+"""
+
+
+def test_constant_case_expression_with_signal_labels(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``case (1'b1)`` with signal labels (a one-hot priority select) is
+    decided at run time, first matching label first. The constant case
+    expression made it look decided at elaboration: the non-constant
+    labels were skipped and the ``default`` walked alone, so ``o`` was
+    the constant 0 and ``q`` had no driver from ``d`` at all."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _check(
+            tmp_path,
+            _CASE_TRUE,
+            ("a",),
+            ("o",),
+            lambda a: {"o": 3 if a & 8 else 2 if a & 4 else 1 if a & 2 else 0},
+        )
+    assert _warnings(caplog) == []
+    (ff,) = [c for c in module.cells.values() if c.type == "$dff"]
+    for a in range(16):
+        for d in (0x5, 0xA):
+            values = {"a": a, "d": d}
+            # ``q`` holds unless a[0] or a[1]: the hold reads Q = 0 here.
+            want = d if a & 1 else (~d & 0xF) if a & 2 else 0
+            assert _next_q(module, ff, values) == want, values
+
+
+def _next_q(module: Module, ff: Cell, values: dict[str, int]) -> int:
+    """``ff``'s ``D`` with the inputs ``values`` and ``Q`` = 0."""
+    probe = Module(
+        name=module.name,
+        ports={
+            **module.ports,
+            "__d": netlist.Port(
+                name="__d", direction="output", bits=ff.connections["D"]
+            ),
+        },
+        cells=module.cells,
+        netnames=module.netnames,
+    )
+    return _outputs(probe, values, ("__d",))["__d"]

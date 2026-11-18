@@ -490,16 +490,17 @@ def test_arithmetic_shift_left_emits_sshl(tmp_path: Path) -> None:
         ("|", "$reduce_or"),
         ("~|", "$reduce_or"),
         ("^", "$reduce_xor"),
-        ("~^", "$reduce_xor"),
+        ("~^", "$reduce_xnor"),
     ],
 )
 def test_reduction_unary_ops_lower_and_collapse_to_one_bit(
     tmp_path: Path, op: str, expected_cell: str
 ) -> None:
     """Each reduction ``UnaryOperator`` collapses its multi-bit operand
-    to a single-bit ``$reduce_*`` cell. ``~&`` / ``~|`` / ``~^`` share a
-    cell with their non-inverting form (the rule pack only reads
-    category membership), and the Y width is exactly 1."""
+    to a single-bit ``$reduce_*`` cell, and the Y width is exactly 1.
+    ``~&`` / ``~|`` are that cell then a ``$logic_not`` and ``~^`` is a
+    ``$reduce_xnor``, as Yosys lowers them (rtl-buddy-cdc#405: the
+    inversion was dropped)."""
     src = f"""
     module m (input logic [3:0] a, output logic y);
         assign y = {op}a;
@@ -516,6 +517,12 @@ def test_reduction_unary_ops_lower_and_collapse_to_one_bit(
     assert len(reduces[0].connections["A"]) == 4, (
         f"reduction A should be the full 4-bit operand; got {reduces[0].connections['A']}"
     )
+    nots = [c for c in mod.cells.values() if c.type == "$logic_not"]
+    if op in ("~&", "~|"):
+        (inv,) = nots
+        assert inv.connections["A"] == reduces[0].connections["Y"]
+    else:
+        assert not nots
 
 
 # --- _const_int folding ---------------------------------------------------
