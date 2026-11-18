@@ -623,8 +623,9 @@ def _pin_reach(
     out_bits: set[Bit],
 ) -> tuple[bool, tuple[tuple[str, str, str], ...], set[str]]:
     """Forward from an input pin, as the flat crossing walk goes:
-    through comb cells, stopping at flops (the captures), memories and
-    output ports (counted as captures too), and transparent latches (the
+    through comb cells, stopping at flops (the captures), memories, cells
+    it cannot see into and output ports (counted as captures too), and
+    transparent latches (the
     walk ends there; CDC-017 owns the shape). A clock pin is not a
     consumer, so a clock mux select or gate enable reaches nothing.
 
@@ -663,7 +664,10 @@ def _pin_reach(
                         if dst is not None and clock is not None:
                             feeds.add((cell_name, dst.cell.name, clock))
                     continue
-                if cell.type.startswith("$mem"):
+                if cell.type.startswith("$mem") or not cell.type.startswith("$"):
+                    # A memory, or a cell the walk cannot see into (a nested
+                    # instance, a library cell): counted as a capture, so
+                    # the pin keeps its sink — the conservative reading.
                     captured = True
                     continue
                 if cell_name in expanded:
