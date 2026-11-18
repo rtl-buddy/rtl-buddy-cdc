@@ -538,6 +538,10 @@ def _summarise_single_clock(
                 latch=facts.latch if facts is not None else None,
                 driver=facts.driver if facts is not None else None,
             )
+        if facts is not None and facts.async_only:
+            # A reset pin and nothing else: no data capture to seed
+            # (rtl-buddy-cdc#405); its reset facts travel in ``reset_pins``.
+            continue
         if port.direction in ("input", "inout") and port.name not in ic.clock_pins:
             # Clock pins are excluded by the *traced* determination (FIX
             # 1), not just the name allow-list: they carry distribution
@@ -555,6 +559,8 @@ def _summarise_single_clock(
                 ),
                 chain_exit=facts.chain_exit if facts is not None else None,
                 chain_stages=facts.chain_stages if facts is not None else (),
+                comb_hops=facts.comb_hops if facts is not None else None,
+                inter_stage=facts.inter_stage if facts is not None else None,
             )
     return BoundarySummary(
         module=sub.name,
@@ -565,7 +571,17 @@ def _summarise_single_clock(
         reconvergent_inputs=(
             analysis.reconvergent_inputs if analysis is not None else frozenset()
         ),
+        reset_pins=_reset_pins(analysis),
     )
+
+
+def _reset_pins(
+    analysis: "ModuleAnalysis | None",
+) -> dict[str, tuple[tuple[str, str, str, bool], ...]]:
+    """:attr:`BoundarySummary.reset_pins` from a greybox analysis."""
+    if analysis is None:
+        return {}
+    return {name: f.resets for name, f in analysis.ports.items() if f.resets}
 
 
 def _summarise_multi_clock(
@@ -614,6 +630,8 @@ def _summarise_multi_clock(
                 driver=facts.driver,
             )
         if port.direction in ("input", "inout"):
+            if facts.async_only:
+                continue
             if facts.ambiguous:
                 return None
             if facts.clock is None:
@@ -632,6 +650,8 @@ def _summarise_multi_clock(
                 user_synchronised=facts.user_synchronised,
                 chain_exit=facts.chain_exit,
                 chain_stages=facts.chain_stages,
+                comb_hops=facts.comb_hops,
+                inter_stage=facts.inter_stage,
             )
     return BoundarySummary(
         module=sub.name,
@@ -640,6 +660,7 @@ def _summarise_multi_clock(
         input_ports=input_ports,
         internal_analysed=True,
         reconvergent_inputs=analysis.reconvergent_inputs,
+        reset_pins=_reset_pins(analysis),
     )
 
 

@@ -147,10 +147,14 @@ class PortBoundary:
     chain_stages: tuple[tuple[str, int], ...] = ()
     # rtl-buddy-cdc#405: for a single-bit output, the comb cells between
     # the launching register and the pin inside the block (``None``: no
-    # register, or a latch on the way), and the transparent latch that
+    # register, or a latch on the way; for a proven input, between the
+    # pin and the first stage), and the transparent latch that
     # drives the pin directly, with the clock its ``D`` is launched from.
     comb_hops: int | None = None
     latch: tuple[str, str] | None = None
+    # rtl-buddy-cdc#405: for a proven input, the stage a comb cell after a
+    # depth-1 first stage feeds (CDC-014's shape).
+    inter_stage: str | None = None
     # rtl-buddy-cdc#405: the register driving an output pin directly.
     driver: DriverFacts | None = None
 
@@ -201,6 +205,14 @@ class BoundarySummary:
     # when one parent-side source flop crosses into two ports of a group.
     internal_analysed: bool = False
     reconvergent_inputs: frozenset[frozenset[str]] = field(default_factory=frozenset)
+    # rtl-buddy-cdc#405: per input pin, the flops inside whose reset it
+    # drives, ``(pin label, flop, clock, reset-synchroniser stage)``, so the
+    # parent's reset rules can judge what drives the pin. A pin that
+    # reaches flops only through asynchronous controls is no data capture
+    # and gets no entry in ``input_ports``.
+    reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)

@@ -251,6 +251,18 @@ class _RuleContext:
     boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] = field(
         default_factory=dict
     )
+    # Comb cells between a sink's pin and the first stage behind it, and
+    # the stage a comb cell after a depth-1 first stage feeds (CDC-014's
+    # shape), instance-qualified (rtl-buddy-cdc#405).
+    boundary_sink_comb_hops: dict[str, int] = field(default_factory=dict)
+    boundary_inter_stage: dict[str, str] = field(default_factory=dict)
+    # Per abstracted block input pin (``"<instance>.<port>"``), the flops
+    # inside whose reset it drives: ``(pin label, instance-qualified flop,
+    # clock, reset-synchroniser stage)`` (rtl-buddy-cdc#405). RDC-001 /
+    # RDC-003 / CDC-015 read them as the flat run reads those flops.
+    boundary_reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]] = field(
+        default_factory=dict
+    )
     # Each parent bit an abstracted block's output drives, as the source
     # the parent's backward walks stop at (rtl-buddy-cdc#405).
     boundary_sources: dict[Bit, BoundarySource] = field(default_factory=dict)
@@ -398,6 +410,10 @@ def _build_context(
     boundary_chain_exits: dict[str, Bit] | None = None,
     boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] | None = None,
     boundary_sources: dict[Bit, BoundarySource] | None = None,
+    boundary_sink_comb_hops: dict[str, int] | None = None,
+    boundary_inter_stage: dict[str, str] | None = None,
+    boundary_reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]]
+    | None = None,
     max_depth: int = 16,
 ) -> _RuleContext:
     """Compute the per-``run_all`` cached views in one pass.
@@ -526,6 +542,9 @@ def _build_context(
         boundary_chain_exits=boundary_chain_exits or {},
         boundary_chain_stages=boundary_chain_stages or {},
         boundary_sources=boundary_sources or {},
+        boundary_sink_comb_hops=boundary_sink_comb_hops or {},
+        boundary_inter_stage=boundary_inter_stage or {},
+        boundary_reset_pins=boundary_reset_pins or {},
         boundary_reconvergence=boundary_reconvergence or {},
         max_depth=max_depth,
     )
@@ -1263,6 +1282,37 @@ def _boundary_source_of(c: Crossing, ctx: _RuleContext) -> BoundarySource | None
     return ctx.boundary_source_by_label.get(".".join(c.src_boundary))
 
 
+def _boundary_reset_arrivals(
+    module: Module, ctx: _RuleContext, labels: frozenset[str]
+) -> list[tuple[str, str, str, bool, dict[str, tuple[str | None, bool]]]]:
+    """Resets arriving at flops inside abstracted blocks (rtl-buddy-cdc#405).
+
+    One ``(pin label, flop, flop clock, exempt, sources)`` per entry of
+    ``ctx.boundary_reset_pins`` whose pin label is in ``labels``, with
+    ``sources`` what :func:`_backward_sources` finds behind the block's
+    input pin in the parent — the walk a flat run takes from the flop's
+    reset pin, joined at the boundary.
+    """
+    out: list[tuple[str, str, str, bool, dict[str, tuple[str | None, bool]]]] = []
+    for pin_label_full, entries in sorted(ctx.boundary_reset_pins.items()):
+        inst, _, port = pin_label_full.rpartition(".")
+        cell = module.cells.get(inst)
+        bits = cell.connections.get(port, ()) if cell is not None else ()
+        if not bits:
+            continue
+        sources: dict[str, tuple[str | None, bool]] | None = None
+        for label, flop, clock, exempt in entries:
+            if label not in labels:
+                continue
+            if sources is None:
+                sources = _backward_sources(module, tuple(bits), ctx)
+            out.append((label, flop, clock, exempt, sources))
+    return out
+
+
+_ASYNC_LABELS: frozenset[str] = frozenset({"ARST", "CLR", "SET", "ALOAD"})
+
+
 def _source_desc(name: str, is_boundary: bool) -> str:
     """``flop x`` or ``abstracted block output u.q`` for a message."""
     return f"abstracted block output {name}" if is_boundary else f"flop {name}"
@@ -1666,6 +1716,7 @@ def _joined_chain_depth(
     if (
         sink is None
         or sink in seen
+        or sink in ctx.boundary_sink_comb_hops
         or ctx.reader_counts.get(tail.q[0], 0) != 1
         or ctx.boundary_sink_clocks.get(sink) != clock
     ):
@@ -1734,6 +1785,7 @@ def _joined_chain_stages(
         sink is None
         or sink in seen
         or sink not in ctx.boundary_chain_stages
+        or sink in ctx.boundary_sink_comb_hops
         or ctx.reader_counts.get(tail.q[0], 0) != 1
         or ctx.boundary_sink_clocks.get(sink) != clock
     ):
@@ -1809,6 +1861,35 @@ def _sync_chain_flops(
         visited.add(nxt.cell.name)
         current = nxt
     return tuple(out)
+
+
+def _inter_stage_comb_name(head: Flop, ctx: _RuleContext) -> str | None:
+    """The stage a comb cell after ``head`` feeds, abstracted blocks included.
+
+    :func:`_chain_has_inter_stage_comb`, plus the two shapes a boundary
+    hides (rtl-buddy-cdc#405): ``head`` is a block's input pin whose
+    depth-1 first stage feeds a comb cell into the next stage (the block
+    publishes it), or ``head``'s ``Q`` feeds nothing but a block pin that
+    reaches its first stage through one comb cell.
+    """
+    inside = ctx.boundary_inter_stage.get(head.cell.name)
+    if inside is not None:
+        return inside
+    nxt = _chain_has_inter_stage_comb(head, ctx)
+    if nxt is not None:
+        return nxt.name
+    if not ctx.boundary_sink_comb_hops or len(head.q) != 1:
+        return None
+    sink = ctx.boundary_sink_by_bit.get(head.q[0])
+    if (
+        sink is None
+        or ctx.boundary_sink_comb_hops.get(sink) != 1
+        or ctx.reader_counts.get(head.q[0], 0) != 1
+        or ctx.boundary_sink_clocks.get(sink) != ctx.domains.get(head.cell.name)
+    ):
+        return None
+    stages = ctx.boundary_chain_stages.get(sink)
+    return stages[0][0] if stages else sink
 
 
 def _chain_has_inter_stage_comb(head: Flop, ctx: _RuleContext) -> Flop | None:
@@ -2117,7 +2198,7 @@ def check_cdc_001(
             # Defer to CDC-014 when a follow-on flop *is* present but
             # behind a comb cell — the message "no second-stage" would
             # mislead the user into adding a stage they already have.
-            if _chain_has_inter_stage_comb(c.dst_flop, ctx) is not None:
+            if _inter_stage_comb_name(c.dst_flop, ctx) is not None:
                 continue
             if flops_by_name is None:
                 flops_by_name = {f.cell.name: f for f in ctx.flops}
@@ -2269,11 +2350,11 @@ def check_cdc_003(
         # Comb cells between the launching register and an abstracted
         # block's output pin are on the path a flat walk counts
         # (rtl-buddy-cdc#405).
-        inside = 0
+        inside = ctx.boundary_sink_comb_hops.get(c.dst_flop.cell.name, 0)
         if c.src_boundary is not None:
             src = ctx.boundary_source_by_label.get(".".join(c.src_boundary))
             if src is not None and src.width == 1 and src.comb_hops:
-                inside = src.comb_hops
+                inside += src.comb_hops
         hops = c.min_hops + inside
         if hops < 1:
             continue
@@ -3397,6 +3478,7 @@ def check_cdc_006(
         (sink, None, (bit,))
         for bit, sink in sorted(ctx.boundary_sink_by_bit.items(), key=lambda kv: kv[1])
     )
+    sink_hits: dict[str, tuple[str, str, list[tuple[str, str | None]]]] = {}
     for cell_name, f, stage_d in stages:
         my_clk = (
             ctx.domains.get(cell_name)
@@ -3433,6 +3515,10 @@ def check_cdc_006(
             else None
         ) or stage_d
         comb_bits = _comb_driven_bits(module, d_bits, ctx.bit_drivers)
+        if f is None and ctx.boundary_sink_comb_hops.get(cell_name):
+            # The comb cell is inside the block, between its pin and the
+            # first stage (rtl-buddy-cdc#405).
+            comb_bits = tuple(dict.fromkeys((*comb_bits, *d_bits)))
         if not comb_bits:
             continue
         reached_bits: set[Bit] = set()
@@ -3479,25 +3565,49 @@ def check_cdc_006(
                 flagged_ports.append((label, port_clk))
         if not flagged_ports:
             continue
-        port_descs = ", ".join(
-            f"{p}" if pc is None else f"{p} (clock={pc})" for p, pc in flagged_ports
-        )
+        if f is None:
+            # Several pins of one block can feed one first stage inside
+            # it (a gate over two inputs): one finding for that stage,
+            # as the flat run gives.
+            stage = ctx.boundary_chain_stages.get(cell_name)
+            key = stage[0][0] if stage else cell_name
+            hit = sink_hits.setdefault(key, (cell_name, my_clk, []))
+            hit[2].extend(fp for fp in flagged_ports if fp not in hit[2])
+            continue
         violations.append(
-            Violation(
-                rule_id="CDC-006",
-                severity="error",
-                message=(
-                    f"glitchy combinational source on synchronizer "
-                    f"{cell_name if f is not None else 'abstracted block input ' + cell_name} "
-                    f"(clk={my_clk}): D pin is driven "
-                    f"by combinational logic with no registering flop, "
-                    f"reaching unregistered top-level port(s): "
-                    f"{port_descs}"
-                ),
-                cell_name=cell_name,
-            )
+            _cdc_006_violation(cell_name, cell_name, my_clk, flagged_ports)
         )
+    for key, (sink, my_clk, flagged_ports) in sorted(sink_hits.items()):
+        where = (
+            f"{key} (abstracted block input {sink})"
+            if key != sink
+            else (f"abstracted block input {sink}")
+        )
+        violations.append(_cdc_006_violation(where, sink, my_clk, flagged_ports))
     return violations
+
+
+def _cdc_006_violation(
+    where: str,
+    cell_name: str,
+    my_clk: str,
+    flagged_ports: list[tuple[str, str | None]],
+) -> Violation:
+    port_descs = ", ".join(
+        f"{p}" if pc is None else f"{p} (clock={pc})" for p, pc in flagged_ports
+    )
+    return Violation(
+        rule_id="CDC-006",
+        severity="error",
+        message=(
+            f"glitchy combinational source on synchronizer "
+            f"{where} (clk={my_clk}): D pin is driven "
+            f"by combinational logic with no registering flop, "
+            f"reaching unregistered top-level port(s): "
+            f"{port_descs}"
+        ),
+        cell_name=cell_name,
+    )
 
 
 def _clock_network_cells(
@@ -4111,6 +4221,20 @@ def check_rdc_001(
                     boundary_srcs.add(src_name)
                 edges[(src_name, src_clk, my_clk)].append(f.cell.name)
                 edge_pins[(src_name, src_clk, my_clk)].add(_ASYNC_PIN_LABEL[pin.role])
+    # Flops inside an abstracted block whose async reset arrives on one of
+    # its input pins (rtl-buddy-cdc#405).
+    for label, flop, my_clk, flop_exempt, sources in _boundary_reset_arrivals(
+        module, ctx, _ASYNC_LABELS
+    ):
+        if flop_exempt:
+            continue
+        for src_name, (src_clk, is_boundary) in sources.items():
+            if src_clk is None or src_clk == my_clk or not _async(my_clk, src_clk):
+                continue
+            if is_boundary:
+                boundary_srcs.add(src_name)
+            edges[(src_name, src_clk, my_clk)].append(flop)
+            edge_pins[(src_name, src_clk, my_clk)].add(label)
 
     for (src_name, src_clk, dst_clk), dst_flops in edges.items():
         pins = "/".join(sorted(edge_pins[(src_name, src_clk, dst_clk)]))
@@ -4287,6 +4411,17 @@ def check_rdc_003(
                 key = (src_name, src_clk, my_clk)
                 edges[key].append(f.cell.name)
                 via_mux[key] |= is_mux
+    # Flops inside an abstracted block whose sync reset arrives on one of
+    # its input pins (rtl-buddy-cdc#405).
+    for _label, flop, my_clk, _ex, sources in _boundary_reset_arrivals(
+        module, ctx, frozenset({"SRST"})
+    ):
+        for src_name, (src_clk, is_boundary) in sources.items():
+            if src_clk is None or src_clk == my_clk or not _async(my_clk, src_clk):
+                continue
+            if is_boundary:
+                boundary_srcs.add(src_name)
+            edges[(src_name, src_clk, my_clk)].append(flop)
 
     violations: list[Violation] = []
     for (src_name, src_clk, dst_clk), dst_flops in edges.items():
@@ -6130,7 +6265,7 @@ def check_cdc_014(
             continue
         if head.cell.name in ctx.user_handshakes:
             continue  # (* cdc_handshake *) — post-capture decode comb is datapath (#247)
-        nxt = _chain_has_inter_stage_comb(head, ctx)
+        nxt = _inter_stage_comb_name(head, ctx)
         if nxt is None:
             continue
         violations.append(
@@ -6140,7 +6275,7 @@ def check_cdc_014(
                 message=(
                     f"combinational logic between synchroniser stages on "
                     f"{c.src_clock} → {c.dst_clock}: head {head.name} "
-                    f"feeds a comb cell whose output reaches {nxt.name} "
+                    f"feeds a comb cell whose output reaches {nxt} "
                     f"(same clock domain). The gate's propagation delay "
                     f"can sample a metastable head output, destroying the "
                     f"full-cycle resolution time the chain was meant to "
@@ -6203,6 +6338,9 @@ def check_cdc_015(
         # clock named after another clock's port to the wrong clock.
         return clock_spec.are_async(a, b)
 
+    inside: (
+        list[tuple[str, str, str, bool, dict[str, tuple[str | None, bool]]]] | None
+    ) = None
     for c in crossings:
         if c.width != 1:
             continue
@@ -6211,22 +6349,32 @@ def check_cdc_015(
             continue
         if head.cell.name in ctx.user_syncs:
             continue
-        chain = _sync_chain_flops(
-            module,
-            head,
-            c.dst_clock,
-            ctx.domains,
-            ctx.reader_counts,
-            ctx.d_bit_to_single_bit_flop,
-            ctx.srst_mux_data_bit_to_single_bit_flop,
-        )
-        if len(chain) < 2:
+        # Joined across abstracted blocks (rtl-buddy-cdc#405): stages
+        # inside a block reset from one of its pins are judged on what
+        # drives the pin in the parent.
+        stages = [
+            name for name, _edge in _joined_chain_stages(module, head, c.dst_clock, ctx)
+        ]
+        if len(stages) < 2:
             continue
 
         offending: set[tuple[str, str]] = set()
         pins: set[str] = set()
-        for chain_flop in chain:
-            rd = ctx.reset_domains.get(chain_flop.cell.name)
+        if inside is None:
+            inside = _boundary_reset_arrivals(module, ctx, _ASYNC_LABELS)
+        names = set(stages)
+        for label, flop, _clk, _ex, sources in inside:
+            if flop not in names:
+                continue
+            for src_name, (src_clk, _bnd) in sources.items():
+                if src_clk is None or src_clk == c.dst_clock:
+                    continue
+                if not _async(src_clk, c.dst_clock):
+                    continue
+                offending.add((src_name, src_clk))
+                pins.add(label)
+        for name in stages:
+            rd = ctx.reset_domains.get(name)
             for ctl in rd.controls if rd is not None else ():
                 sources = _backward_sources(module, ctl.bits, ctx)
                 for src_name, (src_clk, _bnd) in sources.items():
@@ -8448,6 +8596,10 @@ def run_all(
     boundary_chain_exits: dict[str, Bit] | None = None,
     boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] | None = None,
     boundary_sources: dict[Bit, BoundarySource] | None = None,
+    boundary_sink_comb_hops: dict[str, int] | None = None,
+    boundary_inter_stage: dict[str, str] | None = None,
+    boundary_reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]]
+    | None = None,
     max_depth: int = 16,
     sync_primitives: frozenset[str] = frozenset(),
     ignore_scan_mode: bool = False,
@@ -8487,6 +8639,9 @@ def run_all(
         boundary_chain_exits=boundary_chain_exits,
         boundary_chain_stages=boundary_chain_stages,
         boundary_sources=boundary_sources,
+        boundary_sink_comb_hops=boundary_sink_comb_hops,
+        boundary_inter_stage=boundary_inter_stage,
+        boundary_reset_pins=boundary_reset_pins,
         max_depth=max_depth,
     )
     out: list[Violation] = []
@@ -8619,7 +8774,7 @@ def crossing_synchronizer(
         depth = _effective_sync_chain_depth(module, c.dst_flop, c.dst_clock, ctx)
         if depth < 2:
             if (
-                _chain_has_inter_stage_comb(c.dst_flop, ctx) is None
+                _inter_stage_comb_name(c.dst_flop, ctx) is None
                 and _single_bit_handshake_capture(module, c, ctx) == "handshake"
             ):
                 return "handshake"

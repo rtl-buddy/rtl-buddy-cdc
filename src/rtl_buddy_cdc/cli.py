@@ -1175,10 +1175,18 @@ def _analyze_module_and_report(
         boundary_sink_clocks: dict[str, str | None] = {}
         boundary_chain_exits: dict[str, netlist.Bit] = {}
         boundary_chain_stages: dict[str, tuple[tuple[str, int], ...]] = {}
+        boundary_sink_comb_hops: dict[str, int] = {}
+        boundary_inter_stage: dict[str, str] = {}
+        boundary_reset_pins: dict[str, tuple[tuple[str, str, str, bool], ...]] = {}
         boundary_sources: dict[netlist.Bit, BoundarySource] = {}
         for inst_name, summary in boundaries.items():
             if summary.reconvergent_inputs:
                 boundary_reconvergence[inst_name] = summary.reconvergent_inputs
+            for port_name, entries in summary.reset_pins.items():
+                boundary_reset_pins[f"{inst_name}.{port_name}"] = tuple(
+                    (label, f"{inst_name}.{flop}", clock, exempt)
+                    for label, flop, clock, exempt in entries
+                )
             # The output pins, as the sources the parent's backward walks
             # stop at (rtl-buddy-cdc#405).
             for port_name, pb in summary.ports.items():
@@ -1201,6 +1209,10 @@ def _analyze_module_and_report(
                     boundary_sink_clocks[sink] = (
                         pb.src_clock if pb.src_clock is not None else summary.clock
                     )
+                    if pb.comb_hops:
+                        boundary_sink_comb_hops[sink] = pb.comb_hops
+                    if pb.inter_stage is not None:
+                        boundary_inter_stage[sink] = f"{inst_name}.{pb.inter_stage}"
                     if pb.chain_stages:
                         boundary_chain_stages[sink] = tuple(
                             (f"{inst_name}.{name}", edge)
@@ -1246,6 +1258,9 @@ def _analyze_module_and_report(
             "boundary_chain_exits": boundary_chain_exits,
             "boundary_chain_stages": boundary_chain_stages,
             "boundary_sources": boundary_sources,
+            "boundary_sink_comb_hops": boundary_sink_comb_hops,
+            "boundary_inter_stage": boundary_inter_stage,
+            "boundary_reset_pins": boundary_reset_pins,
             "max_depth": clock_trace_depth,
         }
         if not no_findings:
