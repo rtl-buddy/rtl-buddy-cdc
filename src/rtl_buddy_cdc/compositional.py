@@ -65,7 +65,7 @@ from rtl_buddy_cdc.flops import (
     is_latch_cell,
 )
 from rtl_buddy_cdc.netlist import Bit, DriverFacts, Module, ResetPinFact
-from rtl_buddy_cdc.pulse import classify_toggle_d_pin
+from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.rules import (
     Violation,
     _backward_flop_fanin,
@@ -73,6 +73,7 @@ from rtl_buddy_cdc.rules import (
     _backward_fanin,
     _build_context,
     _chain_has_inter_stage_comb,
+    _decoder_group,
     _deasserting_reset_sync_members,
     _folded_srst_selects,
     _live_mux_driver,
@@ -463,6 +464,20 @@ def _attach_resets(
         )
         if srst:
             reached.append(("SRST", srst, False, False))
+        # RDC-002's subject: the main async reset, wired from a pin.
+        direct = (
+            rd.reset.name
+            if rd is not None
+            and rd.reset is not None
+            and rd.reset.type == "async"
+            and rd.reset.source == "port"
+            else None
+        )
+        polarity = (
+            ("1" if rd.reset.polarity == "high" else "0")
+            if direct is not None and rd is not None and rd.reset is not None
+            else None
+        )
         for label, bits, comb, mux in reached:
             _flops, in_ports = _backward_fanin(sub, bits, ctx.bit_drivers)
             for name in in_ports:
@@ -476,6 +491,7 @@ def _attach_resets(
                     comb=comb,
                     reset_sync=f.cell.name in ctx.reset_synchronizers,
                     mux=mux,
+                    polarity=polarity if name == direct and label != "SRST" else None,
                 )
                 if entry not in found.setdefault(name, []):
                     found[name].append(entry)
@@ -796,6 +812,7 @@ def _driver_facts(
             ("gray", ctx.user_grays),
             ("static", ctx.user_statics),
             ("handshake", ctx.user_handshakes),
+            ("sync", ctx.user_syncs),
         )
         if name in tagged
     )
@@ -825,7 +842,20 @@ def _driver_facts(
             )
             == "toggle"
         )
-    return DriverFacts(width=1, marks=marks, reset_value=reset_value, toggle=toggle)
+    pulse = len(d_bits) == 1 and (
+        classify_d_pin_shape(
+            d_bits[0], ctx.domains.get(name) or "", sub, ctx.bit_drivers, ctx.domains
+        )
+        == "pulse"
+    )
+    return DriverFacts(
+        width=1,
+        marks=marks,
+        reset_value=reset_value,
+        toggle=toggle,
+        pulse=pulse,
+        decoder=_decoder_group(sub, flop, ctx, {}),
+    )
 
 
 def _launch_comb_hops(sub: Module, bit: Bit, ctx: _RuleContext) -> int | None:

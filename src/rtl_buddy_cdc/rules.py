@@ -5097,6 +5097,23 @@ def check_rdc_002(
                 f.cell.name
             )
 
+    # A flop inside an abstracted block whose async reset is wired from
+    # one of its pins, the pin driven straight from a register in the
+    # parent (rtl-buddy-cdc#405).
+    for fact, bit, _sources in _boundary_reset_arrivals(module, ctx, _ASYNC_LABELS):
+        if fact.polarity is None or fact.reset_sync:
+            continue
+        drv = ctx.bit_drivers.get(bit)
+        producer = module.cells.get(drv[0]) if drv is not None else None
+        if drv is None or producer is None or drv[1] != "Q":
+            continue
+        if producer.name in recognised_syncs:
+            continue
+        value = _producer_async_reset_value(producer)
+        if value is None or value == fact.polarity:
+            continue
+        groups[(producer.name, value, fact.polarity)].append(fact.flop)
+
     violations: list[Violation] = []
     for (producer_name, prod_val, cons_pol), consumers in groups.items():
         dsts = sorted(set(consumers))
@@ -5668,7 +5685,14 @@ def check_cdc_009(
     for c in crossings:
         if c.src_clock == UNCONSTRAINED_SENTINEL:
             continue
-        if c.src_flop is None or c.width != 1:
+        if c.width != 1:
+            continue
+        # A pulse register behind an abstracted block's output pin: the
+        # greybox body classified it (rtl-buddy-cdc#405).
+        bsrc = _boundary_source_of(c, ctx) if c.src_flop is None else None
+        if c.src_flop is None and (
+            bsrc is None or bsrc.driver is None or not bsrc.driver.pulse
+        ):
             continue
         src_clk = clock_spec.clocks.get(c.src_clock)
         dst_clk = clock_spec.clocks.get(c.dst_clock)
@@ -5676,20 +5700,22 @@ def check_cdc_009(
             continue
         if src_clk.period * PULSE_FACTOR >= dst_clk.period:
             continue
-        d_bits = c.src_flop.cell.connections.get("D", ())
-        if len(d_bits) != 1:
-            continue
-        shape = classify_d_pin_shape(
-            d_bits[0], c.src_clock, module, ctx.bit_drivers, ctx.domains
-        )
-        if shape != "pulse":
-            continue
+        if c.src_flop is not None:
+            d_bits = c.src_flop.cell.connections.get("D", ())
+            if len(d_bits) != 1:
+                continue
+            shape = classify_d_pin_shape(
+                d_bits[0], c.src_clock, module, ctx.bit_drivers, ctx.domains
+            )
+            if shape != "pulse":
+                continue
         out.append(
             Violation(
                 rule_id="CDC-009",
                 severity="warning",
                 message=(
-                    f"pulse-width risk on {c.src_flop.name!r} → "
+                    f"pulse-width risk on "
+                    f"{c.src_flop.name if c.src_flop is not None else c.src_name!r} → "
                     f"{c.dst_flop.name!r}: src clock {c.src_clock!r} "
                     f"(period {src_clk.period}) is faster than dst "
                     f"clock {c.dst_clock!r} (period {dst_clk.period}); "
@@ -5698,7 +5724,13 @@ def check_cdc_009(
                     f"or req/ack handshake."
                 ),
                 crossing=c,
-                cell_name=c.src_flop.cell.name,
+                cell_name=(
+                    c.src_flop.cell.name
+                    if c.src_flop is not None
+                    else c.src_boundary[0]
+                    if c.src_boundary is not None
+                    else None
+                ),
             )
         )
     return out
@@ -6879,56 +6911,39 @@ def check_cdc_019(
     # multiple crossings to the same dst clock.
     groups: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
     suppressed_groups: set[tuple[str, str]] = set()
-    vector_of: dict[Bit, str] | None = None  # built on first gate-level lane
-
-    rom_drivers: dict[Bit, str] | None = None
+    memo: dict[str, dict[Bit, str]] = {}
+    # Lane label -> anchoring cell, for a lane behind an abstracted
+    # block's output pin (rtl-buddy-cdc#405): the register is in the block.
+    boundary_lanes: dict[str, str] = {}
 
     for crossing in crossings:
         if crossing.src_flop is None:
+            # A register behind an abstracted block's output pin, whose
+            # decoder the greybox body named.
+            bsrc = _boundary_source_of(crossing, ctx)
+            reg = bsrc.driver if bsrc is not None else None
+            if bsrc is None or reg is None or reg.decoder is None:
+                continue
+            assert crossing.src_boundary is not None
+            inst = crossing.src_boundary[0]
+            group = reg.decoder
+            if group.startswith(_NET_GROUP_PREFIX):
+                group = f"{_NET_GROUP_PREFIX}{inst}.{group[len(_NET_GROUP_PREFIX) :]}"
+            else:
+                group = f"{inst}.{group}"
+            key = (group, crossing.dst_clock)
+            if reg.marks & {"gray", "static", "sync"}:
+                suppressed_groups.add(key)
+                continue
+            boundary_lanes[bsrc.label] = inst
+            groups[key][bsrc.label] = crossing.dst_flop.cell.name
             continue
         src_flop = crossing.src_flop
         src_name = src_flop.cell.name
-        src_d = src_flop.d
-        if len(src_d) != 1 or not isinstance(src_d[0], int):
-            continue  # multi-bit source is CDC-004's domain
-        drv = ctx.bit_drivers.get(src_d[0])
-        if drv is None:
-            # A full ``case`` decoder the yosys frontend lowered to a ROM
-            # drives the lanes from an async ``$memrd`` ``DATA`` port.
-            if rom_drivers is None:
-                rom_drivers = _async_rom_read_drivers(module)
-            rom_cell = rom_drivers.get(src_d[0])
-            if rom_cell is None:
-                continue
-            drv = (rom_cell, "DATA", 0)
-        drv_cell_name, drv_port, _drv_idx = drv
-        if drv_port not in ("Y", "DATA"):
-            continue  # only true comb-cell outputs count
-        drv_cell = module.cells.get(drv_cell_name)
-        if drv_cell is None:
+        group_of = _decoder_group(module, src_flop, ctx, memo)
+        if group_of is None:
             continue
-        if is_ff_cell(drv_cell.type):
-            continue
-        # Decoder shape requires the driver cell to have ≥2 output bits
-        # — a WIDTH=1 gate fanning out to multiple flops is just normal
-        # fan-out, not a one-hot decode.
-        y_bits = drv_cell.connections.get(drv_port, ())
-        int_y_bits = [b for b in y_bits if isinstance(b, int)]
-        group = drv_cell_name
-        if len(int_y_bits) < 2:
-            # Gate level (rtl-buddy-cdc#337): ``techmap`` / ``abc`` split
-            # the decoder into one gate per lane, but its output vector
-            # survives as a multi-bit netname (``one_hot``). Lanes whose
-            # one-bit gate drives a bit of the same vector share it.
-            if not drv_cell.type.startswith("$_"):
-                continue
-            if vector_of is None:
-                vector_of = _bit_vector_names(module)
-            vec = vector_of.get(src_d[0])
-            if vec is None:
-                continue
-            group = f"{_NET_GROUP_PREFIX}{vec}"
-        key = (group, crossing.dst_clock)
+        key = (group_of, crossing.dst_clock)
         # Suppression: any participating src flop tagged by the user.
         if (
             src_name in ctx.user_grays
@@ -6967,10 +6982,59 @@ def check_cdc_019(
                     f"one-hot), or gate the destination sample behind a "
                     f"req/ack handshake."
                 ),
-                cell_name=src_names[0],
+                cell_name=boundary_lanes.get(src_names[0], src_names[0]),
             )
         )
     return violations
+
+
+def _decoder_group(
+    module: Module, src_flop: Flop, ctx: _RuleContext, memo: dict[str, dict[Bit, str]]
+) -> str | None:
+    """The shared combinational driver CDC-019 groups ``src_flop`` under.
+
+    A comb cell with two or more output bits drives the flop's 1-bit
+    ``D`` (or, from the yosys frontend, an async ROM read lowered from a
+    full ``case`` decoder); at gate level, the multi-bit netname the
+    lane's one-bit gate drives a bit of (``_NET_GROUP_PREFIX`` + name).
+    ``None`` when the flop is no decoder lane. ``memo`` caches the two
+    module-wide indexes across calls.
+    """
+    src_d = src_flop.d
+    if len(src_d) != 1 or not isinstance(src_d[0], int):
+        return None  # multi-bit source is CDC-004's domain
+    drv = ctx.bit_drivers.get(src_d[0])
+    if drv is None:
+        # A full ``case`` decoder the yosys frontend lowered to a ROM
+        # drives the lanes from an async ``$memrd`` ``DATA`` port.
+        if "rom" not in memo:
+            memo["rom"] = _async_rom_read_drivers(module)
+        rom_cell = memo["rom"].get(src_d[0])
+        if rom_cell is None:
+            return None
+        drv = (rom_cell, "DATA", 0)
+    drv_cell_name, drv_port, _drv_idx = drv
+    if drv_port not in ("Y", "DATA"):
+        return None  # only true comb-cell outputs count
+    drv_cell = module.cells.get(drv_cell_name)
+    if drv_cell is None or is_ff_cell(drv_cell.type):
+        return None
+    # Decoder shape requires the driver cell to have ≥2 output bits
+    # — a WIDTH=1 gate fanning out to multiple flops is just normal
+    # fan-out, not a one-hot decode.
+    y_bits = drv_cell.connections.get(drv_port, ())
+    if len([b for b in y_bits if isinstance(b, int)]) >= 2:
+        return drv_cell_name
+    # Gate level (rtl-buddy-cdc#337): ``techmap`` / ``abc`` split
+    # the decoder into one gate per lane, but its output vector
+    # survives as a multi-bit netname (``one_hot``). Lanes whose
+    # one-bit gate drives a bit of the same vector share it.
+    if not drv_cell.type.startswith("$_"):
+        return None
+    if "vec" not in memo:
+        memo["vec"] = _bit_vector_names(module)
+    vec = memo["vec"].get(src_d[0])
+    return None if vec is None else f"{_NET_GROUP_PREFIX}{vec}"
 
 
 def check_cdc_020(
@@ -7058,8 +7122,8 @@ def check_cdc_020(
             continue  # not sliced — single dst recombines it natively
         if src_name in boundary_regs:
             reg, inst = boundary_regs[src_name]
-            if reg.marks:
-                continue  # gray / static / handshake, as for a flop below
+            if reg.marks & {"gray", "static", "handshake"}:
+                continue  # as for a flop below
             if reg.gray and any(
                 _is_multibit_sync_first_stage(
                     module, dst, dst_clock, ctx.domains, ctx.flops_by_d, ctx=ctx

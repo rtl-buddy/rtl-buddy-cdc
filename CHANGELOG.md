@@ -422,11 +422,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     gate before or between the first stages (CDC-003 / CDC-006 /
     CDC-014 — the greybox reported CDC-001, or nothing for a gate over
     top-level ports in front of a block), opposite-edge stages (CDC-016,
-    was silent), the flops a reset pin drives (RDC-001 / RDC-003 /
-    RDC-004 / CDC-015 — a foreign reset into a block was a spurious
-    CDC-001, or silent), and the register or latch behind an output
-    (CDC-003 one per register, CDC-017, CDC-013, CDC-020, RDC-002 — all
-    silent; a gray-coded register no longer fires CDC-004). Every
+    was silent), the flops a reset pin drives (RDC-001 / RDC-002 /
+    RDC-003 / RDC-004 / CDC-015 — a foreign reset into a block was a
+    spurious CDC-001, or silent), and the register or latch behind an
+    output (CDC-003 one per register, CDC-009, CDC-013, CDC-017, CDC-019,
+    CDC-020, RDC-002 — all silent; a gray-coded register no longer fires
+    CDC-004). Every
     summarised output, stub included, is a source in its launch clock
     for RDC-001 / RDC-003 / CDC-015 (a reset launched inside a block was
     silent), CDC-005, CDC-018 and CDC-024. RDC-005 moves from the

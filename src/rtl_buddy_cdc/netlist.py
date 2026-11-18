@@ -89,13 +89,17 @@ class DriverFacts:
     - ``width`` — the register's width; a pin carrying a whole register
       of two or more bits that the parent slices into per-bit crossings
       is CDC-020's shape.
-    - ``marks`` — which of ``gray`` / ``static`` / ``handshake`` the user
-      tagged it with (``cdc_gray`` / ``cdc_static`` / ``cdc_handshake``);
+    - ``marks`` — which of ``gray`` / ``static`` / ``handshake`` / ``sync``
+      the user tagged it with (``cdc_gray`` / ``cdc_static`` /
+      ``cdc_handshake`` / ``cdc_sync``);
       ``gray`` — it is structurally gray-encoded.
     - ``reset_value`` — a single-bit register's async-reset value
       (RDC-002), ``None`` when it has none or is a reset synchroniser.
     - ``toggle`` — a single-bit register whose ``D`` is the
-      toggle-with-enable shape (CDC-013), not handshake-tagged.
+      toggle-with-enable shape (CDC-013), not handshake-tagged; ``pulse``
+      — one whose ``D`` is a one-cycle pulse (CDC-009).
+    - ``decoder`` — the shared combinational driver (a one-hot decoder)
+      a single-bit register is a lane of, as CDC-019 groups lanes.
     """
 
     width: int
@@ -103,6 +107,8 @@ class DriverFacts:
     gray: bool = False
     reset_value: str | None = None
     toggle: bool = False
+    pulse: bool = False
+    decoder: str | None = None
 
 
 @dataclass(frozen=True)
@@ -118,7 +124,10 @@ class ResetPinFact:
     reset-synchroniser stage (RDC-004 skips those), and ``comb`` whether a
     combinational gate sits between the block's pin and the flop's reset
     (RDC-004's shape) and ``mux`` whether that gate is a mux selecting
-    between live signals (RDC-005's exemption).
+    between live signals (RDC-005's exemption). ``polarity`` is the
+    flop's async-reset assertion level (``"1"`` / ``"0"``) when the pin
+    is wired straight to it, the case RDC-002 compares with the
+    producer's reset value; ``None`` otherwise.
     """
 
     pin: str
@@ -128,6 +137,7 @@ class ResetPinFact:
     comb: bool = False
     reset_sync: bool = False
     mux: bool = False
+    polarity: str | None = None
 
 
 @dataclass(frozen=True)

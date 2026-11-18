@@ -240,6 +240,115 @@ def test_deep_chain_behind_a_block_output_is_cdc018(tmp_path: Path) -> None:
 # body, so it knows only the pins: what it reports is pinned here too.
 _AUDIT = [
     pytest.param(
+        # CDC-009: a fast pulse register feeds a slow block's 2FF
+        """\
+module m (input clk, input p, output q);
+  logic s1, s2; always_ff @(posedge clk) begin s1 <= p; s2 <= s1; end assign q = s2;
+endmodule
+module top (input fast, input slow, input go, output q);
+  logic g1, g2, pulse; always_ff @(posedge fast) begin g1 <= go; g2 <= g1; pulse <= g1 & ~g2; end
+  m u (.clk(slow), .p(pulse), .q(q));
+endmodule
+""",
+        "create_clock -name fast -period 2 [get_ports fast]\ncreate_clock -name slow -period 20 [get_ports slow]\nset_clock_groups -asynchronous -group {fast} -group {slow}\nset_input_delay -clock fast 1 [get_ports go]\n",
+        {"CDC-009": 1},
+        {"CDC-009": 1},
+        {"CDC-001": 1, "CDC-009": 1},
+        id="in_009",
+    ),
+    pytest.param(
+        # CDC-009: a fast pulse register inside the block drives its output
+        """\
+module m (input clk, input go, output logic pulse);
+  logic g1, g2; always_ff @(posedge clk) begin g1 <= go; g2 <= g1; pulse <= g1 & ~g2; end
+endmodule
+module top (input fast, input slow, input go, output logic q);
+  logic o, s1; m u (.clk(fast), .go(go), .pulse(o));
+  always_ff @(posedge slow) begin s1 <= o; q <= s1; end
+endmodule
+""",
+        "create_clock -name fast -period 2 [get_ports fast]\ncreate_clock -name slow -period 20 [get_ports slow]\nset_clock_groups -asynchronous -group {fast} -group {slow}\nset_input_delay -clock fast 1 [get_ports go]\n",
+        {"CDC-009": 1},
+        {"CDC-009": 1},
+        {},
+        id="out_009",
+    ),
+    pytest.param(
+        # CDC-019: one-hot decoded registers feed four block 2FFs
+        """\
+module m (input clk, input a, input b, input c, input e, output [3:0] q);
+  logic a1, a2, b1, b2, c1, c2, e1, e2;
+  always_ff @(posedge clk) begin a1 <= a; a2 <= a1; b1 <= b; b2 <= b1; c1 <= c; c2 <= c1; e1 <= e; e2 <= e1; end
+  assign q = {e2, c2, b2, a2};
+endmodule
+module top (input fast, input slow, input [1:0] sel, output [3:0] q);
+  logic [3:0] one_hot; always_comb begin one_hot = '0; one_hot[sel] = 1'b1; end
+  logic d0, d1, d2, d3; always_ff @(posedge fast) begin d0 <= one_hot[0]; d1 <= one_hot[1]; d2 <= one_hot[2]; d3 <= one_hot[3]; end
+  m u (.clk(slow), .a(d0), .b(d1), .c(d2), .e(d3), .q(q));
+endmodule
+""",
+        "create_clock -name fast -period 2 [get_ports fast]\ncreate_clock -name slow -period 20 [get_ports slow]\nset_clock_groups -asynchronous -group {fast} -group {slow}\nset_input_delay -clock fast 1 [get_ports sel]\n",
+        {"CDC-019": 1},
+        {"CDC-019": 1},
+        {"CDC-BBX": 1},
+        id="in_019b",
+    ),
+    pytest.param(
+        # CDC-019: one-hot decoded registers inside the block drive four outputs
+        """\
+module m (input clk, input [1:0] sel, output logic d0, output logic d1, output logic d2, output logic d3);
+  logic [3:0] one_hot; always_comb begin one_hot = '0; one_hot[sel] = 1'b1; end
+  always_ff @(posedge clk) begin d0 <= one_hot[0]; d1 <= one_hot[1]; d2 <= one_hot[2]; d3 <= one_hot[3]; end
+endmodule
+module top (input fast, input slow, input [1:0] sel, output [3:0] q);
+  logic d0, d1, d2, d3; m u (.clk(fast), .sel(sel), .d0(d0), .d1(d1), .d2(d2), .d3(d3));
+  logic d0_m, d0_s, d1_m, d1_s, d2_m, d2_s, d3_m, d3_s;
+  always_ff @(posedge slow) begin d0_m <= d0; d0_s <= d0_m; d1_m <= d1; d1_s <= d1_m; d2_m <= d2; d2_s <= d2_m; d3_m <= d3; d3_s <= d3_m; end
+  assign q = {d3_s, d2_s, d1_s, d0_s};
+endmodule
+""",
+        "create_clock -name fast -period 2 [get_ports fast]\ncreate_clock -name slow -period 20 [get_ports slow]\nset_clock_groups -asynchronous -group {fast} -group {slow}\nset_input_delay -clock fast 1 [get_ports sel]\n",
+        {"CDC-019": 1},
+        {"CDC-019": 1},
+        {},
+        id="out_019",
+    ),
+    pytest.param(
+        # RDC-002: a parent register's reset value mismatches a block flop
+        """\
+module m (input clk, input rst_n, input a, output logic q);
+  always_ff @(posedge clk or negedge rst_n) if (!rst_n) q <= 0; else q <= a;
+endmodule
+module top (input fast, input slow, input d, input r, input a, output q);
+  logic rp; always_ff @(posedge fast or posedge r) if (r) rp <= 1; else rp <= d;
+  m u (.clk(fast), .rst_n(rp), .a(a), .q(q));
+endmodule
+""",
+        "create_clock -name fast -period 4 [get_ports fast]\ncreate_clock -name slow -period 9 [get_ports slow]\nset_clock_groups -asynchronous -group {fast} -group {slow}\nset_input_delay -clock fast 1 [get_ports {d r a}]",
+        {"RDC-002": 1},
+        {"RDC-002": 1},
+        {},
+        id="in_rdc002",
+    ),
+    pytest.param(
+        # RDC-007: a backwards reset synchroniser wholly inside the block
+        """\
+module m (input clk, input rst_n, input a, output logic q);
+  logic s1, s2;
+  always_ff @(posedge clk or negedge rst_n) if (!rst_n) begin s1 <= 0; s2 <= 0; end else begin s1 <= 1'b0; s2 <= s1; end
+  always_ff @(posedge clk or negedge s2) if (!s2) q <= 0; else q <= a;
+endmodule
+module top (input fast, input slow, input r, input a, output q);
+  m u (.clk(fast), .rst_n(r), .a(a), .q(q));
+endmodule
+""",
+        "create_clock -name fast -period 4 [get_ports fast]\ncreate_clock -name slow -period 9 [get_ports slow]\nset_clock_groups -asynchronous -group {fast} -group {slow}\nset_input_delay -clock fast 1 [get_ports {r a}]",
+        {"RDC-007": 1},
+        {"RDC-007": 1},
+        {},
+        id="int_rdc007",
+    ),
+    pytest.param(
         # CDC-006: a gate over two top-level ports in front of a block's 2FF
         """\
 module m (input clk, input a, output q);

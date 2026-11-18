@@ -182,9 +182,9 @@ own internals, and lifts what it finds:
   flops the boundary hides are published and checked in the parent: a
   gate before or between the first stages (CDC-003 / CDC-006 / CDC-014),
   opposite-edge stages (CDC-016), the flops a reset pin drives (RDC-001 /
-  RDC-003 / RDC-004 / RDC-005 / CDC-015), and the register or latch
-  behind an output (CDC-003 / CDC-004 gray / CDC-013 / CDC-017 / CDC-020 /
-  RDC-002). Every summarised output, stub or greybox, is a source in its
+  RDC-002 / RDC-003 / RDC-004 / RDC-005 / CDC-015), and the register or
+  latch behind an output (CDC-003 / CDC-004 gray / CDC-009 / CDC-013 /
+  CDC-017 / CDC-019 / CDC-020 / RDC-002). Every summarised output, stub or greybox, is a source in its
   launch clock for the reset rules, CDC-005, CDC-018 and CDC-024.
 
 The proof bar is deliberately one-sided: `synchronised` is the only lever

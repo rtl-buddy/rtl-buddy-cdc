@@ -1166,7 +1166,8 @@ the parent's rule reach the verdict the flat run reaches
 - **Reset pins (inputs).** Per input pin, the flops inside whose reset
   (`ARST` / `CLR` / `SET` / `ALOAD` / folded `SRST`) it drives
   (`netlist.ResetPinFact`: the flop's clock, whether it is a reset
-  synchroniser, whether a gate or a live mux sits between). RDC-001 /
+  synchroniser, whether a gate or a live mux sits between, its assertion
+  level when the pin is wired straight to it). RDC-001 / RDC-002 /
   RDC-003 / CDC-015 / RDC-004 / RDC-005 judge what drives the pin in
   the parent as the flat rules judge what drives the flop's reset. A pin
   that reaches flops only through asynchronous controls is no data
@@ -1175,9 +1176,10 @@ the parent's rule reach the verdict the flat run reaches
   between the launching registers and the pin and their names (CDC-003,
   one finding per register), and the transparent latch driving it
   (CDC-017); for an output one register drives whole, that register's
-  width, gray encoding and `cdc_gray` / `cdc_static` / `cdc_handshake`
-  tags (CDC-004 / CDC-020), single-bit async reset value (RDC-002) and
-  toggle shape (CDC-013). The parent reads these through
+  width, gray encoding and `cdc_gray` / `cdc_static` / `cdc_handshake` /
+  `cdc_sync` tags (CDC-004 / CDC-020), and for a single-bit one its async
+  reset value (RDC-002), toggle or pulse shape (CDC-013 / CDC-009) and
+  the one-hot decoder it is a lane of (CDC-019). The parent reads these through
   `rules.BoundarySource`, the source its backward walks stop at: every
   summarised output pin, stub or greybox, carries its launch clock, so
   RDC-001 / RDC-003 / CDC-015 / CDC-024 / CDC-005 / CDC-018 treat a block
