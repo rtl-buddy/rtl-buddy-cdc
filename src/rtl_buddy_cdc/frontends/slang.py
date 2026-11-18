@@ -101,8 +101,13 @@ What currently works
 - In clocked blocks a blocking write's value reaches the later reads of
   the same block; each register is one flop per contiguous run of the
   bits the block writes, as ``proc`` groups them (rtl-buddy-cdc#377).
-- User-defined function calls are inlined; ``for`` loops (SV and
-  Verilog-2001 forms) are unrolled in every block; ``n++`` and compound
+- Hierarchical references (rtl-buddy-cdc#405): a dotted name into a
+  generate block, a child instance or upward reads and writes its
+  target's bits when the target is in an inlined instance
+  (:meth:`_ModuleBuilder._is_named`).
+- User-defined function and task calls are inlined; ``for`` /
+  ``repeat`` / ``foreach`` loops (SV and Verilog-2001 forms) are
+  unrolled in every block; ``n++`` and compound
   assignments are writes; ``casez`` / ``casex`` labels compare their
   non-wildcard bits; parameters, enum values and ``x`` / ``z`` literals
   are constants; gate primitives lower to ``$and`` / ``$or`` / ``$xor``
@@ -162,9 +167,9 @@ What currently works
   and continuous writes to part of a variable splice into its other bits
   (:meth:`_splice_assign`). Every assignment's RHS is sized to its target.
 - An assignment target this frontend cannot lower — a streaming
-  concatenation, a run-time index outside the memory-write and
-  ``$shl``-decoder shapes, an unpacked-struct member, a hierarchical
-  reference — is reported once per location with a ``WARNING`` (see
+  concatenation with a ``with`` range, a run-time index outside the
+  memory-write and ``$shl``-decoder shapes, an unpacked-struct member, a
+  hierarchical reference into a blackbox — is reported once per location with a ``WARNING`` (see
   :meth:`_ModuleBuilder._warn_lvalue_dropped`), never dropped silently.
 - A right-hand side, condition or statement the frontend cannot lower
   is reported with a ``WARNING`` and modelled as an opaque ``$_UNKNOWN_``
@@ -189,9 +194,12 @@ What currently works
 
 What is NOT yet implemented (next slices)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- ``while`` / ``repeat`` / ``foreach`` loops, task calls, functions
-  with an early ``return`` or an ``output`` argument, tristate gates,
-  switches and user-defined primitives: reported, not lowered.
+- ``while`` / ``do … while`` loops, ``break`` / ``continue`` in a
+  clocked loop, a function with an ``output`` argument called in an
+  expression, tristate gates, switches and user-defined primitives:
+  reported, not lowered. (``repeat`` / ``foreach`` loops, an early
+  ``return``, combinational ``break`` / ``continue`` and task / ``void``
+  function calls are lowered since rtl-buddy-cdc#405.)
 - (was: ``CLK_POLARITY = "0"`` for negedge-clocked flops — landed
   in rtl-buddy-cdc#221 to close the CDC-016 cross-frontend parity
   gap. ``_analyse_event_list`` now reports the clock edge alongside
