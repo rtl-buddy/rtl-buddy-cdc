@@ -7892,25 +7892,56 @@ class _ModuleBuilder:
             return False
         start, size, data, mask = write
         net = self._blocking_nets.get(sym) or self._alloc_bits(sym)
+        # Written earlier in the block: its pending value is not ``Q``.
+        rewritten = sym in self._proc_regs
         self._proc_regs.setdefault(sym, net)
         blocking = not getattr(expr, "isNonBlocking", False)
         for base, cond in words:
             lane = base + start
             current = self._var_bits.get(sym, net)
             old = tuple(current[lane : lane + size])
-            value = self._masked_update(old, data, mask, lhs)
+            if mask is None or blocking or not rewritten:
+                value = self._masked_update(old, data, mask, lhs)
+                writes: list[Any] = [(sym, lane, value)]
+            else:
+                # A nonblocking write reads the register, not what an
+                # earlier write in the block loads into it: each bit is
+                # written only where the run-time position selects it
+                # (rtl-buddy-cdc#408: ``y <= x; y[k] <= b;`` loaded the
+                # register's own value into every other bit of ``y``).
+                writes = self._lane_writes(sym, lane, data, mask())
+                value = data
             if cond is None:
-                self._proc_case.items.append((sym, lane, value))
+                self._proc_case.items.extend(writes)
                 if blocking:
                     self._forward_blocking_write(sym, net, lane, value)
                 continue
             case = _ProcCase()
-            case.items.append((sym, lane, value))
+            case.items.extend(writes)
             self._proc_case.items.append(_ProcSwitch([(cond, case)]))
             if blocking:
                 held = self._build_hold_mux(cond, old, value)
                 self._forward_blocking_write(sym, net, lane, held)
         return True
+
+    @staticmethod
+    def _lane_writes(
+        sym: Any, lane: int, data: tuple[Bit, ...], mask: tuple[Bit, ...]
+    ) -> list[Any]:
+        """One write of each bit ``lane + j`` of ``sym`` that ``mask[j]``
+        selects, its value ``data[j]``: a decision-tree switch on the mask
+        bit (a plain write where it is constant 1)."""
+        writes: list[Any] = []
+        for j, (bit, sel) in enumerate(zip(data, mask)):
+            if sel == "0":
+                continue
+            if sel == "1":
+                writes.append((sym, lane + j, (bit,)))
+                continue
+            case = _ProcCase()
+            case.items.append((sym, lane + j, (bit,)))
+            writes.append(_ProcSwitch([(sel, case)]))
+        return writes
 
     def _position_bits(
         self,
