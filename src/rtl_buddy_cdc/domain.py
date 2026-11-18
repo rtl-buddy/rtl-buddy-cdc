@@ -992,16 +992,15 @@ def _trace(
                     )
                     for b, r in legs
                 ]
-                clock_legs = [
+                clock_legs: list[tuple[Bit, str]] = [
                     (b, r)
                     for b, r in direct
                     if r is not None and clock_identity(r) is not None
                 ]
                 if len({clock_identity(r) for _, r in clock_legs}) == 1:
-                    picked = clock_legs[0][1]
                     clock_bits = {b for b, _ in clock_legs}
                     _record_control(tuple(b for b, _ in legs if b not in clock_bits))
-                    return picked
+                    return clock_legs[0][1]
         picked = _pick_combining_root(roots, clock_identity, _record)
         if picked is not None:
             # Every leg that is NOT the clock the cell resolved to is,

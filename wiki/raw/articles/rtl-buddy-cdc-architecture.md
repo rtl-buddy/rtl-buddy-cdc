@@ -1182,8 +1182,31 @@ the parent's rule reach the verdict the flat run reaches
   the one-hot decoder it is a lane of (CDC-019). The parent reads these through
   `rules.BoundarySource`, the source its backward walks stop at: every
   summarised output pin, stub or greybox, carries its launch clock, so
-  RDC-001 / RDC-003 / CDC-015 / CDC-024 / CDC-005 / CDC-018 treat a block
-  output as the register behind it.
+  RDC-001 / RDC-003 / CDC-015 / CDC-024 / CDC-025 / CDC-005 / CDC-018
+  treat a block output as the register behind it.
+- **Payload hold (outputs, CDC-012; rtl-buddy-cdc#408).** For an output
+  one multi-bit register drives whole, where CDC-012's acknowledge walk
+  goes from that register's load / hold control inside the block
+  (`DriverFacts.hold_domains` / `hold_pins`, from `rules._ack_walk` run
+  exhaustively): the clock domains of the registers it reaches, and the
+  input pins it leaves through. The parent (`rules._cdc_012_boundary`)
+  finds an acknowledge when the destination clock is among those
+  domains or when its own walk from the parent nets on those pins
+  reaches a destination register — the flat walk, split at the pin. A
+  stub publishes nothing about the payload, so the parent walks from
+  every non-clock input pin of the instance: an acknowledge entering the
+  stub anywhere counts as holding it. That can miss a stub that takes an
+  acknowledge and still lets its payload run (the stub's limit); it
+  never reports where the flat run finds an acknowledge.
+- **Feed-through (outputs, CDC-024 / CDC-025; rtl-buddy-cdc#408).** The
+  input pins with a combinational path to each output
+  (`PortFacts.feedthrough`, carried to the parent as the parent nets on
+  those pins in `BoundarySource.feedthrough`). The output-cone walk
+  (`rules._output_cone` / `_reached_output_bits`) continues through the
+  block there, so a register in another clock reaching a top-level
+  output through a block's gate is a launch of that output, as flat. A
+  stub publishes no feed-through: its outputs are one launch each, in
+  the block's clock.
 
 - **Per-port `sync_depth` / `synchronised` (inputs).** For a *width-1*
   input port, the proof requires: the port bit has **exactly one** reader,
@@ -1288,10 +1311,12 @@ CDC-012 — an over-report), a clock mux / gate inside the block whose
 select arrives on a pin (CDC-001 at the pin instead of CDC-010), a latch
 or a memory between a pin and the first stage (CDC-001 / CDC-004 instead
 of CDC-017 / CDC-026), a block output that carries a clock pin
-combinationally (CDC-001 instead of CDC-008), a source register's data
-hold behind a block output (CDC-012), and an asynchronous merge that
-reaches a top-level output through a block's combinational feed-through
-(CDC-025).
+combinationally (CDC-001 instead of CDC-008). Under `--blackbox` only
+(rtl-buddy-cdc#408): an asynchronous merge that reaches a top-level
+output through a stub's combinational feed-through is not seen (CDC-025
+/ CDC-024 — the stub's output is one launch in its clock), and a stub's
+payload counts as held when any acknowledge from the destination enters
+the stub (CDC-012).
 
 ### 4.10 Recognised CDC primitives (issue #275)
 

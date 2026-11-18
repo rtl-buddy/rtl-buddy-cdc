@@ -123,6 +123,9 @@ class BoundarySource:
     latch: tuple[str, str] | None = None
     driver: DriverFacts | None = None
     launchers: tuple[str, ...] = ()  # instance-qualified
+    # The parent bits feeding the block's input pins that reach this
+    # output combinationally (rtl-buddy-cdc#408).
+    feedthrough: tuple[Bit, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -4089,8 +4092,7 @@ def check_cdc_010(
                 control_ports = frozenset(
                     port
                     for port, bits in cell.connections.items()
-                    if not cell.is_output_pin(port)
-                    and any(b in traced for b in bits)
+                    if not cell.is_output_pin(port) and any(b in traced for b in bits)
                 )
         if not control_ports:
             continue
@@ -6193,10 +6195,60 @@ def _has_dst_to_src_feedback(
     src_flop = crossing.src_flop
     if src_flop is None:
         return False
-    src_clock = crossing.src_clock
-    dst_clock = crossing.dst_clock
+    control = _hold_control_bits(src_flop, module, bit_drivers)
+    if not control:
+        return False
+    return (
+        crossing.dst_clock
+        in _ack_walk(
+            module,
+            control,
+            crossing.src_clock,
+            domains,
+            bit_drivers,
+            flops_by_name,
+            stop_at=crossing.dst_clock,
+            seen={src_flop.cell.name},
+            max_flop_hops=max_flop_hops,
+            max_relay_hops=max_relay_hops,
+            excluded=excluded,
+            fanin_cache=fanin_cache,
+        )[0]
+    )
+
+
+def _ack_walk(
+    module: Module,
+    control: tuple[Bit, ...],
+    src_clock: str | None,
+    domains: dict[str, str | None],
+    bit_drivers: dict[Bit, tuple[str, str, int]],
+    flops_by_name: dict[str, Flop],
+    *,
+    stop_at: str | None = None,
+    seen: set[str] | None = None,
+    max_flop_hops: int = 6,
+    max_relay_hops: int = 6,
+    excluded: frozenset[str] = frozenset(),
+    fanin_cache: dict[str, set[str]] | None = None,
+) -> tuple[set[str], set[Bit]]:
+    """The acknowledge walk of :func:`_has_dst_to_src_feedback`, from a
+    payload register's hold-control bits ``control``.
+
+    Returns ``(domains, undriven)``: the clock domains of the registers
+    the walk reached, and the bits it stopped at for want of a driver
+    (ports, abstracted blocks' pins). With ``stop_at`` it returns as
+    soon as a register of that domain is reached (the flat check: is
+    there an acknowledge from the destination?); without it the walk is
+    exhaustive within its budgets — what a greybox publishes for an
+    output register whose destination only the parent knows
+    (rtl-buddy-cdc#408).
+    """
     if fanin_cache is None:
         fanin_cache = {}
+    seen = set() if seen is None else seen
+    reached: set[str] = set()
+    undriven: set[Bit] = set()
 
     def fanin_of(f: Flop) -> set[str]:
         hit = fanin_cache.get(f.cell.name)
@@ -6206,9 +6258,6 @@ def _has_dst_to_src_feedback(
             fanin_cache[f.cell.name] = hit
         return hit
 
-    control = _hold_control_bits(src_flop, module, bit_drivers)
-    first = _backward_flop_fanin(module, control, bit_drivers) if control else set()
-    seen: set[str] = {src_flop.cell.name}
     # (register, source-domain hops, relay hops) on the path to it.
     frontier: list[tuple[Flop, int, int]] = []
 
@@ -6220,7 +6269,8 @@ def _has_dst_to_src_feedback(
             ff_domain = domains.get(ff_name)
             if ff_domain is None:
                 continue
-            if ff_domain == dst_clock:
+            reached.add(ff_domain)
+            if ff_domain == stop_at:
                 return True
             ff = flops_by_name.get(ff_name)
             if ff is None:
@@ -6231,8 +6281,9 @@ def _has_dst_to_src_feedback(
                 frontier.append((ff, src_hops, relay_hops + 1))
         return False
 
+    first = _backward_flop_fanin(module, control, bit_drivers, undriven=undriven)
     if visit(first, 0, 0):
-        return True
+        return reached, undriven
     while frontier:
         level, frontier = frontier, []
         for f, src_hops, relay_hops in level:
@@ -6240,9 +6291,13 @@ def _has_dst_to_src_feedback(
                 continue
             if relay_hops >= max_relay_hops:
                 continue
+            bits = _flop_functional_fanin_bits(f)
+            if stop_at is None and bits:
+                # Exhaustive mode also needs the pins behind each register.
+                _backward_flop_fanin(module, bits, bit_drivers, undriven=undriven)
             if visit(fanin_of(f), src_hops, relay_hops):
-                return True
-    return False
+                return reached, undriven
+    return reached, undriven
 
 
 def _ack_walk_excluded(ctx: _RuleContext) -> frozenset[str]:
@@ -6326,7 +6381,14 @@ def check_cdc_012(
     for c in crossings:
         if c.src_clock == UNCONSTRAINED_SENTINEL:
             continue
-        if c.src_flop is None or c.width <= 1:
+        if c.width <= 1:
+            continue
+        if c.src_flop is None:
+            # A register behind an abstracted block's output pin
+            # (rtl-buddy-cdc#408): judged off the pin's published facts.
+            v = _cdc_012_boundary(module, c, ctx, flops_by_name, fanin_cache)
+            if v is not None:
+                out.append(v)
             continue
         if not _is_gated_bus_crossing(
             module, c, ctx.domains, ctx.bit_drivers, ctx.reader_counts
@@ -6372,30 +6434,104 @@ def check_cdc_012(
             )
         if feedback_cache[key]:
             continue
-        out.append(
-            Violation(
-                rule_id="CDC-012",
-                severity="warning",
-                message=(
-                    f"functional data-hold risk on {c.src_flop.name!r} "
-                    f"→ {c.dst_flop.name!r}: {c.width}-bit gated bus "
-                    f"crossing from {c.src_clock!r} to {c.dst_clock!r} "
-                    f"has no synced-back handshake between the two "
-                    f"domains. The destination's enable is "
-                    f"synchronised, but nothing keeps the source "
-                    f"payload stable while the enable is in flight — "
-                    f"a payload change between request and capture "
-                    f"silently corrupts the latched value. Add a "
-                    f"req/ack handshake: hold the source payload "
-                    f"until an ack from the destination "
-                    f"(synchronised back through a 2FF chain) "
-                    f"confirms the sample."
-                ),
-                crossing=c,
-                cell_name=c.src_flop.cell.name,
-            )
-        )
+        out.append(_cdc_012_violation(c, c.src_flop.name, c.src_flop.cell.name))
     return out
+
+
+def _cdc_012_violation(c: Crossing, src: str, cell_name: str) -> Violation:
+    return Violation(
+        rule_id="CDC-012",
+        severity="warning",
+        message=(
+            f"functional data-hold risk on {src!r} "
+            f"→ {c.dst_flop.name!r}: {c.width}-bit gated bus "
+            f"crossing from {c.src_clock!r} to {c.dst_clock!r} "
+            f"has no synced-back handshake between the two "
+            f"domains. The destination's enable is "
+            f"synchronised, but nothing keeps the source "
+            f"payload stable while the enable is in flight — "
+            f"a payload change between request and capture "
+            f"silently corrupts the latched value. Add a "
+            f"req/ack handshake: hold the source payload "
+            f"until an ack from the destination "
+            f"(synchronised back through a 2FF chain) "
+            f"confirms the sample."
+        ),
+        crossing=c,
+        cell_name=cell_name,
+    )
+
+
+def _cdc_012_boundary(
+    module: Module,
+    c: Crossing,
+    ctx: _RuleContext,
+    flops_by_name: dict[str, Flop],
+    fanin_cache: dict[str, set[str]],
+) -> Violation | None:
+    """CDC-012 for a crossing launched from an abstracted block's output
+    pin (rtl-buddy-cdc#408) — the flat check, with the payload register
+    behind the pin read off :class:`BoundarySource`.
+
+    A greybox publishes, for an output one multi-bit register drives
+    whole, the register's gray / tag marks and where its load / hold
+    control's acknowledge walk goes inside the block
+    (:attr:`DriverFacts.hold_domains` / ``hold_pins``): there is an
+    acknowledge when the destination clock is among the domains reached
+    inside, or when the parent's walk from the pins the inside walk
+    leaves through reaches a destination register. A stub (or an output
+    no single register drives) publishes nothing about the payload, so
+    the parent's walk starts from every non-clock input pin of the
+    instance: an acknowledge entering the block anywhere is taken as
+    holding the payload. That can miss a stub that takes an acknowledge
+    and still lets the payload run; it never fires where the flat run
+    finds an acknowledge.
+    """
+    bsrc = _boundary_source_of(c, ctx)
+    if bsrc is None or c.src_boundary is None:
+        return None
+    if not _is_gated_bus_crossing(
+        module, c, ctx.domains, ctx.bit_drivers, ctx.reader_counts
+    ):
+        return None
+    if c.dst_flop.cell.name in ctx.user_handshakes:
+        return None
+    drv = bsrc.driver
+    if drv is not None and (drv.gray or drv.marks & {"gray", "handshake"}):
+        return None
+    inst = c.src_boundary[0]
+    cell = module.cells.get(inst)
+    if cell is None:
+        return None
+    if drv is not None and drv.width > 1:
+        if c.dst_clock in drv.hold_domains:
+            return None
+        pins: Iterable[str] = drv.hold_pins
+    else:
+        clock_pins = ctx.boundary_clock_pins.get(inst, frozenset())
+        pins = sorted(
+            p
+            for p in cell.connections
+            if not cell.is_output_pin(p) and p not in clock_pins
+        )
+    bits = tuple(
+        b for p in pins for b in cell.connections.get(p, ()) if isinstance(b, int)
+    )
+    if bits:
+        reached, _ = _ack_walk(
+            module,
+            bits,
+            c.src_clock,
+            ctx.domains,
+            ctx.bit_drivers,
+            flops_by_name,
+            stop_at=c.dst_clock,
+            excluded=_ack_walk_excluded(ctx),
+            fanin_cache=fanin_cache,
+        )
+        if c.dst_clock in reached:
+            return None
+    return _cdc_012_violation(c, c.src_name, inst)
 
 
 def check_cdc_014(
@@ -7662,6 +7798,7 @@ def _output_cone(
     drivers: dict[Bit, tuple[str, str, int]],
     input_bit_port: dict[Bit, str],
     max_depth: int = _CDC_024_CONE_DEPTH,
+    through: Mapping[Bit, tuple[Bit, ...]] | None = None,
 ) -> tuple[set[str], set[str], set[Bit]]:
     """Backward combinational cone of a top-level output (CDC-024).
 
@@ -7677,6 +7814,12 @@ def _output_cone(
     ``input_bit_port`` is a prebuilt bit→input-port index: ``Module.port_of_bit``
     is a linear scan over every port, which this walk must not repeat
     per undriven bit.
+
+    ``through`` maps an abstracted block's output bit to the parent bits
+    feeding the block's input pins that reach it combinationally
+    (:attr:`BoundarySource.feedthrough`, rtl-buddy-cdc#408): the walk
+    carries on through the block there, as it would through the
+    flattened comb cells.
     """
     q_cells: set[str] = set()
     ports: set[str] = set()
@@ -7695,6 +7838,8 @@ def _output_cone(
                 port = input_bit_port.get(bit)
                 if port is not None:
                     ports.add(port)
+                elif through and depth < max_depth:
+                    nxt.extend(through.get(bit, ()))
                 continue
             cell_name, pin, _idx = drv
             if pin == "Q":
@@ -7718,6 +7863,7 @@ def _reached_output_bits(
     cone: set[Bit],
     consumers: dict[Bit, tuple[tuple[str, str, int], ...]],
     port_bit_index: dict[Bit, list[int]],
+    through_fwd: Mapping[Bit, tuple[Bit, ...]] | None = None,
 ) -> set[int]:
     """Indices of the output port's bits that ``seeds`` reach (CDC-024).
 
@@ -7728,6 +7874,9 @@ def _reached_output_bits(
     upper half is launched from another domain reports those bits, not
     the whole bus. A cell whose every output is reachable from any input
     (an adder, a mux select) is expanded once, not once per input bit.
+    ``through_fwd`` is the forward view of :func:`_output_cone`'s
+    ``through``: a parent bit feeding an abstracted block's input pin,
+    mapped to the block's output bits it reaches.
     """
     reached: set[int] = set()
     seen: set[Bit] = set()
@@ -7740,6 +7889,12 @@ def _reached_output_bits(
                 continue
             seen.add(bit)
             reached.update(port_bit_index.get(bit, ()))
+            if through_fwd:
+                nxt.extend(
+                    ob
+                    for ob in through_fwd.get(bit, ())
+                    if ob in cone and ob not in seen
+                )
             for cell_name, pin, idx in consumers.get(bit, ()):
                 cell = module.cells[cell_name]
                 if cell.type == "$scopeinfo" or is_ff_cell(cell.type):
@@ -7794,6 +7949,17 @@ class _OutputLaunchIndex:
                     if isinstance(b, int):
                         self.input_bit_port.setdefault(b, p.name)
         self.flop_by_name: dict[str, Flop] = {f.cell.name: f for f in ctx.flops}
+        # Combinational paths through abstracted blocks (rtl-buddy-cdc#408).
+        self.through: dict[Bit, tuple[Bit, ...]] = {}
+        fwd: dict[Bit, list[Bit]] = defaultdict(list)
+        for b, src in ctx.boundary_sources.items():
+            if src.feedthrough:
+                self.through[b] = src.feedthrough
+                for fb in src.feedthrough:
+                    fwd[fb].append(b)
+        self.through_fwd: dict[Bit, tuple[Bit, ...]] = {
+            b: tuple(v) for b, v in fwd.items()
+        }
         self._cones: dict[
             tuple[str, tuple[int, ...] | None], tuple[set[str], set[str], set[Bit]]
         ] = {}
@@ -7818,6 +7984,7 @@ class _OutputLaunchIndex:
                 bits,
                 self.ctx.bit_drivers,
                 self.input_bit_port,
+                through=self.through,
             )
             self._cones[key] = hit
         return hit
@@ -8014,7 +8181,7 @@ def check_cdc_024(
             if isinstance(b, int) and (positions is None or i in positions):
                 port_bit_index[b].append(i)
         reached = _reached_output_bits(
-            module, seeds, cone, ctx.bit_consumers, port_bit_index
+            module, seeds, cone, ctx.bit_consumers, port_bit_index, idx.through_fwd
         )
         width = len(port.bits)
         bits_desc = (
@@ -8213,7 +8380,12 @@ def check_cdc_025(
             port.bits if positions is None else tuple(port.bits[i] for i in positions)
         )
         q_cells, in_ports, cone = idx.cone(port.name, positions)
-        if not q_cells or in_ports & clock_ports:
+        bnd_bits = (
+            sorted(b for b in cone if b in ctx.boundary_sources)
+            if ctx.boundary_sources
+            else []
+        )
+        if (not q_cells and not bnd_bits) or in_ports & clock_ports:
             continue
         by_domain: dict[str, list[str]] = defaultdict(list)
         seeds: dict[str, list[Bit]] = defaultdict(list)
@@ -8233,6 +8405,19 @@ def check_cdc_025(
             launch = idx.canonical(dom)
             by_domain[launch].append(f"flop `{name}`")
             seeds[launch].extend(b for b in f.q if isinstance(b, int))
+        # An abstracted block's output pin launches in the clock the block
+        # drives it in, as the register behind it would flat (CDC-024's
+        # reading; rtl-buddy-cdc#408).
+        named: set[str] = set()
+        for b in bnd_bits:
+            src = ctx.boundary_sources[b]
+            if src.clock is None or src.clock == UNCONSTRAINED_SENTINEL:
+                continue
+            launch = idx.canonical(src.clock)
+            if src.label not in named:
+                named.add(src.label)
+                by_domain[launch].append(f"abstracted block output `{src.label}`")
+            seeds[launch].append(b)
         if not by_domain:
             continue  # no register with a resolved domain launches it
         for typed, in_label, in_seeds in idx.input_launchers(in_ports, cone):
@@ -8259,7 +8444,12 @@ def check_cdc_025(
 
         def reach(dom_seeds: list[Bit]) -> set[int]:
             return _reached_output_bits(
-                module, dom_seeds, cone, ctx.bit_consumers, port_bit_index
+                module,
+                dom_seeds,
+                cone,
+                ctx.bit_consumers,
+                port_bit_index,
+                idx.through_fwd,
             )
 
         merged: set[int] = set()
@@ -8284,11 +8474,18 @@ def check_cdc_025(
         )
         anchor: str | None = None
         if shown_bits:
-            drv = ctx.bit_drivers.get(port.bits[min(shown_bits)])
+            first_bit = port.bits[min(shown_bits)]
+            drv = ctx.bit_drivers.get(first_bit)
             if drv is not None:
                 anchor = drv[0]
+            elif first_bit in ctx.boundary_sources:
+                anchor = ctx.boundary_sources[first_bit].label.rpartition(".")[0]
         if anchor is None:
-            anchor = min(q_cells)
+            anchor = (
+                min(q_cells)
+                if q_cells
+                else ctx.boundary_sources[bnd_bits[0]].label.rpartition(".")[0]
+            )
 
         if merged:
             launch_desc = _describe_launchers({d: by_domain[d] for d in merged_domains})

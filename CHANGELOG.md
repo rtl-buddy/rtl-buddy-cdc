@@ -421,6 +421,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bad_clock_gating_async_enable` reports CDC-010 (error) instead of
   CDC-023, and its gated flop resolves to `clk_a`.
 
+- **CDC-012 and CDC-025 across abstracted block boundaries**
+  (rtl-buddy-cdc#408, items 2, 3).
+  - **CDC-012 behind a block output.** A gated bus captured from an
+    abstracted block's output reported nothing under `--greybox` or
+    `--blackbox` where the flat run reports CDC-012: the rule needed a
+    source flop. A greybox now publishes where the payload register's
+    hold control leads inside the block (the clock domains and input
+    pins its acknowledge walk reaches), and the parent completes the
+    walk from those pins. A stub's payload counts as held when an
+    acknowledge from the destination enters it on any pin.
+  - **CDC-025 / CDC-024 through a block's combinational feed-through.**
+    The summary dropped input→output connectivity, so an asynchronous
+    merge reaching a top-level output through a block gate was lost, and
+    CDC-025 ignored launches from abstracted block outputs altogether.
+    A greybox output now carries the input pins that reach it
+    combinationally and the output-cone walk continues through them;
+    CDC-025 counts a block output as a launch in its clock, as CDC-024
+    already did. A stub shows no feed-through (documented).
+
 - **Abstracted runs agree with the flat run on the data-path and reset
   rules** (rtl-buddy-cdc#405, items 1, 3, 4).
   - **CDC-018 under `--greybox`.** The per-module pass proved the depth

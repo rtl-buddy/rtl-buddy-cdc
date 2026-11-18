@@ -49,6 +49,7 @@ either over-reporting or *proven*:
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import Iterable
 
 from rtl_buddy_cdc.domain import (
     DepthCut,
@@ -67,6 +68,9 @@ from rtl_buddy_cdc.flops import (
 from rtl_buddy_cdc.netlist import Bit, DriverFacts, Module, ResetPinFact
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.rules import (
+    _ack_walk,
+    _ack_walk_excluded,
+    _hold_control_bits,
     Violation,
     _backward_flop_fanin,
     _ASYNC_PIN_LABEL,
@@ -201,6 +205,10 @@ class PortFacts:
     # Outputs only: what the register driving the pin directly looks like
     # (rtl-buddy-cdc#405) — see :class:`~rtl_buddy_cdc.netlist.DriverFacts`.
     driver: DriverFacts | None = None
+    # Outputs only: the input pins with a combinational path to the pin
+    # (rtl-buddy-cdc#408), so the parent's output-cone walk carries on
+    # through the block as a flat walk does.
+    feedthrough: tuple[str, ...] = ()
 
     @property
     def synchronised(self) -> bool:
@@ -408,7 +416,9 @@ def analyse_module(
         if port.direction in ("input", "inout"):
             ports[port.name] = _input_facts(sub, port.name, ctx, domains, flop_by_name)
         else:
-            ports[port.name] = _output_facts(sub, port.name, ctx, domains, flop_by_name)
+            ports[port.name] = _output_facts(
+                sub, port.name, ctx, domains, flop_by_name, clock_pin_roots
+            )
 
     _attach_resets(sub, ports, ctx, domains)
     reconvergent = _reconvergent_input_ports(sub, ports, ctx, domains, flop_by_name)
@@ -762,10 +772,12 @@ def _output_facts(
     ctx: _RuleContext,
     domains: dict[str, str | None],
     flop_by_name: dict[str, Flop],
+    clock_pins: Iterable[str] = (),
 ) -> PortFacts:
     """Launch domain + synchroniser proof for one output port."""
     port = sub.ports[name]
-    launchers = _backward_flop_fanin(sub, port.bits, ctx.bit_drivers)
+    undriven: set[Bit] = set()
+    launchers = _backward_flop_fanin(sub, port.bits, ctx.bit_drivers, undriven=undriven)
     clock, ambiguous = _single_domain({domains.get(f) for f in launchers})
     user = _prove_output_synchroniser(sub, name, ctx, domains, flop_by_name)
     hops: int | None = None
@@ -786,6 +798,15 @@ def _output_facts(
         latch=latch,
         launchers=(
             tuple(sorted(n for n in launchers if n in flop_by_name)) if hops else ()
+        ),
+        feedthrough=tuple(
+            sorted(
+                p.name
+                for p in sub.ports.values()
+                if p.direction in ("input", "inout")
+                and p.name not in clock_pins
+                and any(b in undriven for b in p.bits)
+            )
         ),
     )
 
@@ -817,10 +838,35 @@ def _driver_facts(
         if name in tagged
     )
     if len(bits) != 1:
+        hold_domains: frozenset[str] = frozenset()
+        hold_pins: tuple[str, ...] = ()
+        control = _hold_control_bits(flop, sub, ctx.bit_drivers)
+        if control:
+            reached, undriven = _ack_walk(
+                sub,
+                control,
+                ctx.domains.get(name),
+                ctx.domains,
+                ctx.bit_drivers,
+                flop_by_name,
+                seen={name},
+                excluded=_ack_walk_excluded(ctx),
+            )
+            hold_domains = frozenset(reached)
+            hold_pins = tuple(
+                sorted(
+                    p.name
+                    for p in sub.ports.values()
+                    if p.direction in ("input", "inout")
+                    and any(b in undriven for b in p.bits)
+                )
+            )
         return DriverFacts(
             width=len(bits),
             marks=marks,
             gray=_is_gray_encoded_source(sub, flop, ctx.bit_drivers),
+            hold_domains=hold_domains,
+            hold_pins=hold_pins,
         )
     reset_value = _producer_async_reset_value(flop.cell)
     if reset_value is not None and name in ctx.reset_synchronizers:

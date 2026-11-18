@@ -545,6 +545,7 @@ def _summarise_single_clock(
                 latch=facts.latch if facts is not None else None,
                 driver=facts.driver if facts is not None else None,
                 launchers=facts.launchers if facts is not None else (),
+                feedthrough=facts.feedthrough if facts is not None else (),
             )
         if facts is not None and facts.async_only:
             # A reset pin and nothing else: no data capture to seed
@@ -637,6 +638,7 @@ def _summarise_multi_clock(
                 latch=facts.latch,
                 driver=facts.driver,
                 launchers=facts.launchers,
+                feedthrough=facts.feedthrough,
             )
         if port.direction in ("input", "inout"):
             if facts.async_only:

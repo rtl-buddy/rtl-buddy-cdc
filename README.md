@@ -201,7 +201,11 @@ or memory between a pin and the first stage, and a block output that
 carries a clock pin (CDC-001 / CDC-004 instead of CDC-010 / CDC-017 /
 CDC-026 / CDC-008). A source register's data hold behind a block output
 (CDC-012) and an asynchronous merge reaching a top-level output through a
-block's combinational feed-through (CDC-025) are not seen.
+block's combinational feed-through (CDC-025 / CDC-024) are seen through a
+greybox as flat (rtl-buddy-cdc#408). A stub (`--blackbox`) has no body to
+show either: its outputs are one launch each in the block's clock (no
+feed-through, so such a merge is not seen), and its payload counts as held
+when an acknowledge from the destination enters the stub on any pin.
 
 **Clock pins of a stub.** A pin is a clock pin of a bodyless
 (`--blackbox`) module when its name is on the allow-list (`clk`, `CLK`,

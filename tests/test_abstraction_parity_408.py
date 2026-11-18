@@ -114,7 +114,9 @@ endmodule
 
 @needs_slang
 def test_and_gate_with_foreign_enable_is_cdc010(tmp_path: Path) -> None:
-    report = _run(tmp_path, _AND_GATE_ASYNC_EN, _SDC + _typed("slow", "e") + _typed("fast", "d"))
+    report = _run(
+        tmp_path, _AND_GATE_ASYNC_EN, _SDC + _typed("slow", "e") + _typed("fast", "d")
+    )
     assert _rules(report) == Counter({"CDC-010": 1})
     (msg,) = _messages(report, "CDC-010")
     assert "in domain slow" in msg and "['fast']" in msg
@@ -124,7 +126,9 @@ def test_and_gate_with_foreign_enable_is_cdc010(tmp_path: Path) -> None:
 
 @needs_slang
 def test_and_gate_with_synchronised_enable_is_clean(tmp_path: Path) -> None:
-    report = _run(tmp_path, _AND_GATE_SYNCED_EN, _SDC + _typed("slow", "e") + _typed("fast", "d"))
+    report = _run(
+        tmp_path, _AND_GATE_SYNCED_EN, _SDC + _typed("slow", "e") + _typed("fast", "d")
+    )
     assert _rules(report) == Counter()
 
 
@@ -132,7 +136,9 @@ def test_and_gate_with_synchronised_enable_is_clean(tmp_path: Path) -> None:
 def test_latch_icg_with_foreign_enable_is_cdc010(tmp_path: Path) -> None:
     """The latch takes the clock on EN and the enable on D: CDC-010
     checks the leg the clock walk reads as the control."""
-    report = _run(tmp_path, _LATCH_ICG_ASYNC_EN, _SDC + _typed("slow", "e") + _typed("fast", "d"))
+    report = _run(
+        tmp_path, _LATCH_ICG_ASYNC_EN, _SDC + _typed("slow", "e") + _typed("fast", "d")
+    )
     assert _rules(report) == Counter({"CDC-010": 1})
     (msg,) = _messages(report, "CDC-010")
     assert "($dlatch) control pin D" in msg
@@ -218,3 +224,62 @@ def test_held_behind_a_block_output_is_clean(tmp_path: Path) -> None:
     reports = _views(tmp_path, _HELD_BEHIND_OUTPUT, sdc)
     for view in ("flat", "greybox", "blackbox"):
         assert _rules(reports[view])["CDC-012"] == 0, view
+
+
+# --- item 3: CDC-025 through a block's combinational feed-through -------------
+
+# The block's output XORs its own register with its input, which the
+# parent drives from another clock: the top-level output merges two
+# asynchronous launches through the block.
+_MERGE_THROUGH_BLOCK = """\
+module blk (input clk, input d, output q);
+    logic s1;
+    always_ff @(posedge clk) s1 <= d;
+    assign q = s1 ^ d;
+endmodule
+module top (input fast, input slow, input d, output q);
+    logic x;
+    always_ff @(posedge slow) x <= d;
+    blk u (.clk(fast), .d(x), .q(q));
+endmodule
+"""
+
+# Registered output: no feed-through, nothing merges.
+_REGISTERED_THROUGH_BLOCK = _MERGE_THROUGH_BLOCK.replace(
+    "assign q = s1 ^ d;",
+    "logic s2;\n    always_ff @(posedge clk) s2 <= s1;\n    assign q = s2;",
+)
+
+
+@needs_slang
+def test_async_merge_through_a_greybox_feedthrough_is_cdc025(tmp_path: Path) -> None:
+    reports = _views(tmp_path, _MERGE_THROUGH_BLOCK, _SDC + _typed("slow", "d"))
+    assert _rules(reports["flat"])["CDC-025"] == 1
+    assert _rules(reports["greybox"]) == _rules(reports["flat"])
+    (msg,) = _messages(reports["greybox"], "CDC-025")
+    assert "abstracted block output `u.q`" in msg and "slow" in msg
+    (v,) = [x for x in reports["greybox"]["violations"] if x["rule_id"] == "CDC-025"]
+    assert v["cell_name"] == "u"
+    # A stub has no body to show the feed-through: documented limit
+    # (architecture spec section 4.9), its output is one launch in the
+    # block's clock.
+    assert _rules(reports["blackbox"])["CDC-025"] == 0
+
+
+@needs_slang
+def test_registered_block_output_merges_nothing(tmp_path: Path) -> None:
+    reports = _views(tmp_path, _REGISTERED_THROUGH_BLOCK, _SDC + _typed("slow", "d"))
+    for view in ("flat", "greybox", "blackbox"):
+        assert _rules(reports[view])["CDC-025"] == 0, view
+
+
+@needs_slang
+def test_feedthrough_reaches_a_contracted_output(tmp_path: Path) -> None:
+    """CDC-024 reads the same cone: a contracted output fed through the
+    block from a register in the contract's foreign clock."""
+    sdc = _SDC + _typed("slow", "d") + "set_output_delay -clock fast 1 [get_ports q]\n"
+    reports = _views(tmp_path, _MERGE_THROUGH_BLOCK, sdc)
+    assert _rules(reports["flat"])["CDC-024"] == 1
+    assert _rules(reports["greybox"])["CDC-024"] == 1
+    (msg,) = _messages(reports["greybox"], "CDC-024")
+    assert "slow (flop" in msg

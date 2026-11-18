@@ -100,6 +100,14 @@ class DriverFacts:
       — one whose ``D`` is a one-cycle pulse (CDC-009).
     - ``decoder`` — the shared combinational driver (a one-hot decoder)
       a single-bit register is a lane of, as CDC-019 groups lanes.
+    - ``hold_domains`` / ``hold_pins`` — for a multi-bit register, what
+      CDC-012's acknowledge walk reaches inside the block from the
+      register's load / hold control (rtl-buddy-cdc#408): the clock
+      domains of the registers on it, and the block's input pins it
+      leaves through. The parent has an acknowledge when the destination
+      clock is among the domains, or when its own walk from those pins
+      reaches a destination register. Both empty: the register loads
+      every cycle (or nothing reaches its control), so nothing holds it.
     """
 
     width: int
@@ -109,6 +117,8 @@ class DriverFacts:
     toggle: bool = False
     pulse: bool = False
     decoder: str | None = None
+    hold_domains: frozenset[str] = frozenset()
+    hold_pins: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -194,6 +204,10 @@ class PortBoundary:
     launchers: tuple[str, ...] = ()
     # rtl-buddy-cdc#405: the register driving an output pin directly.
     driver: DriverFacts | None = None
+    # rtl-buddy-cdc#408: for an output, the block's data input pins with a
+    # combinational path to it — the feed-through the parent's output-cone
+    # walk (CDC-024 / CDC-025) continues through.
+    feedthrough: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

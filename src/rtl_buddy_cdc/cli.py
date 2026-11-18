@@ -1220,6 +1220,12 @@ def _analyze_module_and_report(
                     latch=pb.latch,
                     driver=pb.driver,
                     launchers=tuple(f"{inst_name}.{n}" for n in pb.launchers),
+                    feedthrough=tuple(
+                        b
+                        for pin in pb.feedthrough
+                        for b in module.cells[inst_name].connections.get(pin, ())
+                        if isinstance(b, int)
+                    ),
                 )
                 for b in conn:
                     if isinstance(b, int):
