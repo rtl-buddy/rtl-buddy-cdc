@@ -745,7 +745,7 @@ class _ModuleBuilder:
         self._memory_write_ports: dict[str, int] = {}
         # The unpacked arrays Yosys keeps as memories (canonical symbols)
         # and their ``MEMID`` spellings; every other unpacked array is a
-        # list of registers (:meth:`_classify_arrays`, rtl-buddy-cdc#398).
+        # list of registers (:meth:`_classify_design_arrays`, rtl-buddy-cdc#398).
         self._memories: set[Any] = set()
         self._memory_ids: set[str] = set()
         # Each memory's ``MEMID`` (its declaration's hierarchical name).
@@ -774,6 +774,12 @@ class _ModuleBuilder:
         # reads.
         self._compound_lhs: list[Any] = []
         self._lowering_failures = 0
+        # The instance bodies this builder inlines (rtl-buddy-cdc#405): a
+        # hierarchical reference (``gr.lm[i]``, ``u_child.q``, an upward
+        # ``top.sig``) resolves to its target's bits when the target is
+        # declared in one of them, and is reported otherwise (a name
+        # inside a blackbox, or above a greybox body lowered on its own).
+        self._inlined_bodies: set[Any] = set()
         self._branch_muxes: dict[
             tuple[Bit, ...], tuple[Bit, tuple[Bit, ...], tuple[Bit, ...]]
         ] = {}
@@ -784,6 +790,7 @@ class _ModuleBuilder:
         # The top instance's ports become the flat ``Module``'s ports;
         # child instances contribute flops / comb / netnames into the
         # same flat namespace, hierarchically prefixed (``u_b0.q``).
+        self._classify_design_arrays()
         self._walk_instance(self.top, hier_prefix="", bound_internals=frozenset())
         self._apply_forward_renames()
         # A memory has no netname in Yosys' output (rtl-buddy-cdc#394,
@@ -831,7 +838,6 @@ class _ModuleBuilder:
             if hier_prefix == "":
                 for member in inst.body:
                     self._collect_port(member)
-            self._classify_arrays(inst, hier_prefix)
             for member, prefix in self._iter_scope(inst.body, hier_prefix):
                 # ``_fresh_cell_name`` reads ``_hier_stack[-1]`` when
                 # naming cells; for members inside a generate block
@@ -1017,6 +1023,26 @@ class _ModuleBuilder:
         and a ``kind`` enum; the class name is sufficient and avoids
         having to thread the enum import through every comparison."""
         return type(sym).__name__
+
+    def _is_named(self, expr: Any) -> bool:
+        """``expr`` names a variable or net this builder lowers: a plain
+        name, or a hierarchical one (``gr.lm``, ``g[1].x``, ``u_child.q``,
+        an upward ``top.sig``) whose target is declared in an instance
+        body this builder inlines, so it reads and writes the target's
+        own bits (rtl-buddy-cdc#405: it was an opaque driver / a dropped
+        write). A hierarchical name of a constant reads its value."""
+        kind = type(expr).__name__
+        if kind == "NamedValueExpression":
+            return True
+        if kind != "HierarchicalValueExpression":
+            return False
+        sym = getattr(expr, "symbol", None)
+        if sym is None:
+            return False
+        if self._kind_name(sym) in self._CONSTANT_SYMBOLS:
+            return True
+        scope = getattr(sym, "parentScope", None)
+        return getattr(scope, "containingInstance", None) in self._inlined_bodies
 
     # -- pass 1: variables ----------------------------------------------
 
@@ -1322,7 +1348,16 @@ class _ModuleBuilder:
             # wire. ``_alloc_bits`` keys on the internal Symbol identity
             # which is unique per elaborated instance, so two
             # instantiations of the same module don't share bits.
-            self._var_bits[self._canonical_var(internal)] = parent_bits
+            canonical = self._canonical_var(internal)
+            early = self._var_bits.get(canonical)
+            if early is not None:
+                # A hierarchical read of the port (``u_child.a``) lowered
+                # before this instance (rtl-buddy-cdc#405): its readers
+                # see the parent's net.
+                for o, n in zip(early, parent_bits):
+                    if o in self._placeholder_bits and o != n:
+                        self._forward_renames[o] = n
+            self._var_bits[canonical] = parent_bits
             bound.add(internal)
             # Also emit a netname for the port at ``<child_prefix><port_name>``
             # so SDC pin paths like ``[get_pins u_a/clk_out_b0]`` resolve
@@ -2186,8 +2221,7 @@ class _ModuleBuilder:
         rst_edge = str(getattr(rst_ev, "edge", "")).rsplit(".", 1)[-1]
         return clk_sym, rst_sym, rst_edge == "NegEdge", clk_edge == "NegEdge"
 
-    @staticmethod
-    def _extract_condition_symbol(expr: Any) -> Any | None:
+    def _extract_condition_symbol(self, expr: Any) -> Any | None:
         """For an if-condition that's the reset check (``rst`` or
         ``!rst_n``), return the underlying VariableSymbol. Anything
         more elaborate (``rst && enable``, function calls, …) → None,
@@ -2195,10 +2229,10 @@ class _ModuleBuilder:
         # UnaryExpression(operand=NamedValueExpression)  → !rst form
         if type(expr).__name__ == "UnaryExpression":
             operand = getattr(expr, "operand", None)
-            if operand is not None and type(operand).__name__ == "NamedValueExpression":
+            if operand is not None and self._is_named(operand):
                 return operand.symbol
         # NamedValueExpression directly  → positive-polarity reset
-        if type(expr).__name__ == "NamedValueExpression":
+        if self._is_named(expr):
             return expr.symbol
         return None
 
@@ -3666,7 +3700,7 @@ class _ModuleBuilder:
         LSB-first (an output port bound to ``{a, b}``); procedural and
         continuous writes split one first, see :meth:`_concat_writes`."""
         kind = type(expr).__name__
-        if kind == "NamedValueExpression":
+        if self._is_named(expr):
             return self._alloc_bits(expr.symbol)
         if kind in {"ElementSelectExpression", "MemberAccessExpression"}:
             return self._element_select_bits(expr)
@@ -3705,7 +3739,7 @@ class _ModuleBuilder:
                     return None
                 out.extend(sub)
             return out or None
-        if kind == "NamedValueExpression":
+        if self._is_named(expr):
             sym = self._canonical_var(expr.symbol)
             return [(sym, 0, len(self._alloc_bits(sym)))]
         if kind in {"ElementSelectExpression", "MemberAccessExpression"}:
@@ -3856,12 +3890,17 @@ class _ModuleBuilder:
                     return self._lvalue_unsupported_reason(op)
         if kind == "StreamingConcatenationExpression":
             return "target is a streaming concatenation"
+        base = expr
+        while type(base).__name__ in self._SELECT_KINDS:
+            base = getattr(base, "value", None)
+        if type(base).__name__ == "HierarchicalValueExpression" and not self._is_named(
+            base
+        ):
+            return "target is a hierarchical reference outside the lowered design"
         if kind in {"ElementSelectExpression", "RangeSelectExpression"}:
             return "target select has a run-time index or is out of range"
         if kind == "MemberAccessExpression":
             return "target is a member of an unpacked or indexed aggregate"
-        if kind == "HierarchicalValueExpression":
-            return "target is a hierarchical reference"
         return f"target `{kind}` is not modelled"
 
     def _warn_lvalue_dropped(self, node: Any, lhs: Any) -> None:
@@ -3923,7 +3962,7 @@ class _ModuleBuilder:
         (non-constant selector, non-NamedValueExpression base, …).
         """
         kind = type(expr).__name__
-        if kind == "NamedValueExpression":
+        if self._is_named(expr):
             sym = getattr(expr, "symbol", None)
             if sym is None or self._canonical_var(sym) in self._memories:
                 # A memory's words are read and written through ports.
@@ -4145,7 +4184,7 @@ class _ModuleBuilder:
 
         # Loop-variable binding takes priority — pyslang considers the
         # loopvar a runtime variable, so its own ``.constant`` is None.
-        if kind == "NamedValueExpression":
+        if kind in self._NAME_KINDS:
             sym = getattr(expr, "symbol", None)
             if sym is not None and sym in self._loop_bindings:
                 return self._loop_bindings[sym]
@@ -4243,7 +4282,7 @@ class _ModuleBuilder:
         ):
             base = getattr(base, "value", None) or getattr(base, "operand", None)
         sym = getattr(base, "symbol", None)
-        if type(base).__name__ != "NamedValueExpression" or sym is None:
+        if not self._is_named(base) or sym is None:
             return None
         if not self._is_constant_name(sym):
             return None
@@ -4288,7 +4327,7 @@ class _ModuleBuilder:
         than crashing.
         """
         kind = type(expr).__name__
-        if kind == "NamedValueExpression":
+        if self._is_named(expr):
             if expr.symbol in self._loop_bindings:
                 # An unrolled loop's variable read as a value.
                 value = self._loop_bindings[expr.symbol]
@@ -4461,6 +4500,9 @@ class _ModuleBuilder:
                 "Y_WIDTH": _param_int32(width),
             },
         )
+
+    # Expressions that name a symbol: a plain name, a dotted one.
+    _NAME_KINDS = frozenset({"NamedValueExpression", "HierarchicalValueExpression"})
 
     # Symbols a NamedValueExpression reads as a constant.
     _CONSTANT_SYMBOLS = frozenset(
@@ -4939,7 +4981,7 @@ class _ModuleBuilder:
         while type(e).__name__ in self._SELECT_KINDS:
             nodes.append(e)
             e = getattr(e, "value", None)
-        if type(e).__name__ != "NamedValueExpression" or not nodes:
+        if not self._is_named(e) or not nodes:
             return None
         sym = self._canonical_var(e.symbol)
         dims = self._unpacked_ranges(sym)
@@ -4959,8 +5001,37 @@ class _ModuleBuilder:
                     element = node
         return _ArrayAccess(sym, dims, selectors, element, packed)
 
-    def _classify_arrays(self, inst: Any, hier_prefix: str) -> None:
-        """Decide which unpacked arrays of ``inst`` are memories, as Yosys'
+    def _design_instances(
+        self, inst: Any, prefix: str, out: list[tuple[Any, str]]
+    ) -> None:
+        """Append ``(instance, hierarchy prefix)`` for ``inst`` and every
+        instance below it that this builder inlines (boundary instances
+        stay cells), named as :meth:`_emit_instance` /
+        :meth:`_emit_instance_array` name them."""
+        out.append((inst, prefix))
+        self._inlined_bodies.add(inst.body)
+
+        def child(member: Any, scope_prefix: str, name: str) -> None:
+            kind = self._kind_name(member)
+            if kind == "InstanceSymbol":
+                if not self._is_boundary_instance(member):
+                    self._design_instances(member, f"{scope_prefix}{name}.", out)
+            elif kind == "InstanceArraySymbol":
+                if getattr(member, "isUninstantiated", False):
+                    return
+                lower = getattr(getattr(member, "range", None), "lower", None)
+                if lower is None:
+                    return
+                for offset, element in enumerate(
+                    getattr(member, "elements", None) or []
+                ):
+                    child(element, scope_prefix, f"{name}[{int(lower) + offset}]")
+
+        for member, scope_prefix in self._iter_scope(inst.body, prefix):
+            child(member, scope_prefix, getattr(member, "name", "") or "")
+
+    def _classify_design_arrays(self) -> None:
+        """Decide which unpacked arrays of the design are memories, as Yosys'
         Verilog frontend does before ``proc`` (``mem2reg``), checked
         against Yosys 0.64 for each case (rtl-buddy-cdc#398). An array is
         a list of registers, named per element, when
@@ -4979,28 +5050,38 @@ class _ModuleBuilder:
         Anything else is a memory, also one nothing writes: every read of
         it is a ``$memrd_v2``, every write a ``$memwr_v2``, at a constant
         address too, and it has no netname. Arrays bound to ports stay
-        registers."""
+        registers.
+
+        The whole inlined design is scanned before anything is lowered
+        (rtl-buddy-cdc#405): a hierarchical write (``u_child.a[i] <= d``)
+        counts against the array it names, and a read of a memory through
+        a hierarchical name (``gr.lm[ra]``, ``u_child.mem[ra]``) is a read
+        port wherever it sits in source order."""
+        instances: list[tuple[Any, str]] = []
+        self._design_instances(self.top, "", instances)
         flags: dict[Any, set[str]] = {}
         arrays: list[tuple[Any, str]] = []
-        ports = {
-            self._canonical_var(m)
-            for m in inst.body
-            if self._kind_name(m) == "PortSymbol"
-            and getattr(m, "internalSymbol", None) is not None
-        }
-        for member, prefix in self._iter_scope(inst.body, hier_prefix):
-            kind = self._kind_name(member)
-            if kind == "VariableSymbol":
-                arrays.append((member, prefix))
-            elif kind == "ProceduralBlockSymbol":
-                proc = str(member.procedureKind).rsplit(".", 1)[-1]
-                if proc not in {"Initial", "Final"}:
-                    sync = self._edge_event_count(member.body) == 1
-                    self._scan_array_process(member.body, sync, flags)
-            elif kind == "ContinuousAssignSymbol":
-                assign = getattr(member, "assignment", None)
-                if assign is not None:
-                    self._scan_array_process(assign, False, flags)
+        ports: set[Any] = set()
+        for inst, hier_prefix in instances:
+            ports.update(
+                self._canonical_var(m)
+                for m in inst.body
+                if self._kind_name(m) == "PortSymbol"
+                and getattr(m, "internalSymbol", None) is not None
+            )
+            for member, prefix in self._iter_scope(inst.body, hier_prefix):
+                kind = self._kind_name(member)
+                if kind == "VariableSymbol":
+                    arrays.append((member, prefix))
+                elif kind == "ProceduralBlockSymbol":
+                    proc = str(member.procedureKind).rsplit(".", 1)[-1]
+                    if proc not in {"Initial", "Final"}:
+                        sync = self._edge_event_count(member.body) == 1
+                        self._scan_array_process(member.body, sync, flags)
+                elif kind == "ContinuousAssignSymbol":
+                    assign = getattr(member, "assignment", None)
+                    if assign is not None:
+                        self._scan_array_process(assign, False, flags)
         for member, prefix in arrays:
             sym = self._canonical_var(member)
             if sym in ports or self._unpacked_ranges(sym) is None:
@@ -5036,7 +5117,7 @@ class _ModuleBuilder:
         self, node: Any, sync: bool, flags: dict[Any, set[str]]
     ) -> None:
         """Record in ``flags`` how one process (or continuous assignment)
-        writes and reads unpacked arrays, for :meth:`_classify_arrays`:
+        writes and reads unpacked arrays, for :meth:`_classify_design_arrays`:
         ``async`` (written outside a single-edge process), ``reread``
         (read after a blocking write in the same process), ``whole`` (the
         whole array or a slice written), ``const`` / ``var`` (an element
@@ -5051,7 +5132,7 @@ class _ModuleBuilder:
             names: list[Any] = []
 
             def name(n: Any) -> None:
-                if type(n).__name__ == "NamedValueExpression":
+                if type(n).__name__ in self._NAME_KINDS:
                     names.append(n.symbol)
 
             sel.visit(name)
@@ -5071,7 +5152,7 @@ class _ModuleBuilder:
                     target = getattr(init, "left", None)
                     if type(target).__name__ == "NamedValueExpression":
                         loop_vars.add(getattr(target, "symbol", None))
-            elif kind == "NamedValueExpression":
+            elif kind in self._NAME_KINDS:
                 sym = self._canonical_var(n.symbol)
                 if sym in blocking:
                     flags.setdefault(sym, set()).add("reread")
@@ -5102,7 +5183,7 @@ class _ModuleBuilder:
             return out
         acc = self._array_access(lhs)
         if acc is None:
-            if type(lhs).__name__ == "NamedValueExpression":
+            if self._is_named(lhs):
                 sym = self._canonical_var(lhs.symbol)
                 if self._unpacked_ranges(sym) is not None:
                     flags.setdefault(sym, set()).add("whole")
@@ -5975,7 +6056,7 @@ class _ModuleBuilder:
         # skipped without a word).
         lhs = expr.left
         lhs_kind = type(lhs).__name__
-        if lhs_kind == "NamedValueExpression":
+        if self._is_named(lhs):
             rhs_bits = self._rhs_bits(expr.right, len(self._alloc_bits(lhs.symbol)))
             self._rewrite_aliased(lhs, rhs_bits)
             return
@@ -6063,7 +6144,7 @@ class _ModuleBuilder:
         while type(e).__name__ in self._SELECT_KINDS:
             nodes.append(e)
             e = getattr(e, "value", None)
-        if type(e).__name__ != "NamedValueExpression" or not nodes:
+        if not self._is_named(e) or not nodes:
             return None
         sym = self._canonical_var(e.symbol)
         sym_type = getattr(sym, "type", None)
@@ -6334,7 +6415,7 @@ class _ModuleBuilder:
         if a is None or type(a).__name__ != "AssignmentExpression":
             return
         lhs, rhs = a.left, a.right
-        if type(lhs).__name__ != "NamedValueExpression":
+        if not self._is_named(lhs):
             # ``assign {c, s} = a + b;`` / ``assign bus[3:0] = x;``
             # (rtl-buddy-cdc#370).
             if not self._splice_assign(lhs, rhs, continuous=True):

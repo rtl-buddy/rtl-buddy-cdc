@@ -526,7 +526,12 @@ _UNPACKED = "typedef struct { logic [1:0] f; } us_t;\n"
             "output port connection `q` not lowered (target is a member",
         ),
         ("us_t us; always_comb us.f = x[1:0];", "member of an unpacked"),
-        ("always @(posedge clk_b) u.r <= x[0];", "hierarchical reference"),
+        # A name inside a blackbox (rtl-buddy-cdc#405: one into an
+        # inlined instance is lowered).
+        (
+            "bbx v (); always @(posedge clk_b) v.r <= x[0];",
+            "hierarchical reference outside the lowered design",
+        ),
     ],
     ids=[
         "port_unpacked",
@@ -537,7 +542,10 @@ _UNPACKED = "typedef struct { logic [1:0] f; } us_t;\n"
 def test_more_unlowered_targets_warn(tmp_path: Path, caplog, body: str, needle: str):
     src = (
         _UNPACKED
-        + f"""module sub (output logic [1:0] q);
+        + f"""(* blackbox *) module bbx;
+    logic r;
+endmodule
+module sub (output logic [1:0] q);
     logic r;
     assign q = 2'b0;
 endmodule
