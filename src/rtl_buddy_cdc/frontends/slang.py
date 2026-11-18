@@ -212,6 +212,7 @@ from __future__ import annotations
 
 import functools
 import importlib.metadata
+import itertools
 import logging
 import math
 import re
@@ -2044,7 +2045,7 @@ class _ModuleBuilder:
             return
         if kind == "VariableDeclStatement":
             return
-        if kind == "ForLoopStatement":
+        if kind in self._LOOP_KINDS:
             # Unrolled like the data branch: ``for (i) q[i] <= 0``.
             self._unroll_for(
                 stmt, lambda body: self._collect_reset_assignments(body, into)
@@ -2342,7 +2343,7 @@ class _ModuleBuilder:
             if default is not None:
                 ok = ok and self._is_constant_only_assignment_tree(default)
             return ok
-        if kind == "ForLoopStatement":
+        if kind in self._LOOP_KINDS:
             return self._is_constant_only_assignment_tree(getattr(stmt, "body", None))
         if kind == "ExpressionStatement":
             expr = getattr(stmt, "expr", None)
@@ -2480,7 +2481,7 @@ class _ModuleBuilder:
                 statement, clk_sym, reset_sym, reset_active_low, src_node
             )
             return
-        if kind == "ForLoopStatement":
+        if kind in self._LOOP_KINDS:
             self._emit_for_loop(
                 statement, clk_sym, reset_sym, reset_active_low, src_node
             )
@@ -2747,25 +2748,71 @@ class _ModuleBuilder:
         Yosys' frontend unrolls them. A loop whose trip count is not known
         at elaboration time is reported, never skipped silently
         (rtl-buddy-cdc#377)."""
-        header = self._for_loop_iterations(stmt)
-        if header is None:
-            self._warn_dropped(
-                stmt,
-                "bounds, step or loop variable are not constant",
-                "`for` loop",
+        iterations = self._loop_iterations(stmt)
+        if iterations is None:
+            what = {
+                "RepeatLoopStatement": ("count is not constant", "`repeat` loop"),
+                "ForeachLoopStatement": (
+                    "the array has no fixed bounds",
+                    "`foreach` loop",
+                ),
+            }.get(
+                self._kind_name(stmt),
+                ("bounds, step or loop variable are not constant", "`for` loop"),
             )
+            self._warn_dropped(stmt, *what)
             return
-        loopvar, values = header
-        for v in values:
-            prev = self._loop_bindings.pop(loopvar, _SENTINEL)
-            self._loop_bindings[loopvar] = v
+        for binding in iterations:
+            prev = {var: self._loop_bindings.pop(var, _SENTINEL) for var in binding}
+            self._loop_bindings.update(binding)
             try:
                 walk(getattr(stmt, "body", None))
             finally:
-                if prev is _SENTINEL:
-                    self._loop_bindings.pop(loopvar, None)
-                else:
-                    self._loop_bindings[loopvar] = prev
+                for var, old in prev.items():
+                    if old is _SENTINEL:
+                        self._loop_bindings.pop(var, None)
+                    else:
+                        self._loop_bindings[var] = old
+
+    # Loops unrolled at elaboration time (rtl-buddy-cdc#405: ``repeat`` and
+    # ``foreach`` were reported and their bodies dropped).
+    _LOOP_KINDS = frozenset(
+        {"ForLoopStatement", "RepeatLoopStatement", "ForeachLoopStatement"}
+    )
+
+    def _loop_iterations(self, stmt: Any) -> list[dict[Any, int]] | None:
+        """The loop-variable bindings of each iteration of a ``for``,
+        ``repeat (N)`` (no variable) or ``foreach`` loop (each named
+        dimension from its left bound to its right, the first dimension
+        outermost, IEEE 1800-2017 12.7.3); ``None`` when the trip count is
+        not known at elaboration time or exceeds the unroll cap."""
+        kind = self._kind_name(stmt)
+        if kind == "RepeatLoopStatement":
+            count = self._const_int(getattr(stmt, "count", None))
+            if count is None or count > self._ITER_CAP:
+                return None
+            return [{} for _ in range(max(count, 0))]
+        if kind == "ForeachLoopStatement":
+            axes: list[list[tuple[Any, int]]] = []
+            for dim in getattr(stmt, "loopDims", None) or []:
+                var = getattr(dim, "loopVar", None)
+                if var is None:
+                    continue
+                rng = getattr(dim, "range", None)
+                left = getattr(rng, "left", None)
+                right = getattr(rng, "right", None)
+                if left is None or right is None:
+                    return None
+                step = 1 if right >= left else -1
+                axes.append([(var, v) for v in range(left, right + step, step)])
+            if math.prod(len(a) for a in axes) > self._ITER_CAP:
+                return None
+            return [dict(combo) for combo in itertools.product(*axes)]
+        header = self._for_loop_iterations(stmt)
+        if header is None:
+            return None
+        loopvar, values = header
+        return [{loopvar: v} for v in values]
 
     _ITER_CAP = 1024
 
@@ -5479,6 +5526,10 @@ class _ModuleBuilder:
 
         def visit(n: Any) -> Any:
             kind = type(n).__name__
+            if kind == "ForeachLoopStatement":
+                loop_vars.update(
+                    d.loopVar for d in getattr(n, "loopDims", None) or [] if d.loopVar
+                )
             if kind == "ForLoopStatement":
                 loop_vars.update(getattr(n, "loopVars", None) or [])
                 for init in getattr(n, "initializers", None) or []:
@@ -6158,7 +6209,7 @@ class _ModuleBuilder:
             else:
                 self._var_bits[ret] = bits
             return
-        if kind == "ForLoopStatement":
+        if kind in self._LOOP_KINDS:
             self._unroll_for(stmt, self._walk_comb_statement)
             return
         if kind == "VariableDeclStatement":

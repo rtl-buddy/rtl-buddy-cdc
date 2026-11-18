@@ -545,3 +545,42 @@ def test_assignment_patterns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -
                     "q": [nd, d, nd, d][i],
                     "r": (d << 4) | 3,
                 }, (s, d, i)
+
+
+# --- repeat and foreach loops (were dropped) ---------------------------------------
+
+_LOOPS = """module m (input [3:0] a, output logic [3:0] o, output logic [3:0] p,
+          output [5:0] r);
+    logic [1:0] arr [2][3:1];
+    always_comb foreach (o[i]) o[i] = a[i] ^ a[(i + 1) % 4];
+    always_comb begin
+        p = a;
+        repeat (3) p = {p[2:0], p[3]};
+    end
+    always_comb foreach (arr[i, j]) arr[i][j] = a[1:0] + i + j;
+    assign r = {arr[1][3], arr[0][2], arr[0][1]};
+endmodule
+"""
+
+
+def test_repeat_and_foreach_unroll(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``repeat (N)`` and ``foreach`` (one and two dimensions, a
+    descending one included) are unrolled like ``for`` (each was a
+    reported statement whose writes were dropped). Every output matches
+    the SystemVerilog value; a ``repeat`` matches Yosys too (Yosys' Verilog
+    frontend does not parse ``foreach``)."""
+    with caplog.at_level(logging.WARNING, logger=_SLANG_LOG):
+        module = _slang(tmp_path, _LOOPS)
+    assert _warnings(caplog) == []
+    for a in range(16):
+        o = sum((((a >> i) ^ (a >> ((i + 1) % 4))) & 1) << i for i in range(4))
+        p = ((a << 3) | (a >> 1)) & 0xF
+        arr = {(i, j): ((a & 3) + i + j) & 3 for i in (0, 1) for j in (1, 2, 3)}
+        r = (arr[1, 3] << 4) | (arr[0, 2] << 2) | arr[0, 1]
+        assert _outputs(module, {"a": a}, ("o", "p", "r")) == {
+            "o": o,
+            "p": p,
+            "r": r,
+        }, a

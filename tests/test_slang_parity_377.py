@@ -806,7 +806,8 @@ endmodule
     [
         ("for (int i = 0; i < n; i++) q[i] = a;", "`for` loop not lowered"),
         ("while (n[0]) q = a;", "`WhileLoopStatement` is not modelled"),
-        ("repeat (2) q = a;", "`RepeatLoopStatement` is not modelled"),
+        # A constant ``repeat`` is unrolled (rtl-buddy-cdc#405).
+        ("repeat (n) q = a;", "`repeat` loop not lowered"),
         ("t(q);", "`ExpressionStatement` is not modelled"),
     ],
     ids=["runtime_bound", "while", "repeat", "task_call"],
