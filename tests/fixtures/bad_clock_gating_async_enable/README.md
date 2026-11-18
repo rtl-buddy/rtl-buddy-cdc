@@ -6,9 +6,9 @@ Negative-case fixture: a raw-AND clock gate whose enable is a flop in a clock do
 
 Hazard: the enable transitions asynchronously to `clk_a`, so the AND output can chop the gated clock into runt pulses every time the enable changes. The downstream flop sees a clock with arbitrarily short high phases — every flop on this clock branch is at risk.
 
-CDC-010 today targets named-control-pin cells ($mux.S, $dffe.EN, $dlatch.EN) and the pin-name heuristic for tech-mapped library cells (E / EN / CE / GATE / SE). A bare $and cell has none of those, so this hazard is currently invisible to the rule pack. The paired test pins that behaviour so future CDC-010 extensions (or a dedicated rule) can re-evaluate; if a rule starts firing here, the test signals the coverage expansion.
+CDC-010 fires on the $and's enable leg B. A bare $and has no named control pin; the clock-root walk reads leg A as the clock (clk_a) and leg B as the enable, and CDC-010 checks the leg the walk reads as control. The enable flop's Q is NOT a second clock: before rtl-buddy-cdc#408 the walk followed it back to clk_b as a divided clock and reported a two-clock combine (CDC-023, warning) instead of the async enable (CDC-010, error).
 
-See issue #177.
+See issue #177 and rtl-buddy-cdc#408.
 
 - **Status:** negative — analyzer must report a violation
 - **Top module:** `bad_clock_gating_async_enable`
@@ -23,6 +23,7 @@ flowchart LR
   subgraph clk_clk_a["clk_a · 10.0 ns"]
     direction TB
     p_in_d[/"d⟨in⟩"/]:::ckcls_clk_a
+    f_81f9c4bd["$procdff$10<br/><i>sv:42</i>"]:::ckcls_clk_a
   end
   subgraph clk_clk_b["clk_b · 7.5 ns"]
     direction TB

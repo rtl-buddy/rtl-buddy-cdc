@@ -517,7 +517,11 @@ def test_cli_lifted_greybox_finding_is_scoped_to_its_instance(tmp_path: Path) ->
     )
     rep = json.loads(out)
     sup = [(s["rule_id"], s["cell_name"]) for s in rep["suppressed"]]
-    assert sup == [("CDC-001", "u_thru")]
+    # CDC-025 on ``y_thru`` (``sel`` in clk_a gating a clk_b register
+    # inside the block) is the flat run's finding too, seen through the
+    # block's feed-through since rtl-buddy-cdc#408; anchored on the
+    # instance, so the same instance waiver takes it.
+    assert sup == [("CDC-001", "u_thru"), ("CDC-025", "u_thru")]
     assert rep["suppressed"][0]["message"].startswith("[inside `feedthru`")
     # The other blackboxes are untouched. ``u_odd``'s ``strobe`` clocks a
     # flop inside it from an undeclared port: CDC-021, anchored on the pin

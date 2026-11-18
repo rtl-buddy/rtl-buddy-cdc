@@ -1,25 +1,16 @@
-"""Sentinel fixture: raw-AND clock gate with foreign-domain enable.
+"""Raw-AND clock gate with a foreign-domain enable: CDC-010.
 
 The enable lives in `clk_b`'s domain; the AND output drives a flop's
 CLK on `clk_a`'s branch. The clocks are declared async. Every enable
-transition can chop the gated clock into runt pulses — exactly the
-CDC-010 failure mode, but on a raw `$and` gate instead of a named
-control pin.
+transition can chop the gated clock into runt pulses — the CDC-010
+failure mode, on a raw `$and` gate instead of a named control pin.
 
-CDC-010 today targets named-control-pin cells (`$mux.S`, `$dffe.EN`,
-`$dlatch.EN`) and the pin-name heuristic for tech-mapped library
-cells (`E` / `EN` / `CE` / `GATE` / `SE`). A bare `$and` cell falls
-through every step — the rule treats AND/OR fanout as data-shape,
-not control-shape, on the principle that the cell's inputs are
-structurally symmetric. So this hazard is currently invisible to the
-rule pack.
-
-This test pins that gap. The expectation surfaced in issue #177 is
-that future CDC-010 work (or a dedicated rule) will fire here; when
-that lands, this test signals the coverage expansion and should be
-updated to assert the new finding.
-
-See issue #177.
+Issue #177 pinned this as invisible to the rule pack. Since
+rtl-buddy-cdc#408 CDC-010 reads the gate's control leg off the
+clock-root walk (the leg that is not the gate's clock), and the walk
+no longer follows the enable flop's `Q` back to `clk_b` as a divided
+clock — which used to decline the gate as a two-clock combine
+(CDC-023) and leave the gated flop domain-unknown.
 """
 
 from __future__ import annotations
@@ -47,19 +38,15 @@ def context():
     return module, crossings, spec
 
 
-def test_raw_and_clock_gate_not_caught_today(context) -> None:
-    """Foreign-domain enable into a raw-AND clock gate: real CDC
-    hazard, currently invisible to the rule pack. Pin that gap as a
-    regression sentinel — when CDC-010 (or a successor rule) grows
-    coverage for raw `$and` clock-network cells, this test signals
-    the change."""
+def test_raw_and_clock_gate_with_async_enable_is_cdc010(context) -> None:
+    """The enable leg is a control, not a second clock: CDC-010 fires
+    on the gate's enable pin, CDC-023 does not, and the gated flop
+    resolves to `clk_a`."""
     module, crossings, spec = context
     violations = run_all_rules(module, crossings, spec)
-    cdc_010_findings = [v for v in violations if v.rule_id == "CDC-010"]
-    assert cdc_010_findings == [], (
-        f"CDC-010 now fires on a raw-AND clock gate with a "
-        f"foreign-domain enable: {[v.message for v in cdc_010_findings]}. "
-        f"Issue #177 anticipated this expansion — update this test to "
-        f"assert the new finding (and add a paired good_* fixture if "
-        f"none exists yet)."
-    )
+    assert sorted(v.rule_id for v in violations) == ["CDC-010"]
+    (v,) = violations
+    assert v.severity == "error"
+    assert "control pin B" in v.message
+    assert "in domain clk_b" in v.message
+    assert "['clk_a']" in v.message

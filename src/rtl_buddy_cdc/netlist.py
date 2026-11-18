@@ -100,6 +100,14 @@ class DriverFacts:
       — one whose ``D`` is a one-cycle pulse (CDC-009).
     - ``decoder`` — the shared combinational driver (a one-hot decoder)
       a single-bit register is a lane of, as CDC-019 groups lanes.
+    - ``hold_domains`` / ``hold_pins`` — for a multi-bit register, what
+      CDC-012's acknowledge walk reaches inside the block from the
+      register's load / hold control (rtl-buddy-cdc#408): the clock
+      domains of the registers on it, and the block's input pins it
+      leaves through. The parent has an acknowledge when the destination
+      clock is among the domains, or when its own walk from those pins
+      reaches a destination register. Both empty: the register loads
+      every cycle (or nothing reaches its control), so nothing holds it.
     """
 
     width: int
@@ -109,6 +117,8 @@ class DriverFacts:
     toggle: bool = False
     pulse: bool = False
     decoder: str | None = None
+    hold_domains: frozenset[str] = frozenset()
+    hold_pins: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -138,6 +148,44 @@ class ResetPinFact:
     reset_sync: bool = False
     mux: bool = False
     polarity: str | None = None
+
+
+@dataclass(frozen=True)
+class PinFacts:
+    """What an abstracted block's body does with one pin, beyond a flop
+    capturing or launching it (rtl-buddy-cdc#408).
+
+    Published by the greybox pass so the parent reports the rule the
+    flat run reports at the cell behind the pin:
+
+    - ``no_capture`` — no flop, memory or output port is reached from
+      the pin on a path the flat crossing walk follows (it stops at a
+      transparent latch, and a clock pin is no data capture). The pin
+      seeds no boundary sink; flat, no crossing ends behind it.
+    - ``clock_controls`` — the clock-network cells whose control (a
+      clock mux's select, a clock gate's or latch ICG's enable) the pin
+      drives, each with the clock domains of the cell's clock inputs:
+      CDC-010's facts.
+    - ``latch_feeds`` — the transparent latches the pin reaches on their
+      ``D``, each with the single-bit flop reading the latch's ``Q`` and
+      that flop's clock: CDC-017's facts.
+    - ``gated`` — every flop capturing the pin loads it under an enable
+      (or a hold mux) driven only from its own clock domain: CDC-004's
+      gated-bus exemption, which hands the crossing to CDC-012.
+
+    For an output pin:
+
+    - ``clock_out`` — the block's clock pins that reach it
+      combinationally: the pin carries that clock, so the parent reads
+      it as a clock bit (CDC-008). With no register or data input behind
+      it as well, it seeds no boundary source.
+    """
+
+    no_capture: bool = False
+    clock_controls: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    latch_feeds: tuple[tuple[str, str, str], ...] = ()
+    gated: bool = False
+    clock_out: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -194,6 +242,10 @@ class PortBoundary:
     launchers: tuple[str, ...] = ()
     # rtl-buddy-cdc#405: the register driving an output pin directly.
     driver: DriverFacts | None = None
+    # rtl-buddy-cdc#408: for an output, the block's data input pins with a
+    # combinational path to it — the feed-through the parent's output-cone
+    # walk (CDC-024 / CDC-025) continues through.
+    feedthrough: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -248,6 +300,10 @@ class BoundarySummary:
     # reaches flops only through asynchronous controls is no data capture
     # and gets no entry in ``input_ports``.
     reset_pins: dict[str, tuple[ResetPinFact, ...]] = field(default_factory=dict)
+    # rtl-buddy-cdc#408: per data input pin, what the body does with it
+    # besides a flop capture (:class:`PinFacts`). A ``no_capture`` pin
+    # gets no entry in ``input_ports``.
+    pin_facts: dict[str, PinFacts] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

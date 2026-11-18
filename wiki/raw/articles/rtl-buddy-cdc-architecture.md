@@ -1015,8 +1015,8 @@ found, plus the clock-output hole #273 found.** All of them err toward
 - **Declined-opaque `CDC-BBX` error (FIX 2).** A declined instance is
   absent from the boundary map; its zero-cell internals are unanalysed —
   a coverage gap. Each declined instance (from
-  `CompositionStats.declined_modules`, plus the reconvergence-declined set
-  below) is emitted as a per-instance **`error`-severity `Violation`** with
+  `CompositionStats.declined_instances`, plus the reconvergence-declined
+  set below) is emitted as a per-instance **`error`-severity `Violation`** with
   `rule_id = "CDC-BBX"` and `cell_name = <instance>`, folded into the
   `violations` list before waiver/baseline/exit-code processing. So it is
   rendered in every format, **fails the run by default** (exit 1), and is
@@ -1182,8 +1182,63 @@ the parent's rule reach the verdict the flat run reaches
   the one-hot decoder it is a lane of (CDC-019). The parent reads these through
   `rules.BoundarySource`, the source its backward walks stop at: every
   summarised output pin, stub or greybox, carries its launch clock, so
-  RDC-001 / RDC-003 / CDC-015 / CDC-024 / CDC-005 / CDC-018 treat a block
-  output as the register behind it.
+  RDC-001 / RDC-003 / CDC-015 / CDC-024 / CDC-025 / CDC-005 / CDC-018
+  treat a block output as the register behind it.
+- **The pin is where the walks stop, whatever it is called
+  (rtl-buddy-cdc#408).** `_RuleContext.bit_drivers` leaves out the
+  output pins of abstracted instances (types in `boundary_modules` /
+  `blackbox_modules`): the driver map otherwise keys on the `Q` / `Y`
+  pin names, and a block pin named `Q` would read as a register with no
+  domain, one named `Y` as a gate to walk on through. Undriven, the bit
+  is looked up in `boundary_sources` like any other pin.
+- **Pin facts (`netlist.PinFacts`, rtl-buddy-cdc#408).** What the body
+  does with a pin besides a flop capture or launch, carried to the parent
+  in `BoundarySummary.pin_facts` / `_RuleContext.boundary_pin_facts`:
+  - *inputs* — the clock-network cells whose control the pin drives, with
+    each cell's clock-input domains (CDC-010's reading of the body:
+    `rules._clock_control_cells`, the clock walk's controls taken from one
+    declared clock up via `clock_network_events(min_clocks=1)`, each
+    control traced back to pins); the transparent latches it feeds on `D`
+    whose `Q` a single-bit flop reads (CDC-017); whether every flop
+    capturing a multi-bit pin loads it under an enable driven from its
+    own domain (`gated`: CDC-004's exemption, handing the crossing to
+    CDC-012, whose acknowledge walk in the parent now also stops at a
+    block output pin launched in the destination clock); and
+    `no_capture` — the forward walk the flat crossing walk takes (through
+    comb cells, stopping at latches; a clock pin is no consumer) reaches
+    no flop, memory or output. A `no_capture` pin seeds no boundary sink
+    in either summariser: flat, no crossing ends behind it.
+    `rules._cdc_010_boundary` and CDC-017's boundary pass raise the flat
+    rule at the pin from the parent flops driving it.
+  - *outputs* — `clock_out`, the clock pins reaching the output
+    combinationally. CDC-008 reads the parent bits as that clock; an
+    output with nothing else behind it seeds no source (a clock is no
+    crossing source flat). A body with no cells whose outputs share a net
+    with an input (`assign q = clk;`) is analysed, not taken for a stub
+    (`compositional._wired_through`).
+- **Payload hold (outputs, CDC-012; rtl-buddy-cdc#408).** For an output
+  one multi-bit register drives whole, where CDC-012's acknowledge walk
+  goes from that register's load / hold control inside the block
+  (`DriverFacts.hold_domains` / `hold_pins`, from `rules._ack_walk` run
+  exhaustively): the clock domains of the registers it reaches, and the
+  input pins it leaves through. The parent (`rules._cdc_012_boundary`)
+  finds an acknowledge when the destination clock is among those
+  domains or when its own walk from the parent nets on those pins
+  reaches a destination register — the flat walk, split at the pin. A
+  stub publishes nothing about the payload, so the parent walks from
+  every non-clock input pin of the instance: an acknowledge entering the
+  stub anywhere counts as holding it. That can miss a stub that takes an
+  acknowledge and still lets its payload run (the stub's limit); it
+  never reports where the flat run finds an acknowledge.
+- **Feed-through (outputs, CDC-024 / CDC-025; rtl-buddy-cdc#408).** The
+  input pins with a combinational path to each output
+  (`PortFacts.feedthrough`, carried to the parent as the parent nets on
+  those pins in `BoundarySource.feedthrough`). The output-cone walk
+  (`rules._output_cone` / `_reached_output_bits`) continues through the
+  block there, so a register in another clock reaching a top-level
+  output through a block's gate is a launch of that output, as flat. A
+  stub publishes no feed-through: its outputs are one launch each, in
+  the block's clock.
 
 - **Per-port `sync_depth` / `synchronised` (inputs).** For a *width-1*
   input port, the proof requires: the port bit has **exactly one** reader,
@@ -1257,7 +1312,12 @@ the parent's rule reach the verdict the flat run reaches
   one apart from the added facts.
 
 **What still declines, and why.** A conservative decline carrying a
-`CDC-BBX` diagnostic is acceptable; silence is not. Three cases survive:
+`CDC-BBX` diagnostic is acceptable; silence is not. A decline is per
+**instance** — per `(module type, clock context)`, the cache key — not per
+module type (rtl-buddy-cdc#408): a sibling whose context summarises is
+abstracted and gets no `CDC-BBX` (`CompositionStats.declined_instances`).
+Only the clock-output decline above is per module type, by design.
+Three cases survive:
 
 1. **An internal flop that lands on no parent clock root.** This is the
    case pin inspection *cannot* see, and the pass's most valuable catch.
@@ -1280,18 +1340,29 @@ seeded as its own source — unconstrained when that output is a comb
 feed-through, so the path stays covered conservatively.
 
 **Residual imprecision, stated plainly.** Chain depth is joined across
-the boundary (above). What is still evaluated on each side separately,
-each reported by the audit of rtl-buddy-cdc#405 with a reproducer, and
-none of them silent at the site: a gated bus whose gating sits inside
-the block (the parent reports CDC-004 where the flat run reports
-CDC-012 — an over-report), a clock mux / gate inside the block whose
-select arrives on a pin (CDC-001 at the pin instead of CDC-010), a latch
-or a memory between a pin and the first stage (CDC-001 / CDC-004 instead
-of CDC-017 / CDC-026), a block output that carries a clock pin
-combinationally (CDC-001 instead of CDC-008), a source register's data
-hold behind a block output (CDC-012), and an asynchronous merge that
-reaches a top-level output through a block's combinational feed-through
-(CDC-025).
+the boundary (above), and the shapes the #405 audit listed as judged on
+each side separately are reported at the pin under the flat rule
+(rtl-buddy-cdc#408, the pin facts above). One remains, a documented
+limit pinned by `tests/test_abstraction_parity_408.py`, reported at the
+site under another rule:
+
+- **A memory inside the block read asynchronously into the parent**:
+  CDC-004 at the read-address pin (captured in the block's clock) and on
+  the read data, where the flat run reports CDC-026. CDC-026 asks whether
+  a crossing from the *write* clock reaches the read port's address /
+  enable, which spans both sides of the boundary, and the read address
+  is a combinational feed-through, which a single-clock summary captures
+  in the block's clock (the conservative feed-through rule at the top of
+  this section). A per-rule fact on the output pin cannot answer it
+  without the parent's crossing walk continuing through the block.
+
+Under `--blackbox` only, by construction (a stub has no body): every
+non-clock pin is data (CDC-001 / CDC-004 where flat reports CDC-010 /
+CDC-017 / CDC-026), an output is one launch in the block's clock (an
+asynchronous merge through a stub's feed-through is not seen — CDC-025 /
+CDC-024 — and a clock it carries out is data, CDC-001 where flat reports
+CDC-008), and a stub's payload counts as held when any acknowledge from
+the destination enters it (CDC-012).
 
 ### 4.10 Recognised CDC primitives (issue #275)
 
@@ -1385,7 +1456,7 @@ Cell-type categories the walker recognizes:
 
 | Two-input gate (ICG) | `$and`, `$or`, `$logic_and`, `$logic_or`, `$xor`, `$xnor`, and the gate-level `cells.GATE_LOGIC_TYPES` (`$_AND_`, `$_OR_`, `$_NAND_`, `$_NOR_`, `$_XOR_`, `$_XNOR_`, `$_ANDNOT_`, `$_ORNOT_`, `$_AOI3_`, `$_OAI3_`, `$_AOI4_`, `$_OAI4_`; rtl-buddy-cdc#336) | Trace every input (`A`/`B`, plus `C`/`D` on the AOI/OAI cells). The leg choice depends on the legs' clocks, not their order: every walk passes `declared_clock_for_port` (`ClockSpec.declared_clock_for_port`, `create_clock` ports only — a `set_input_delay`-typed data port is not a clock; rtl-buddy-cdc#358), so `en & clk` and `clk & en` resolve alike, and an enable typed to a foreign clock is not a second clock; the side that resolves to a clock is the root, the other is the gate's enable. Two **distinct declared clocks** combining here decline and are reported as CDC-023 (see below) |
 | Mux | `cells.MUX_PINS`: `$mux`, `$pmux`, and gate-level `$_MUX_`, `$_NMUX_`, `$_MUX4_`, `$_MUX8_`, `$_MUX16_` (rtl-buddy-cdc#336) | Trace each candidate data input (`A`/`B`, or `A`…`P` on the wide gate muxes); every select pin (`S`, plus `T`/`U`/`V`) is reported as the mux's control; first one to resolve wins (the analyzer can't statically know which side `S` selects). A mux *selects* — it does not combine — so it is not subject to the combine-decline, and never produces a CDC-023 finding |
-| FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root |
+| FF (clock divider) | any of `FF_CELL_TYPES` reaching from a `Q` output | Recurse on the source flop's CLK pin; the divided clock inherits its domain identity from the upstream root. On a gate / latch leg this reading is the weaker one (rtl-buddy-cdc#408): when the legs would decline as a combine, they are re-read without the divider clause, and if exactly one declared clock then remains, that leg is the clock and a leg that reached another clock only through a flop's `Q` is an **enable launched by that flop** — CDC-010's shape (async control on a clock gate), not CDC-023's. A divided clock declared with `create_generated_clock` stops the walk at its own pin first, so it stays a clock and still combines; two legs that are both undeclared dividers still combine |
 | Transparent latch (clock-path ICG) | `$dlatch`, any `$_DLATCH_*` reaching from a `Q` output | Explore the latch's data pin (`D`) and enable pin (`EN` coarse / `E` gate-level); the leg that resolves to a declared clock is the root (whichever pin it enters on). A clock routed through a latch-based ICG can enter on either pin depending on the coding style. Two distinct declared clocks combining decline and are reported as CDC-023 (see below). **Clock-resolution only** — latch transparency here never reaches data-path crossing detection, which keeps treating a latch as an opaque endpoint (CDC-017). See issue #263 (P2) |
 
 The walker maintains a per-call `seen` set keyed on bit ID and a
@@ -2532,7 +2603,17 @@ infrastructure:
 1. Enumerate clock-network cells with `_clock_network_cells`
    (same set CDC-008 *exempts*).
 2. For each cell, look up its control pins via `_control_pins_for`
-   — Yosys-primitive only: `$mux.S`, `$dffe.EN`, `$dlatch.EN`.
+   — Yosys-primitive only: `$mux.S`, `$dffe.EN`, `$dlatch.EN`. For a
+   gate (`$and` / `$or` / … / gate-level `$_AND_` …) or a latch the
+   clock-root walk resolved through, the control pins are instead the
+   legs the walk read as **not** the clock (`ctx.clock_network_events`,
+   the `on_clock_control` events of the same walk CDC-023's combines
+   come from; rtl-buddy-cdc#408). That covers the raw `$and` clock gate,
+   which has no named control pin, and the latch ICG
+   `always_latch if (!clk) en_l = en;`, whose enable enters on `D`
+   with the clock on `EN`. Needs an SDC with two or more declared
+   clocks: without clock identities the walk cannot tell the clock
+   leg from the enable.
 3. Backward-walk each control pin's fanin with
    `_backward_flop_fanin` (same helper RDC-001 uses on `ARST`).
 4. Classify the cell's *non-control* inputs by source clock domain
@@ -3311,7 +3392,16 @@ two implementations agreeing, and the mux exclusion, the same-clock
 (#166) exclusion, and the sentinel exclusion are all inherited for
 free.
 
-The cost is one extra clock-root pass over the flop list. It is skipped
+A leg that reaches a declared clock only through a flop's `Q` (the
+divider clause) is not a second clock when another leg is a declared
+clock: the walk re-reads the legs without the divider clause before
+declining, and such a gate resolves to its clock with the flop's leg as
+an enable — CDC-010's finding, not CDC-023's (rtl-buddy-cdc#408).
+
+The cost is one extra clock-root pass over the flop list, shared with
+CDC-010, which reads the same walk's control events
+(`domain.clock_network_events`, cached on the rule context;
+rtl-buddy-cdc#408). It is skipped
 outright when fewer than two clock identities are declared (no SDC, or
 a single-clock design), which is the case where an extra walk would buy
 nothing.
