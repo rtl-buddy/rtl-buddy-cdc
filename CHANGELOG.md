@@ -37,7 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   register(s) left out of the CDC analysis …`); the `lint` Yosys flow no
   longer runs `opt_clean`, which deleted such registers before the
   analyzer could name them (verdict-identical: the analyzer prunes the
-  same cells); and an `inout` top-level port, which the crossing walk
+  same cells, and the frontend folds the `$buf` cells `read_slang`
+  writes for assignments and port connections into wires itself, as
+  `opt_clean` did, so they are not counted as logic before a
+  synchroniser); and an `inout` top-level port, which the crossing walk
   does not start from (Yosys `read_verilog` makes one of each member of
   an interface port without a modport), is reported on stderr.
 - **CDC-020 on async-FIFO storage written in an async-reset block**

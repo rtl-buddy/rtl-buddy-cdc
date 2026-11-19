@@ -154,7 +154,9 @@ built is pluggable:
 - **Yosys frontend** (`frontends/yosys.py`) — runs `yosys -p
   'read_verilog ...; hierarchy -top X; proc; flatten;
   write_json /tmp/out.json'` (no `opt_clean` since rtl-buddy-cdc#414,
-  §4.1a), then loads the JSON via `netlist.load`.
+  §4.1a), folds each `$buf` cell into a wire (`read_slang` writes one
+  per assignment and port connection; left in, it would count as logic
+  before a synchroniser), then loads the JSON via `netlist.load`.
   This is the historical primary path and remains the default for
   `lint --frontend yosys` / `analyze --netlist file.json`.
 - **slang frontend** (`frontends/slang.py`) — elaborates SV sources
