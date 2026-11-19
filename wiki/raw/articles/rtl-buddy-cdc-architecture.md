@@ -1229,7 +1229,8 @@ the parent's rule reach the verdict the flat run reaches
   every non-clock input pin of the instance: an acknowledge entering the
   stub anywhere counts as holding it. That can miss a stub that takes an
   acknowledge and still lets its payload run (the stub's limit); it
-  never reports where the flat run finds an acknowledge.
+  never reports where the flat run finds an acknowledge, and since
+  rtl-buddy-cdc#411 it is never silent: see *Stub readings* below.
 - **Feed-through (outputs, CDC-024 / CDC-025; rtl-buddy-cdc#408).** The
   input pins with a combinational path to each output
   (`PortFacts.feedthrough`, carried to the parent as the parent nets on
@@ -1238,7 +1239,35 @@ the parent's rule reach the verdict the flat run reaches
   block there, so a register in another clock reaching a top-level
   output through a block's gate is a launch of that output, as flat. A
   stub publishes no feed-through: its outputs are one launch each, in
-  the block's clock.
+  the block's clock, unless a `// rbcdc: stub` pragma declares the
+  paths (*Stub readings* below).
+- **Asynchronous memory reads (outputs and inputs; rtl-buddy-cdc#411).**
+  The flat crossing walk passes a memory's asynchronous read from its
+  address / enable to its read data (`memory.crossing_view`'s
+  `$mem_async_read` transit) and never walks the storage — CDC-026 judges
+  that. The pass reads the body the same way: `_pin_reach` walks an
+  asynchronous read port through instead of counting it as a capture, so
+  an input that reaches only output pins, one of them through such a read
+  (`PinFacts.transit`), seeds no sink; an output that no register, latch,
+  clocked read or opaque cell launches — only such reads and input pins
+  (`compositional._output_reach`) — is no source of its own
+  (`PortBoundary.seed` False). In their place the parent's crossing walk
+  passes through the block: `domain._boundary_transit_cells` adds one
+  `$boundary_transit` cell per output with `transit_from` pins (all the
+  input pins behind an unseeded output; the transit-only pins behind a
+  seeded one), so a crossing through the read lands where the flat one
+  does. A read whose domain the body cannot place — its data reaches no
+  register inside, its address no register — is published as a
+  `netlist.MemReadFact` (memory, read port, write clocks, address pins)
+  on the output; `rules.boundary_memory_crossings` judges CDC-026 for it
+  in the parent with the flat predicate split at the pin: the read clock
+  is where the parent registers the read data (else where it computes the
+  address), and the control cone runs back from the parent nets on the
+  address pins. The finding is anchored on the instance and names the
+  memory `"<instance>.<memory>"`. All of it is gated on the body having a
+  memory read asynchronously, so no other summary changes. A read placed
+  inside (its data registered, or its address computed, in the body) is
+  the body's own CDC-026, lifted as before.
 
 - **Per-port `sync_depth` / `synchronised` (inputs).** For a *width-1*
   input port, the proof requires: the port bit has **exactly one** reader,
@@ -1340,29 +1369,60 @@ seeded as its own source — unconstrained when that output is a comb
 feed-through, so the path stays covered conservatively.
 
 **Residual imprecision, stated plainly.** Chain depth is joined across
-the boundary (above), and the shapes the #405 audit listed as judged on
-each side separately are reported at the pin under the flat rule
-(rtl-buddy-cdc#408, the pin facts above). One remains, a documented
-limit pinned by `tests/test_abstraction_parity_408.py`, reported at the
-site under another rule:
+the boundary (above), the shapes the #405 audit listed as judged on each
+side separately are reported at the pin under the flat rule
+(rtl-buddy-cdc#408, the pin facts above), and an asynchronous memory
+read through the block reaches CDC-026 as flat (rtl-buddy-cdc#411,
+`tests/test_abstraction_parity_411.py`). Two narrow differences remain
+for that read, neither a lost finding: the domain map's
+`memory_crossings[]` lists only the parent's own memories (the boundary
+read is reported by the rule, not mapped), and a read the body places by
+its own address registers is judged in the block's terms even when the
+parent registers the data in a third clock.
 
-- **A memory inside the block read asynchronously into the parent**:
-  CDC-004 at the read-address pin (captured in the block's clock) and on
-  the read data, where the flat run reports CDC-026. CDC-026 asks whether
-  a crossing from the *write* clock reaches the read port's address /
-  enable, which spans both sides of the boundary, and the read address
-  is a combinational feed-through, which a single-clock summary captures
-  in the block's clock (the conservative feed-through rule at the top of
-  this section). A per-rule fact on the output pin cannot answer it
-  without the parent's crossing walk continuing through the block.
+**Stub readings (`--blackbox` only, by construction — a stub has no
+body).** Every non-clock pin is data (CDC-001 / CDC-004 where flat
+reports CDC-010 / CDC-017 / CDC-026), a clock it carries out is data
+(CDC-001 where flat reports CDC-008), and two readings stand in for what
+the body would say:
 
-Under `--blackbox` only, by construction (a stub has no body): every
-non-clock pin is data (CDC-001 / CDC-004 where flat reports CDC-010 /
-CDC-017 / CDC-026), an output is one launch in the block's clock (an
-asynchronous merge through a stub's feed-through is not seen — CDC-025 /
-CDC-024 — and a clock it carries out is data, CDC-001 where flat reports
-CDC-008), and a stub's payload counts as held when any acknowledge from
-the destination enters it (CDC-012).
+- an output is one launch in the block's clock with **no combinational
+  path through the stub** — so an asynchronous merge through a stub's
+  feed-through (CDC-025 / CDC-024) is not seen;
+- a stub's payload counts as **held when any acknowledge from the
+  destination enters it** (CDC-012) — so a stub that takes an
+  acknowledge and lets the payload run is not seen.
+
+The conservative readings were measured and rejected as defaults
+(rtl-buddy-cdc#411): every output reached from every data input adds a
+CDC-025 error to 2 of the 13 committed stub netlists — the textbook
+synchroniser stub `bbx_input_sync` among them — and to 16 stub-view
+cases of the parity tests, one per affected top-level output, and no
+hold without evidence adds a CDC-012 to every well-formed handshake
+stub. Neither is a lost finding in the crossing walk (the stub's input
+sink and output source still report the crossing, split in two), but
+both can keep an output or hold rule quiet. So the readings are
+**never silent**: `run_all(assumptions=)` collects a
+`rules.StubAssumption` wherever one decides a verdict — the CDC-012 stub
+branch where an acknowledge entering the stub is what holds the payload,
+and a replay of CDC-024 / CDC-025 with each undeclared stub output
+reached from every data input pin (`BoundarySource.assumed_feedthrough`)
+whose extra findings are the ones the reading kept quiet. The report
+carries them as an advisory (text section, JSON `stub_assumptions[]`),
+each with the finding the other reading gives and the pragma that
+settles it. The replay costs nothing without an undeclared stub.
+
+The pragma is the user's description of the stub, in the tool's
+`rbcdc:` namespace (`pragma.scan_stubs`, lint path):
+`// rbcdc: stub <module>.<output|*> feedthrough=<inputs|none>
+hold=<inputs|none>`. A declared feed-through becomes the source's
+`feedthrough` and is walked like a greybox's; a declared hold is checked
+— the acknowledge from the destination must enter on a pin it names
+(`hold=none`: not held, CDC-012 fires). `<module>.*` sets a key for every
+output, a pragma naming the output overrides it key by key, and a
+declaration naming a port or pin the stub does not have is reported on
+stderr and dropped (`cli._checked_stub_decls`). It applies only where
+the module is a bodyless stub in the run.
 
 ### 4.10 Recognised CDC primitives (issue #275)
 
@@ -3588,6 +3648,13 @@ through logic into an R register), `good_async_fifo_inferred_ram`
 recognised), `good_same_clock_ram` (silent), and
 `bad_ram_write_addr_wrong_domain` (CDC-004 on the write port, no
 CDC-026). Both frontends reach the same verdict on all five.
+
+**Inside a greybox (rtl-buddy-cdc#411).** A memory in a `--greybox` body
+read asynchronously into the parent is judged in the parent from the
+body's `MemReadFact` (`rules.boundary_memory_crossings`, §4.9): same
+read-domain and control-cone predicates, the address cone starting at
+the parent nets on the block's address pins, the finding anchored on the
+instance. A bodyless stub shows no memory: CDC-004 at its pins.
 
 ### 8.21 CDC-024 — top-level output launched asynchronously to its contract (issue #323)
 

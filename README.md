@@ -204,15 +204,23 @@ block's combinational feed-through (CDC-025 / CDC-024). A pin the body only
 steers a clock with, feeds a latch with, or does not use seeds no boundary
 sink, as no crossing ends behind it flat.
 
-One shape is still judged on each side separately and reports a different
-rule — never nothing at the site: a memory inside the block whose
-asynchronous read reaches the parent (CDC-004 at the read address pin and
-the read data, instead of CDC-026). A stub (`--blackbox`) has no body, so it
-keeps the pre-#408 readings: every non-clock pin is data (CDC-001 / CDC-004
-where the flat run says CDC-010 / CDC-017 / CDC-026), an output is one
-launch in the block's clock (no feed-through, so a merge through it is not
-seen, and a clock carried out is data), and its payload counts as held when
-an acknowledge from the destination enters the stub on any pin.
+Since rtl-buddy-cdc#411 a memory inside a greybox whose asynchronous read
+reaches the parent is judged as flat too: the crossing walk passes through
+the block from the read-address pin to the read-data pin (an asynchronous
+read is a transit, not a capture), and the parent raises CDC-026 when no
+crossing from the write clock reaches the read address — where it used to
+report CDC-004 at the address pin and on the read data.
+
+A stub (`--blackbox`) has no body, so it keeps the pre-#408 readings: every
+non-clock pin is data (CDC-001 / CDC-004 where the flat run says CDC-010 /
+CDC-017 / CDC-026), a clock carried out is data, an output is one launch in
+the block's clock with **no combinational path through the stub**, and its
+payload counts as **held when an acknowledge from the destination enters
+the stub** on any pin. The last two can keep a finding quiet that the flat
+run reports (an asynchronous merge through the stub, CDC-025 / CDC-024; a
+stub that takes an acknowledge and still lets its payload run, CDC-012), so
+the run says whenever they decide a verdict — see
+[Describing a stub](#describing-a-stub).
 
 **Clock pins of a stub.** A pin is a clock pin of a bodyless
 (`--blackbox`) module when its name is on the allow-list (`clk`, `CLK`,
@@ -235,6 +243,39 @@ sibling instance of the same module whose clock context summarises is
 abstracted and gets no `CDC-BBX` (rtl-buddy-cdc#408).
 
 **It is opt-in — without `--blackbox`, behavior is unchanged.** On a normally-flattened netlist with no blackbox modules there is nothing to abstract, so the analyzer walks the full flat design exactly as in prior releases (the pre-existing fixture suite is unchanged proof). The abstraction is conservative: exact for registered single-clock logic, and it over-approximates but **never under-reports** on combinational paths through a boundary — see [`wiki/raw/articles/rtl-buddy-cdc-architecture.md`](wiki/raw/articles/rtl-buddy-cdc-architecture.md) §4.8–§4.9 for the precision model.
+
+### Describing a stub
+
+The conservative readings — every stub output reached combinationally from
+every data input, no payload ever held — would add a finding to every
+well-formed stub with a foreign-domain input or a req/ack handshake (measured
+on the committed fixtures: a CDC-025 error on the textbook synchroniser
+stub), so they are not the default. Instead, each time one of the readings
+above is what keeps CDC-024, CDC-025 or CDC-012 quiet, the report lists it
+under **stub assumptions** (an advisory: text report section, JSON
+`stub_assumptions[]` with `rule_id` / `instance` / `module` / `port` /
+`message`; it never changes the exit code). The message carries the finding
+the other reading gives and the pragma that settles it:
+
+```systemverilog
+// rbcdc: stub blk.q feedthrough=d,e      // q is a comb function of d and e
+// rbcdc: stub blk.* feedthrough=none     // every output of blk is registered
+// rbcdc: stub blk.data hold=ack          // data is held until ack
+// rbcdc: stub blk.data hold=none         // data is not held
+```
+
+Grammar: `// rbcdc: stub <module>.<output|*> key=value…` in a `//` or
+`/* … */` comment, anywhere in the `lint` sources; keys `feedthrough` and
+`hold`, each a comma-separated list of the stub's input pins or `none`; free
+text after the last `key=value` is a note. `<module>.*` sets a key for every
+output, and a pragma naming the output overrides it key by key. A declared
+feed-through is walked like a greybox's (the stub reaches the flat verdict
+when the declaration is right); a declared hold is checked — the
+acknowledge from the destination must enter on a pin it names. The pragma
+applies to bodyless stubs only: a flattened or `--greybox` run ignores it
+(the body says what the pins do). One naming a port or pin the stub does not
+have is reported on stderr and ignored. The `analyze` path reads no sources,
+so there the advisories are the only record.
 
 ## XPM CDC macro recognition
 
@@ -434,6 +475,8 @@ Suppressed by waivers (1)
 
 In `--format json` the `suppressed[].waiver` object gains an `origin` key: `null` for a waiver-file entry (so `source_line` is a line in the `--waivers` file), the source path for a pragma (so `source_line` is the line of the pragma in the RTL).
 
+The same namespace carries one more pragma, `// rbcdc: stub`, which suppresses nothing: it declares what a bodyless `--blackbox` stub does with its pins — see [Describing a stub](#describing-a-stub).
+
 ### Block scoping
 
 An `enable-rule` closes the region a `disable-rule` opened:
@@ -588,7 +631,7 @@ src/rtl_buddy_cdc/
   rules.py      # CDC-001..-008 + RULES registry
   primitives.py # Sanctioned CDC macro registry (xpm_cdc_*) + depth params
   waivers.py    # Waiver file parser + apply()
-  pragma.py     # In-RTL `// rbcdc:` pragma scanner
+  pragma.py     # In-RTL `// rbcdc:` pragma scanner (waivers, stub declarations)
   reporter.py   # text / JSON / SARIF formatters
 tests/
   fixtures/
