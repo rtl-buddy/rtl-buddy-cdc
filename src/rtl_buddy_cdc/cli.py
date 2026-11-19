@@ -893,17 +893,20 @@ def _analyze_module_and_report(
     # (rtl-buddy-cdc#414, :mod:`rtl_buddy_cdc.regfile`), also named.
     regfiles: list[tuple[str | None, regfile_mod.RegisterMemory]] = []
     unobserved: list[tuple[str | None, str]] = []
+    regfile_notes: list[str] = []
 
     def prepare(body: netlist.Module, owner: str | None) -> netlist.Module:
         pruned = prune_dead_cells(body, blackboxes)
         unobserved.extend((owner, n) for n in dropped_registers(body, pruned))
         # On the live netlist: a dead reader of a decode would read as a
         # second use of it. The decode the rewrite leaves unread goes too.
-        found = regfile_mod.recognise(pruned)
-        if not found:
+        notes: list[str] = []
+        found = regfile_mod.recognise(pruned, notes)
+        rewritten, done = regfile_mod.rewrite(pruned, found, notes)
+        regfile_notes.extend(f"{owner}: {n}" if owner else n for n in notes)
+        if not done:
             return pruned
-        regfiles.extend((owner, m) for m in found)
-        rewritten = regfile_mod.rewrite(pruned, found)
+        regfiles.extend((owner, m) for m in done)
         final = prune_dead_cells(rewritten, blackboxes)
         unobserved.extend((owner, n) for n in dropped_registers(rewritten, final))
         return final
@@ -914,6 +917,8 @@ def _analyze_module_and_report(
             name: prepare(body, name) if body.cells else body
             for name, body in blackboxes.items()
         }
+    for line in regfile_notes:
+        typer.echo(f"note: {line}", err=True)
     for owner, mem in regfiles:
         typer.echo(
             f"note: register array {owner + ':' if owner else ''}{mem.memid} "

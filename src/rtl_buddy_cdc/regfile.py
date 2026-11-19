@@ -86,6 +86,8 @@ class RegisterMemory:
     # Read ports: (read data in column order, control leaves).
     reads: tuple[tuple[tuple[Bit, ...], tuple[Bit, ...]], ...]
     read_cells: tuple[str, ...]  # the read mux trees and their decode
+    # The hold / load multiplexers and the write decode only it reads.
+    write_cells: tuple[str, ...]
     src: str | None
 
 
@@ -193,8 +195,11 @@ class _Evaluator:
         self.symbols = symbols
         self.env: dict[Bit, Value] = {}
         self.memo: dict[str, dict[str, list[Value]]] = {}
+        self._deps: dict[str, tuple[str, ...]] = {}
 
     def reset(self, env: dict[Bit, Value]) -> None:
+        """Start a new assignment. Its keys (the leaves) must be the same
+        in every assignment of one evaluator."""
         self.env = env
         self.memo = {}
 
@@ -211,9 +216,57 @@ class _Evaluator:
         name, pin, idx = drv
         outs = self.memo.get(name)
         if outs is None:
-            outs = self._cell(self.module.cells[name])
-            self.memo[name] = outs
+            self._settle(name)
+            outs = self.memo[name]
         return outs[pin][idx]
+
+    def _settle(self, root: str) -> None:
+        """Evaluate cell ``root`` and, first, every unevaluated cell it
+        depends on, without recursion (rtl-buddy-cdc#414: a 256-deep mux
+        chain overflowed the Python stack): a cell is evaluated once all
+        its inputs are leaves, symbols or evaluated cells."""
+        expanded: set[str] = set()
+        stack = [root]
+        memo = self.memo
+        while stack:
+            name = stack[-1]
+            if name in memo:
+                stack.pop()
+                continue
+            if name in expanded:
+                # Every input is settled now.
+                memo[name] = self._cell(self.module.cells[name])
+                stack.pop()
+                continue
+            expanded.add(name)
+            for dep in self._deps_of(name):
+                if dep in memo:
+                    continue
+                if dep in expanded:
+                    raise _Unsupported("combinational loop")
+                stack.append(dep)
+
+    def _deps_of(self, name: str) -> tuple[str, ...]:
+        """The cells driving ``name``'s inputs that are neither leaves nor
+        symbols. The leaves are the same in every assignment, so this is
+        computed once per cell."""
+        deps = self._deps.get(name)
+        if deps is None:
+            cell = self.module.cells[name]
+            found: dict[str, None] = {}
+            for pin, bits in cell.connections.items():
+                if cell.is_output_pin(pin):
+                    continue
+                for b in bits:
+                    if not isinstance(b, int) or b in self.env or b in self.symbols:
+                        continue
+                    drv = self.drivers.get(b)
+                    if drv is None:
+                        raise _Unsupported(f"leaf {b} not assigned")
+                    found[drv[0]] = None
+            deps = tuple(found)
+            self._deps[name] = deps
+        return deps
 
     def bits(self, bits: tuple[Bit, ...]) -> list[Value]:
         return [self.bit(b) for b in bits]
@@ -560,6 +613,15 @@ def _write_side(
                     raise _Unsupported("two write data sources")
     if any(b is None or b in q_owner for b in wdata):
         raise _Unsupported("no shared write data")
+    # A hold / load multiplexer is the register's next state and nothing
+    # else's: logic reading it would read a word the rewrite removes.
+    for name in owned:
+        cell = module.cells[name]
+        if cell.type in _WORD_TYPES:
+            continue
+        for b in _cell_out_bits(cell):
+            if b in ports or any(c not in owned for c, _p in consumers.get(b, ())):
+                raise _Unsupported("a register's next state is read elsewhere")
     data: tuple[Bit, ...] = tuple(b for b in wdata if b is not None)
     if not any(isinstance(b, int) for b in data):
         raise _Unsupported("constant write data")
@@ -575,26 +637,31 @@ def _write_side(
     symbols.update({b: ("w", j) for j, b in enumerate(data) if isinstance(b, int)})
     ev = _Evaluator(module, drivers, symbols)
     loaded = [False] * len(words)
+    plan = []
+    for k, w in enumerate(words):
+        en_pin, pol = _word_pins(w)
+        en_bit = w.connections[en_pin][0] if en_pin is not None else None
+        hold = [("q", k, j) for j in range(width)]
+        plan.append((k, en_bit, 1 if pol else 0, tuple(w.connections["D"]), hold))
     for values in product((0, 1), repeat=len(order)):
         ev.reset(dict(zip(order, values)))
         writes = 0
-        for k, w in enumerate(words):
-            en_pin, pol = _word_pins(w)
-            if en_pin is not None:
-                v = ev.bit(w.connections[en_pin][0])
+        for k, en_bit, active, d_bits, hold in plan:
+            if en_bit is not None:
+                v = ev.bit(en_bit)
                 if v not in (0, 1):
                     raise _Unsupported("undefined enable")
-                if v != (1 if pol else 0):
+                if v != active:
                     continue
-            dvals = ev.bits(tuple(w.connections["D"]))
-            if all(dv == ("q", k, j) for j, dv in enumerate(dvals)):
+            dvals = ev.bits(d_bits)
+            if dvals == hold:
                 continue
             if dvals != expected:
                 raise _Unsupported("a word loads something else")
             writes += 1
+            if writes > 1:
+                raise _Unsupported("two words loaded at once")
             loaded[k] = True
-        if writes > 1:
-            raise _Unsupported("two words loaded at once")
     if not all(loaded):
         raise _Unsupported("a word is never written")
     return data, tuple(order), owned
@@ -748,9 +815,32 @@ def _read_port(
     return tuple(sorted(rdata, key=lambda b: column[b])), tuple(order), owned
 
 
-def recognise(module: Module) -> list[RegisterMemory]:
-    """Every register array of ``module`` that is a memory (module docstring)."""
+def _truthy(raw: object) -> bool:
+    return raw is not None and any(ch not in "0" for ch in str(raw))
+
+
+def _posedge(cell: Cell) -> bool:
+    """A rising-edge word register (rtl-buddy-cdc#414: the write port the
+    rewrite builds is rising-edge, so a falling-edge array is not
+    rewritten)."""
+    if cell.type in ("$dff", "$dffe"):
+        raw = str(cell.parameters.get("CLK_POLARITY", "1"))
+        return raw[-1:] != "0"
+    return cell.type in ("$_DFF_P_",) or cell.type.startswith("$_DFFE_P")
+
+
+def recognise(module: Module, notes: list[str] | None = None) -> list[RegisterMemory]:
+    """Every register array of ``module`` that is a memory (module docstring).
+
+    Never raises: an array whose analysis fails for any reason stays
+    registers, and when ``notes`` is given a line saying so is appended to
+    it."""
     elements = element_netnames(module)
+    keep_nets = {
+        tuple(nn.bits)
+        for nn in module.netnames.values()
+        if _truthy(nn.attributes.get("keep"))
+    }
     groups: dict[tuple, list[tuple[int, Cell]]] = {}
     for cell in module.cells.values():
         if cell.type not in _WORD_TYPES:
@@ -775,9 +865,23 @@ def recognise(module: Module) -> list[RegisterMemory]:
         try:
             for w in words:
                 _word_pins(w)
+                if not _posedge(w):
+                    raise _Unsupported("falling-edge registers")
+                if (
+                    _truthy(w.attributes.get("keep"))
+                    or tuple(w.connections["Q"]) in keep_nets
+                ):
+                    raise _Unsupported("a register is marked keep")
             wdata, wctl, wcells = _write_side(module, words, drivers, consumers, ports)
             reads, rcells = _read_side(module, words, wcells, drivers, consumers, ports)
         except _Unsupported:
+            continue
+        except Exception as exc:  # noqa: BLE001 - never fail the run over this
+            if notes is not None:
+                notes.append(
+                    f"register array {key[0]} left as registers: its memory "
+                    f"check failed ({type(exc).__name__}: {exc})"
+                )
             continue
         out.append(
             RegisterMemory(
@@ -788,67 +892,149 @@ def recognise(module: Module) -> list[RegisterMemory]:
                 write_control=wctl,
                 reads=reads,
                 read_cells=tuple(sorted(rcells)),
+                write_cells=tuple(sorted(wcells - {w.name for w in words})),
                 src=words[0].attributes.get("src"),
             )
         )
     return out
 
 
-def rewrite(module: Module, memories: list[RegisterMemory]) -> Module:
-    """``module`` with each of ``memories`` as a write port and an
-    asynchronous read port (``MEMID`` its array name): the word registers
-    and the read tree are removed; the write decode is left for the
-    liveness pass, which removes it as nothing reads it any more."""
-    if not memories:
-        return module
-    cells = dict(module.cells)
-    for mem in memories:
-        for name in mem.words + mem.read_cells:
-            cells.pop(name, None)
-        attrs = {"src": mem.src} if mem.src else {}
-        abits = len(mem.write_control)
-        params = {
-            "MEMID": f"\\{mem.memid}",
-            "WIDTH": format(len(mem.wdata), "b"),
-            "ABITS": format(max(abits, 1), "b"),
-        }
-        wr = f"{mem.memid}$regfile$wr"
-        cells[wr] = Cell(
-            name=wr,
-            type="$memwr_v2",
-            connections={
-                "CLK": (mem.clk,),
-                "ADDR": mem.write_control,
-                "DATA": mem.wdata,
-                "EN": (),
-            },
-            parameters={**params, "CLK_ENABLE": "1", "PORTID": "0"},
+def _driven(module: Module) -> set[Bit]:
+    """Every bit something drives: a cell output or a module input."""
+    out: set[Bit] = {
+        b
+        for p in module.ports.values()
+        if p.direction != "output"
+        for b in p.bits
+        if isinstance(b, int)
+    }
+    for cell in module.cells.values():
+        out.update(_cell_out_bits(cell))
+    return out
+
+
+def _read_bits(module: Module) -> set[Bit]:
+    """Every bit something reads: a cell input or a module output."""
+    out: set[Bit] = {
+        b
+        for p in module.ports.values()
+        if p.direction != "input"
+        for b in p.bits
+        if isinstance(b, int)
+    }
+    for cell in module.cells.values():
+        for pin, bits in cell.connections.items():
+            if not cell.is_output_pin(pin):
+                out.update(b for b in bits if isinstance(b, int))
+    return out
+
+
+def _rewrite_one(module: Module, mem: RegisterMemory) -> Module | None:
+    """``module`` with ``mem`` as a memory, or ``None`` when that would
+    leave something reading a net nothing drives any more.
+
+    A cell is deleted only if every reader of every one of its outputs is
+    deleted too (or the output is the new read port's data): a read-side
+    decode the write side also uses stays (rtl-buddy-cdc#414). The result
+    is then checked as a whole — no bit that was driven and is read
+    afterwards may be undriven — so a reader the recognition missed (of a
+    word, of a hold mux) refuses the rewrite instead of silently cutting a
+    crossing."""
+    consumers = _consumers(module)
+    redriven = {b for rdata, _ctl in mem.reads for b in rdata if isinstance(b, int)}
+    # What the new ports read must stay driven.
+    needed = set(mem.write_control) | set(mem.wdata)
+    for _rdata, ctl in mem.reads:
+        needed.update(ctl)
+    words = set(mem.words)
+    doomed = words | set(mem.read_cells) | set(mem.write_cells)
+    changed = True
+    while changed:
+        changed = False
+        for name in sorted(doomed - words):
+            cell = module.cells[name]
+            for b in _cell_out_bits(cell):
+                if b in redriven:
+                    continue
+                if b in needed or any(
+                    c not in doomed for c, _p in consumers.get(b, ())
+                ):
+                    doomed.discard(name)
+                    changed = True
+                    break
+    cells = {n: c for n, c in module.cells.items() if n not in doomed}
+    attrs = {"src": mem.src} if mem.src else {}
+    params = {
+        "MEMID": f"\\{mem.memid}",
+        "WIDTH": format(len(mem.wdata), "b"),
+        "ABITS": format(max(len(mem.write_control), 1), "b"),
+    }
+    wr = f"{mem.memid}$regfile$wr"
+    cells[wr] = Cell(
+        name=wr,
+        type="$memwr_v2",
+        connections={
+            "CLK": (mem.clk,),
+            "ADDR": mem.write_control,
+            "DATA": mem.wdata,
+            "EN": (),
+        },
+        parameters={**params, "CLK_ENABLE": "1", "CLK_POLARITY": "1", "PORTID": "0"},
+        attributes=dict(attrs),
+        port_directions={
+            "CLK": "input",
+            "ADDR": "input",
+            "DATA": "input",
+            "EN": "input",
+        },
+    )
+    for i, (rdata, rctl) in enumerate(mem.reads):
+        rd = f"{mem.memid}$regfile$rd{i}"
+        cells[rd] = Cell(
+            name=rd,
+            type="$memrd_v2",
+            connections={"CLK": ("x",), "ADDR": rctl, "DATA": rdata, "EN": ("1",)},
+            parameters={**params, "CLK_ENABLE": "0"},
             attributes=dict(attrs),
             port_directions={
                 "CLK": "input",
                 "ADDR": "input",
-                "DATA": "input",
+                "DATA": "output",
                 "EN": "input",
             },
         )
-        for i, (rdata, rctl) in enumerate(mem.reads):
-            rd = f"{mem.memid}$regfile$rd{i}"
-            cells[rd] = Cell(
-                name=rd,
-                type="$memrd_v2",
-                connections={
-                    "CLK": ("x",),
-                    "ADDR": rctl,
-                    "DATA": rdata,
-                    "EN": ("1",),
-                },
-                parameters={**params, "CLK_ENABLE": "0"},
-                attributes=dict(attrs),
-                port_directions={
-                    "CLK": "input",
-                    "ADDR": "input",
-                    "DATA": "output",
-                    "EN": "input",
-                },
-            )
-    return replace(module, cells=cells)
+    after = replace(module, cells=cells)
+    lost = (_read_bits(after) & _driven(module)) - _driven(after)
+    if lost:
+        return None
+    return after
+
+
+def rewrite(
+    module: Module,
+    memories: list[RegisterMemory],
+    notes: list[str] | None = None,
+) -> tuple[Module, list[RegisterMemory]]:
+    """``module`` with each of ``memories`` as one ``$memwr_v2`` write port
+    and an asynchronous ``$memrd_v2`` per read tree (``MEMID`` the array
+    name), and the memories actually rewritten. The word registers and
+    the read trees go, and so do the hold multiplexers and the decode only
+    they read (whatever else still reads a cell keeps it). A
+    memory whose rewrite would cut a net something still reads
+    (:func:`_rewrite_one`) is left as registers, with a line in ``notes``."""
+    done: list[RegisterMemory] = []
+    for mem in memories:
+        try:
+            after = _rewrite_one(module, mem)
+        except Exception as exc:  # noqa: BLE001 - never fail the run over this
+            after = None
+            reason = f"{type(exc).__name__}: {exc}"
+        else:
+            reason = "other logic reads its registers or their next state"
+        if after is None:
+            if notes is not None:
+                notes.append(f"register array {mem.memid} left as registers: {reason}")
+            continue
+        module = after
+        done.append(mem)
+    return module, done
