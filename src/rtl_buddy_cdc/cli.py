@@ -38,6 +38,7 @@ from rtl_buddy_cdc.domain import (
     find_inferred_clock_candidates,
 )
 from rtl_buddy_cdc.liveness import dropped_registers, prune_dead_cells
+from rtl_buddy_cdc import regfile as regfile_mod
 from rtl_buddy_cdc.hierarchy import (
     compose_boundaries,
     reconvergence_unsafe_instances,
@@ -887,13 +888,25 @@ def _analyze_module_and_report(
     # compositional pass analyses them.
     # A register dropped this way is named on stderr (rtl-buddy-cdc#414):
     # a synchroniser whose output nothing reads must not vanish from the
-    # crossing analysis without a word.
+    # crossing analysis without a word. Before it, a register array that is
+    # a memory in all but coding style becomes the memory it describes
+    # (rtl-buddy-cdc#414, :mod:`rtl_buddy_cdc.regfile`), also named.
+    regfiles: list[tuple[str | None, regfile_mod.RegisterMemory]] = []
     unobserved: list[tuple[str | None, str]] = []
 
     def prepare(body: netlist.Module, owner: str | None) -> netlist.Module:
         pruned = prune_dead_cells(body, blackboxes)
         unobserved.extend((owner, n) for n in dropped_registers(body, pruned))
-        return pruned
+        # On the live netlist: a dead reader of a decode would read as a
+        # second use of it. The decode the rewrite leaves unread goes too.
+        found = regfile_mod.recognise(pruned)
+        if not found:
+            return pruned
+        regfiles.extend((owner, m) for m in found)
+        rewritten = regfile_mod.rewrite(pruned, found)
+        final = prune_dead_cells(rewritten, blackboxes)
+        unobserved.extend((owner, n) for n in dropped_registers(rewritten, final))
+        return final
 
     module = prepare(module, None)
     if blackboxes:
@@ -901,6 +914,14 @@ def _analyze_module_and_report(
             name: prepare(body, name) if body.cells else body
             for name, body in blackboxes.items()
         }
+    for owner, mem in regfiles:
+        typer.echo(
+            f"note: register array {owner + ':' if owner else ''}{mem.memid} "
+            f"({len(mem.words)} x {len(mem.wdata)} bits, one write decode, "
+            f"{len(mem.reads)} read mux tree(s)) is analysed as a memory "
+            "(CDC-026 judges its storage path)",
+            err=True,
+        )
     if unobserved:
         shown = [f"{m}:{n}" if m else n for m, n in unobserved[:_UNOBSERVED_SHOWN]]
         more = len(unobserved) - len(shown)

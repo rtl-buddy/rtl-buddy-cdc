@@ -43,6 +43,7 @@ from rtl_buddy_cdc.flops import (
 )
 from rtl_buddy_cdc.gate_eval import cone_tables
 from rtl_buddy_cdc.memory import MemPort, find_memories
+from rtl_buddy_cdc.regfile import element_netnames
 from rtl_buddy_cdc.netlist import (
     Bit,
     Cell,
@@ -7587,6 +7588,7 @@ def check_cdc_020(
         groups[key][c.dst_flop.cell.name] = c.dst_flop
 
     violations: list[Violation] = []
+    elements: dict[tuple[Bit, ...], tuple[str, int]] | None = None
     for (src_name, dst_clock), dst_map in sorted(groups.items()):
         if len(dst_map) < 2:
             continue  # not sliced — single dst recombines it natively
@@ -7626,6 +7628,9 @@ def check_cdc_020(
             for dst in dst_map.values()
         ):
             continue
+        if elements is None:
+            elements = element_netnames(module)
+        element = elements.get(tuple(src_flop.q))
         violations.append(
             _cdc_020_violation(
                 f"flop {src_name}",
@@ -7633,13 +7638,20 @@ def check_cdc_020(
                 dst_clock,
                 sorted(dst_map),
                 src_name,
+                array=None if element is None else element[0],
             )
         )
     return violations
 
 
 def _cdc_020_violation(
-    source: str, width: int, dst_clock: str, lanes: list[str], cell_name: str
+    source: str,
+    width: int,
+    dst_clock: str,
+    lanes: list[str],
+    cell_name: str,
+    *,
+    array: str | None = None,
 ) -> Violation:
     """One CDC-020 finding: ``source`` sliced into ``lanes``."""
     lane_desc = ", ".join(lanes[:4]) + (
@@ -7660,6 +7672,21 @@ def _cdc_020_violation(
             f"the source (mark `(* cdc_gray *)`), use a req/ack "
             f"handshake, or replace the per-lane sync chains with "
             f"a single multi-bit sync chain."
+            + (
+                ""
+                if array is None
+                else (
+                    f" The source is an element of the register array "
+                    f"`{array}` (rtl-buddy-cdc#414): an array written in a "
+                    f"block with an asynchronous reset is registers, not a "
+                    f"memory, and is judged as one only when it is exactly "
+                    f"one write decode and one read mux (then CDC-026 judges "
+                    f"its storage path). If this is FIFO / RAM storage, write "
+                    f"it from a clocked block without a reset, or waive "
+                    f"CDC-020 for `{array}` when a synchronised pointer "
+                    f"protocol keeps the read word stable."
+                )
+            )
         ),
         cell_name=cell_name,
     )

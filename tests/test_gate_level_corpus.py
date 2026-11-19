@@ -176,6 +176,13 @@ _R_OPT_CONST_FLOP = (
     "bug under test (optimisation changes the design, not the lowering)"
 )
 
+_R_REGFILE_RTL_ONLY = (
+    "limitation: a register array is judged as a memory only when its read "
+    "is a tree of multiplexer cells (rtl-buddy-cdc#414); techmap lowers the "
+    "read $pmux to AND / OR gates, so the gate legs keep the words as "
+    "registers and their sliced capture fires CDC-020"
+)
+
 
 def _both(reason: str) -> dict[str, str]:
     return {leg: reason for leg in GATE_LEGS}
@@ -186,6 +193,8 @@ _KNOWN_GATE_DIVERGENCES: dict[str, dict[str, str]] = {
     "bad_reset_sync_deassert_polarity": {"synth": _R_OPT_CONST_FLOP},
     # Its backwards-polarity chain (`w0`) is the same stuck-at-0 flop.
     "bad_reset_sync_foreign_reg": {"synth": _R_OPT_CONST_FLOP},
+    # The register-array memory recogniser reads RTL-level netlists only.
+    "good_async_fifo_reset_block": _both(_R_REGFILE_RTL_ONLY),
 }
 
 
