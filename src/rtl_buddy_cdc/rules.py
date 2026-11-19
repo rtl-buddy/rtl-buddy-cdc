@@ -9367,6 +9367,16 @@ def _stub_assumptions(
                 )
     if clock_spec is None or not any(s.assumed_feedthrough for s in stub_sources):
         return out
+    # Only an output whose cone (as the rules just walked it) stops at an
+    # undeclared stub output can change: skip the replay when none does.
+    assumed_bits = {
+        b for b, src in ctx.boundary_sources.items() if src.assumed_feedthrough
+    }
+    memo = ctx.output_launch_memo.get(id(clock_spec))
+    if memo is not None and not any(
+        assumed_bits & cone for _q, _p, cone in memo._cones.values()
+    ):
+        return out
     replay = replace(
         ctx,
         boundary_sources={
