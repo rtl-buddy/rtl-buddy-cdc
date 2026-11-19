@@ -243,3 +243,17 @@ def prune_dead_cells(
         module,
         cells={name: c for name, c in module.cells.items() if name in live},
     )
+
+
+def dropped_registers(before: Module, after: Module) -> list[str]:
+    """Names of the registers / latches of ``before`` that
+    :func:`prune_dead_cells` removed to give ``after``, sorted
+    (rtl-buddy-cdc#414: reported, so a register nothing observes never
+    leaves the crossing analysis silently)."""
+    if after is before:
+        return []
+    return sorted(
+        name
+        for name, cell in before.cells.items()
+        if name not in after.cells and pure_cell_outputs(cell.type) == _Q
+    )

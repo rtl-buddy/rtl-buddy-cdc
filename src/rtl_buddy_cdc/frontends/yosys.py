@@ -195,10 +195,15 @@ def elaborate_with_blackboxes(
         grey = "".join(
             f"setattr -mod -set blackbox 1 {shlex.quote(m)}; " for m in (greybox or ())
         )
+        # No ``opt_clean`` (rtl-buddy-cdc#414): it deletes a register nothing
+        # observes (a synchroniser with an unconnected output) without a
+        # word. The analyzer prunes the same cells itself (``liveness``,
+        # verdict-identical, rtl-buddy-cdc#338) and names the registers it
+        # drops.
         script = (
             f"{read_cmd}; "
             f"hierarchy -top {shlex.quote(top)}; "
-            f"proc; {grey}flatten; opt_clean; "
+            f"proc; {grey}flatten; "
             f"write_json {shlex.quote(str(tmp_json))}"
         )
         proc = subprocess.run(
