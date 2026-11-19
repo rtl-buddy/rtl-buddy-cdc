@@ -100,6 +100,7 @@ from rtl_buddy_cdc.rules import (
     _deasserting_reset_sync_members,
     _folded_srst_selects,
     _live_mux_driver,
+    _forward_reachable_flops,
     _memory_read_domains,
     memory_clock_views,
     _forward_reachable_cells,
@@ -862,10 +863,12 @@ def _attach_memory_transit(
     walks through the block to it from the pins behind it
     (``transit_from``); an input that only reaches outputs, one through
     such a read (:attr:`PinFacts.transit`), seeds no sink and the parent
-    walks through from it to every output it reaches. A read whose
-    domain the body cannot place — its data reaches no register inside,
-    its address no register — is published for the parent's CDC-026
-    (``mem_reads``).
+    walks through from it to every output it reaches. A read whose data
+    reaches no register inside is published for the parent's CDC-026
+    (``mem_reads``): the parent sees where the data is registered. The
+    read domains the body placed by its own address registers, and
+    judged itself, travel with it (``read_clocks``) so the parent
+    leaves those to the body.
     """
     in_pins: dict[Bit, str] = {}
     for port in sub.ports.values():
@@ -914,8 +917,13 @@ def _attach_memory_transit(
             memid = memid_of[rp]
             if not writers.get(memid):
                 continue
-            if _memory_read_domains(sub, rp, clock_of, flop_clock, spec, ctx):
-                continue  # placed inside: the body's own CDC-026 judges it
+            data = tuple(b for b in rp.data if isinstance(b, int))
+            if _forward_reachable_flops(sub, data, ctx.bit_consumers):
+                continue  # registered inside: the body's own CDC-026 judges it
+            # Placed by its address registers (if any): the body judged
+            # those read domains; the parent judges the ones it registers
+            # the data in.
+            placed = _memory_read_domains(sub, rp, clock_of, flop_clock, spec, ctx)
             _l, addr_pins, _r = _output_reach(
                 sub, rp.control_bits, ctx, reads, in_pins, driven
             )
@@ -925,6 +933,7 @@ def _attach_memory_transit(
                     read_port=rp.endpoint,
                     write_clocks=writers[memid],
                     addr_pins=tuple(sorted(addr_pins)),
+                    read_clocks=tuple(sorted(placed)),
                 )
             )
         ports[name] = replace(

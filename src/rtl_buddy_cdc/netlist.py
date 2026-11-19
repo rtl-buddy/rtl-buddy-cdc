@@ -199,12 +199,12 @@ class MemReadFact:
     """A memory inside an abstracted block whose asynchronous read data
     leaves through an output pin (rtl-buddy-cdc#411).
 
-    Published by the greybox pass when the body alone cannot place the
-    read in a clock domain — its data reaches no register inside and its
-    address no register or typed port — so the parent, which can, judges
+    Published by the greybox pass when the read data reaches no register
+    inside, so the parent, which sees where it is registered, judges
     CDC-026 for it: the read clock is where the parent registers the
     output (or computes the address), and the control cone runs back from
-    the parent nets on ``addr_pins``. ``memory`` is the memory's name
+    the parent nets on ``addr_pins``. ``read_clocks`` are the domains of
+    the address registers inside, already judged by the body. ``memory`` is the memory's name
     inside the block, ``read_port`` the read port's endpoint there,
     ``write_clocks`` the clocks it is written on.
     """
@@ -213,6 +213,10 @@ class MemReadFact:
     read_port: str
     write_clocks: tuple[str, ...]
     addr_pins: tuple[str, ...] = ()
+    # The clocks of the registers inside the body its address is computed
+    # from: the read domains the body judged itself (its own CDC-026),
+    # which the parent leaves to it.
+    read_clocks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -1256,18 +1256,18 @@ the parent's rule reach the verdict the flat run reaches
   `$boundary_transit` cell per output with `transit_from` pins (all the
   input pins behind an unseeded output; the transit-only pins behind a
   seeded one), so a crossing through the read lands where the flat one
-  does. A read whose domain the body cannot place — its data reaches no
-  register inside, its address no register — is published as a
-  `netlist.MemReadFact` (memory, read port, write clocks, address pins)
-  on the output; `rules.boundary_memory_crossings` judges CDC-026 for it
+  does. A read whose data reaches no register inside is published as a
+  `netlist.MemReadFact` (memory, read port, write clocks, address pins,
+  and the read clocks the body placed by its own address registers and
+  judged itself) on the output; `rules.boundary_memory_crossings` judges
+  CDC-026 for every other read clock
   in the parent with the flat predicate split at the pin: the read clock
   is where the parent registers the read data (else where it computes the
   address), and the control cone runs back from the parent nets on the
   address pins. The finding is anchored on the instance and names the
   memory `"<instance>.<memory>"`. All of it is gated on the body having a
-  memory read asynchronously, so no other summary changes. A read placed
-  inside (its data registered, or its address computed, in the body) is
-  the body's own CDC-026, lifted as before.
+  memory read asynchronously, so no other summary changes. A read whose
+  data the body registers is the body's own CDC-026, lifted as before.
 
 - **Per-port `sync_depth` / `synchronised` (inputs).** For a *width-1*
   input port, the proof requires: the port bit has **exactly one** reader,
@@ -1373,12 +1373,10 @@ the boundary (above), the shapes the #405 audit listed as judged on each
 side separately are reported at the pin under the flat rule
 (rtl-buddy-cdc#408, the pin facts above), and an asynchronous memory
 read through the block reaches CDC-026 as flat (rtl-buddy-cdc#411,
-`tests/test_abstraction_parity_411.py`). Two narrow differences remain
-for that read, neither a lost finding: the domain map's
-`memory_crossings[]` lists only the parent's own memories (the boundary
-read is reported by the rule, not mapped), and a read the body places by
-its own address registers is judged in the block's terms even when the
-parent registers the data in a third clock.
+`tests/test_abstraction_parity_411.py`). One narrow difference remains
+for that read, not a lost finding: the domain map's `memory_crossings[]`
+lists only the parent's own memories (the boundary read is reported by
+the rule, not mapped).
 
 **Stub readings (`--blackbox` only, by construction — a stub has no
 body).** Every non-clock pin is data (CDC-001 / CDC-004 where flat

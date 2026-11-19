@@ -174,6 +174,7 @@ class BoundaryMemRead:
     read_port: str  # "<instance>.<read port endpoint>"
     write_clocks: tuple[str, ...]
     addr_bits: tuple[Bit, ...]
+    read_clocks: tuple[str, ...] = ()  # judged by the body (MemReadFact)
 
 
 @dataclass(frozen=True)
@@ -9168,11 +9169,16 @@ def boundary_memory_crossings(
     for key in sorted(reads):
         mr = reads[key]
         data = tuple(sorted(set(data_of[key]), key=str))
-        read_domains = _async_read_domains(
-            module, data, mr.addr_bits, flop_clock, clock_spec, ctx
-        )
+        captured = _forward_reachable_flops(module, data, ctx.bit_consumers)
+        read_domains = {k for n in captured if (k := flop_clock(n)) is not None}
+        if not read_domains:
+            read_domains = set(mr.read_clocks) | _async_read_domains(
+                module, data, mr.addr_bits, flop_clock, clock_spec, ctx
+            )
         inst = mr.instance
         for r in sorted(read_domains):
+            if r in mr.read_clocks:
+                continue  # placed by the body's address registers: judged there
             foreign = [w for w in mr.write_clocks if w != r]
             if not foreign:
                 continue
@@ -9374,7 +9380,7 @@ def _stub_assumptions(
         output_launch_memo={},
     )
     have = {
-        (v.rule_id, m.group(1))
+        (v.rule_id, v.severity, m.group(1))
         for v in found
         if v.rule_id in ("CDC-024", "CDC-025")
         and (m := _OUTPUT_LABEL.search(v.message)) is not None
@@ -9384,7 +9390,7 @@ def _stub_assumptions(
         module, crossings, clock_spec, ctx=replay
     ):
         m = _OUTPUT_LABEL.search(v.message)
-        if m is None or (v.rule_id, m.group(1)) in have:
+        if m is None or (v.rule_id, v.severity, m.group(1)) in have:
             continue
         stubs = _assumed_stubs(idx.cone(m.group(1))[2], replay)
         if not stubs:

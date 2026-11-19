@@ -1284,6 +1284,7 @@ def _analyze_module_and_report(
                             memory=f"{inst_name}.{mr.memory}",
                             read_port=f"{inst_name}.{mr.read_port}",
                             write_clocks=mr.write_clocks,
+                            read_clocks=mr.read_clocks,
                             addr_bits=tuple(
                                 b
                                 for pin in mr.addr_pins

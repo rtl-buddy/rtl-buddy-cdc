@@ -118,6 +118,17 @@ _READ_FAST = _READ_SLOW.replace("posedge slow) q <= o", "posedge fast) q <= o")
 
 _MEM_SDC = _SDC + _typed("fast", "a", "d", "w")
 
+# The block registers the read address in its own (the write) clock and
+# reads asynchronously from it: the body places the read in the write
+# clock, but the parent registers the data in the other one — CDC-026 is
+# the parent's, as flat (with CDC-004 for the address register's value
+# crossing through the read).
+_READ_ADDR_REGISTERED = _READ_SLOW.replace(
+    "    logic [7:0] mem [4];\n",
+    "    logic [7:0] mem [4];\n    logic [1:0] rr;\n"
+    "    always_ff @(posedge clk) rr <= ra;\n",
+).replace("assign q = mem[ra];", "assign q = mem[rr];")
+
 
 @needs_slang
 @pytest.mark.parametrize(
@@ -129,8 +140,15 @@ _MEM_SDC = _SDC + _typed("fast", "a", "d", "w")
         (_READ_SLOW, "fast", {"CDC-004": 1, "CDC-026": 1}, {"CDC-004": 1}),
         (_READ_FAST, "slow", {"CDC-004": 1}, {"CDC-004": 1}),
         (_READ_SLOW_SYNCED, None, {}, {"CDC-004": 2}),
+        (_READ_ADDR_REGISTERED, "fast", {"CDC-004": 1, "CDC-026": 1}, {"CDC-004": 1}),
     ],
-    ids=["read-slow", "address-from-write-clock", "read-fast", "fifo-shape"],
+    ids=[
+        "read-slow",
+        "address-from-write-clock",
+        "read-fast",
+        "fifo-shape",
+        "address-registered-inside",
+    ],
 )
 def test_memory_async_read_through_a_greybox_matches_flat(
     tmp_path: Path, sv: str, b_clock: str | None, flat: dict, blackbox: dict
