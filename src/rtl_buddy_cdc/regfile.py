@@ -181,9 +181,16 @@ def _pick(sel: Value, a: Value, b: Value) -> Value:
 class _Evaluator:
     """Evaluate nets of ``module`` under one assignment of leaf bits."""
 
-    def __init__(self, module: Module, drivers: dict[Bit, tuple[str, str, int]]):
+    def __init__(
+        self,
+        module: Module,
+        drivers: dict[Bit, tuple[str, str, int]],
+        symbols: dict[Bit, Value],
+    ):
         self.module = module
         self.drivers = drivers
+        # Data bits, the same in every assignment.
+        self.symbols = symbols
         self.env: dict[Bit, Value] = {}
         self.memo: dict[str, dict[str, list[Value]]] = {}
 
@@ -196,6 +203,8 @@ class _Evaluator:
             return int(b) if b in ("0", "1") else "x"
         if b in self.env:
             return self.env[b]
+        if b in self.symbols:
+            return self.symbols[b]
         drv = self.drivers.get(b)
         if drv is None:
             raise _Unsupported(f"leaf {b} not assigned")
@@ -394,6 +403,13 @@ _EVALUABLE = frozenset(
 )
 # Most cells a control cone may span before the structure is given up.
 _MAX_CONE_CELLS = 4096
+# Most (assignment x register) evaluations one array may cost.
+MAX_EVALUATIONS = 1 << 18
+
+
+def _budget(leaves: int, registers: int) -> None:
+    if (1 << leaves) * registers > MAX_EVALUATIONS:
+        raise _Unsupported("enumeration over budget")
 
 
 def _control_leaves(
@@ -402,6 +418,7 @@ def _control_leaves(
     owned: set[str],
     drivers: dict[Bit, tuple[str, str, int]],
     consumers: dict[Bit, list[tuple[str, str]]],
+    ports: frozenset[Bit],
     stop: set[Bit],
 ) -> tuple[list[Bit], set[str]]:
     """Leaves of the control cone behind ``roots`` and the cells it owns.
@@ -426,7 +443,7 @@ def _control_leaves(
         if b in stop:
             raise _Unsupported("data in a control cone")
         drv = drivers.get(b)
-        if drv is None or module.port_of_bit(b) is not None:
+        if drv is None or b in ports:
             continue
         cell = module.cells[drv[0]]
         if cell.type not in _EVALUABLE or cell.name in owned or cell.name in cone:
@@ -445,7 +462,7 @@ def _control_leaves(
         for name in sorted(mine):
             cell = module.cells[name]
             if any(
-                module.port_of_bit(o) is not None
+                o in ports
                 or any(
                     c not in mine and c not in owned for c, _p in consumers.get(o, ())
                 )
@@ -467,11 +484,7 @@ def _control_leaves(
             # A structure cell (a hold mux): its select cone was given as
             # a root already.
             continue
-        if (
-            drv_name is None
-            or drv_name not in mine
-            or module.port_of_bit(b) is not None
-        ):
+        if drv_name is None or drv_name not in mine or b in ports:
             leaves.add(b)
             continue
         cell = module.cells[drv_name]
@@ -503,6 +516,7 @@ def _write_side(
     words: list[Cell],
     drivers: dict[Bit, tuple[str, str, int]],
     consumers: dict[Bit, list[tuple[str, str]]],
+    ports: frozenset[Bit],
 ) -> tuple[tuple[Bit, ...], tuple[Bit, ...], set[str]]:
     """``(wdata, control leaves, write-side cells)`` when every word holds
     or loads one shared bus, at most one loads at a time and each loads
@@ -550,20 +564,19 @@ def _write_side(
     if not any(isinstance(b, int) for b in data):
         raise _Unsupported("constant write data")
     stop = set(q_owner) | {b for b in data if isinstance(b, int)}
-    order, owned = _control_leaves(module, selects, owned, drivers, consumers, stop)
+    order, owned = _control_leaves(
+        module, selects, owned, drivers, consumers, ports, stop
+    )
     expected = [
         ("w", j) if isinstance(b, int) else _const_value(b) for j, b in enumerate(data)
     ]
-    ev = _Evaluator(module, drivers)
+    _budget(len(order), len(words))
+    symbols: dict[Bit, Value] = {b: ("q", k, j) for b, (k, j) in q_owner.items()}
+    symbols.update({b: ("w", j) for j, b in enumerate(data) if isinstance(b, int)})
+    ev = _Evaluator(module, drivers, symbols)
     loaded = [False] * len(words)
     for values in product((0, 1), repeat=len(order)):
-        env: dict[Bit, Value] = dict(zip(order, values))
-        for b, (k, j) in q_owner.items():
-            env[b] = ("q", k, j)
-        for j, b in enumerate(data):
-            if isinstance(b, int):
-                env[b] = ("w", j)
-        ev.reset(env)
+        ev.reset(dict(zip(order, values)))
         writes = 0
         for k, w in enumerate(words):
             en_pin, pol = _word_pins(w)
@@ -593,6 +606,7 @@ def _read_side(
     write_cells: set[str],
     drivers: dict[Bit, tuple[str, str, int]],
     consumers: dict[Bit, list[tuple[str, str]]],
+    ports: frozenset[Bit],
 ) -> tuple[tuple[tuple[tuple[Bit, ...], tuple[Bit, ...]], ...], set[str]]:
     """``(read ports, read-side cells)`` when the words are read by
     multiplexer trees only, each of which always yields one whole word
@@ -600,7 +614,7 @@ def _read_side(
     qbits = [tuple(w.connections["Q"]) for w in words]
     q_owner = {b: (k, j) for k, q in enumerate(qbits) for j, b in enumerate(q)}
     word_names = {w.name for w in words}
-    if any(module.port_of_bit(b) is not None for b in q_owner):
+    if any(b in ports for b in q_owner):
         raise _Unsupported("a word is a port")
     # Grow the tree: a mux whose every data input is a word bit, a tree
     # output or a constant joins it (so a user mux mixing the read data
@@ -639,14 +653,14 @@ def _read_side(
     # One read port per connected part of the tree (``hi <= mem[ra][7:4];
     # lo <= mem[ra][3:0]`` is two), each checked on its own.
     parts = _components(module, tree)
-    ports: list[tuple[tuple[Bit, ...], tuple[Bit, ...]]] = []
+    read_ports: list[tuple[tuple[Bit, ...], tuple[Bit, ...]]] = []
     owned = set(tree) | word_names | write_cells
     for part in parts:
         rdata, control, owned = _read_port(
-            module, part, q_owner, len(qbits[0]), owned, drivers, consumers
+            module, part, q_owner, len(qbits[0]), owned, drivers, consumers, ports
         )
-        ports.append((rdata, control))
-    return tuple(ports), owned - word_names - write_cells
+        read_ports.append((rdata, control))
+    return tuple(read_ports), owned - word_names - write_cells
 
 
 def _components(module: Module, tree: set[str]) -> list[set[str]]:
@@ -687,6 +701,7 @@ def _read_port(
     owned: set[str],
     drivers: dict[Bit, tuple[str, str, int]],
     consumers: dict[Bit, list[tuple[str, str]]],
+    ports: frozenset[Bit],
 ) -> tuple[tuple[Bit, ...], tuple[Bit, ...], set[str]]:
     """``(read data in column order, control leaves, owned cells)`` of one
     read port, the tree cells ``part``: over every value of its control,
@@ -700,7 +715,7 @@ def _read_port(
         inner = [n for n, _p in users if n in part]
         if not inner:
             rdata.append(b)
-        elif len(inner) != len(users) or module.port_of_bit(b) is not None:
+        elif len(inner) != len(users) or b in ports:
             raise _Unsupported("a partial read")
     selects: set[Bit] = set()
     for name in part:
@@ -708,15 +723,14 @@ def _read_port(
         for p in _MUX_LEGS[cell.type][1]:
             selects.update(x for x in cell.connections[p] if isinstance(x, int))
     order, owned = _control_leaves(
-        module, selects, owned, drivers, consumers, set(q_owner) | part_out
+        module, selects, owned, drivers, consumers, ports, set(q_owner) | part_out
     )
-    ev = _Evaluator(module, drivers)
+    _budget(len(order), 1)
+    symbols: dict[Bit, Value] = {b: ("q", k, j) for b, (k, j) in q_owner.items()}
+    ev = _Evaluator(module, drivers, symbols)
     column: dict[Bit, int] = {}
     for values in product((0, 1), repeat=len(order)):
-        env: dict[Bit, Value] = dict(zip(order, values))
-        for b, (k, j) in q_owner.items():
-            env[b] = ("q", k, j)
-        ev.reset(env)
+        ev.reset(dict(zip(order, values)))
         word: int | None = None
         for b in rdata:
             v = ev.bit(b)
@@ -752,6 +766,7 @@ def recognise(module: Module) -> list[RegisterMemory]:
         return []
     drivers = _drivers(module)
     consumers = _consumers(module)
+    ports = frozenset(b for p in module.ports.values() for b in p.bits)
     out: list[RegisterMemory] = []
     for key, members in sorted(groups.items(), key=lambda kv: str(kv[0])):
         if len(members) < 2:
@@ -760,8 +775,8 @@ def recognise(module: Module) -> list[RegisterMemory]:
         try:
             for w in words:
                 _word_pins(w)
-            wdata, wctl, wcells = _write_side(module, words, drivers, consumers)
-            reads, rcells = _read_side(module, words, wcells, drivers, consumers)
+            wdata, wctl, wcells = _write_side(module, words, drivers, consumers, ports)
+            reads, rcells = _read_side(module, words, wcells, drivers, consumers, ports)
         except _Unsupported:
             continue
         out.append(

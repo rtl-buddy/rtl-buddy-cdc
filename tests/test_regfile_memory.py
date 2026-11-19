@@ -209,7 +209,93 @@ def test_shapes_that_are_not_one_memory_stay_registers(
         assert mems == [], shape
 
 
-def test_too_many_control_bits_is_not_enumerated() -> None:
-    """The enumeration is bounded: a cone past MAX_CONTROL_BITS leaves the
-    array as registers rather than guessing."""
-    assert regfile.MAX_CONTROL_BITS <= 16
+def test_enumeration_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the evaluation budget the array stays registers rather than
+    being guessed at."""
+    module = prune_dead_cells(netlist.load(NET))
+    monkeypatch.setattr(regfile, "MAX_EVALUATIONS", 4)
+    assert regfile.recognise(module) == []
+
+
+# --- the evaluator ------------------------------------------------------------
+
+
+def _eval(cell_type: str, conns: dict, params: dict | None = None, **env):
+    """Evaluate ``Y`` of one cell whose input bits are named ints."""
+    cell = netlist.Cell("c", cell_type, conns, params or {})
+    y = conns["Y"]
+    module = netlist.Module("m", {}, {"c": cell}, {})
+    drivers = {b: ("c", "Y", i) for i, b in enumerate(y)}
+    ev = regfile._Evaluator(module, drivers, {})
+    ev.reset({int(k[1:]): v for k, v in env.items()})
+    return ev.bits(tuple(y))
+
+
+@pytest.mark.parametrize(
+    ("cell_type", "conns", "params", "env", "want"),
+    [
+        ("$mux", {"A": (1,), "B": (2,), "S": (3,), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": 1}, [1]),
+        ("$mux", {"A": (1,), "B": (2,), "S": (3,), "Y": (9,)}, {}, {"b1": 1, "b2": 1, "b3": "x"}, [1]),
+        ("$mux", {"A": (1,), "B": (2,), "S": (3,), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": "x"}, ["x"]),
+        ("$pmux", {"A": (1,), "B": (2, 3), "S": (4, 5), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": 0, "b4": 0, "b5": 1}, [0]),
+        ("$pmux", {"A": (1,), "B": (2, 3), "S": (4, 5), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": 0, "b4": 0, "b5": 0}, [0]),
+        ("$pmux", {"A": (1,), "B": (2, 3), "S": (4, 5), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": 0, "b4": 1, "b5": 1}, ["x"]),
+        ("$pmux", {"A": (1,), "B": (2, 3), "S": (4, 5), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": 0, "b4": "x", "b5": 0}, ["x"]),
+        ("$bmux", {"A": (1, 2), "S": (3,), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": 1}, [1]),
+        ("$bmux", {"A": (1, 2), "S": (3,), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": "x"}, ["x"]),
+        ("$shiftx", {"A": (1, 2), "B": (3,), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": 1}, [1]),
+        ("$shiftx", {"A": (1, 2), "B": (3, 4), "Y": (9,)}, {"B_SIGNED": "1"}, {"b1": 0, "b2": 1, "b3": 1, "b4": 1}, ["x"]),
+        ("$shiftx", {"A": (1, 2), "B": (3,), "Y": (9,)}, {}, {"b1": 0, "b2": 1, "b3": "x"}, ["x"]),
+        ("$eq", {"A": (1, 2), "B": ("1", "0"), "Y": (9,)}, {}, {"b1": 1, "b2": 0}, [1]),
+        ("$ne", {"A": (1, 2), "B": ("1", "0"), "Y": (9,)}, {}, {"b1": 1, "b2": 0}, [0]),
+        ("$eq", {"A": (1,), "B": ("1",), "Y": (9,)}, {}, {"b1": "x"}, ["x"]),
+        ("$and", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 1, "b2": 1}, [1]),
+        ("$or", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 0, "b2": 0}, [0]),
+        ("$xor", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 1, "b2": 1}, [0]),
+        ("$xnor", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 1, "b2": "x"}, ["x"]),
+        ("$_AND_", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 0, "b2": "x"}, [0]),
+        ("$_OR_", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 1, "b2": "x"}, [1]),
+        ("$_ANDNOT_", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 1, "b2": 0}, [1]),
+        ("$_ORNOT_", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 0, "b2": 1}, [0]),
+        ("$_NAND_", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 1, "b2": 1}, [0]),
+        ("$_NOR_", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 0, "b2": 0}, [1]),
+        ("$not", {"A": (1,), "Y": (9,)}, {}, {"b1": 0}, [1]),
+        ("$_NOT_", {"A": (1,), "Y": (9,)}, {}, {"b1": "x"}, ["x"]),
+        ("$pos", {"A": (1,), "Y": (9, 10)}, {"A_SIGNED": "1"}, {"b1": 1}, [1, 1]),
+        ("$logic_not", {"A": (1, 2), "Y": (9,)}, {}, {"b1": 0, "b2": 0}, [1]),
+        ("$reduce_and", {"A": (1, 2), "Y": (9,)}, {}, {"b1": 1, "b2": 0}, [0]),
+        ("$reduce_or", {"A": (1, 2), "Y": (9,)}, {}, {"b1": 1, "b2": 0}, [1]),
+        ("$reduce_bool", {"A": (1,), "Y": (9,)}, {}, {"b1": "x"}, ["x"]),
+        ("$logic_and", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 1, "b2": 1}, [1]),
+        ("$logic_or", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": 0, "b2": 0}, [0]),
+        ("$logic_or", {"A": (1,), "B": (2,), "Y": (9,)}, {}, {"b1": "x", "b2": 0}, ["x"]),
+    ],
+)  # fmt: skip
+def test_evaluator_cells(cell_type, conns, params, env, want) -> None:
+    assert _eval(cell_type, conns, params, **env) == want
+
+
+def test_evaluator_symbols() -> None:
+    """Data passes through a mux leg; logic on data, data on a select and
+    unknown cell types are not evaluated (the structure is rejected)."""
+    sym = ("q", 0, 0)
+    assert _eval(
+        "$mux", {"A": (1,), "B": (2,), "S": (3,), "Y": (9,)}, b1=sym, b2=0, b3=0
+    ) == [sym]
+    assert _eval("$and", {"A": (1,), "B": (2,), "Y": (9,)}, b1=sym, b2=1) == [sym]
+    assert _eval("$or", {"A": (1,), "B": (2,), "Y": (9,)}, b1=sym, b2=0) == [sym]
+    for bad in (
+        lambda: _eval("$xor", {"A": (1,), "B": (2,), "Y": (9,)}, b1=sym, b2=1),
+        lambda: _eval("$not", {"A": (1,), "Y": (9,)}, b1=sym),
+        lambda: _eval(
+            "$mux", {"A": (1,), "B": (2,), "S": (3,), "Y": (9,)}, b1=0, b2=1, b3=sym
+        ),
+        lambda: _eval(
+            "$pmux", {"A": (1,), "B": (2,), "S": (3,), "Y": (9,)}, b1=0, b2=1, b3=sym
+        ),
+        lambda: _eval("$eq", {"A": (1,), "B": (2,), "Y": (9,)}, b1=sym, b2=1),
+        lambda: _eval("$add", {"A": (1,), "B": (2,), "Y": (9,)}, b1=0, b2=1),
+        lambda: _eval("$and", {"A": (1,), "B": (5,), "Y": (9,)}, b1=1),
+    ):
+        with pytest.raises(regfile._Unsupported):
+            bad()
