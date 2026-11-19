@@ -186,6 +186,33 @@ class PinFacts:
     latch_feeds: tuple[tuple[str, str, str], ...] = ()
     gated: bool = False
     clock_out: tuple[str, ...] = ()
+    # rtl-buddy-cdc#411: an input that reaches no capture inside, only
+    # output pins, at least one of them through a memory's asynchronous
+    # read (address / enable → read data, a transit flat). It seeds no
+    # boundary sink; the parent's crossing walk passes through the block
+    # to the outputs it reaches (``PortBoundary.transit_from``).
+    transit: bool = False
+
+
+@dataclass(frozen=True)
+class MemReadFact:
+    """A memory inside an abstracted block whose asynchronous read data
+    leaves through an output pin (rtl-buddy-cdc#411).
+
+    Published by the greybox pass when the body alone cannot place the
+    read in a clock domain — its data reaches no register inside and its
+    address no register or typed port — so the parent, which can, judges
+    CDC-026 for it: the read clock is where the parent registers the
+    output (or computes the address), and the control cone runs back from
+    the parent nets on ``addr_pins``. ``memory`` is the memory's name
+    inside the block, ``read_port`` the read port's endpoint there,
+    ``write_clocks`` the clocks it is written on.
+    """
+
+    memory: str
+    read_port: str
+    write_clocks: tuple[str, ...]
+    addr_pins: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -246,6 +273,16 @@ class PortBoundary:
     # combinational path to it — the feed-through the parent's output-cone
     # walk (CDC-024 / CDC-025) continues through.
     feedthrough: tuple[str, ...] = ()
+    # rtl-buddy-cdc#411: for an output, the input pins the parent's
+    # crossing walk passes through the block from (as through a comb
+    # cell), and whether the pin is seeded as a source of its own:
+    # ``seed`` False when no register, latch or opaque cell launches it
+    # inside — only a memory's asynchronous read and input pins, which a
+    # flat walk transits. ``mem_reads``: the asynchronous memory reads
+    # behind it whose CDC-026 verdict the parent owns.
+    transit_from: tuple[str, ...] = ()
+    seed: bool = True
+    mem_reads: tuple[MemReadFact, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -364,6 +364,46 @@ def _boundary_for(
     return boundaries.get(module_type)
 
 
+# Cell ``type`` of the synthetic cell standing in for a block's
+# input → output transit in the crossing walk (rtl-buddy-cdc#411). Like
+# ``$mem_async_read``, not lane-aligned: every input bit reaches every
+# output bit. It never appears in the rule pack's ``Module.cells``.
+BOUNDARY_TRANSIT_TYPE = "$boundary_transit"
+
+
+def _boundary_transit_cells(
+    module: Module, boundaries: dict[str, "BoundarySummary"]
+) -> dict[str, Cell]:
+    """One ``$boundary_transit`` cell per abstracted output pin with
+    ``transit_from`` pins: ``A`` the parent bits on those input pins,
+    ``Y`` the parent bits on the output pin."""
+    out: dict[str, Cell] = {}
+    for inst_name, cell in module.cells.items():
+        summary = _boundary_for(boundaries, inst_name, cell.type)
+        if summary is None:
+            continue
+        for port_name, pb in summary.ports.items():
+            if not pb.transit_from:
+                continue
+            a = tuple(
+                b
+                for pin in pb.transit_from
+                for b in cell.connections.get(pin, ())
+                if isinstance(b, int)
+            )
+            y = tuple(
+                b for b in cell.connections.get(port_name, ()) if isinstance(b, int)
+            )
+            if a and y:
+                name = f"{inst_name}.{port_name}$transit"
+                out[name] = Cell(
+                    name=name,
+                    type=BOUNDARY_TRANSIT_TYPE,
+                    connections={"A": a, "Y": y},
+                )
+    return out
+
+
 def _boundary_sink_flops(
     module: Module,
     boundaries: dict[str, "BoundarySummary"],
@@ -2318,6 +2358,13 @@ def find_crossings(
             domains[vflop.cell.name] = FlopDomain(
                 flop=vflop, clock=port_clock_of(vflop.clk)
             )
+    if boundaries:
+        # rtl-buddy-cdc#411: where a greybox publishes that its output is
+        # a transit from input pins (an asynchronous memory read, as the
+        # flat walk passes it), the walk passes through the block there.
+        transits = _boundary_transit_cells(module, boundaries)
+        if transits:
+            module = replace(module, cells={**module.cells, **transits})
     consumers = _build_bit_consumers(module)
 
     # Synthetic boundary-*sink* flops (P3/#257): a blackbox input pin in
@@ -2619,6 +2666,10 @@ def find_crossings(
             if summary is None:
                 continue
             for port_name, pb in summary.ports.items():
+                if not pb.seed:
+                    # Nothing inside launches it (rtl-buddy-cdc#411): the
+                    # walk reaches it through the block's transit cell.
+                    continue
                 src_clk_name = pb.src_clock
                 bnd_src = f"boundary {inst_name}.{port_name}"
                 bnd_clock = (

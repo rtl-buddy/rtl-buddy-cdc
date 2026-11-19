@@ -74,6 +74,7 @@ from rtl_buddy_cdc.reset_hints import (
     load as load_reset_hints,
 )
 from rtl_buddy_cdc.rules import (
+    BoundaryMemRead,
     BoundarySource,
     Violation,
     _build_context as build_rule_context,
@@ -1231,6 +1232,23 @@ def _analyze_module_and_report(
                         for pin in pb.feedthrough
                         for b in module.cells[inst_name].connections.get(pin, ())
                         if isinstance(b, int)
+                    ),
+                    mem_reads=tuple(
+                        BoundaryMemRead(
+                            instance=inst_name,
+                            memory=f"{inst_name}.{mr.memory}",
+                            read_port=f"{inst_name}.{mr.read_port}",
+                            write_clocks=mr.write_clocks,
+                            addr_bits=tuple(
+                                b
+                                for pin in mr.addr_pins
+                                for b in module.cells[inst_name].connections.get(
+                                    pin, ()
+                                )
+                                if isinstance(b, int)
+                            ),
+                        )
+                        for mr in pb.mem_reads
                     ),
                 )
                 for b in conn:

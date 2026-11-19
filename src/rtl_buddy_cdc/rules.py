@@ -127,6 +127,24 @@ class BoundarySource:
     # The parent bits feeding the block's input pins that reach this
     # output combinationally (rtl-buddy-cdc#408).
     feedthrough: tuple[Bit, ...] = ()
+    # rtl-buddy-cdc#411: the asynchronous memory reads behind the pin
+    # whose CDC-026 verdict the parent owns (:class:`BoundaryMemRead`).
+    mem_reads: tuple["BoundaryMemRead", ...] = ()
+
+
+@dataclass(frozen=True)
+class BoundaryMemRead:
+    """A memory inside an abstracted block read asynchronously out
+    through an output pin, in the parent's terms (rtl-buddy-cdc#411):
+    :class:`~rtl_buddy_cdc.netlist.MemReadFact` with the memory and read
+    port named by instance, and the address / enable pins replaced by
+    the parent bits on them."""
+
+    instance: str
+    memory: str  # "<instance>.<memory>"
+    read_port: str  # "<instance>.<read port endpoint>"
+    write_clocks: tuple[str, ...]
+    addr_bits: tuple[Bit, ...]
 
 
 @dataclass(frozen=True)
@@ -8790,12 +8808,13 @@ _MEMORY_CONE_FLOP_PINS: frozenset[str] = frozenset({"D", "EN", "E"})
 
 def _memory_control_cone(
     module: Module,
-    port: MemPort,
+    start: tuple[Bit, ...],
     read_clock: str,
     flop_clock: Callable[[str], str | None],
     ctx: _RuleContext,
 ) -> set[str]:
-    """Flops in the transitive fanin of ``port``'s address + enable,
+    """Flops in the transitive fanin of a read port's address + enable
+    (``start``, its live bits),
     walking back through combinational cells and through flops clocked
     on ``read_clock`` (their ``D`` / enable) — but not through flops of
     any other domain, which are recorded and left as leaves.
@@ -8808,7 +8827,7 @@ def _memory_control_cone(
     """
     cone: set[str] = set()
     seen: set[Bit] = set()
-    stack: list[Bit] = list(port.control_bits)
+    stack: list[Bit] = list(start)
     while stack:
         bit = stack.pop()
         if bit in seen:
@@ -8854,14 +8873,29 @@ def _memory_read_domains(
         clock = clock_of(port.clk)
         return {clock} if clock is not None else set()
     data = tuple(b for b in port.data if isinstance(b, int))
+    return _async_read_domains(
+        module, data, port.control_bits, flop_clock, clock_spec, ctx
+    )
+
+
+def _async_read_domains(
+    module: Module,
+    data: tuple[Bit, ...],
+    control: tuple[Bit, ...],
+    flop_clock: Callable[[str], str | None],
+    clock_spec: ClockSpec | None,
+    ctx: _RuleContext,
+) -> set[str]:
+    """The read domain(s) of an asynchronous read whose data bits are
+    ``data`` and address + enable bits ``control``: the domains of the
+    flops the data reaches through comb logic, else of the flops and
+    typed input ports the address is computed from."""
     captured = _forward_reachable_flops(module, data, ctx.bit_consumers)
     domains = {c for name in captured if (c := flop_clock(name)) is not None}
     if domains:
         return domains
     reached: set[Bit] = set()
-    flops, ports = _backward_fanin(
-        module, port.control_bits, ctx.bit_drivers, port_bits=reached
-    )
+    flops, ports = _backward_fanin(module, control, ctx.bit_drivers, port_bits=reached)
     domains = {c for name in flops if (c := flop_clock(name)) is not None}
     if clock_spec is None:
         return domains
@@ -8873,6 +8907,28 @@ def _memory_read_domains(
             if typed is not None and typed != UNCONSTRAINED_SENTINEL:
                 domains.add(typed)
     return domains
+
+
+def memory_clock_views(
+    module: Module, clock_spec: ClockSpec | None, ctx: _RuleContext
+) -> tuple[Callable[[Bit], str | None], Callable[[str], str | None]]:
+    """``(clock_of, flop_clock)``: a bit's clock root and a flop's clock,
+    resolved by :func:`~rtl_buddy_cdc.domain.bit_clock_resolver` with the
+    SDC's clock inputs — the view the crossing walk assigns domains
+    with, so memory-port clocks and crossing clocks agree."""
+    if clock_spec is not None:
+        clock_of = bit_clock_resolver(
+            module, max_depth=ctx.max_depth, **clock_spec.clock_root_inputs()
+        )
+    else:
+        clock_of = bit_clock_resolver(module, max_depth=ctx.max_depth)
+    flops_by_name = {f.cell.name: f for f in ctx.flops}
+
+    def flop_clock(name: str) -> str | None:
+        f = flops_by_name.get(name)
+        return clock_of(f.clk) if f is not None else None
+
+    return clock_of, flop_clock
 
 
 def memory_crossings(
@@ -8904,17 +8960,7 @@ def memory_crossings(
         return []
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    if clock_spec is not None:
-        clock_of = bit_clock_resolver(
-            module, max_depth=ctx.max_depth, **clock_spec.clock_root_inputs()
-        )
-    else:
-        clock_of = bit_clock_resolver(module, max_depth=ctx.max_depth)
-    flops_by_name = {f.cell.name: f for f in ctx.flops}
-
-    def flop_clock(name: str) -> str | None:
-        f = flops_by_name.get(name)
-        return clock_of(f.clk) if f is not None else None
+    clock_of, flop_clock = memory_clock_views(module, clock_spec, ctx)
 
     by_pair: dict[tuple[str, str], list[Crossing]] = defaultdict(list)
     for c in crossings:
@@ -8939,7 +8985,7 @@ def memory_crossings(
                 foreign = [w for w in sorted(writers) if w != r]
                 if not foreign:
                     continue
-                cone = _memory_control_cone(module, rp, r, flop_clock, ctx)
+                cone = _memory_control_cone(module, rp.control_bits, r, flop_clock, ctx)
                 for w in foreign:
                     out.append(
                         MemoryCrossing(
@@ -8961,6 +9007,73 @@ def memory_crossings(
                             ),
                         )
                     )
+    return out
+
+
+def boundary_memory_crossings(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None,
+    ctx: _RuleContext,
+) -> list[MemoryCrossing]:
+    """:func:`memory_crossings` for the memories inside abstracted blocks
+    whose asynchronous read data leaves through an output pin and whose
+    read domain only the parent can place (rtl-buddy-cdc#411).
+
+    The flat reading, split at the pin: the read clock is the domain of
+    the parent registers the output pins' data reaches (else of the
+    registers and typed ports the address pins are driven from), and the
+    control cone runs back from the parent nets on the address pins
+    (:func:`_memory_control_cone`). Every record is anchored on the
+    instance (``read_cell``), which is where a finding points.
+    """
+    data_of: dict[tuple[str, str], list[Bit]] = defaultdict(list)
+    reads: dict[tuple[str, str], BoundaryMemRead] = {}
+    for b, src in ctx.boundary_sources.items():
+        for mr in src.mem_reads:
+            key = (mr.memory, mr.read_port)
+            reads[key] = mr
+            data_of[key].append(b)
+    if not reads:
+        return []
+    _clock_of, flop_clock = memory_clock_views(module, clock_spec, ctx)
+    by_pair: dict[tuple[str, str], list[Crossing]] = defaultdict(list)
+    for c in crossings:
+        by_pair[(c.src_clock, c.dst_clock)].append(c)
+    out: list[MemoryCrossing] = []
+    for key in sorted(reads):
+        mr = reads[key]
+        data = tuple(sorted(set(data_of[key]), key=str))
+        read_domains = _async_read_domains(
+            module, data, mr.addr_bits, flop_clock, clock_spec, ctx
+        )
+        inst = mr.instance
+        for r in sorted(read_domains):
+            foreign = [w for w in mr.write_clocks if w != r]
+            if not foreign:
+                continue
+            cone = _memory_control_cone(module, mr.addr_bits, r, flop_clock, ctx)
+            for w in foreign:
+                out.append(
+                    MemoryCrossing(
+                        memory=mr.memory,
+                        write_clock=w,
+                        read_clock=r,
+                        write_ports=(),
+                        read_port=mr.read_port,
+                        read_cell=inst,
+                        async_per_sdc=(
+                            clock_spec is not None
+                            and not clock_spec.is_unreachable_crossing(w, r)
+                            and clock_spec.are_async(w, r)
+                        ),
+                        control=tuple(
+                            c
+                            for c in by_pair.get((w, r), ())
+                            if c.dst_flop.cell.name in cone
+                        ),
+                    )
+                )
     return out
 
 
@@ -9014,7 +9127,9 @@ def check_cdc_026(
         return []
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    groups = cdc_026_groups(memory_crossings(module, crossings, clock_spec, ctx))
+    records = memory_crossings(module, crossings, clock_spec, ctx)
+    records += boundary_memory_crossings(module, crossings, clock_spec, ctx)
+    groups = cdc_026_groups(records)
     violations: list[Violation] = []
     for (memory, read_clock), records in groups.items():
         write_clocks = ", ".join(

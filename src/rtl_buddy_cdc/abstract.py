@@ -547,15 +547,21 @@ def _summarise_single_clock(
                 driver=facts.driver if facts is not None else None,
                 launchers=facts.launchers if facts is not None else (),
                 feedthrough=facts.feedthrough if facts is not None else (),
+                transit_from=facts.transit_from if facts is not None else (),
+                seed=facts.seed if facts is not None else True,
+                mem_reads=facts.mem_reads if facts is not None else (),
             )
         if facts is not None and (
-            facts.async_only or (facts.pin is not None and facts.pin.no_capture)
+            facts.async_only
+            or (facts.pin is not None and (facts.pin.no_capture or facts.pin.transit))
         ):
             # A reset pin and nothing else: no data capture to seed
             # (rtl-buddy-cdc#405); its reset facts travel in ``reset_pins``.
             # Likewise a pin that only steers a clock mux / gate, feeds a
             # latch, or is unused (rtl-buddy-cdc#408): flat, no crossing
-            # ends behind it; its facts travel in ``pin_facts``.
+            # ends behind it; its facts travel in ``pin_facts``. And a pin
+            # the parent's walk passes through the block from, to the
+            # outputs it reaches (rtl-buddy-cdc#411).
             continue
         if port.direction in ("input", "inout") and port.name not in ic.clock_pins:
             # Clock pins are excluded by the *traced* determination (FIX
@@ -668,9 +674,14 @@ def _summarise_multi_clock(
                 driver=facts.driver,
                 launchers=facts.launchers,
                 feedthrough=facts.feedthrough,
+                transit_from=facts.transit_from,
+                seed=facts.seed,
+                mem_reads=facts.mem_reads,
             )
         if port.direction in ("input", "inout"):
-            if facts.async_only or (facts.pin is not None and facts.pin.no_capture):
+            if facts.async_only or (
+                facts.pin is not None and (facts.pin.no_capture or facts.pin.transit)
+            ):
                 continue
             if facts.ambiguous:
                 return None

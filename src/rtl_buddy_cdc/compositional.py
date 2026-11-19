@@ -67,7 +67,21 @@ from rtl_buddy_cdc.flops import (
     is_ff_cell,
     is_latch_cell,
 )
-from rtl_buddy_cdc.netlist import Bit, DriverFacts, Module, PinFacts, ResetPinFact
+from rtl_buddy_cdc.memory import (
+    PACKED_MEMORY_TYPES,
+    READ_PORT_TYPES,
+    MemPort,
+    Memory,
+    find_memories,
+)
+from rtl_buddy_cdc.netlist import (
+    Bit,
+    DriverFacts,
+    MemReadFact,
+    Module,
+    PinFacts,
+    ResetPinFact,
+)
 from rtl_buddy_cdc.pulse import classify_d_pin_shape, classify_toggle_d_pin
 from rtl_buddy_cdc.rules import (
     _ack_walk,
@@ -86,6 +100,8 @@ from rtl_buddy_cdc.rules import (
     _deasserting_reset_sync_members,
     _folded_srst_selects,
     _live_mux_driver,
+    _memory_read_domains,
+    memory_clock_views,
     _forward_reachable_cells,
     _is_gray_encoded_source,
     _own_srst_data_leg,
@@ -219,6 +235,14 @@ class PortFacts:
     # (rtl-buddy-cdc#408), so the parent's output-cone walk carries on
     # through the block as a flat walk does.
     feedthrough: tuple[str, ...] = ()
+    # Outputs only (rtl-buddy-cdc#411), set only for a body with a memory
+    # read asynchronously: the input pins the parent's crossing walk
+    # passes through the block from, whether the pin is a source of its
+    # own (``seed``), and the asynchronous reads whose CDC-026 verdict the
+    # parent owns — see :class:`~rtl_buddy_cdc.netlist.PortBoundary`.
+    transit_from: tuple[str, ...] = ()
+    seed: bool = True
+    mem_reads: tuple[MemReadFact, ...] = ()
 
     @property
     def synchronised(self) -> bool:
@@ -431,7 +455,13 @@ def analyse_module(
             )
 
     _attach_resets(sub, ports, ctx, domains)
-    _attach_pin_facts(sub, ports, ctx, sub_spec, domains, max_depth)
+    memories = find_memories(sub)
+    reads = _AsyncReads.of(sub, memories)
+    _attach_pin_facts(sub, ports, ctx, sub_spec, domains, max_depth, reads)
+    if reads.sites:
+        _attach_memory_transit(
+            sub, ports, ctx, sub_spec, clock_pin_roots, memories, reads
+        )
     reconvergent = _reconvergent_input_ports(sub, ports, ctx, domains, flop_by_name)
 
     return ModuleAnalysis(
@@ -558,6 +588,7 @@ def _attach_pin_facts(
     spec: ClockSpec,
     domains: dict[str, str | None],
     max_depth: int,
+    reads: "_AsyncReads | None" = None,
 ) -> None:
     """Fill :attr:`PortFacts.pin` on the data input ports
     (rtl-buddy-cdc#408): see :class:`~rtl_buddy_cdc.netlist.PinFacts`.
@@ -597,20 +628,85 @@ def _attach_pin_facts(
         if facts.direction not in ("input", "inout"):
             continue
         pin_bits = sub.ports[name].bits
-        captured, latch_feeds, heads = _pin_reach(sub, pin_bits, ctx, domains, out_bits)
+        reach = _pin_reach(sub, pin_bits, ctx, domains, out_bits, reads)
+        heads = reach.heads
         gated = (
             len(pin_bits) > 1
             and bool(heads)
             and all(_gated_head(sub, ctx, domains, h, len(pin_bits)) for h in heads)
         )
         pin = PinFacts(
-            no_capture=not captured and not facts.resets,
+            no_capture=not reach.captured and not reach.to_output and not facts.resets,
             clock_controls=tuple(sorted(set(controls.get(name, ())))),
-            latch_feeds=latch_feeds,
+            latch_feeds=reach.latch_feeds,
             gated=gated,
+            # rtl-buddy-cdc#411: only outputs reached, one of them through
+            # an asynchronous memory read — a transit, not a capture.
+            transit=(
+                facts.direction == "input"
+                and not reach.captured
+                and reach.to_output
+                and reach.via_read
+                and not facts.resets
+                and not reach.latch_feeds
+            ),
         )
         if pin != PinFacts():
             ports[name] = replace(facts, pin=pin)
+
+
+def _is_mem_read_data(cell_type: str, pin: str) -> bool:
+    """A memory cell's read-data pin: an output, though a netlist with no
+    ``port_directions`` lists it like an input."""
+    if cell_type in READ_PORT_TYPES:
+        return pin == "DATA"
+    return cell_type in PACKED_MEMORY_TYPES and pin == "RD_DATA"
+
+
+@dataclass(frozen=True)
+class _PinReach:
+    """What :func:`_pin_reach` found forward of an input pin."""
+
+    captured: bool  # a flop, memory capture or opaque cell
+    latch_feeds: tuple[tuple[str, str, str], ...]
+    heads: frozenset[str]  # the flops reached
+    to_output: bool = False  # an output port bit
+    via_read: bool = False  # through an asynchronous memory read
+
+
+@dataclass(frozen=True)
+class _AsyncReads:
+    """The asynchronous read ports of a body's memories
+    (rtl-buddy-cdc#411): each address / enable input site
+    ``(cell, pin, index)`` and each read-data bit, mapped to its port. A
+    flat crossing walk passes from the one to the other
+    (:func:`~rtl_buddy_cdc.memory.crossing_view`)."""
+
+    sites: dict[tuple[str, str, int], MemPort]
+    data: dict[Bit, MemPort]
+
+    @classmethod
+    def of(cls, sub: Module, memories: tuple[Memory, ...]) -> "_AsyncReads":
+        sites: dict[tuple[str, str, int], MemPort] = {}
+        data: dict[Bit, MemPort] = {}
+        for mem in memories:
+            for rp in mem.read_ports:
+                if rp.clocked:
+                    continue
+                cell = sub.cells[rp.cell]
+                if cell.type in READ_PORT_TYPES:
+                    for pin in ("ADDR", "EN"):
+                        for i in range(len(cell.connections.get(pin, ()))):
+                            sites[(rp.cell, pin, i)] = rp
+                else:
+                    abits = len(rp.addr)
+                    for k in range(abits):
+                        sites[(rp.cell, "RD_ADDR", rp.index * abits + k)] = rp
+                    sites[(rp.cell, "RD_EN", rp.index)] = rp
+                for b in rp.data:
+                    if isinstance(b, int):
+                        data[b] = rp
+        return cls(sites=sites, data=data)
 
 
 def _pin_reach(
@@ -619,19 +715,24 @@ def _pin_reach(
     ctx: _RuleContext,
     domains: dict[str, str | None],
     out_bits: set[Bit],
-) -> tuple[bool, tuple[tuple[str, str, str], ...], set[str]]:
+    reads: _AsyncReads | None = None,
+) -> _PinReach:
     """Forward from an input pin, as the flat crossing walk goes:
     through comb cells, stopping at flops (the captures), memories, cells
-    it cannot see into and output ports (counted as captures too), and
-    transparent latches (the
-    walk ends there; CDC-017 owns the shape). A clock pin is not a
-    consumer, so a clock mux select or gate enable reaches nothing.
+    it cannot see into, and transparent latches (the walk ends there;
+    CDC-017 owns the shape). A clock pin is not a consumer, so a clock
+    mux select or gate enable reaches nothing. An output port bit is
+    recorded (``to_output``), and so is a memory's asynchronous read
+    port, which the walk passes through from address / enable to read
+    data as the flat walk does (``via_read``, rtl-buddy-cdc#411); every
+    other memory pin is a capture.
 
-    Returns ``(captured, latch_feeds, heads)``: whether anything was
-    reached, the ``(latch, flop, clock)`` of each latch reached on its
-    ``D`` whose ``Q`` a single-bit flop reads, and the flops reached.
+    The ``latch_feeds`` are the ``(latch, flop, clock)`` of each latch
+    reached on its ``D`` whose ``Q`` a single-bit flop reads.
     """
     captured = False
+    to_output = False
+    via_read = False
     feeds: set[tuple[str, str, str]] = set()
     heads: set[str] = set()
     seen: set[Bit] = set()
@@ -644,8 +745,8 @@ def _pin_reach(
                 continue
             seen.add(b)
             if b in out_bits:
-                captured = True
-            for cell_name, pin, _idx in ctx.bit_consumers.get(b, ()):
+                to_output = True
+            for cell_name, pin, idx in ctx.bit_consumers.get(b, ()):
                 cell = sub.cells[cell_name]
                 if is_ff_cell(cell.type):
                     captured = True
@@ -660,6 +761,13 @@ def _pin_reach(
                         if dst is not None and clock is not None:
                             feeds.add((cell_name, dst.cell.name, clock))
                     continue
+                if _is_mem_read_data(cell.type, pin):
+                    continue  # the read port's own output, not a reader
+                port = reads.sites.get((cell_name, pin, idx)) if reads else None
+                if port is not None:
+                    via_read = True
+                    nxt.extend(x for x in port.data if isinstance(x, int))
+                    continue
                 if cell.type.startswith("$mem") or not cell.type.startswith("$"):
                     # A memory, or a cell the walk cannot see into (a nested
                     # instance, a library cell): counted as a capture, so
@@ -673,7 +781,158 @@ def _pin_reach(
                     if cell.is_output_pin(p):
                         nxt.extend(x for x in obits if isinstance(x, int))
         frontier = nxt
-    return captured, tuple(sorted(feeds)), heads
+    return _PinReach(
+        captured=captured,
+        latch_feeds=tuple(sorted(feeds)),
+        heads=frozenset(heads),
+        to_output=to_output,
+        via_read=via_read,
+    )
+
+
+def _output_reach(
+    sub: Module,
+    bits: Iterable[Bit],
+    ctx: _RuleContext,
+    reads: _AsyncReads,
+    in_pins: dict[Bit, str],
+    driven: set[Bit],
+) -> tuple[bool, set[str], set[MemPort]]:
+    """Backward from output bits, as the flat crossing walk reaches them:
+    through comb cells and through asynchronous memory reads (read data
+    back to address / enable). Returns ``(launched, pins, read ports)``:
+    whether a register, latch, clocked memory read or opaque cell drives
+    the bits from inside, the input pins reached, and the asynchronous
+    read ports passed through (rtl-buddy-cdc#411)."""
+    launched = False
+    pins: set[str] = set()
+    ports: set[MemPort] = set()
+    seen: set[Bit] = set()
+    expanded: set[str] = set()
+    frontier: list[Bit] = [b for b in bits if isinstance(b, int)]
+    while frontier:
+        nxt: list[Bit] = []
+        for b in frontier:
+            if b in seen:
+                continue
+            seen.add(b)
+            drv = ctx.bit_drivers.get(b)
+            if drv is not None:
+                cell_name, out_pin, _idx = drv
+                if out_pin == "Q":
+                    launched = True
+                    continue
+                if cell_name in expanded:
+                    continue
+                expanded.add(cell_name)
+                cell = sub.cells[cell_name]
+                for p, in_bits in cell.connections.items():
+                    if p in ("Y", "Q") or cell.is_output_pin(p):
+                        continue
+                    nxt.extend(x for x in in_bits if isinstance(x, int))
+                continue
+            rp = reads.data.get(b)
+            if rp is not None:
+                ports.add(rp)
+                nxt.extend(rp.control_bits)
+            elif b in in_pins:
+                pins.add(in_pins[b])
+            elif b in driven:
+                launched = True  # clocked read data, an opaque cell's output
+        frontier = nxt
+    return launched, pins, ports
+
+
+def _attach_memory_transit(
+    sub: Module,
+    ports: dict[str, PortFacts],
+    ctx: _RuleContext,
+    spec: ClockSpec,
+    clock_pin_roots: dict[str, str | None],
+    memories: tuple[Memory, ...],
+    reads: _AsyncReads,
+) -> None:
+    """Fill the transit facts of a body with an asynchronous memory read
+    (rtl-buddy-cdc#411).
+
+    A flat crossing walk passes an asynchronous read from its address to
+    its data, and does not walk the storage (write data to read data) at
+    all — CDC-026 judges that. So an output only such reads and input
+    pins drive is no source of its own (``seed`` False), and the parent
+    walks through the block to it from the pins behind it
+    (``transit_from``); an input that only reaches outputs, one through
+    such a read (:attr:`PinFacts.transit`), seeds no sink and the parent
+    walks through from it to every output it reaches. A read whose
+    domain the body cannot place — its data reaches no register inside,
+    its address no register — is published for the parent's CDC-026
+    (``mem_reads``).
+    """
+    in_pins: dict[Bit, str] = {}
+    for port in sub.ports.values():
+        if port.direction in ("input", "inout") and port.name not in clock_pin_roots:
+            for b in port.bits:
+                if isinstance(b, int):
+                    in_pins.setdefault(b, port.name)
+    driven: set[Bit] = {
+        b
+        for cell in sub.cells.values()
+        for p, cbits in cell.connections.items()
+        if cell.is_output_pin(p) or _is_mem_read_data(cell.type, p)
+        for b in cbits
+        if isinstance(b, int)
+    }
+    # A clock pin behind an output is a launch of its own (CDC-008's
+    # ``clock_out``): the pin stays seeded.
+    driven.update(
+        b
+        for pin in clock_pin_roots
+        if pin in sub.ports
+        for b in sub.ports[pin].bits
+        if isinstance(b, int)
+    )
+    transit_pins = {
+        name for name, f in ports.items() if f.pin is not None and f.pin.transit
+    }
+    clock_of, flop_clock = memory_clock_views(sub, spec, ctx)
+    writers: dict[str, tuple[str, ...]] = {}
+    for mem in memories:
+        clocks = {c for wp in mem.write_ports if wp.clocked and (c := clock_of(wp.clk))}
+        writers[mem.memid] = tuple(sorted(clocks))
+    memid_of = {rp: mem.memid for mem in memories for rp in mem.read_ports}
+    for name, facts in list(ports.items()):
+        if facts.direction != "output":
+            continue
+        launched, pins, rps = _output_reach(
+            sub, sub.ports[name].bits, ctx, reads, in_pins, driven
+        )
+        if not rps and not (pins & transit_pins):
+            continue
+        seed = launched or not rps
+        transit_from = tuple(sorted(pins if not seed else pins & transit_pins))
+        mem_reads: list[MemReadFact] = []
+        for rp in sorted(rps, key=lambda p: p.endpoint):
+            memid = memid_of[rp]
+            if not writers.get(memid):
+                continue
+            if _memory_read_domains(sub, rp, clock_of, flop_clock, spec, ctx):
+                continue  # placed inside: the body's own CDC-026 judges it
+            _l, addr_pins, _r = _output_reach(
+                sub, rp.control_bits, ctx, reads, in_pins, driven
+            )
+            mem_reads.append(
+                MemReadFact(
+                    memory=memid,
+                    read_port=rp.endpoint,
+                    write_clocks=writers[memid],
+                    addr_pins=tuple(sorted(addr_pins)),
+                )
+            )
+        ports[name] = replace(
+            facts,
+            transit_from=transit_from,
+            seed=seed,
+            mem_reads=tuple(mem_reads),
+        )
 
 
 def _gated_head(
