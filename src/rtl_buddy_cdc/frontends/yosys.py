@@ -12,10 +12,12 @@ module is only used when the caller starts from SV sources.
 
 from __future__ import annotations
 
+import json
 import shlex
 import shutil
 import subprocess
 import tempfile
+from typing import Any
 from pathlib import Path
 
 from rtl_buddy_cdc import netlist
@@ -195,10 +197,17 @@ def elaborate_with_blackboxes(
         grey = "".join(
             f"setattr -mod -set blackbox 1 {shlex.quote(m)}; " for m in (greybox or ())
         )
+        # No ``opt_clean`` (rtl-buddy-cdc#414): it deletes a register nothing
+        # observes (a synchroniser with an unconnected output) without a
+        # word. The analyzer prunes the same cells itself (``liveness``,
+        # verdict-identical, rtl-buddy-cdc#338) and names the registers it
+        # drops. The one other thing ``opt_clean`` did that a verdict
+        # depends on, folding ``$buf`` cells into wires, is done by
+        # :func:`_collapse_buffers` on the written JSON.
         script = (
             f"{read_cmd}; "
             f"hierarchy -top {shlex.quote(top)}; "
-            f"proc; {grey}flatten; opt_clean; "
+            f"proc; {grey}flatten; "
             f"write_json {shlex.quote(str(tmp_json))}"
         )
         proc = subprocess.run(
@@ -216,6 +225,7 @@ def elaborate_with_blackboxes(
                 msg += f"\n{proc.stdout.strip()}"
             raise YosysError(msg)
 
+        _collapse_buffers(tmp_json)
         module, blackboxes = netlist.load_with_blackboxes(tmp_json)
         if keep_json is not None:
             shutil.copy(tmp_json, keep_json)
@@ -225,3 +235,96 @@ def elaborate_with_blackboxes(
             tmp_json.unlink()
         except FileNotFoundError:
             pass
+
+
+def _collapse_buffers(json_path: Path) -> None:
+    """Fold every ``$buf`` cell of the netlist at ``json_path`` into a wire.
+
+    ``read_slang`` writes a ``$buf`` for each continuous assignment and
+    port connection, and ``flatten`` keeps them. ``opt_clean`` used to
+    replace each with a plain connection; the ``lint`` flow no longer runs
+    it (rtl-buddy-cdc#414), and a ``$buf`` left between a source flop and
+    a synchroniser's first stage counts as a combinational cell (a false
+    CDC-003). This does that one rewrite: each buffer's ``Y`` bits become
+    its ``A`` bits everywhere they are read, and the cell is removed.
+
+    A buffer stays when it carries ``keep``, when its pins differ in
+    width, or when a ``Y`` bit is one the module does not drive (an input
+    or inout port bit). ``$_BUF_`` is a mapped gate, not a wire, and is
+    never touched.
+    """
+    data = json.loads(json_path.read_text())
+    changed = False
+    for mod in data.get("modules", {}).values():
+        cells = mod.get("cells", {})
+        undriven = {
+            b
+            for port in mod.get("ports", {}).values()
+            if port.get("direction") != "output"
+            for b in port.get("bits", ())
+        }
+        # Bits another cell drives: a buffer onto one of them is a second
+        # driver (a short), not a wire, and stays.
+        other: set[object] = set()
+        for cell in cells.values():
+            if cell.get("type") == "$buf":
+                continue
+            dirs = cell.get("port_directions", {})
+            for pin, bits in cell.get("connections", {}).items():
+                if (
+                    dirs.get(pin, "output" if pin in ("Y", "Q") else "input")
+                    == "output"
+                ):
+                    other.update(bits)
+        alias: dict[int, int | str] = {}
+        folded: list[str] = []
+        for name, cell in cells.items():
+            if cell.get("type") != "$buf":
+                continue
+            attrs = cell.get("attributes", {})
+            if str(attrs.get("keep", "0")).strip("0") != "":
+                continue
+            conns = cell.get("connections", {})
+            a, y = conns.get("A"), conns.get("Y")
+            if not isinstance(a, list) or not isinstance(y, list) or len(a) != len(y):
+                continue
+            if any(
+                not isinstance(b, int) or b in undriven or b in alias or b in other
+                for b in y
+            ):
+                continue
+            alias.update(zip(y, a))
+            folded.append(name)
+        if not folded:
+            continue
+
+        def resolve(bit: int | str) -> int | str:
+            seen: set[int] = set()
+            while isinstance(bit, int) and bit in alias and bit not in seen:
+                seen.add(bit)
+                bit = alias[bit]
+            return bit
+
+        for name in folded:
+            del cells[name]
+        for cell in cells.values():
+            conns = cell.get("connections", {})
+            for pin, bits in conns.items():
+                conns[pin] = [resolve(b) for b in bits]
+        for port in mod.get("ports", {}).values():
+            port["bits"] = [resolve(b) for b in port.get("bits", ())]
+        # A wire renamed onto its driver's bits goes after the names it
+        # aliases, so a report naming a net by its first source-level name
+        # keeps the driver's (A-side) name, as before the fold.
+        nets = mod.get("netnames", {})
+        kept: dict[str, Any] = {}
+        moved: dict[str, Any] = {}
+        for net_name, net in nets.items():
+            bits = net.get("bits", ())
+            new = [resolve(b) for b in bits]
+            (moved if new != list(bits) else kept)[net_name] = net
+            net["bits"] = new
+        mod["netnames"] = {**kept, **moved}
+        changed = True
+    if changed:
+        json_path.write_text(json.dumps(data))

@@ -37,7 +37,8 @@ from rtl_buddy_cdc.domain import (
     find_crossings,
     find_inferred_clock_candidates,
 )
-from rtl_buddy_cdc.liveness import prune_dead_cells
+from rtl_buddy_cdc.liveness import dropped_registers, prune_dead_cells
+from rtl_buddy_cdc import regfile as regfile_mod
 from rtl_buddy_cdc.hierarchy import (
     compose_boundaries,
     reconvergence_unsafe_instances,
@@ -108,6 +109,9 @@ class OutputFormat(str, Enum):
 class RenderFormat(str, Enum):
     mermaid = "mermaid"
 
+
+# How many unobserved registers the pruning warning names (rtl-buddy-cdc#414).
+_UNOBSERVED_SHOWN = 8
 
 _FORMAT_OPT = typer.Option(
     OutputFormat.text,
@@ -435,7 +439,7 @@ def lint(
         "--frontend",
         case_sensitive=False,
         help="Elaboration frontend. 'yosys' (default) shells out to "
-        "`yosys` and runs hierarchy/proc/flatten/opt_clean before "
+        "`yosys` and runs hierarchy/proc/flatten before "
         "analysis. 'slang' elaborates via pyslang directly with no "
         "synth step; install the optional extra with "
         "`pip install 'rtl-buddy-cdc[slang]'`. 'auto' picks slang when "
@@ -540,7 +544,7 @@ def lint(
     """Convenience wrapper: elaborate the sources using the chosen
     frontend, then analyze. With ``--frontend yosys`` (the default)
     this is equivalent to ``yosys -p 'read_verilog ...; hierarchy -top
-    X; proc; flatten; opt_clean; write_json /tmp/out.json' &&
+    X; proc; flatten; write_json /tmp/out.json' &&
     rtl-buddy-cdc analyze --netlist /tmp/out.json --sdc ...``."""
     # Anchor the relative path-bearing args (#245) before they reach the
     # frontend / emit path, so they track the project root rather than
@@ -882,12 +886,59 @@ def _analyze_module_and_report(
     # and a register nothing reads is not a crossing destination. Greybox
     # bodies get the same treatment against their own ports, since the
     # compositional pass analyses them.
-    module = prune_dead_cells(module, blackboxes)
+    # A register dropped this way is named on stderr (rtl-buddy-cdc#414):
+    # a synchroniser whose output nothing reads must not vanish from the
+    # crossing analysis without a word. Before it, a register array that is
+    # a memory in all but coding style becomes the memory it describes
+    # (rtl-buddy-cdc#414, :mod:`rtl_buddy_cdc.regfile`), also named.
+    regfiles: list[tuple[str | None, regfile_mod.RegisterMemory]] = []
+    unobserved: list[tuple[str | None, str]] = []
+    regfile_notes: list[str] = []
+
+    def prepare(body: netlist.Module, owner: str | None) -> netlist.Module:
+        pruned = prune_dead_cells(body, blackboxes)
+        unobserved.extend((owner, n) for n in dropped_registers(body, pruned))
+        # On the live netlist: a dead reader of a decode would read as a
+        # second use of it. The decode the rewrite leaves unread goes too.
+        notes: list[str] = []
+        found = regfile_mod.recognise(pruned, notes)
+        rewritten, done = regfile_mod.rewrite(pruned, found, notes)
+        regfile_notes.extend(f"{owner}: {n}" if owner else n for n in notes)
+        if not done:
+            return pruned
+        regfiles.extend((owner, m) for m in done)
+        final = prune_dead_cells(rewritten, blackboxes)
+        unobserved.extend((owner, n) for n in dropped_registers(rewritten, final))
+        return final
+
+    module = prepare(module, None)
     if blackboxes:
         blackboxes = {
-            name: prune_dead_cells(body, blackboxes) if body.cells else body
+            name: prepare(body, name) if body.cells else body
             for name, body in blackboxes.items()
         }
+    for line in regfile_notes:
+        typer.echo(f"note: {line}", err=True)
+    for owner, mem in regfiles:
+        typer.echo(
+            f"note: register array {owner + ':' if owner else ''}{mem.memid} "
+            f"({len(mem.words)} x {len(mem.wdata)} bits, one write decode, "
+            f"{len(mem.reads)} read mux tree(s)) is analysed as a memory "
+            "(CDC-026 judges its storage path)",
+            err=True,
+        )
+    if unobserved:
+        shown = [f"{m}:{n}" if m else n for m, n in unobserved[:_UNOBSERVED_SHOWN]]
+        more = len(unobserved) - len(shown)
+        typer.echo(
+            f"note: {len(unobserved)} register(s) left out of the CDC "
+            "analysis because no output port, instance pin or (* keep *) net "
+            f"observes them: {', '.join(shown)}"
+            + (f" (+{more} more)" if more else "")
+            + "; crossings into them are not checked (mark one (* keep *) "
+            "to analyse it)",
+            err=True,
+        )
     # Load --reset-hints early so an unreadable / malformed file
     # fails the run before any analysis cost — same pattern the SDC
     # loader uses. Loud failure with file:line context; see #129.
@@ -923,6 +974,22 @@ def _analyze_module_and_report(
     # Empty for every SDC without one, which leaves every report as it was.
     sdc_coverage: dict[sdc_objects.CrossingKey, sdc_objects.CrossingCoverage] = {}
     if sdc_path is not None:
+        # The crossing walk seeds from input ports only (rtl-buddy-cdc#414):
+        # say so for an inout, which Yosys ``read_verilog`` makes of each
+        # member of a top-level interface port without a modport.
+        inouts = [p.name for p in module.ports.values() if p.direction == "inout"]
+        if inouts:
+            typer.echo(
+                f"warning: inout port(s) {', '.join(inouts[:_UNOBSERVED_SHOWN])}"
+                + (
+                    f" (+{len(inouts) - _UNOBSERVED_SHOWN} more)"
+                    if len(inouts) > _UNOBSERVED_SHOWN
+                    else ""
+                )
+                + " are not crossing sources: a crossing from them is not "
+                "checked",
+                err=True,
+            )
         spec = sdc_mod.parse_file(sdc_path)
         # set_*_delay targets written as a bus index (``{d[3]}``) or a glob
         # (``d*``) resolve against the top-level ports (#357). Before the

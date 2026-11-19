@@ -536,11 +536,14 @@ endmodule
 def _mux_legs(module) -> dict[str, tuple[str, ...]]:
     """Resolve the module's single ``$mux`` cell connections back to net
     names, so the assertion reads in RTL terms and is independent of
-    each frontend's private bit numbering."""
+    each frontend's private bit numbering. A source name wins over a
+    Yosys auto-named (``$``) alias of the same net, which the Yosys flow
+    keeps without ``opt_clean`` (rtl-buddy-cdc#414)."""
     names: dict[int, str] = {}
     for net_name, net in module.netnames.items():
         for bit in net.bits:
-            names.setdefault(bit, net_name)
+            if bit not in names or names[bit].startswith("$"):
+                names[bit] = net_name
     muxes = [c for c in module.cells.values() if c.type == "$mux"]
     assert len(muxes) == 1, sorted(c.type for c in module.cells.values())
     return {

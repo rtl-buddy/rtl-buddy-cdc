@@ -740,6 +740,12 @@ class _ModuleBuilder:
         # first driver's input to the second's).
         self._net_bits: dict[Any, tuple[Bit, ...]] = {}
         self._ports: dict[str, Port] = {}
+        # Members of a top-level interface port lowered as ports
+        # (rtl-buddy-cdc#414): port name -> (its placeholder bits, the
+        # modport's direction for it or ``None``).
+        self._iface_members: dict[str, tuple[tuple[Bit, ...], str | None]] = {}
+        # Top-level interface port name -> the prefix of its members' names.
+        self._iface_bases: dict[str, str] = {}
         self._cells: dict[str, Cell] = {}
         self._netnames: dict[str, Netname] = {}
         # Element netnames of each unpacked array, by its ``MEMID``
@@ -872,6 +878,7 @@ class _ModuleBuilder:
         self._classify_design_arrays()
         self._walk_instance(self.top, hier_prefix="", bound_internals=frozenset())
         self._apply_forward_renames()
+        self._finish_iface_ports()
         # A memory has no netname in Yosys' output (rtl-buddy-cdc#394,
         # #398): only an array lowered to registers names its elements.
         for memid in self._memory_ids:
@@ -916,7 +923,10 @@ class _ModuleBuilder:
             # scope-flattening is needed for this pass.
             if hier_prefix == "":
                 for member in inst.body:
-                    self._collect_port(member)
+                    if self._kind_name(member) == "InterfacePortSymbol":
+                        self._collect_iface_port(member)
+                    else:
+                        self._collect_port(member)
             for member, prefix in self._iter_scope(inst.body, hier_prefix):
                 # ``_fresh_cell_name`` reads ``_hier_stack[-1]`` when
                 # naming cells; for members inside a generate block
@@ -1287,6 +1297,255 @@ class _ModuleBuilder:
             val = getattr(attr, "value", None)
             netname.attributes[name] = str(val) if val is not None else "1"
 
+    # -- top-level interface ports (rtl-buddy-cdc#414) ---------------------
+
+    def _iface_port_instances(self, member: Any) -> list[tuple[Any, str, Any]]:
+        """``(interface instance, hierarchy prefix, modport)`` for each
+        interface a top-level interface port ``member`` binds: one for
+        ``bus_if.sink s`` (prefix ``s.``), one per element of an interface
+        array port (``s[0].``, ``s[1].``). slang elaborates an interface
+        instance for an unconnected top-level interface port
+        (``AllowTopLevelIfacePorts``); its ``connection`` is that instance
+        (or array) and the modport (``None`` for a bare interface type).
+        Empty when there is no elaborated instance (reported by the
+        caller)."""
+        conn = getattr(member, "connection", None)
+        if not conn:
+            return []
+        try:
+            target, modport = conn
+        except (TypeError, ValueError):
+            return []
+        out: list[tuple[Any, str, Any]] = []
+        # The modport slang names for an interface array port is the one of
+        # its first element: the modport named in the declaration is
+        # looked up in each element.
+        modport_name = str(getattr(member, "modport", "") or "")
+
+        def add(sym: Any, prefix: str) -> None:
+            kind = self._kind_name(sym)
+            body = getattr(sym, "body", None)
+            if kind == "InstanceSymbol" and body is not None:
+                mp = modport
+                if modport_name:
+                    mp = next(
+                        (
+                            m
+                            for m in body
+                            if self._kind_name(m) == "ModportSymbol"
+                            and m.name == modport_name
+                        ),
+                        modport,
+                    )
+                out.append((sym, prefix, mp))
+            elif kind == "InstanceArraySymbol":
+                lower = getattr(getattr(sym, "range", None), "lower", None)
+                if lower is None:
+                    return
+                for offset, element in enumerate(getattr(sym, "elements", None) or []):
+                    add(element, f"{prefix[:-1]}[{int(lower) + offset}].")
+
+        add(target, f"{self._iface_base(member)}.")
+        return out
+
+    def _iface_base(self, member: Any) -> str:
+        """The name the members of top-level interface port ``member`` are
+        prefixed with: the port's own name, unless the top already has a
+        port, variable or net spelled like one of them (an escaped
+        identifier ``\\s.a`` next to interface port ``s``), in which case
+        ``<port>$iface`` — reported, so neither shadows the other
+        (rtl-buddy-cdc#414)."""
+        cached = self._iface_bases.get(member.name)
+        if cached is not None:
+            return cached
+        base = member.name
+        taken = {
+            getattr(m, "name", "")
+            for m in self.top.body
+            if self._kind_name(m) in {"PortSymbol", *self._NAMED_STORAGE}
+        }
+        if any(t.startswith((f"{base}.", f"{base}[")) for t in taken):
+            fresh = f"{base}$iface"
+            n = 1
+            while any(t.startswith((f"{fresh}.", f"{fresh}[")) for t in taken):
+                n += 1
+                fresh = f"{base}$iface{n}"
+            _log.warning(
+                "slang frontend: %s: the members of interface port `%s` are "
+                "named `%s.<member>`: a port, variable or net of the top is "
+                "already spelled `%s.<name>`",
+                self._src_attr(member) or "<unknown location>",
+                base,
+                fresh,
+                base,
+            )
+            base = fresh
+        self._iface_bases[member.name] = base
+        return base
+
+    def _collect_iface_port(self, member: Any) -> None:
+        """Lower a top-level interface port (``apb_intf.subordinate apb``)
+        as the netlist ports of its members (rtl-buddy-cdc#414).
+
+        A Yosys netlist has no interface ports, so each variable / net of
+        the interface becomes one top-level port named ``<port>.<member>``
+        (``apb.psel``, ``apb[1].psel`` for an interface array), the name
+        the member's netname already had inside the design: SDC types it
+        with ``[get_ports apb.psel]`` (or ``apb.*``). The interface body
+        is lowered like an inlined instance under the ``apb.`` prefix, so
+        a read or write of ``apb.psel`` anywhere in the design (through
+        the modport, or through a child module's interface port bound to
+        it) is that member's bits, and logic inside the interface
+        (``assign`` / processes) is lowered too.
+
+        The direction is settled once the whole design is lowered
+        (:meth:`_finish_iface_ports`): a member the design drives is an
+        output, any other an input, so every member is exactly as the
+        design uses it. The modport is recorded for the report and for a
+        member nothing drives (a modport ``output`` stays an output)."""
+        instances = self._iface_port_instances(member)
+        if not instances:
+            self._warn_dropped(
+                member,
+                "no elaborated interface instance",
+                f"interface port `{member.name}`",
+            )
+            return
+        for iface, prefix, modport in instances:
+            self._walk_instance(iface, hier_prefix=prefix, bound_internals=frozenset())
+            directions: dict[Any, str] = {}
+            for mp_port in list(modport) if modport is not None else []:
+                if self._kind_name(mp_port) != "ModportPortSymbol":
+                    continue
+                internal = getattr(mp_port, "internalSymbol", None)
+                if internal is None:
+                    # A modport expression port (``.lo(data[3:0])``) has no
+                    # variable of its own; its target member is a port in
+                    # its own right.
+                    continue
+                directions[self._canonical_var(internal)] = _port_direction(mp_port)
+            self._add_iface_members(iface, prefix, directions, frozenset())
+
+    def _add_iface_members(
+        self,
+        iface: Any,
+        prefix: str,
+        directions: dict[Any, str],
+        bound: frozenset[Any],
+    ) -> None:
+        """Add each variable / net of interface instance ``iface`` (lowered
+        under ``prefix``) as a port, and those of the interfaces it
+        instantiates (``o.inner.data``) — except the ports of a nested one,
+        which its parent interface binds (``bound``)."""
+        for var, var_prefix in self._iter_scope(iface.body, prefix):
+            kind = self._kind_name(var)
+            if kind == "InstanceSymbol" and getattr(var, "isInterface", False):
+                inner = frozenset(
+                    pc.port.internalSymbol
+                    for pc in getattr(var, "portConnections", None) or []
+                    if getattr(pc.port, "internalSymbol", None) is not None
+                    and pc.expression is not None
+                )
+                self._add_iface_members(
+                    var, f"{var_prefix}{var.name}.", directions, inner
+                )
+                continue
+            if kind not in self._NAMED_STORAGE or var in bound:
+                continue
+            canonical = self._canonical_var(var)
+            name = f"{var_prefix}{var.name}"
+            if canonical in self._memories:
+                self._warn_dropped(
+                    var,
+                    "a memory inside a top-level interface is not a port",
+                    f"interface member `{name}`",
+                )
+                continue
+            bits = self._alloc_bits(var)
+            self._ports[name] = Port(name=name, direction="input", bits=bits)
+            self._iface_members[name] = (bits, directions.get(canonical))
+
+    def _finish_iface_ports(self) -> None:
+        """Settle each interface-member port's direction, bit by bit (see
+        :meth:`_collect_iface_port`): a bit anything in the design drives
+        (a cell output, a continuous driver, a constant) is an output bit,
+        any other an input bit — unless the modport makes the member an
+        ``output``, which an undriven bit stays.
+
+        A member with bits of both kinds (``assign bus.data[3:0] = lo;``
+        with ``bus.data[7:4]`` driven from outside) is two ports
+        (rtl-buddy-cdc#414): ``<member>`` is the input, carrying the
+        undriven bits, and ``<member>$out`` the output, carrying the driven
+        ones; the other positions of each are bits nothing drives or reads,
+        so a declared index still names the same bit of either. Reported
+        on stderr: before this the whole member became an output and the
+        externally driven bits stopped being crossing sources, silently."""
+        if not self._iface_members:
+            return
+        driven: set[Bit] = set()
+        for cell in self._cells.values():
+            for pin, bits in cell.connections.items():
+                if cell.is_output_pin(pin):
+                    driven.update(bits)
+        for name, (placeholder, modport_dir) in list(self._iface_members.items()):
+            port = self._ports.get(name)
+            if port is None:
+                continue
+            mask = [
+                not isinstance(b, int) or b != p or b in driven
+                for b, p in zip(port.bits, placeholder)
+            ]
+            if modport_dir == "output" or all(mask):
+                direction = "output"
+            elif not any(mask):
+                direction = "input"
+            else:
+                self._split_iface_member(name, port, mask)
+                continue
+            if direction != port.direction:
+                self._ports[name] = Port(name=name, direction=direction, bits=port.bits)
+
+    def _split_iface_member(self, name: str, port: Port, mask: list[bool]) -> None:
+        """Lower a partly driven interface member as an input port of its
+        undriven bits and an output port ``<name>$out`` of its driven bits
+        (:meth:`_finish_iface_ports`)."""
+
+        def fresh() -> Bit:
+            bit = self._next_bit_id
+            self._next_bit_id += 1
+            return bit
+
+        in_bits = tuple(fresh() if d else b for b, d in zip(port.bits, mask))
+        out_bits = tuple(b if d else fresh() for b, d in zip(port.bits, mask))
+        out_name = f"{name}$out"
+        self._ports[name] = Port(name=name, direction="input", bits=in_bits)
+        self._ports[out_name] = Port(name=out_name, direction="output", bits=out_bits)
+        nn = self._netnames.get(name)
+        offset, upto = (nn.offset, nn.upto) if nn is not None else (0, False)
+        self._netnames[out_name] = Netname(
+            name=out_name, bits=out_bits, attributes={}, offset=offset, upto=upto
+        )
+        width = len(mask)
+
+        def indices(want: bool) -> str:
+            idx = [
+                offset + (width - 1 - pos if upto else pos)
+                for pos, d in enumerate(mask)
+                if d == want
+            ]
+            return ", ".join(str(i) for i in sorted(idx))
+
+        _log.warning(
+            "slang frontend: interface member `%s` is driven by the design on "
+            "bit(s) %s and from outside on bit(s) %s: the input port `%s` "
+            "carries the outside bits and the output port `%s` the driven ones",
+            name,
+            indices(True),
+            indices(False),
+            name,
+            out_name,
+        )
+
     # -- pass 3: cells + continuous assigns -----------------------------
 
     def _emit_for_member(self, member: Any, hier_prefix: str = "") -> None:
@@ -1409,6 +1668,9 @@ class _ModuleBuilder:
         element, whose own ``name`` is empty).
         """
         bound: set[Any] = set()
+        # Outputs whose parent-side target did not lower: the child still
+        # drives its own net, which nothing in the parent reads.
+        cut_outputs: list[Any] = []
         for pc in getattr(child, "portConnections", []) or []:
             port = pc.port
             internal = getattr(port, "internalSymbol", None)
@@ -1416,6 +1678,13 @@ class _ModuleBuilder:
                 continue
             parent_bits = self._port_connection_bits(pc)
             if parent_bits is None:
+                ex: Any = getattr(pc, "expression", None)
+                if (
+                    type(ex).__name__ == "AssignmentExpression"
+                    and type(getattr(ex, "left", None)).__name__
+                    != "EmptyArgumentExpression"
+                ):
+                    cut_outputs.append(internal)
                 continue
             # Alias the child's internal-variable bits to the parent's
             # wire. ``_alloc_bits`` keys on the internal Symbol identity
@@ -1460,6 +1729,13 @@ class _ModuleBuilder:
         self._walk_instance(
             child, hier_prefix=child_prefix, bound_internals=frozenset(bound)
         )
+        # The logic behind an output whose connection was dropped (reported
+        # by ``_port_connection_bits``) stays observable (rtl-buddy-cdc#414:
+        # it was pruned as unobservable, taking a synchroniser and its
+        # CDC-003 with it).
+        for internal in cut_outputs:
+            canonical = self._canonical_var(internal)
+            self._sink(self._net_bits.get(canonical) or self._alloc_bits(canonical))
 
     def _port_connection_bits(self, pc: Any) -> tuple[Bit, ...] | None:
         """Resolve a :class:`PortConnection` to the parent-side bits.
@@ -2007,7 +2283,12 @@ class _ModuleBuilder:
     # -- plain ``always`` (Verilog-2001) lowering, rtl-buddy-cdc#345 -------
 
     def _warn_dropped(
-        self, block: Any, reason: str, what: str = "procedural block"
+        self,
+        block: Any,
+        reason: str,
+        what: str = "procedural block",
+        *,
+        sink: bool = True,
     ) -> None:
         """Report a construct (a procedural block, by default, or an
         instance array, rtl-buddy-cdc#353) this frontend cannot lower.
@@ -2015,7 +2296,11 @@ class _ModuleBuilder:
         Its flops / logic are missing from the netlist, so the run would
         otherwise come back clean on a design it never saw. Logged at
         ``WARNING`` (stderr) with the source location, like the frontend's
-        other non-fatal diagnostics."""
+        other non-fatal diagnostics. What the construct reads stays
+        observable (:meth:`_sink`, rtl-buddy-cdc#414): a register whose
+        only reader it was is still a crossing destination."""
+        if sink:
+            self._sink(self._read_bits(block))
         # (``getattr``: also reached on a bare builder in unit tests.)
         self._lowering_failures = getattr(self, "_lowering_failures", 0) + 1
         where = self._src_attr(block) or "<unknown location>"
@@ -4497,12 +4782,15 @@ class _ModuleBuilder:
         lowered, once per source location (an unrolled ``for`` body is
         walked once per iteration)."""
         reason = self._lvalue_unsupported_reason(lhs)
+        # Every walk of it (each unrolled iteration) keeps what it reads
+        # observable; the warning is once per location.
+        self._sink(self._read_bits(node))
         key = (self._src_attr(node), reason)
         if key in self._lvalue_warned:
             self._lowering_failures += 1
             return
         self._lvalue_warned.add(key)
-        self._warn_dropped(node, reason, "assignment")
+        self._warn_dropped(node, reason, "assignment", sink=False)
 
     def _element_select_bits(self, expr: Any) -> tuple[Bit, ...] | None:
         """``var[i]`` (and ``var[i][j]``, ``var[i][j][k]``, ...) —
@@ -6579,6 +6867,13 @@ class _ModuleBuilder:
         :meth:`_emit_instance_array` name them."""
         out.append((inst, prefix))
         self._inlined_bodies.add(inst.body)
+        if inst is self.top:
+            # The interfaces bound to the top's interface ports are lowered
+            # in place (rtl-buddy-cdc#414): ``apb.psel`` is their member.
+            for member in inst.body:
+                if self._kind_name(member) == "InterfacePortSymbol":
+                    for iface, iprefix, _mp in self._iface_port_instances(member):
+                        self._design_instances(iface, iprefix, out)
 
         def child(member: Any, scope_prefix: str, name: str) -> None:
             kind = self._kind_name(member)
@@ -7030,7 +7325,9 @@ class _ModuleBuilder:
         return self._opaque(expr, width, what)
 
     def _opaque(self, node: Any, width: int, what: str) -> tuple[Bit, ...]:
-        """An ``$_UNKNOWN_`` driver standing in for ``node``, reported."""
+        """An ``$_UNKNOWN_`` driver standing in for ``node``, reported. What
+        ``node`` reads stays observable (:meth:`_sink`)."""
+        self._sink(self._read_bits(node))
         self._warn_opaque(node, what)
         return self._unknown_driver(max(width, 1))
 
@@ -7057,6 +7354,65 @@ class _ModuleBuilder:
             where or "<unknown location>",
             what,
             f" `{text}`" if text else "",
+        )
+
+    # Type of the cell that keeps the inputs of logic this frontend could
+    # not lower observable (rtl-buddy-cdc#414). It has no output and is no
+    # known Yosys cell, so the liveness pass treats it as an observation
+    # point; the crossing walks end on it like on any other unknown cell.
+    OPAQUE_SINK = "$_OPAQUE_SINK_"
+
+    def _read_bits(self, node: Any) -> tuple[Bit, ...]:
+        """The current bits of every variable / net ``node`` (an expression,
+        statement or symbol this frontend could not lower) reads by name,
+        as far as this builder lowers them: parameters, loop variables and
+        memories aside. Duplicate variables are read once."""
+        pyslang = getattr(self, "pyslang", None)
+        if node is None or pyslang is None or not hasattr(node, "visit"):
+            return ()
+        visit_action = _pyslang_namespaces(pyslang)[0].VisitAction
+        seen: set[Any] = set()
+        out: list[Bit] = []
+
+        def name(n: Any) -> Any:
+            if type(n).__name__ in self._NAME_KINDS and self._is_named(n):
+                sym = getattr(n, "symbol", None)
+                if (
+                    sym is not None
+                    and self._kind_name(sym) not in self._CONSTANT_SYMBOLS
+                    and sym not in self._loop_bindings
+                ):
+                    canonical = self._canonical_var(sym)
+                    if canonical not in seen and canonical not in self._memories:
+                        seen.add(canonical)
+                        out.extend(
+                            b for b in self._alloc_bits(sym) if isinstance(b, int)
+                        )
+            return visit_action.Advance
+
+        try:
+            node.visit(name)
+        except Exception:  # pragma: no cover - defensive: pyslang visit shapes
+            return tuple(out)
+        return tuple(out)
+
+    def _sink(self, bits: tuple[Bit, ...]) -> None:
+        """Keep ``bits`` observable: an :attr:`OPAQUE_SINK` cell reads them
+        (rtl-buddy-cdc#414). Used wherever the frontend drops or makes
+        opaque a construct, so the registers whose only reader it was stay
+        in the analysis — the crossings into them are still checked —
+        instead of being pruned as unobservable without a word."""
+        bits = tuple(b for b in bits if isinstance(b, int))
+        if not bits or not hasattr(self, "_cells"):
+            return
+        name = self._fresh_cell_name(self.OPAQUE_SINK)
+        self._cells[name] = Cell(
+            name=name,
+            type=self.OPAQUE_SINK,
+            connections={"A": bits},
+            parameters={},
+            attributes={},
+            port_directions={"A": "input"},
         )
 
     def _unknown_driver(self, width: int) -> tuple[Bit, ...]:

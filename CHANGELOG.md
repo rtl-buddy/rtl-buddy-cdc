@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Top-level interface ports are lowered; logic behind them is no longer
+  dropped** (rtl-buddy-cdc#414, a 0.8.0 regression). On the slang
+  frontend a top whose ports include a SystemVerilog interface port
+  (`apb_intf.subordinate apb`) had no netlist port for its members: a
+  read of `apb.psel` became an opaque driver and a write of `apb.prdata`
+  was dropped, so every register observed only through an interface
+  member was pruned as unobservable — in the project template a 2FF
+  synchroniser fed by a comparator, and the CDC-003 0.7.3 reported at it.
+  Each member is now a top-level port named `<port>.<member>`
+  (`apb.psel`; `apb[1].psel` for an interface array, `o.inner.data` for
+  a nested interface), the name Yosys `read_verilog` gives it, so
+  `[get_ports apb.psel]` / `[get_ports apb.*]` type it; a member the
+  design drives is an output, any other an input, with or without a
+  modport, bit by bit (a member driven on some bits only is an input port
+  `<member>` of the others plus an output port `<member>$out`, reported;
+  members whose names an escaped top port already takes become
+  `<port>$iface.<member>`, reported). Untyped input members are `<unconstrained>` (CDC-011), like
+  any untyped input port — 0.7.3 had no port for them at all, so an SDC
+  written for it types none and gains CDC-011 for each one a register
+  captures. A memory inside a top-level interface, or an interface port
+  with no elaborated instance, is reported.
+- **Nothing leaves the crossing analysis silently** (rtl-buddy-cdc#414,
+  audit of rtl-buddy-cdc#338). A construct the slang frontend reports as
+  not lowered (a dropped output connection, assignment or block) or as
+  an opaque driver now keeps what it reads observable, so the registers
+  behind it are still crossing destinations; every register the
+  unobservable-cell pass removes that captures anything (an input or
+  another register) is named on stderr (`note: N
+  register(s) left out of the CDC analysis …`); the `lint` Yosys flow no
+  longer runs `opt_clean`, which deleted such registers before the
+  analyzer could name them (verdict-identical: the analyzer prunes the
+  same cells, and the frontend folds the `$buf` cells `read_slang`
+  writes for assignments and port connections into wires itself, as
+  `opt_clean` did, so they are not counted as logic before a
+  synchroniser — except a buffer onto a bit another cell drives, which
+  stays; the driver-side wire name keeps precedence); and an `inout` top-level port, which the crossing walk
+  does not start from (Yosys `read_verilog` makes one of each member of
+  an interface port without a modport), is reported on stderr.
+- **CDC-020 on async-FIFO storage written in an async-reset block**
+  (rtl-buddy-cdc#414). A memory whose write shares a block with an
+  asynchronous reset is registers on both frontends (Yosys `mem2reg`;
+  slang since rtl-buddy-cdc#401), and a read side capturing the word in
+  several registers fired CDC-020 once per word. A register array that
+  is exactly one memory — ≥ 2 registers named as elements of one
+  unpacked array, one clock, no reset pin, each holding or loading one
+  shared write bus with at most one loading per cycle (checked by
+  exhaustive evaluation of the write decode), read only through
+  multiplexer trees that always yield one whole word — is now analysed
+  as that memory, so CDC-026 judges its storage path (a note on stderr
+  names it). The rewrite never deletes a cell something else still reads
+  and refuses any result that would leave a read net undriven; falling-
+  edge and `(* keep *)` arrays, arrays whose next-state nets are read
+  elsewhere, and any check that fails are left as registers (a note says
+  so). As a memory the storage path is judged by CDC-026 alone, which is
+  silent once a synchronised write-clock crossing reaches the read
+  address — the same judgement as the RTL written as a memory, weaker
+  than the per-word flop findings for a wrong pointer protocol (README,
+  CDC-026). Anything else stays registers, and a CDC-020 on an array
+  element now names the array and the fix. Gate-level netlists keep the
+  register form. Verdict changes on the committed fixtures: none except
+  the new `good_async_fifo_reset_block` (CDC-020 × 8 → clean on both
+  frontends); an unsynchronised read of such an array is now CDC-026.
+
 ## [0.8.0] — 2026-11-19
 
 ### Added

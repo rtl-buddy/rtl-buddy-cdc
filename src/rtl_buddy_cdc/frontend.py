@@ -4,7 +4,7 @@ The analyzer (``rules.py`` / ``sdc.py`` / ``waivers.py`` / ``reporter.py``)
 operates on a :class:`rtl_buddy_cdc.netlist.Module`. How that ``Module``
 got there is pluggable:
 
-- ``"yosys"`` — shell out to Yosys (``hierarchy; proc; flatten; opt_clean;
+- ``"yosys"`` — shell out to Yosys (``hierarchy; proc; flatten;
   write_json``) and load the resulting JSON. This is the historical
   primary path and remains the default.
 - ``"slang"`` — elaborate SystemVerilog directly via the pyslang Python
