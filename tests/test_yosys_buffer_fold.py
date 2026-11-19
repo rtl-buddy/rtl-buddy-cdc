@@ -156,3 +156,39 @@ def test_read_slang_handshake_is_clean(tmp_path: Path) -> None:
     report = json.loads(out.read_text())
     assert report["violations"] == []
     assert len(report["crossings"]) == 3
+
+
+def test_a_buffer_onto_a_driven_bit_stays(tmp_path: Path) -> None:
+    """A ``$buf`` whose ``Y`` another cell drives is a second driver, not
+    a wire: folding it would hide one of them."""
+    data = _netlist(
+        {
+            "f0": {"type": "$dff", "connections": {"CLK": [2], "D": [3], "Q": [5]}},
+            "f1": {"type": "$dff", "connections": {"CLK": [2], "D": [3], "Q": [4]}},
+            "b0": _buf([4], [5]),
+        },
+        {"clk": {"direction": "input", "bits": [2]}},
+    )
+    module = _fold(tmp_path, data)
+    assert "b0" in module["cells"]
+
+
+def test_the_driver_side_name_comes_first(tmp_path: Path) -> None:
+    """After the fold the reader-side wire aliases the driver's bits; it is
+    listed after the driver-side name, so a report naming a net by its
+    first source-level name keeps the driver's."""
+    data = _netlist(
+        {
+            "src": {"type": "$dff", "connections": {"CLK": [2], "D": [3], "Q": [4]}},
+            "b0": _buf([4], [5]),
+            "dst": {"type": "$dff", "connections": {"CLK": [2], "D": [5], "Q": [6]}},
+        },
+        {"clk": {"direction": "input", "bits": [2]}},
+    )
+    data["modules"]["top"]["netnames"] = {
+        "u_child.d": {"bits": [5]},
+        "src_q": {"bits": [4]},
+    }
+    module = _fold(tmp_path, data)
+    assert list(module["netnames"]) == ["src_q", "u_child.d"]
+    assert module["netnames"]["u_child.d"]["bits"] == [4]

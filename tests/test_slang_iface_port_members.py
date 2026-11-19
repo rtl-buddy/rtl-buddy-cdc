@@ -280,3 +280,77 @@ endmodule
             result.output,
         )
         assert "u_s." in result.output
+
+
+# --- review regressions -------------------------------------------------------
+
+_PARTIAL = """
+interface bus_if;
+    logic [7:0] data;
+    wire [3:0] io;
+    modport m (inout io);
+endinterface
+module t (input logic clk_a, clk_b, output logic [3:0] q, r, bus_if bus,
+          bus_if.m mb);
+    logic [3:0] lo;
+    always_ff @(posedge clk_b) lo <= ~lo;
+    assign bus.data[3:0] = lo;
+    always_ff @(posedge clk_b) q <= bus.data[7:4];
+    always_ff @(posedge clk_b) r <= mb.io;
+endmodule
+"""
+
+
+def test_a_partly_driven_member_keeps_its_outside_bits_as_sources(
+    tmp_path: Path, caplog
+) -> None:
+    """``bus.data[3:0]`` is driven by the design, ``bus.data[7:4]`` from
+    outside: the member is an input port of the outside bits and an output
+    port ``bus.data$out`` of the driven ones (it used to become one output
+    port, and the outside bits stopped being crossing sources, silently).
+    An undriven modport ``inout`` member is an input."""
+    caplog.set_level(logging.WARNING)
+    sv = tmp_path / "t.sv"
+    sv.write_text(_PARTIAL)
+    module = elaborate([sv], "t", frontend=Frontend.slang)
+    data = module.netnames["bus.data"].bits
+    inp, out = module.ports["bus.data"], module.ports["bus.data$out"]
+    assert (inp.direction, out.direction) == ("input", "output")
+    assert inp.bits[4:] == data[4:] and out.bits[:4] == data[:4]
+    assert not set(inp.bits[:4]) & set(data) and not set(out.bits[4:]) & set(data)
+    assert module.ports["mb.io"].direction == "input"
+    assert any("bus.data$out" in r.getMessage() for r in caplog.records)
+    sdc = tmp_path / "t.sdc"
+    sdc.write_text(
+        "create_clock -name ca -period 10 [get_ports clk_a]\n"
+        "create_clock -name cb -period 7 [get_ports clk_b]\n"
+        "set_clock_groups -asynchronous -group ca -group cb\n"
+        "set_input_delay -clock ca 0 [get_ports {bus.data mb.io}]\n"
+    )
+    report, _ = _lint(tmp_path, "slang", sv=sv, sdc=sdc, top="t")
+    srcs = {c.get("src_port") for c in report["crossings"]}
+    assert {"bus.data", "mb.io"} <= srcs, srcs
+    assert sorted(v["rule_id"] for v in report["violations"]) == ["CDC-004"] * 2
+
+
+def test_an_escaped_port_spelled_like_a_member_is_not_shadowed(
+    tmp_path: Path, caplog
+) -> None:
+    """``\\s.a`` next to interface port ``s`` with member ``a``: both stay
+    ports, the members renamed ``s$iface.<member>`` and reported."""
+    caplog.set_level(logging.WARNING)
+    sv = tmp_path / "t.sv"
+    sv.write_text(
+        "interface x_if; logic a; endinterface\n"
+        "module t (input logic clk_b, input logic \\s.a , output logic q1, q2,"
+        " x_if s);\n"
+        "  always_ff @(posedge clk_b) begin q1 <= \\s.a ; q2 <= s.a; end\n"
+        "endmodule\n"
+    )
+    module = elaborate([sv], "t", frontend=Frontend.slang)
+    assert module.ports["s.a"].direction == "input"
+    assert module.ports["s$iface.a"].direction == "input"
+    assert module.ports["s.a"].bits != module.ports["s$iface.a"].bits
+    flops = {c.connections["D"] for c in module.cells.values() if c.type == "$dff"}
+    assert flops == {module.ports["s.a"].bits, module.ports["s$iface.a"].bits}
+    assert any("s$iface" in r.getMessage() for r in caplog.records)

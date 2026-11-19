@@ -744,6 +744,8 @@ class _ModuleBuilder:
         # (rtl-buddy-cdc#414): port name -> (its placeholder bits, the
         # modport's direction for it or ``None``).
         self._iface_members: dict[str, tuple[tuple[Bit, ...], str | None]] = {}
+        # Top-level interface port name -> the prefix of its members' names.
+        self._iface_bases: dict[str, str] = {}
         self._cells: dict[str, Cell] = {}
         self._netnames: dict[str, Netname] = {}
         # Element netnames of each unpacked array, by its ``MEMID``
@@ -1343,8 +1345,43 @@ class _ModuleBuilder:
                 for offset, element in enumerate(getattr(sym, "elements", None) or []):
                     add(element, f"{prefix[:-1]}[{int(lower) + offset}].")
 
-        add(target, f"{member.name}.")
+        add(target, f"{self._iface_base(member)}.")
         return out
+
+    def _iface_base(self, member: Any) -> str:
+        """The name the members of top-level interface port ``member`` are
+        prefixed with: the port's own name, unless the top already has a
+        port, variable or net spelled like one of them (an escaped
+        identifier ``\\s.a`` next to interface port ``s``), in which case
+        ``<port>$iface`` — reported, so neither shadows the other
+        (rtl-buddy-cdc#414)."""
+        cached = self._iface_bases.get(member.name)
+        if cached is not None:
+            return cached
+        base = member.name
+        taken = {
+            getattr(m, "name", "")
+            for m in self.top.body
+            if self._kind_name(m) in {"PortSymbol", *self._NAMED_STORAGE}
+        }
+        if any(t.startswith((f"{base}.", f"{base}[")) for t in taken):
+            fresh = f"{base}$iface"
+            n = 1
+            while any(t.startswith((f"{fresh}.", f"{fresh}[")) for t in taken):
+                n += 1
+                fresh = f"{base}$iface{n}"
+            _log.warning(
+                "slang frontend: %s: the members of interface port `%s` are "
+                "named `%s.<member>`: a port, variable or net of the top is "
+                "already spelled `%s.<name>`",
+                self._src_attr(member) or "<unknown location>",
+                base,
+                fresh,
+                base,
+            )
+            base = fresh
+        self._iface_bases[member.name] = base
+        return base
 
     def _collect_iface_port(self, member: Any) -> None:
         """Lower a top-level interface port (``apb_intf.subordinate apb``)
@@ -1429,11 +1466,20 @@ class _ModuleBuilder:
             self._iface_members[name] = (bits, directions.get(canonical))
 
     def _finish_iface_ports(self) -> None:
-        """Settle each interface-member port's direction (see
-        :meth:`_collect_iface_port`): ``output`` when anything in the
-        design drives one of its bits (a cell output, a continuous
-        driver or a constant), else ``input`` — unless its modport makes
-        it an ``output``, which an undriven member stays."""
+        """Settle each interface-member port's direction, bit by bit (see
+        :meth:`_collect_iface_port`): a bit anything in the design drives
+        (a cell output, a continuous driver, a constant) is an output bit,
+        any other an input bit — unless the modport makes the member an
+        ``output``, which an undriven bit stays.
+
+        A member with bits of both kinds (``assign bus.data[3:0] = lo;``
+        with ``bus.data[7:4]`` driven from outside) is two ports
+        (rtl-buddy-cdc#414): ``<member>`` is the input, carrying the
+        undriven bits, and ``<member>$out`` the output, carrying the driven
+        ones; the other positions of each are bits nothing drives or reads,
+        so a declared index still names the same bit of either. Reported
+        on stderr: before this the whole member became an output and the
+        externally driven bits stopped being crossing sources, silently."""
         if not self._iface_members:
             return
         driven: set[Bit] = set()
@@ -1441,16 +1487,64 @@ class _ModuleBuilder:
             for pin, bits in cell.connections.items():
                 if cell.is_output_pin(pin):
                     driven.update(bits)
-        for name, (placeholder, modport_dir) in self._iface_members.items():
+        for name, (placeholder, modport_dir) in list(self._iface_members.items()):
             port = self._ports.get(name)
             if port is None:
                 continue
-            is_driven = port.bits != placeholder or any(
-                not isinstance(b, int) or b in driven for b in port.bits
-            )
-            direction = "output" if is_driven or modport_dir == "output" else "input"
+            mask = [
+                not isinstance(b, int) or b != p or b in driven
+                for b, p in zip(port.bits, placeholder)
+            ]
+            if modport_dir == "output" or all(mask):
+                direction = "output"
+            elif not any(mask):
+                direction = "input"
+            else:
+                self._split_iface_member(name, port, mask)
+                continue
             if direction != port.direction:
                 self._ports[name] = Port(name=name, direction=direction, bits=port.bits)
+
+    def _split_iface_member(self, name: str, port: Port, mask: list[bool]) -> None:
+        """Lower a partly driven interface member as an input port of its
+        undriven bits and an output port ``<name>$out`` of its driven bits
+        (:meth:`_finish_iface_ports`)."""
+
+        def fresh() -> Bit:
+            bit = self._next_bit_id
+            self._next_bit_id += 1
+            return bit
+
+        in_bits = tuple(fresh() if d else b for b, d in zip(port.bits, mask))
+        out_bits = tuple(b if d else fresh() for b, d in zip(port.bits, mask))
+        out_name = f"{name}$out"
+        self._ports[name] = Port(name=name, direction="input", bits=in_bits)
+        self._ports[out_name] = Port(name=out_name, direction="output", bits=out_bits)
+        nn = self._netnames.get(name)
+        offset, upto = (nn.offset, nn.upto) if nn is not None else (0, False)
+        self._netnames[out_name] = Netname(
+            name=out_name, bits=out_bits, attributes={}, offset=offset, upto=upto
+        )
+        width = len(mask)
+
+        def indices(want: bool) -> str:
+            idx = [
+                offset + (width - 1 - pos if upto else pos)
+                for pos, d in enumerate(mask)
+                if d == want
+            ]
+            return ", ".join(str(i) for i in sorted(idx))
+
+        _log.warning(
+            "slang frontend: interface member `%s` is driven by the design on "
+            "bit(s) %s and from outside on bit(s) %s: the input port `%s` "
+            "carries the outside bits and the output port `%s` the driven ones",
+            name,
+            indices(True),
+            indices(False),
+            name,
+            out_name,
+        )
 
     # -- pass 3: cells + continuous assigns -----------------------------
 

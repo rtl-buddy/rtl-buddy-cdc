@@ -22,7 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a nested interface), the name Yosys `read_verilog` gives it, so
   `[get_ports apb.psel]` / `[get_ports apb.*]` type it; a member the
   design drives is an output, any other an input, with or without a
-  modport. Untyped input members are `<unconstrained>` (CDC-011), like
+  modport, bit by bit (a member driven on some bits only is an input port
+  `<member>` of the others plus an output port `<member>$out`, reported;
+  members whose names an escaped top port already takes become
+  `<port>$iface.<member>`, reported). Untyped input members are `<unconstrained>` (CDC-011), like
   any untyped input port — 0.7.3 had no port for them at all, so an SDC
   written for it types none and gains CDC-011 for each one a register
   captures. A memory inside a top-level interface, or an interface port
@@ -40,7 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same cells, and the frontend folds the `$buf` cells `read_slang`
   writes for assignments and port connections into wires itself, as
   `opt_clean` did, so they are not counted as logic before a
-  synchroniser); and an `inout` top-level port, which the crossing walk
+  synchroniser — except a buffer onto a bit another cell drives, which
+  stays; the driver-side wire name keeps precedence); and an `inout` top-level port, which the crossing walk
   does not start from (Yosys `read_verilog` makes one of each member of
   an interface port without a modport), is reported on stderr.
 - **CDC-020 on async-FIFO storage written in an async-reset block**
@@ -54,7 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exhaustive evaluation of the write decode), read only through
   multiplexer trees that always yield one whole word — is now analysed
   as that memory, so CDC-026 judges its storage path (a note on stderr
-  names it). Anything else stays registers, and a CDC-020 on an array
+  names it). The rewrite never deletes a cell something else still reads
+  and refuses any result that would leave a read net undriven; falling-
+  edge and `(* keep *)` arrays, arrays whose next-state nets are read
+  elsewhere, and any check that fails are left as registers (a note says
+  so). As a memory the storage path is judged by CDC-026 alone, which is
+  silent once a synchronised write-clock crossing reaches the read
+  address — the same judgement as the RTL written as a memory, weaker
+  than the per-word flop findings for a wrong pointer protocol (README,
+  CDC-026). Anything else stays registers, and a CDC-020 on an array
   element now names the array and the fix. Gate-level netlists keep the
   register form. Verdict changes on the committed fixtures: none except
   the new `good_async_fifo_reset_block` (CDC-020 × 8 → clean on both

@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from typing import Any
 from pathlib import Path
 
 from rtl_buddy_cdc import netlist
@@ -262,6 +263,19 @@ def _collapse_buffers(json_path: Path) -> None:
             if port.get("direction") != "output"
             for b in port.get("bits", ())
         }
+        # Bits another cell drives: a buffer onto one of them is a second
+        # driver (a short), not a wire, and stays.
+        other: set[object] = set()
+        for cell in cells.values():
+            if cell.get("type") == "$buf":
+                continue
+            dirs = cell.get("port_directions", {})
+            for pin, bits in cell.get("connections", {}).items():
+                if (
+                    dirs.get(pin, "output" if pin in ("Y", "Q") else "input")
+                    == "output"
+                ):
+                    other.update(bits)
         alias: dict[int, int | str] = {}
         folded: list[str] = []
         for name, cell in cells.items():
@@ -274,7 +288,10 @@ def _collapse_buffers(json_path: Path) -> None:
             a, y = conns.get("A"), conns.get("Y")
             if not isinstance(a, list) or not isinstance(y, list) or len(a) != len(y):
                 continue
-            if any(not isinstance(b, int) or b in undriven or b in alias for b in y):
+            if any(
+                not isinstance(b, int) or b in undriven or b in alias or b in other
+                for b in y
+            ):
                 continue
             alias.update(zip(y, a))
             folded.append(name)
@@ -296,8 +313,18 @@ def _collapse_buffers(json_path: Path) -> None:
                 conns[pin] = [resolve(b) for b in bits]
         for port in mod.get("ports", {}).values():
             port["bits"] = [resolve(b) for b in port.get("bits", ())]
-        for net in mod.get("netnames", {}).values():
-            net["bits"] = [resolve(b) for b in net.get("bits", ())]
+        # A wire renamed onto its driver's bits goes after the names it
+        # aliases, so a report naming a net by its first source-level name
+        # keeps the driver's (A-side) name, as before the fold.
+        nets = mod.get("netnames", {})
+        kept: dict[str, Any] = {}
+        moved: dict[str, Any] = {}
+        for net_name, net in nets.items():
+            bits = net.get("bits", ())
+            new = [resolve(b) for b in bits]
+            (moved if new != list(bits) else kept)[net_name] = net
+            net["bits"] = new
+        mod["netnames"] = {**kept, **moved}
         changed = True
     if changed:
         json_path.write_text(json.dumps(data))

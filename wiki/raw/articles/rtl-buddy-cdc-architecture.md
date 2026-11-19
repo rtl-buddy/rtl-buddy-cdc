@@ -224,8 +224,14 @@ a read or write of `apb.psel` anywhere in the design — through the
 modport, or through a child module's interface port bound to it — is
 that member's bits, and every member is a top-level `Port` named
 `<port>.<member>` (Yosys `read_verilog`'s name for it). Its direction is
-settled after the walk: `output` when anything drives one of its bits,
-else `input` (an undriven modport `output` stays an `output`). Before
+settled after the walk, bit by bit: a bit anything drives is an output
+bit, any other an input bit (an undriven modport `output` stays an
+`output`); a member with bits of both kinds is two ports, `<member>`
+(input, its undriven bits) and `<member>$out` (output, its driven bits),
+each padded with bits nothing drives or reads so a declared index names
+the same bit of either, and is reported. When the top already has a
+port, variable or net spelled `<port>.<name>` (an escaped identifier),
+the members are named `<port>$iface.<member>` instead, reported. Before
 this, a read of `apb.psel` was an opaque driver and a write of
 `apb.prdata` was dropped.
 
@@ -3697,8 +3703,9 @@ so the crossing walk and this rule see a memory. The conditions, all
 checked on the netlist:
 
 - ≥ 2 registers named as elements of one unpacked array (`mem[k]`, the
-  netnames both frontends emit), one clock / type / edge, no reset,
-  set or load pin (`$dff` / `$dffe`, gate-level `$_DFF(E)_*`);
+  netnames both frontends emit), one clock / type, rising edge, no
+  reset, set or load pin and no `keep` (`$dff` / `$dffe`, gate-level
+  `$_DFF(E)_P*`); the hold / load multiplexers read by nothing else;
 - each register's next state is its own value or one write-data bus
   shared by all, through `$mux` legs (or an enable pin); the control
   cone behind the selects — walked back through the comb cells only
@@ -3713,7 +3720,23 @@ checked on the netlist:
   word (or undefined), each bit in a fixed column.
 
 Free variables over-approximate the reachable control values, so a
-pass is sound; correlation the enumeration cannot see only rejects. A
+pass is sound; correlation the enumeration cannot see only rejects. The
+evaluator is iterative (a 256-deep mux chain is fine) and bounded
+(`MAX_EVALUATIONS`). The rewrite deletes a cell only when every reader of
+every output it has is deleted too (or the output is the new read data,
+or an input of a new port): a decode both sides share stays. It then
+checks the whole result — no bit driven before and read after may be
+undriven — and is refused otherwise; any exception in recognition or
+rewrite leaves the registers, with a stderr note.
+
+**Trade-off.** A recognised array is judged as a memory: CDC-026 only,
+which is silent once any synchronised write-clock crossing reaches the
+read address / enable cone, whether or not the protocol keeps the word
+read stable (a read address equal to the synchronised gray write pointer
+passes). In register form every word → capture path was a flop crossing
+(CDC-004 / CDC-020). An unsynchronised read becomes CDC-026 (`error`);
+a synchronised but wrong protocol becomes silent, as for the same RTL
+written as a memory (`tests/test_regfile_memory.py` pins both). A
 rejected array stays registers, and a CDC-020 on an element names the
 array and the fix. Gate-level netlists (`techmap` turns the read
 `$pmux` into AND / OR gates) are not recognised (gate-level corpus

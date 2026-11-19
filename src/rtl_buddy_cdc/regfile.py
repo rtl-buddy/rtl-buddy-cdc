@@ -19,18 +19,20 @@ are judged as the memory they describe. It is deliberately narrow; a
 register array is a memory here only when **all** of this holds, checked
 on the netlist, not on names:
 
-- ``DEPTH >= 2`` registers of one width, with the same cell type, clock
-  and edge and no reset, set or load pin (an array reset in its reset
-  branch is registers, not a memory), named as elements of one unpacked
-  array (``mem[0]`` …, the netnames both frontends give them);
+- ``DEPTH >= 2`` registers of one width, with the same cell type and
+  clock, rising-edge, no reset, set or load pin (an array reset in its
+  reset branch is registers, not a memory) and no ``keep``, named as
+  elements of one unpacked array (``mem[0]`` …, the netnames both
+  frontends give them);
 - each register's next state is either its own value (hold) or one write
   data bus shared by all of them, chosen by multiplexers (or an enable
   pin) whose selects depend on a small set of control nets; evaluated
   exhaustively over every value of those nets, **at most one** register
   loads in any cycle and every register loads in some — a decode of one
   write address;
+- the hold / load multiplexers are read by nothing but the registers;
 - the registers' outputs are read by nothing but their own hold logic and
-  one tree of multiplexers (``$mux`` / ``$pmux`` / ``$bmux`` /
+  trees of multiplexers (``$mux`` / ``$pmux`` / ``$bmux`` /
   ``$shiftx`` / ``$_MUX_``) whose selects again depend on a small set of
   control nets; evaluated over every value of those, the tree's output is
   always all of one register's bits (or undefined), each bit in a fixed
@@ -38,7 +40,23 @@ on the netlist, not on names:
 
 Anything else — a register read elsewhere, a write of anything but the
 shared bus, two words loaded at once, a select cone too large to
-enumerate — is left as registers, and CDC-020 keeps judging it.
+enumerate — is left as registers, and CDC-020 keeps judging it. The
+rewrite itself deletes a cell only when every reader of every output it
+has is deleted too, and is refused (registers kept, a note) when the
+result would leave a net something reads without its driver; any
+exception in either step also leaves the registers, with a note.
+
+What changes for a recognised array. As registers, each word is a
+crossing source, so each word → capture path is judged by the flop rules
+(CDC-004 / CDC-020 …). As a memory, the storage path is judged by CDC-026
+alone: it fires when no crossing from the write clock through a
+synchroniser reaches the read port's address / enable cone, and is silent
+otherwise — whether or not the pointer protocol really keeps the word
+being read stable (a read address that *is* the synchronised gray write
+pointer passes). That is the judgement every memory gets; an
+unsynchronised read becomes a CDC-026 error instead of CDC-020 warnings,
+a synchronised but wrong protocol becomes silent. The write port remains a
+crossing endpoint for the write address / data / enable.
 """
 
 from __future__ import annotations
