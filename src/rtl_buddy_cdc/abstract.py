@@ -594,6 +594,7 @@ def _summarise_single_clock(
         ),
         reset_pins=_reset_pins(analysis),
         pin_facts=_pin_facts(analysis),
+        stub=analysis is None,
     )
 
 

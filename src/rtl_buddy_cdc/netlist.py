@@ -341,6 +341,11 @@ class BoundarySummary:
     # besides a flop capture (:class:`PinFacts`). A ``no_capture`` pin
     # gets no entry in ``input_ports``.
     pin_facts: dict[str, PinFacts] = field(default_factory=dict)
+    # rtl-buddy-cdc#411: a bodyless stub's summary (no body analysed, not
+    # a recognised CDC primitive). The parent assumes the conservative
+    # answer for what the stub does with its pins, unless a
+    # ``// rbcdc: stub`` pragma declares it.
+    stub: bool = False
 
 
 @dataclass(frozen=True)

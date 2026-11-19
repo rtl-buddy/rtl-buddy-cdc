@@ -216,3 +216,277 @@ def test_async_read_sites_of_a_packed_memory() -> None:
         ("m0", "RD_EN", 1),
     }
     assert set(reads.data) == {8}
+
+
+# --- items 1 and 2: what a bodyless stub is read as -------------------------
+
+
+def _advisories(report: dict) -> list[dict]:
+    return report["stub_assumptions"]
+
+
+# The block's output XORs its register with its input, which the parent
+# drives from another clock: the top-level output merges two asynchronous
+# launches through the block (flat CDC-025).
+_MERGE_THROUGH_BLOCK = """\
+module blk (input clk, input d, output q);
+    logic s1;
+    always_ff @(posedge clk) s1 <= d;
+    assign q = s1 ^ d;
+endmodule
+module top (input fast, input slow, input d, output q);
+    logic x;
+    always_ff @(posedge slow) x <= d;
+    blk u (.clk(fast), .d(x), .q(q));
+endmodule
+"""
+# Registered output: no path through the block, nothing merges flat.
+_REGISTERED_THROUGH_BLOCK = _MERGE_THROUGH_BLOCK.replace(
+    "assign q = s1 ^ d;",
+    "logic s2;\n    always_ff @(posedge clk) s2 <= s1;\n    assign q = s2;",
+)
+_MERGE_SDC = _SDC + _typed("slow", "d")
+
+
+@needs_slang
+def test_undeclared_stub_feedthrough_is_an_advisory(tmp_path: Path) -> None:
+    """Item 1, default: a stub's output is read as registered (no path
+    through it), as before — so no finding — and the report says that
+    reading kept CDC-025 quiet, with the finding it would give and the
+    pragma that declares the stub."""
+    reports = _views(tmp_path, _MERGE_THROUGH_BLOCK, _MERGE_SDC)
+    assert _rules(reports["flat"]) == Counter({"CDC-001": 1, "CDC-025": 1})
+    assert _rules(reports["greybox"]) == _rules(reports["flat"])
+    assert _rules(reports["blackbox"]) == Counter({"CDC-001": 1})
+    assert _advisories(reports["flat"]) == []
+    assert _advisories(reports["greybox"]) == []
+    (adv,) = _advisories(reports["blackbox"])
+    assert (adv["rule_id"], adv["instance"], adv["module"], adv["port"]) == (
+        "CDC-025",
+        "u",
+        "blk",
+        "q",
+    )
+    assert "merges launches from fast" in adv["message"]
+    assert "// rbcdc: stub blk.q feedthrough=" in adv["message"]
+
+
+@needs_slang
+def test_registered_stub_output_still_gets_the_advisory(tmp_path: Path) -> None:
+    """The stub cannot show its output is registered: the advisory stands
+    until the pragma says so."""
+    reports = _views(tmp_path, _REGISTERED_THROUGH_BLOCK, _MERGE_SDC)
+    # Flat, the input lands on a 2FF chain; the stub cannot prove it.
+    assert _rules(reports["flat"]) == Counter()
+    assert _rules(reports["greybox"]) == Counter()
+    assert _rules(reports["blackbox"]) == Counter({"CDC-001": 1})
+    assert [a["rule_id"] for a in _advisories(reports["blackbox"])] == ["CDC-025"]
+    declared = _REGISTERED_THROUGH_BLOCK + "// rbcdc: stub blk.* feedthrough=none\n"
+    reports = _views(tmp_path, declared, _MERGE_SDC)
+    assert _rules(reports["blackbox"]) == Counter({"CDC-001": 1})
+    assert _advisories(reports["blackbox"]) == []
+
+
+@needs_slang
+@pytest.mark.parametrize(
+    ("pragma", "blackbox"),
+    [
+        # Declared path: the stub reaches the flat verdict.
+        ("// rbcdc: stub blk.q feedthrough=d", {"CDC-001": 1, "CDC-025": 1}),
+        # Declared registered (wrongly, here): the user's word stands.
+        ("/* rbcdc: stub blk.q feedthrough=none vendor datasheet */", {"CDC-001": 1}),
+        # A per-output pragma overrides the module-wide one, key by key.
+        (
+            "// rbcdc: stub blk.* feedthrough=none\n// rbcdc: stub blk.q feedthrough=d",
+            {"CDC-001": 1, "CDC-025": 1},
+        ),
+    ],
+    ids=["feedthrough-declared", "registered-declared", "override"],
+)
+def test_declared_stub_feedthrough(tmp_path: Path, pragma: str, blackbox: dict) -> None:
+    reports = _views(tmp_path, _MERGE_THROUGH_BLOCK + pragma + "\n", _MERGE_SDC)
+    assert _rules(reports["blackbox"]) == Counter(blackbox)
+    assert _advisories(reports["blackbox"]) == []
+    # Flat and greybox runs ignore a stub pragma.
+    assert _rules(reports["flat"]) == Counter({"CDC-001": 1, "CDC-025": 1})
+    assert _rules(reports["greybox"]) == Counter({"CDC-001": 1, "CDC-025": 1})
+    if "CDC-025" in blackbox:
+        (msg,) = _messages(reports["blackbox"], "CDC-025")
+        assert "rbcdc: stub" not in msg  # declared, not assumed
+
+
+@needs_slang
+def test_undeclared_stub_feedthrough_to_a_contracted_output(tmp_path: Path) -> None:
+    """CDC-024 reads the same cone: its advisory, then the declared path."""
+    sdc = _MERGE_SDC + "set_output_delay -clock fast 1 [get_ports q]\n"
+    reports = _views(tmp_path, _MERGE_THROUGH_BLOCK, sdc)
+    assert _rules(reports["flat"])["CDC-024"] == 1
+    assert _rules(reports["greybox"])["CDC-024"] == 1
+    assert _rules(reports["blackbox"])["CDC-024"] == 0
+    assert [a["rule_id"] for a in _advisories(reports["blackbox"])] == ["CDC-024"]
+    declared = _MERGE_THROUGH_BLOCK + "// rbcdc: stub blk.q feedthrough=d\n"
+    reports = _views(tmp_path, declared, sdc)
+    assert _rules(reports["blackbox"])["CDC-024"] == 1
+    assert _advisories(reports["blackbox"]) == []
+
+
+# The payload register and the request flop are inside the block; the
+# parent synchronises the request and loads the payload on it.
+_HOLD_BEHIND_OUTPUT = """\
+module blk (input clk, input go, input [7:0] d, output logic req, output logic [7:0] data);
+    always_ff @(posedge clk) begin req <= go; data <= d; end
+endmodule
+module top (input fast, input slow, input go, input [7:0] d, output logic [7:0] q);
+    logic r, r1, r2;
+    logic [7:0] x;
+    blk u (.clk(slow), .go(go), .d(d), .req(r), .data(x));
+    always_ff @(posedge fast) begin r1 <= r; r2 <= r1; if (r2) q <= x; end
+endmodule
+"""
+
+
+def _acked(hold: str) -> str:
+    """The parent returns an acknowledge from the destination into the
+    block's ``ack`` pin; ``hold`` is the payload register's load."""
+    return f"""\
+module blk (input clk, input go, input ack, input [7:0] d,
+            output logic req, output logic [7:0] data);
+    logic a1, a2;
+    always_ff @(posedge clk) begin
+        a1 <= ack; a2 <= a1;
+        req <= go;
+        {hold}
+    end
+endmodule
+module top (input fast, input slow, input go, input [7:0] d, output logic [7:0] q);
+    logic r, r1, r2, ack;
+    logic [7:0] x;
+    blk u (.clk(slow), .go(go), .ack(ack), .d(d), .req(r), .data(x));
+    always_ff @(posedge fast) begin r1 <= r; r2 <= r1; ack <= r2; if (r2) q <= x; end
+endmodule
+"""
+
+
+# Holds the payload until the acknowledge; takes it and lets the payload
+# run anyway (flat CDC-012).
+_HELD = _acked("if (a2) data <= d;")
+_NOT_HELD = _acked("data <= d;")
+_HOLD_SDC = _SDC + _typed("slow", "go", "d")
+
+
+@needs_slang
+def test_stub_payload_without_an_acknowledge_is_cdc012(tmp_path: Path) -> None:
+    reports = _views(tmp_path, _HOLD_BEHIND_OUTPUT, _HOLD_SDC)
+    for view in ("flat", "greybox", "blackbox"):
+        assert _rules(reports[view]) == Counter({"CDC-012": 1}), view
+    assert _advisories(reports["blackbox"]) == []
+
+
+@needs_slang
+@pytest.mark.parametrize(("sv", "flat"), [(_HELD, {}), (_NOT_HELD, {"CDC-012": 1})])
+def test_stub_payload_with_an_acknowledge_is_an_advisory(
+    tmp_path: Path, sv: str, flat: dict
+) -> None:
+    """Item 2, default: an acknowledge from the destination enters the
+    stub, so its payload is read as held (no finding) — the stub cannot
+    show whether it really holds it, and the report says so."""
+    reports = _views(tmp_path, sv, _HOLD_SDC)
+    assert _rules(reports["flat"]) == Counter(flat)
+    assert _rules(reports["greybox"]) == Counter(flat)
+    assert _rules(reports["blackbox"])["CDC-012"] == 0
+    (adv,) = _advisories(reports["blackbox"])
+    assert (adv["rule_id"], adv["instance"], adv["port"]) == ("CDC-012", "u", "data")
+    assert "enters it on `ack`" in adv["message"]
+    assert "// rbcdc: stub blk.data hold=ack" in adv["message"]
+
+
+@needs_slang
+@pytest.mark.parametrize(
+    ("pragma", "cdc012"),
+    [
+        ("// rbcdc: stub blk.data hold=ack", 0),
+        ("// rbcdc: stub blk.data hold=none", 1),
+        # The named pin carries no acknowledge from the destination.
+        ("// rbcdc: stub blk.data hold=go", 1),
+    ],
+    ids=["held-on-ack", "not-held", "wrong-pin"],
+)
+def test_declared_stub_hold(tmp_path: Path, pragma: str, cdc012: int) -> None:
+    reports = _views(tmp_path, _NOT_HELD + pragma + "\n", _HOLD_SDC)
+    assert _rules(reports["blackbox"])["CDC-012"] == cdc012
+    assert _advisories(reports["blackbox"]) == []
+    if cdc012:
+        (msg,) = _messages(reports["blackbox"], "CDC-012")
+        assert "is declared to hold `data`" in msg
+
+
+@needs_slang
+def test_stub_advisory_in_the_text_report(tmp_path: Path) -> None:
+    src = tmp_path / "t.sv"
+    src.write_text(_MERGE_THROUGH_BLOCK)
+    sdc = tmp_path / "t.sdc"
+    sdc.write_text(_MERGE_SDC)
+    result = CliRunner().invoke(
+        app,
+        ["lint", "--top", "top", "--sdc", str(sdc), "--frontend", "slang"]
+        + ["--blackbox", "blk", "--no-color", str(src)],
+    )
+    assert result.exit_code == 1, result.output
+    assert "1 verdict rests on an undeclared bodyless stub" in result.output
+    assert "[CDC-025]" in result.output
+
+
+@needs_slang
+def test_stub_pragma_typos_are_reported(tmp_path: Path) -> None:
+    src = tmp_path / "t.sv"
+    src.write_text(
+        _MERGE_THROUGH_BLOCK
+        + "// rbcdc: stub blk.qq feedthrough=d\n"
+        + "// rbcdc: stub blk.q feedthrough=e\n"
+        + "// rbcdc: stub blk.q holds=d\n"
+        + "// rbcdc: stub other.q feedthrough=none\n"
+    )
+    sdc = tmp_path / "t.sdc"
+    sdc.write_text(_MERGE_SDC)
+    result = CliRunner().invoke(
+        app,
+        ["lint", "--top", "top", "--sdc", str(sdc), "--frontend", "slang"]
+        + ["--blackbox", "blk", "--no-color", str(src)],
+    )
+    assert result.exit_code == 1
+    out = result.output
+    assert "blk.qq ignored: qq is not an output" in out
+    assert "blk.q ignored: not an input of blk: e" in out
+    assert "cannot read `holds=d`" in out
+    # A module that is no stub in this run is not this run's business.
+    assert "other.q" not in out
+    # Nothing was declared, so the advisory stands.
+    assert "rests on an undeclared bodyless stub" in out
+
+
+def test_stub_pragma_grammar(tmp_path: Path) -> None:
+    from rtl_buddy_cdc import pragma
+
+    a = tmp_path / "a.sv"
+    a.write_text(
+        "// rbcdc: stub blk.q feedthrough=d,e hold=ack  per the IP spec\n"
+        "/* rbcdc: stub blk.* feedthrough=none */\n"
+        "//rbcdc:stub blk.z hold=none\n"
+        "// rbcdc: stub blk.y\n"
+        "// rbcdc: disable-rule CDC-001 not a stub pragma\n"
+    )
+    b = tmp_path / "b.sv"
+    b.write_text("// rbcdc: stub blk.q feedthrough=none\n")
+    decls = pragma.scan_stubs([a, b])
+    q = decls.ports[("blk", "q")]
+    # b.sv's pragma overrides feedthrough and keeps a.sv's hold.
+    assert (q.feedthrough, q.hold) == ((), ("ack",))
+    assert q.origin == f"{b}:1"
+    assert decls.ports[("blk", "*")].feedthrough == ()
+    assert decls.ports[("blk", "z")].hold == ()
+    assert ("blk", "y") not in decls.ports
+    assert decls.problems == (
+        f"{a}:4: stub pragma for blk.y sets neither feedthrough= nor hold=",
+    )
+    # The waiver scan does not read a stub pragma, and vice versa.
+    assert [w.rule_pattern for w in pragma.scan([a])] == ["CDC-001"]
