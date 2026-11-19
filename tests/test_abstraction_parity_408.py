@@ -492,18 +492,17 @@ def test_latch_between_pin_and_sync_is_cdc017(tmp_path: Path) -> None:
 
 
 @needs_slang
-def test_memory_async_read_through_a_block_is_a_documented_limit(
-    tmp_path: Path,
-) -> None:
-    """Item 7, documented limit (architecture spec section 4.9): CDC-026
-    needs the crossings into the read address relative to the write
-    clock, and the read address is a combinational feed-through, which a
-    single-clock summary captures in the block's clock. The site is still
-    reported as an error, under CDC-004."""
+def test_memory_async_read_through_a_block(tmp_path: Path) -> None:
+    """Item 7. Documented limit here until rtl-buddy-cdc#411: the greybox
+    now publishes the asynchronous read (a transit from the address pin
+    to the data pin, and the memory's write clock), so the parent raises
+    CDC-026 as flat; tests/test_abstraction_parity_411.py has the table.
+    A stub cannot show the memory: CDC-004 at the address pin and the
+    read data (documented)."""
     sdc = _SDC + _typed("fast", "a", "d", "w") + _typed("slow", "b")
     reports = _views(tmp_path, _MEM_ASYNC_READ, sdc)
     assert _rules(reports["flat"]) == Counter({"CDC-026": 1})
-    assert _rules(reports["greybox"]) == Counter({"CDC-004": 2})
+    assert _rules(reports["greybox"]) == Counter({"CDC-026": 1})
     assert _rules(reports["blackbox"]) == Counter({"CDC-004": 2})
 
 

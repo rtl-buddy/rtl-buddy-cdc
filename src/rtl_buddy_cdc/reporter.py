@@ -27,7 +27,7 @@ from rtl_buddy_cdc.domain import (
     InferredClockCandidate,
 )
 from rtl_buddy_cdc.netlist import Module
-from rtl_buddy_cdc.rules import Violation
+from rtl_buddy_cdc.rules import StubAssumption, Violation
 from rtl_buddy_cdc.sdc import ClockSpec
 from rtl_buddy_cdc.waivers import SuppressedViolation, Waiver
 
@@ -146,6 +146,12 @@ class AnalysisResult:
     # crossings behind those paths may be missing from this report.
     crossing_depth: int | None = None
     depth_cuts: list[DepthCut] = field(default_factory=list)
+    # Where reading an undeclared bodyless stub (``--blackbox``) decided a
+    # verdict (rtl-buddy-cdc#411): no combinational path through it, its
+    # payload held for an acknowledge entering it. Report-only, like the
+    # inferred-clock candidates: each names the finding the other reading
+    # would give and the ``// rbcdc: stub`` pragma that settles it.
+    stub_assumptions: list[StubAssumption] = field(default_factory=list)
 
 
 # --- text -------------------------------------------------------------------
@@ -331,6 +337,25 @@ def _render_design_summary(
                 f"    {s.dim}{cand.driver} ({cand.driver_kind}) → "
                 f"{cand.fanout} CLK pins [{sinks}{more}]{s.reset}\n"
             )
+
+    # Undeclared stub readings that decided a verdict (rtl-buddy-cdc#411).
+    # Advisory: what the rule would report under the other reading, and
+    # the pragma that declares the stub either way.
+    if result.stub_assumptions:
+        n = len(result.stub_assumptions)
+        out.write(
+            f"  {s.cyan}ⓘ {n} verdict{'s rest' if n != 1 else ' rests'} on an "
+            f"undeclared bodyless stub — declare it with `// rbcdc: stub` "
+            f"or analyse it with --greybox:{s.reset}\n"
+        )
+        for a in result.stub_assumptions:
+            body = textwrap.fill(
+                f"[{a.rule_id}] {a.message}",
+                width=_BODY_WIDTH,
+                initial_indent="    ",
+                subsequent_indent="      ",
+            )
+            out.write(f"{s.dim}{body}{s.reset}\n")
 
     # Scan-mode suppression tally (issue #45). Only non-zero when
     # ``--ignore-scan-mode`` was passed, and always printed when it is —
@@ -578,6 +603,18 @@ def render_json(result: AnalysisResult, out: IO[str]) -> None:
                 "example_sinks": list(c.example_sinks),
             }
             for c in result.inferred_clock_candidates
+        ],
+        # Advisory (rtl-buddy-cdc#411): verdicts that rest on reading an
+        # undeclared bodyless stub. Report-only. Empty list when none.
+        "stub_assumptions": [
+            {
+                "rule_id": a.rule_id,
+                "instance": a.instance,
+                "module": a.module,
+                "port": a.port,
+                "message": a.message,
+            }
+            for a in result.stub_assumptions
         ],
         "by_instance": _by_instance(result.violations),
         "domains": [

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`// rbcdc: stub` pragma and stub-assumption advisories**
+  (rtl-buddy-cdc#411). A bodyless `--blackbox` stub declares nothing, so
+  the parent reads each output as having no combinational path through
+  the stub and its payload as held when an acknowledge from the
+  destination enters it. Either reading can keep a finding quiet that
+  the flat run reports (an asynchronous merge through the stub, CDC-025 /
+  CDC-024; a stub that takes an acknowledge and lets its payload run,
+  CDC-012), so wherever one decides a verdict the report now lists it
+  under a new advisory, `stub_assumptions` (text section, JSON
+  `stub_assumptions[]` with `rule_id` / `instance` / `module` / `port` /
+  `message`; never exit-code driving), with the finding the other reading
+  gives. `// rbcdc: stub <module>.<output|*> feedthrough=<inputs|none>
+  hold=<inputs|none>` describes the stub instead: a declared feed-through
+  is walked (CDC-025 / CDC-024 as flat), a declared hold is checked
+  against the pins it names. A pragma naming a port or pin the stub does
+  not have is reported on stderr. The conservative readings were measured
+  as defaults and rejected: they add a CDC-025 error to 2 of the 13
+  committed stub netlists (`bbx_input_sync`, `bbx_input_sync_broken`) and
+  a CDC-012 to every well-formed handshake stub. **No verdict changes**;
+  the advisory appears on `bbx_input_sync` (1) and
+  `bbx_input_sync_broken` (2) among the committed netlists.
+
 - **Cell-variety fixtures** (rtl-buddy-cdc#331) — *test-only, no output
   change.* Four fixtures put the Yosys cells the corpus lacked on real
   crossings, checked by `tests/test_cell_variety_fixtures.py`:
@@ -405,6 +427,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clock still fire. No committed fixture changes verdict.
 
 ### Fixed
+
+- **Greybox: a memory read asynchronously into the parent reports
+  CDC-026, as flat** (rtl-buddy-cdc#411). It reported CDC-004 at the
+  read-address pin and on the read data: the summary captured the
+  address in the block's clock and launched the data from it, where the
+  flat crossing walk passes the asynchronous read from address to data
+  and CDC-026 judges the storage. The greybox pass now reads the read
+  port as a transit: an input reaching only outputs, one through such a
+  read, seeds no sink; an output only such reads and input pins drive is
+  no source of its own; the parent's crossing walk passes through the
+  block there (`$boundary_transit`), and the memory's write clocks and
+  address pins are published (`MemReadFact`) so the parent judges
+  CDC-026 with the flat predicate. Gated on a body with an asynchronous
+  memory read: no committed fixture's verdict changes.
 
 - **A clock gate with a foreign-domain enable flop is CDC-010, not
   CDC-023** (rtl-buddy-cdc#408, item 1). On `clk_a & en_q` (or a latch

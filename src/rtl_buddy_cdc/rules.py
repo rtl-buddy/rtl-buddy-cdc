@@ -127,6 +127,54 @@ class BoundarySource:
     # The parent bits feeding the block's input pins that reach this
     # output combinationally (rtl-buddy-cdc#408).
     feedthrough: tuple[Bit, ...] = ()
+    # rtl-buddy-cdc#411: the asynchronous memory reads behind the pin
+    # whose CDC-026 verdict the parent owns (:class:`BoundaryMemRead`).
+    mem_reads: tuple["BoundaryMemRead", ...] = ()
+    # rtl-buddy-cdc#411: for a bodyless stub's output, the stub's module
+    # name; the parent bits on every data input pin when its paths are
+    # undeclared — what a stub *might* pass through, which the checked
+    # walks leave out and :func:`stub_assumptions` replays (the declared
+    # ``// rbcdc: stub … feedthrough=`` pins are in ``feedthrough``); and
+    # the input pins a ``hold=`` declaration names (``None``: undeclared).
+    stub: str | None = None
+    assumed_feedthrough: tuple[Bit, ...] = ()
+    stub_hold: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class StubAssumption:
+    """An undeclared reading of a bodyless stub that decided a verdict
+    (rtl-buddy-cdc#411) — advisory, never a finding.
+
+    A stub declares nothing, so the parent reads it the way that does not
+    flood a well-formed design: no combinational path through it, and its
+    payload held when an acknowledge from the destination enters it. Each
+    time that reading is what keeps ``rule_id`` quiet, the report says so
+    here, with what the rule would report otherwise (``message``) and the
+    ``// rbcdc: stub`` pragma that settles it.
+    """
+
+    rule_id: str
+    instance: str
+    module: str
+    port: str
+    message: str
+
+
+@dataclass(frozen=True)
+class BoundaryMemRead:
+    """A memory inside an abstracted block read asynchronously out
+    through an output pin, in the parent's terms (rtl-buddy-cdc#411):
+    :class:`~rtl_buddy_cdc.netlist.MemReadFact` with the memory and read
+    port named by instance, and the address / enable pins replaced by
+    the parent bits on them."""
+
+    instance: str
+    memory: str  # "<instance>.<memory>"
+    read_port: str  # "<instance>.<read port endpoint>"
+    write_clocks: tuple[str, ...]
+    addr_bits: tuple[Bit, ...]
+    read_clocks: tuple[str, ...] = ()  # judged by the body (MemReadFact)
 
 
 @dataclass(frozen=True)
@@ -6626,6 +6674,7 @@ def _cdc_012_boundary(
     ctx: _RuleContext,
     flops_by_name: dict[str, Flop],
     fanin_cache: dict[str, set[str]],
+    assumptions: list[StubAssumption] | None = None,
 ) -> Violation | None:
     """CDC-012 for a crossing launched from an abstracted block's output
     pin (rtl-buddy-cdc#408) — the flat check, with the payload register
@@ -6637,13 +6686,18 @@ def _cdc_012_boundary(
     (:attr:`DriverFacts.hold_domains` / ``hold_pins``): there is an
     acknowledge when the destination clock is among the domains reached
     inside, or when the parent's walk from the pins the inside walk
-    leaves through reaches a destination register. A stub (or an output
-    no single register drives) publishes nothing about the payload, so
-    the parent's walk starts from every non-clock input pin of the
-    instance: an acknowledge entering the block anywhere is taken as
-    holding the payload. That can miss a stub that takes an acknowledge
-    and still lets the payload run; it never fires where the flat run
-    finds an acknowledge.
+    leaves through reaches a destination register. A greybox output no
+    single register drives publishes nothing about the payload, so the
+    parent's walk starts from every non-clock input pin of the instance:
+    an acknowledge entering the block anywhere is taken as holding it.
+
+    A bodyless stub (rtl-buddy-cdc#411) has no body to say either; it is
+    read the same way (an acknowledge entering anywhere holds the payload),
+    and when that reading is what keeps CDC-012 quiet a
+    :class:`StubAssumption` is appended to ``assumptions``. A
+    ``// rbcdc: stub <module>.<port> hold=<pins>`` pragma replaces the
+    reading: the acknowledge from the destination has to enter on the
+    pins it names (``hold=none``: the payload is not held).
     """
     bsrc = _boundary_source_of(c, ctx)
     if bsrc is None or c.src_boundary is None:
@@ -6659,21 +6713,17 @@ def _cdc_012_boundary(
         return None
     inst = c.src_boundary[0]
     cell = module.cells[inst]
-    if drv is not None and drv.width > 1:
-        if c.dst_clock in drv.hold_domains:
-            return None
-        pins: Iterable[str] = drv.hold_pins
-    else:
-        clock_pins = ctx.boundary_clock_pins.get(inst, frozenset())
-        pins = sorted(
-            p
-            for p in cell.connections
-            if not cell.is_output_pin(p) and p not in clock_pins
-        )
-    bits = tuple(
-        b for p in pins for b in cell.connections.get(p, ()) if isinstance(b, int)
+    clock_pins = ctx.boundary_clock_pins.get(inst, frozenset())
+    data_pins = sorted(
+        p for p in cell.connections if not cell.is_output_pin(p) and p not in clock_pins
     )
-    if bits:
+
+    def acked(pins: Iterable[str]) -> bool:
+        bits = tuple(
+            b for p in pins for b in cell.connections.get(p, ()) if isinstance(b, int)
+        )
+        if not bits:
+            return False
         reached, _ = _ack_walk(
             module,
             bits,
@@ -6685,9 +6735,59 @@ def _cdc_012_boundary(
             excluded=_ack_walk_excluded(ctx),
             fanin_cache=fanin_cache,
         )
-        if c.dst_clock in reached:
+        return c.dst_clock in reached
+
+    if bsrc.stub is not None and bsrc.stub_hold is not None:
+        # A ``// rbcdc: stub … hold=`` declaration (rtl-buddy-cdc#411): the
+        # payload is held for an acknowledge on the pins it names, so one
+        # from the destination has to enter there.
+        if acked(bsrc.stub_hold):
             return None
-    return _cdc_012_violation(c, c.src_name, inst)
+        port = c.src_boundary[1]
+        v = _cdc_012_violation(c, c.src_name, inst)
+        named = ", ".join(f"`{p}`" for p in bsrc.stub_hold) or "none"
+        return replace(
+            v,
+            message=v.message
+            + (
+                f" Stub `{bsrc.stub}` is declared to hold `{port}` for an "
+                f"acknowledge on {named}, and none from {c.dst_clock!r} "
+                f"enters there."
+            ),
+        )
+    if drv is not None and drv.width > 1:
+        if c.dst_clock in drv.hold_domains:
+            return None
+        pins: Iterable[str] = drv.hold_pins
+    else:
+        pins = data_pins
+    if not acked(pins):
+        return _cdc_012_violation(c, c.src_name, inst)
+    if bsrc.stub is not None and assumptions is not None:
+        # An undeclared stub is taken to hold the payload because an
+        # acknowledge enters it: say so (rtl-buddy-cdc#411).
+        port = c.src_boundary[1]
+        entering = [p for p in data_pins if acked((p,))]
+        v = _cdc_012_violation(c, c.src_name, inst)
+        assumptions.append(
+            StubAssumption(
+                rule_id="CDC-012",
+                instance=inst,
+                module=bsrc.stub,
+                port=port,
+                message=(
+                    f"stub `{inst}` (`{bsrc.stub}`) is taken to hold `{port}` "
+                    f"because an acknowledge from {c.dst_clock!r} enters it on "
+                    f"{', '.join(f'`{p}`' for p in entering)}; a bodyless stub "
+                    f"declares nothing. If it does not hold the payload, CDC-012 "
+                    f"applies: {v.message} Declare it next to the stub: "
+                    f"`// rbcdc: stub {bsrc.stub}.{port} "
+                    f"hold={','.join(entering)}` (checked: the acknowledge must "
+                    f"enter there) or `hold=none` — or analyse it with --greybox."
+                ),
+            )
+        )
+    return None
 
 
 def check_cdc_014(
@@ -8242,6 +8342,44 @@ def _output_launch_index(
     return idx
 
 
+def _assumed_stubs(cone: set[Bit], ctx: _RuleContext) -> list[BoundarySource]:
+    """The bodyless-stub outputs in ``cone`` the walk went through on
+    their undeclared paths (:attr:`BoundarySource.assumed_feedthrough`)
+    — only in :func:`_stub_assumptions`' replay, which puts those paths
+    into ``feedthrough`` (rtl-buddy-cdc#411)."""
+    stubs: dict[str, BoundarySource] = {}
+    for b in cone:
+        src = ctx.boundary_sources.get(b)
+        if (
+            src is not None
+            and src.assumed_feedthrough
+            and src.label not in stubs
+            and any(fb in cone for fb in src.assumed_feedthrough)
+            and any(fb in src.feedthrough for fb in src.assumed_feedthrough)
+        ):
+            stubs[src.label] = src
+    return [stubs[k] for k in sorted(stubs)]
+
+
+def _assumed_stub_note(cone: set[Bit], ctx: _RuleContext) -> str:
+    """The note a CDC-024 / CDC-025 finding carries when its cone runs
+    through a bodyless stub on undeclared paths (rtl-buddy-cdc#411)."""
+    stubs = _assumed_stubs(cone, ctx)
+    if not stubs:
+        return ""
+    labels = ", ".join(f"`{src.label}`" for src in stubs)
+    first = stubs[0]
+    port = first.label.rpartition(".")[2]
+    return (
+        f" This reads {labels} as reached combinationally from every data "
+        f"input of the bodyless stub, which declares nothing about its "
+        f"paths: declare them next to the stub "
+        f"(`// rbcdc: stub {first.stub}.{port} feedthrough=<inputs>` or "
+        f"`feedthrough=none` for a registered output; `{first.stub}.*` for "
+        f"every output), or analyse it with --greybox."
+    )
+
+
 def check_cdc_024(
     module: Module,
     crossings: list[Crossing],  # noqa: ARG001
@@ -8330,6 +8468,7 @@ def check_cdc_024(
         label = typing.label(port_name, positions)
         cap = canonical(capture)
         q_cells, in_ports, cone = idx.cone(port_name, positions)
+        note = _assumed_stub_note(cone, ctx)
         by_domain: dict[str, list[str]] = defaultdict(list)
         seeds: list[Bit] = []
         first_flop: str | None = None
@@ -8416,7 +8555,8 @@ def check_cdc_024(
                     f"naming the receiver's synchroniser — the waived finding "
                     f"stays in the report as that obligation. If {capture} is "
                     f"the wrong clock, fix the set_output_delay -clock."
-                ),
+                )
+                + note,
                 cell_name=anchor,
             )
         )
@@ -8576,6 +8716,7 @@ def check_cdc_025(
             port.bits if positions is None else tuple(port.bits[i] for i in positions)
         )
         q_cells, in_ports, cone = idx.cone(port.name, positions)
+        note = _assumed_stub_note(cone, ctx)
         bnd_bits = (
             sorted(b for b in cone if b in ctx.boundary_sources)
             if ctx.boundary_sources
@@ -8701,7 +8842,8 @@ def check_cdc_025(
                         f"re-register the output there. If the receiver is known "
                         f"to tolerate it, waive CDC-025 for `{label}` with "
                         f"that reason."
-                    ),
+                    )
+                    + note,
                     cell_name=anchor,
                 )
             )
@@ -8741,7 +8883,8 @@ def check_cdc_025(
                     f"and CDC-024 cannot check it. {advice}. If it is "
                     f"intentionally unconstrained (a quasi-static status or "
                     f"debug output), waive CDC-025 for `{label}`."
-                ),
+                )
+                + note,
                 cell_name=anchor,
             )
         )
@@ -8790,12 +8933,13 @@ _MEMORY_CONE_FLOP_PINS: frozenset[str] = frozenset({"D", "EN", "E"})
 
 def _memory_control_cone(
     module: Module,
-    port: MemPort,
+    start: tuple[Bit, ...],
     read_clock: str,
     flop_clock: Callable[[str], str | None],
     ctx: _RuleContext,
 ) -> set[str]:
-    """Flops in the transitive fanin of ``port``'s address + enable,
+    """Flops in the transitive fanin of a read port's address + enable
+    (``start``, its live bits),
     walking back through combinational cells and through flops clocked
     on ``read_clock`` (their ``D`` / enable) — but not through flops of
     any other domain, which are recorded and left as leaves.
@@ -8808,7 +8952,7 @@ def _memory_control_cone(
     """
     cone: set[str] = set()
     seen: set[Bit] = set()
-    stack: list[Bit] = list(port.control_bits)
+    stack: list[Bit] = list(start)
     while stack:
         bit = stack.pop()
         if bit in seen:
@@ -8854,14 +8998,29 @@ def _memory_read_domains(
         clock = clock_of(port.clk)
         return {clock} if clock is not None else set()
     data = tuple(b for b in port.data if isinstance(b, int))
+    return _async_read_domains(
+        module, data, port.control_bits, flop_clock, clock_spec, ctx
+    )
+
+
+def _async_read_domains(
+    module: Module,
+    data: tuple[Bit, ...],
+    control: tuple[Bit, ...],
+    flop_clock: Callable[[str], str | None],
+    clock_spec: ClockSpec | None,
+    ctx: _RuleContext,
+) -> set[str]:
+    """The read domain(s) of an asynchronous read whose data bits are
+    ``data`` and address + enable bits ``control``: the domains of the
+    flops the data reaches through comb logic, else of the flops and
+    typed input ports the address is computed from."""
     captured = _forward_reachable_flops(module, data, ctx.bit_consumers)
     domains = {c for name in captured if (c := flop_clock(name)) is not None}
     if domains:
         return domains
     reached: set[Bit] = set()
-    flops, ports = _backward_fanin(
-        module, port.control_bits, ctx.bit_drivers, port_bits=reached
-    )
+    flops, ports = _backward_fanin(module, control, ctx.bit_drivers, port_bits=reached)
     domains = {c for name in flops if (c := flop_clock(name)) is not None}
     if clock_spec is None:
         return domains
@@ -8873,6 +9032,28 @@ def _memory_read_domains(
             if typed is not None and typed != UNCONSTRAINED_SENTINEL:
                 domains.add(typed)
     return domains
+
+
+def memory_clock_views(
+    module: Module, clock_spec: ClockSpec | None, ctx: _RuleContext
+) -> tuple[Callable[[Bit], str | None], Callable[[str], str | None]]:
+    """``(clock_of, flop_clock)``: a bit's clock root and a flop's clock,
+    resolved by :func:`~rtl_buddy_cdc.domain.bit_clock_resolver` with the
+    SDC's clock inputs — the view the crossing walk assigns domains
+    with, so memory-port clocks and crossing clocks agree."""
+    if clock_spec is not None:
+        clock_of = bit_clock_resolver(
+            module, max_depth=ctx.max_depth, **clock_spec.clock_root_inputs()
+        )
+    else:
+        clock_of = bit_clock_resolver(module, max_depth=ctx.max_depth)
+    flops_by_name = {f.cell.name: f for f in ctx.flops}
+
+    def flop_clock(name: str) -> str | None:
+        f = flops_by_name.get(name)
+        return clock_of(f.clk) if f is not None else None
+
+    return clock_of, flop_clock
 
 
 def memory_crossings(
@@ -8904,17 +9085,7 @@ def memory_crossings(
         return []
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    if clock_spec is not None:
-        clock_of = bit_clock_resolver(
-            module, max_depth=ctx.max_depth, **clock_spec.clock_root_inputs()
-        )
-    else:
-        clock_of = bit_clock_resolver(module, max_depth=ctx.max_depth)
-    flops_by_name = {f.cell.name: f for f in ctx.flops}
-
-    def flop_clock(name: str) -> str | None:
-        f = flops_by_name.get(name)
-        return clock_of(f.clk) if f is not None else None
+    clock_of, flop_clock = memory_clock_views(module, clock_spec, ctx)
 
     by_pair: dict[tuple[str, str], list[Crossing]] = defaultdict(list)
     for c in crossings:
@@ -8939,7 +9110,7 @@ def memory_crossings(
                 foreign = [w for w in sorted(writers) if w != r]
                 if not foreign:
                     continue
-                cone = _memory_control_cone(module, rp, r, flop_clock, ctx)
+                cone = _memory_control_cone(module, rp.control_bits, r, flop_clock, ctx)
                 for w in foreign:
                     out.append(
                         MemoryCrossing(
@@ -8961,6 +9132,78 @@ def memory_crossings(
                             ),
                         )
                     )
+    return out
+
+
+def boundary_memory_crossings(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None,
+    ctx: _RuleContext,
+) -> list[MemoryCrossing]:
+    """:func:`memory_crossings` for the memories inside abstracted blocks
+    whose asynchronous read data leaves through an output pin and whose
+    read domain only the parent can place (rtl-buddy-cdc#411).
+
+    The flat reading, split at the pin: the read clock is the domain of
+    the parent registers the output pins' data reaches (else of the
+    registers and typed ports the address pins are driven from), and the
+    control cone runs back from the parent nets on the address pins
+    (:func:`_memory_control_cone`). Every record is anchored on the
+    instance (``read_cell``), which is where a finding points.
+    """
+    data_of: dict[tuple[str, str], list[Bit]] = defaultdict(list)
+    reads: dict[tuple[str, str], BoundaryMemRead] = {}
+    for b, src in ctx.boundary_sources.items():
+        for mr in src.mem_reads:
+            key = (mr.memory, mr.read_port)
+            reads[key] = mr
+            data_of[key].append(b)
+    if not reads:
+        return []
+    _clock_of, flop_clock = memory_clock_views(module, clock_spec, ctx)
+    by_pair: dict[tuple[str, str], list[Crossing]] = defaultdict(list)
+    for c in crossings:
+        by_pair[(c.src_clock, c.dst_clock)].append(c)
+    out: list[MemoryCrossing] = []
+    for key in sorted(reads):
+        mr = reads[key]
+        data = tuple(sorted(set(data_of[key]), key=str))
+        captured = _forward_reachable_flops(module, data, ctx.bit_consumers)
+        read_domains = {k for n in captured if (k := flop_clock(n)) is not None}
+        if not read_domains:
+            read_domains = set(mr.read_clocks) | _async_read_domains(
+                module, data, mr.addr_bits, flop_clock, clock_spec, ctx
+            )
+        inst = mr.instance
+        for r in sorted(read_domains):
+            if r in mr.read_clocks:
+                continue  # placed by the body's address registers: judged there
+            foreign = [w for w in mr.write_clocks if w != r]
+            if not foreign:
+                continue
+            cone = _memory_control_cone(module, mr.addr_bits, r, flop_clock, ctx)
+            for w in foreign:
+                out.append(
+                    MemoryCrossing(
+                        memory=mr.memory,
+                        write_clock=w,
+                        read_clock=r,
+                        write_ports=(),
+                        read_port=mr.read_port,
+                        read_cell=inst,
+                        async_per_sdc=(
+                            clock_spec is not None
+                            and not clock_spec.is_unreachable_crossing(w, r)
+                            and clock_spec.are_async(w, r)
+                        ),
+                        control=tuple(
+                            c
+                            for c in by_pair.get((w, r), ())
+                            if c.dst_flop.cell.name in cone
+                        ),
+                    )
+                )
     return out
 
 
@@ -9014,7 +9257,9 @@ def check_cdc_026(
         return []
     if ctx is None:
         ctx = _build_context(module, clock_spec)
-    groups = cdc_026_groups(memory_crossings(module, crossings, clock_spec, ctx))
+    records = memory_crossings(module, crossings, clock_spec, ctx)
+    records += boundary_memory_crossings(module, crossings, clock_spec, ctx)
+    groups = cdc_026_groups(records)
     violations: list[Violation] = []
     for (memory, read_clock), records in groups.items():
         write_clocks = ", ".join(
@@ -9078,6 +9323,104 @@ RULES: dict[str, RuleFn] = {
     "CDC-025": check_cdc_025,
     "CDC-026": check_cdc_026,
 }
+
+
+_OUTPUT_LABEL = re.compile(r"top-level output `([^`\[]+)")
+
+
+def _stub_assumptions(
+    module: Module,
+    crossings: list[Crossing],
+    clock_spec: ClockSpec | None,
+    ctx: _RuleContext,
+    found: list[Violation],
+) -> list[StubAssumption]:
+    """Where an undeclared bodyless stub's reading decided a verdict
+    (rtl-buddy-cdc#411): :class:`StubAssumption` advisories.
+
+    - CDC-012: a stub payload taken as held because an acknowledge from
+      the destination enters the stub (:func:`_cdc_012_boundary`).
+    - CDC-024 / CDC-025: the two rules replayed with every undeclared
+      stub output reached combinationally from every data input pin of
+      the stub; each finding the replay adds to ``found`` is one the
+      stub's reading (no path through it) kept quiet.
+
+    Free when the design has no undeclared stub output.
+    """
+    stub_sources = [s for s in ctx.boundary_sources.values() if s.stub is not None]
+    if not stub_sources:
+        return []
+    out: list[StubAssumption] = []
+    flops_by_name = {f.cell.name: f for f in ctx.flops}
+    fanin_cache: dict[str, set[str]] = {}
+    for c in crossings:
+        if (
+            c.src_flop is None
+            and c.src_boundary is not None
+            and c.width > 1
+            and c.src_clock != UNCONSTRAINED_SENTINEL
+        ):
+            bsrc = _boundary_source_of(c, ctx)
+            if bsrc is not None and bsrc.stub is not None:
+                _cdc_012_boundary(
+                    module, c, ctx, flops_by_name, fanin_cache, assumptions=out
+                )
+    if clock_spec is None or not any(s.assumed_feedthrough for s in stub_sources):
+        return out
+    # Only an output whose cone (as the rules just walked it) stops at an
+    # undeclared stub output can change: skip the replay when none does.
+    assumed_bits = {
+        b for b, src in ctx.boundary_sources.items() if src.assumed_feedthrough
+    }
+    memo = ctx.output_launch_memo.get(id(clock_spec))
+    if memo is not None and not any(
+        assumed_bits & cone for _q, _p, cone in memo._cones.values()
+    ):
+        return out
+    replay = replace(
+        ctx,
+        boundary_sources={
+            b: (
+                replace(src, feedthrough=src.feedthrough + src.assumed_feedthrough)
+                if src.assumed_feedthrough
+                else src
+            )
+            for b, src in ctx.boundary_sources.items()
+        },
+        output_launch_memo={},
+    )
+    have = {
+        (v.rule_id, v.severity, m.group(1))
+        for v in found
+        if v.rule_id in ("CDC-024", "CDC-025")
+        and (m := _OUTPUT_LABEL.search(v.message)) is not None
+    }
+    idx = _output_launch_index(module, clock_spec, replay)
+    for v in check_cdc_024(module, crossings, clock_spec, ctx=replay) + check_cdc_025(
+        module, crossings, clock_spec, ctx=replay
+    ):
+        m = _OUTPUT_LABEL.search(v.message)
+        if m is None or (v.rule_id, v.severity, m.group(1)) in have:
+            continue
+        stubs = _assumed_stubs(idx.cone(m.group(1))[2], replay)
+        if not stubs:
+            continue
+        first = stubs[0]
+        inst, _, port = first.label.rpartition(".")
+        out.append(
+            StubAssumption(
+                rule_id=v.rule_id,
+                instance=inst,
+                module=first.stub or "",
+                port=port,
+                message=(
+                    f"read as having no combinational path through bodyless "
+                    f"stub output(s) {', '.join(f'`{s.label}`' for s in stubs)}; "
+                    f"if one exists, {v.rule_id} applies: {v.message}"
+                ),
+            )
+        )
+    return out
 
 
 def _tag_handshake_related(violations: list[Violation]) -> list[Violation]:
@@ -9210,6 +9553,7 @@ def run_all(
     max_depth: int = 16,
     sync_primitives: frozenset[str] = frozenset(),
     ignore_scan_mode: bool = False,
+    assumptions: list[StubAssumption] | None = None,
 ) -> list[Violation]:
     # DFT scan-mode suppression (#45), opt-in via ``--ignore-scan-mode``.
     # Filtering here — once, on the shared crossing list — rather than in
@@ -9291,6 +9635,10 @@ def run_all(
             )
         else:
             out.extend(rule(module, crossings, clock_spec, ctx=ctx))
+    # rtl-buddy-cdc#411: where reading an undeclared bodyless stub decided
+    # a verdict, the caller collects it as an advisory.
+    if assumptions is not None:
+        assumptions.extend(_stub_assumptions(module, crossings, clock_spec, ctx, out))
     # Reporter refinement (G-5, rtl-buddy-cdc#214): annotate CDC-001 /
     # CDC-002 findings that share an async domain pair with a CDC-012
     # finding so the user sees the missing-ack relationship without

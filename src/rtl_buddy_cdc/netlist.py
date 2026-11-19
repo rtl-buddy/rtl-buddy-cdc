@@ -186,6 +186,37 @@ class PinFacts:
     latch_feeds: tuple[tuple[str, str, str], ...] = ()
     gated: bool = False
     clock_out: tuple[str, ...] = ()
+    # rtl-buddy-cdc#411: an input that reaches no capture inside, only
+    # output pins, at least one of them through a memory's asynchronous
+    # read (address / enable → read data, a transit flat). It seeds no
+    # boundary sink; the parent's crossing walk passes through the block
+    # to the outputs it reaches (``PortBoundary.transit_from``).
+    transit: bool = False
+
+
+@dataclass(frozen=True)
+class MemReadFact:
+    """A memory inside an abstracted block whose asynchronous read data
+    leaves through an output pin (rtl-buddy-cdc#411).
+
+    Published by the greybox pass when the read data reaches no register
+    inside, so the parent, which sees where it is registered, judges
+    CDC-026 for it: the read clock is where the parent registers the
+    output (or computes the address), and the control cone runs back from
+    the parent nets on ``addr_pins``. ``read_clocks`` are the domains of
+    the address registers inside, already judged by the body. ``memory`` is the memory's name
+    inside the block, ``read_port`` the read port's endpoint there,
+    ``write_clocks`` the clocks it is written on.
+    """
+
+    memory: str
+    read_port: str
+    write_clocks: tuple[str, ...]
+    addr_pins: tuple[str, ...] = ()
+    # The clocks of the registers inside the body its address is computed
+    # from: the read domains the body judged itself (its own CDC-026),
+    # which the parent leaves to it.
+    read_clocks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -246,6 +277,16 @@ class PortBoundary:
     # combinational path to it — the feed-through the parent's output-cone
     # walk (CDC-024 / CDC-025) continues through.
     feedthrough: tuple[str, ...] = ()
+    # rtl-buddy-cdc#411: for an output, the input pins the parent's
+    # crossing walk passes through the block from (as through a comb
+    # cell), and whether the pin is seeded as a source of its own:
+    # ``seed`` False when no register, latch or opaque cell launches it
+    # inside — only a memory's asynchronous read and input pins, which a
+    # flat walk transits. ``mem_reads``: the asynchronous memory reads
+    # behind it whose CDC-026 verdict the parent owns.
+    transit_from: tuple[str, ...] = ()
+    seed: bool = True
+    mem_reads: tuple[MemReadFact, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -304,6 +345,11 @@ class BoundarySummary:
     # besides a flop capture (:class:`PinFacts`). A ``no_capture`` pin
     # gets no entry in ``input_ports``.
     pin_facts: dict[str, PinFacts] = field(default_factory=dict)
+    # rtl-buddy-cdc#411: a bodyless stub's summary (no body analysed, not
+    # a recognised CDC primitive). The parent assumes the conservative
+    # answer for what the stub does with its pins, unless a
+    # ``// rbcdc: stub`` pragma declares it.
+    stub: bool = False
 
 
 @dataclass(frozen=True)

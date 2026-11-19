@@ -74,7 +74,9 @@ from rtl_buddy_cdc.reset_hints import (
     load as load_reset_hints,
 )
 from rtl_buddy_cdc.rules import (
+    BoundaryMemRead,
     BoundarySource,
+    StubAssumption,
     Violation,
     _build_context as build_rule_context,
     run_all as run_all_rules,
@@ -634,6 +636,7 @@ def lint(
         sync_primitives=frozenset(sync_primitive),
         ignore_scan_mode=ignore_scan_mode,
         extra_waivers=pragma_mod.scan(sources),
+        stub_decls=pragma_mod.scan_stubs(sources),
     )
     if code != 0:
         raise typer.Exit(code=code)
@@ -855,6 +858,7 @@ def _analyze_module_and_report(
     sync_primitives: frozenset[str] = frozenset(),
     ignore_scan_mode: bool = False,
     extra_waivers: list[waivers_mod.Waiver] | None = None,
+    stub_decls: pragma_mod.StubDecls | None = None,
 ) -> int:
     """Run the analyzer on an in-memory ``Module`` and dispatch to the
     chosen reporter. Returns a process-style exit code: 0 = clean (or
@@ -901,6 +905,9 @@ def _analyze_module_and_report(
     spec: sdc_mod.ClockSpec | None = None
     async_crossings: list[Crossing] = []
     violations: list[Violation] = []
+    # rtl-buddy-cdc#411: where reading an undeclared bodyless stub decided
+    # a verdict — report-only advisories.
+    stub_assumptions: list[StubAssumption] = []
     scan_mode_suppressed = 0
     # Whether the rule pack ran at all (needs an SDC, and not
     # ``--no-findings``) — the domain map says "not checked" otherwise.
@@ -1005,6 +1012,7 @@ def _analyze_module_and_report(
                 boundary_clock_pins[inst_name] = (
                     frozenset(body_fanout[cell.type]) | type_pins[cell.type]
                 )
+        stub_ports = _checked_stub_decls(stub_decls, blackboxes)
         # DFT scan structures in the clock network (#45). Computed off
         # the same clock-root walk that assigned the domains above, and
         # returns immediately when the design carries no scan-mode
@@ -1216,8 +1224,38 @@ def _analyze_module_and_report(
                 )
             # The output pins, as the sources the parent's backward walks
             # stop at (rtl-buddy-cdc#405).
+            inst_cell = module.cells[inst_name]
+            stub_inputs: tuple[str, ...] = ()
+            if summary.stub:
+                # A bodyless stub declares nothing (rtl-buddy-cdc#411): an
+                # output is read as having no combinational path from its
+                # inputs and its payload as held when an acknowledge enters
+                # it, unless a ``// rbcdc: stub`` pragma declares the paths
+                # (``feedthrough=``) or the hold (``hold=``). Undeclared, the
+                # paths it might have are kept aside so the rule pack can
+                # say where that reading decided a verdict.
+                clock_pins = boundary_clock_pins.get(inst_name, frozenset())
+                stub_inputs = tuple(
+                    sorted(
+                        p
+                        for p in inst_cell.connections
+                        if not inst_cell.is_output_pin(p) and p not in clock_pins
+                    )
+                )
             for port_name, pb in summary.ports.items():
-                conn = module.cells[inst_name].connections.get(port_name, ())
+                conn = inst_cell.connections.get(port_name, ())
+                decl = (
+                    _stub_decl(stub_ports, inst_cell.type, port_name)
+                    if summary.stub
+                    else None
+                )
+                ft_pins: tuple[str, ...] = pb.feedthrough
+                assumed: tuple[str, ...] = ()
+                if summary.stub:
+                    if decl is not None and decl.feedthrough is not None:
+                        ft_pins = decl.feedthrough
+                    else:
+                        assumed = stub_inputs
                 source = BoundarySource(
                     label=f"{inst_name}.{port_name}",
                     clock=pb.src_clock,
@@ -1228,9 +1266,35 @@ def _analyze_module_and_report(
                     launchers=tuple(f"{inst_name}.{n}" for n in pb.launchers),
                     feedthrough=tuple(
                         b
-                        for pin in pb.feedthrough
-                        for b in module.cells[inst_name].connections.get(pin, ())
+                        for pin in ft_pins
+                        for b in inst_cell.connections.get(pin, ())
                         if isinstance(b, int)
+                    ),
+                    stub=inst_cell.type if summary.stub else None,
+                    assumed_feedthrough=tuple(
+                        b
+                        for pin in assumed
+                        for b in inst_cell.connections.get(pin, ())
+                        if isinstance(b, int)
+                    ),
+                    stub_hold=decl.hold if decl is not None else None,
+                    mem_reads=tuple(
+                        BoundaryMemRead(
+                            instance=inst_name,
+                            memory=f"{inst_name}.{mr.memory}",
+                            read_port=f"{inst_name}.{mr.read_port}",
+                            write_clocks=mr.write_clocks,
+                            read_clocks=mr.read_clocks,
+                            addr_bits=tuple(
+                                b
+                                for pin in mr.addr_pins
+                                for b in module.cells[inst_name].connections.get(
+                                    pin, ()
+                                )
+                                if isinstance(b, int)
+                            ),
+                        )
+                        for mr in pb.mem_reads
                     ),
                 )
                 for b in conn:
@@ -1309,6 +1373,7 @@ def _analyze_module_and_report(
                 cdc_018_depth_threshold=cdc_018_depth_threshold,
                 sync_primitives=sync_primitives,
                 ignore_scan_mode=ignore_scan_mode,
+                assumptions=stub_assumptions,
                 **rule_ctx_kwargs,
             )
             # Findings from INSIDE an analysed boundary module (#261),
@@ -1431,6 +1496,7 @@ def _analyze_module_and_report(
         scan_mode_suppressed=scan_mode_suppressed,
         crossing_depth=crossing_depth,
         depth_cuts=depth_cuts,
+        stub_assumptions=stub_assumptions,
     )
 
     # Domain-map emission runs *before* the normal report so a write
@@ -1630,6 +1696,66 @@ def _boundary_scan_sinks(
             if single or sink_clock == domain:
                 out.add(f"{inst}.{port}")
     return frozenset(out)
+
+
+def _stub_decl(
+    ports: dict[tuple[str, str], pragma_mod.StubPortDecl], module: str, port: str
+) -> pragma_mod.StubPortDecl | None:
+    """The declaration for one stub output: the pragma naming it, each
+    key it leaves unset taken from a ``<module>.*`` pragma."""
+    own = ports.get((module, port))
+    every = ports.get((module, "*"))
+    if own is None or every is None:
+        return own or every
+    return dataclasses.replace(
+        own,
+        feedthrough=own.feedthrough
+        if own.feedthrough is not None
+        else every.feedthrough,
+        hold=own.hold if own.hold is not None else every.hold,
+    )
+
+
+def _checked_stub_decls(
+    decls: pragma_mod.StubDecls | None,
+    blackboxes: dict[str, netlist.Module] | None,
+) -> dict[tuple[str, str], pragma_mod.StubPortDecl]:
+    """The ``// rbcdc: stub`` declarations that name an output of a
+    bodyless stub and its input pins (rtl-buddy-cdc#411). A pragma for a
+    module that is no stub in this run (flattened, or a greybox, whose
+    body says what its pins do) does not apply and is dropped quietly; an
+    unreadable one, or one naming a port or pin the stub does not have,
+    is reported on stderr and dropped, so a typo never passes silently."""
+    if decls is None:
+        return {}
+    for problem in decls.problems:
+        typer.echo(f"warning: {problem}", err=True)
+    out: dict[tuple[str, str], pragma_mod.StubPortDecl] = {}
+    for key, decl in sorted(decls.ports.items()):
+        sub = (blackboxes or {}).get(decl.module)
+        if sub is None or sub.cells:
+            # Not a stub in this run — flattened, or a greybox whose body
+            # says what its pins do: the pragma does not apply.
+            continue
+        where = f"warning: {decl.origin}: stub pragma for {decl.module}.{decl.port}"
+        port = sub.ports.get(decl.port)
+        if decl.port != "*" and (port is None or port.direction == "input"):
+            typer.echo(f"{where} ignored: {decl.port} is not an output", err=True)
+            continue
+        named = (decl.feedthrough or ()) + (decl.hold or ())
+        bad = sorted(
+            p
+            for p in named
+            if sub.ports.get(p) is None or sub.ports[p].direction == "output"
+        )
+        if bad:
+            typer.echo(
+                f"{where} ignored: not an input of {decl.module}: {', '.join(bad)}",
+                err=True,
+            )
+            continue
+        out[key] = decl
+    return out
 
 
 def _filter_async(
