@@ -361,7 +361,9 @@ Consequences, deliberately:
   input cone, so a crossing into it is **not reported**: nothing it
   captures can reach an output. It is **named** instead
   (rtl-buddy-cdc#414): `liveness.dropped_registers` lists every register
-  or latch the pass removed and the CLI prints `note: N register(s)
+  or latch the pass removed that captures something (an input or another
+  register reaches its data / enable / sync-reset pins; a loop variable
+  fed only by itself and constants is not listed) and the CLI prints `note: N register(s)
   left out of the CDC analysis …` on stderr, so an unconnected
   synchroniser never vanishes silently. For the same reason the `lint`
   Yosys flow no longer runs `opt_clean`, which deleted those registers

@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not lowered (a dropped output connection, assignment or block) or as
   an opaque driver now keeps what it reads observable, so the registers
   behind it are still crossing destinations; every register the
-  unobservable-cell pass removes is named on stderr (`note: N
+  unobservable-cell pass removes that captures anything (an input or
+  another register) is named on stderr (`note: N
   register(s) left out of the CDC analysis …`); the `lint` Yosys flow no
   longer runs `opt_clean`, which deleted such registers before the
   analyzer could name them (verdict-identical: the analyzer prunes the

@@ -90,7 +90,7 @@ Primary mode (`analyze`):
 
 | Input | Required | Purpose |
 |---|---|---|
-| Yosys netlist JSON | yes | Flattened design (output of `write_json`). `opt_clean` is not required: cells no output can observe are ignored, so the verdict is the same with or without it, and every register left out that way is named on stderr (`note: N register(s) left out of the CDC analysis …`). |
+| Yosys netlist JSON | yes | Flattened design (output of `write_json`). `opt_clean` is not required: cells no output can observe are ignored, so the verdict is the same with or without it, and every register left out that way that captures anything (an input or another register; a loop variable fed only by itself is not listed) is named on stderr (`note: N register(s) left out of the CDC analysis …`). |
 | **SDC** (`.sdc`) | recommended | Clock declarations + async groups; without it, rule checks are skipped and the run is just a structural summary. Cross-statement clock-graph diagnostics — same-port-in-multiple-clocks, unresolved master, master cycles, duplicate clock name — are surfaced as warnings (G-11 / rtl-buddy-cdc#218). |
 | Waiver file | optional | Per-violation suppression with reason (see [Waivers](#waivers)) |
 | `--baseline FILE.json` | optional | Filter out findings already present in a prior JSON report; the carried-over set is surfaced as a separate tally and never drives the exit code. Useful for "fail PR only on new findings". Matches on `(rule_id, cell_name, message)`. |

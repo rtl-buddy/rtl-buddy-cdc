@@ -245,15 +245,79 @@ def prune_dead_cells(
     )
 
 
+# Pins through which a register captures data (not its clock or its
+# asynchronous controls).
+_CAPTURE_PINS = frozenset({"D", "EN", "E", "SRST", "AD"})
+
+
 def dropped_registers(before: Module, after: Module) -> list[str]:
     """Names of the registers / latches of ``before`` that
-    :func:`prune_dead_cells` removed to give ``after``, sorted
-    (rtl-buddy-cdc#414: reported, so a register nothing observes never
-    leaves the crossing analysis silently)."""
+    :func:`prune_dead_cells` removed to give ``after`` and that capture
+    something — another register or a module input reaches them through
+    combinational logic — sorted (rtl-buddy-cdc#414: reported, so a
+    register nothing observes never leaves the crossing analysis
+    silently). A register fed only by constants and itself (the loop
+    variable Yosys ``proc`` leaves for a ``for`` loop) can be no crossing
+    destination and is not listed."""
     if after is before:
         return []
-    return sorted(
-        name
+    dead = [
+        cell
         for name, cell in before.cells.items()
         if name not in after.cells and pure_cell_outputs(cell.type) == _Q
-    )
+    ]
+    if not dead:
+        return []
+    drivers: dict[int, Cell] = {}
+    for cell in before.cells.values():
+        outs = pure_cell_outputs(cell.type)
+        for pin, bits in cell.connections.items():
+            if outs is not None and pin not in outs:
+                continue
+            if outs is None and not cell.is_output_pin(pin):
+                continue
+            for b in bits:
+                if isinstance(b, int):
+                    drivers[b] = cell
+    inputs = {
+        b
+        for p in before.ports.values()
+        if p.direction != "output"
+        for b in p.bits
+        if isinstance(b, int)
+    }
+    return sorted(c.name for c in dead if _captures(c, drivers, inputs))
+
+
+def _captures(reg: Cell, drivers: Mapping[int, Cell], inputs: set[int]) -> bool:
+    """Whether a register / input port bit other than ``reg`` itself
+    reaches one of ``reg``'s capture pins (data, enable, synchronous
+    reset) through combinational cells."""
+    stack = [
+        b
+        for pin, bits in reg.connections.items()
+        if pin in _CAPTURE_PINS
+        for b in bits
+        if isinstance(b, int)
+    ]
+    seen: set[int] = set()
+    while stack:
+        b = stack.pop()
+        if b in seen:
+            continue
+        seen.add(b)
+        if b in inputs:
+            return True
+        cell = drivers.get(b)
+        if cell is None or cell is reg:
+            continue
+        if pure_cell_outputs(cell.type) != _Y:
+            return True  # another register, or an instance / unknown cell
+        stack.extend(
+            x
+            for pin, bits in cell.connections.items()
+            if pin != "Y"
+            for x in bits
+            if isinstance(x, int)
+        )
+    return False

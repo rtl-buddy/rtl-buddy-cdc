@@ -286,3 +286,23 @@ def test_live_counter_register_still_fires_cdc_011(
     assert data["modules"]["ip_cdc_handshake"]["cells"][reg]["type"] == "$dff"
     exposed = _expose(raw, tmp_path, reg, "Q")
     assert _fired(exposed, sdc) == {"CDC-011": 1}
+
+
+def test_dropped_registers_lists_only_registers_that_capture() -> None:
+    """rtl-buddy-cdc#414: every pruned register that captures something
+    (an input, another register) is named; one fed only by itself and
+    constants (a ``for``-loop variable ``proc`` leaves) is not."""
+    from rtl_buddy_cdc.liveness import dropped_registers
+
+    m = _mod(
+        [
+            _flop("kept", D, OUT),
+            _flop("sync_meta", D, 20),
+            _flop("sync_q", 20, 21),
+            Cell("inc", "$add", {"A": (30,), "B": ("1",), "Y": (31,)}),
+            _flop("loop_i", 31, 30),
+        ],
+        [_port("clk", "input", CLK), _port("d", "input", D), _port("q", "output", OUT)],
+    )
+    assert dropped_registers(m, prune_dead_cells(m)) == ["sync_meta", "sync_q"]
+    assert dropped_registers(m, m) == []
