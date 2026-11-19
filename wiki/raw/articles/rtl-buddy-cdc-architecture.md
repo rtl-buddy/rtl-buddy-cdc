@@ -72,6 +72,7 @@ swappable so the rule pack doesn't depend on a specific toolchain.
                         ▼
         ┌──────────────────────────────────┐
         │ liveness.prune_dead_cells (1a)   │  drop cells no output can observe
+        │ regfile.recognise / rewrite      │  register array → memory (§8.21)
         └──────────────────────────────────┘
                         ▼
         ┌──────────────────────────────────┐
@@ -125,6 +126,7 @@ without one the tool prints the structural summary and exits 0.
 | `frontends/slang.py` | slang frontend: elaborate SystemVerilog via pyslang directly | `elaborate`, `SlangFrontendUnavailable`, `SlangElaborationError` |
 | `netlist.py` | Parse Yosys `write_json` output into typed structs | `Module`, `Cell`, `Port`, `Netname`, `BoundarySummary`, `PortBoundary` |
 | `regroup.py` | Loader normalisation: rebuild bit-blasted gate-level registers (and the lane-wise logic in front of them) as wide coarse cells (rtl-buddy-cdc#337) | `regroup_flops`, `REGROUPED_ATTR`, `ORPHAN_ATTR` |
+| `regfile.py` | Register arrays that are one memory in all but coding style → `$memwr_v2` / `$memrd_v2` (rtl-buddy-cdc#414, §8.21) | `recognise`, `rewrite`, `RegisterMemory`, `element_netnames` |
 | `gate_eval.py` | Truth tables of small combinational cones (functional gray recognition on gate netlists) | `cone_tables` |
 | `flops.py` | Recognise the 11 Yosys FF cell variants and extract CLK / D / Q | `Flop`, `FF_CELL_TYPES` |
 | `domain.py` | Trace clock roots, find flop→flop crossings | `FlopDomain`, `Crossing`, `trace_clock_root`, `find_crossings` |
@@ -150,8 +152,9 @@ which `cli.lint` consumes when the user supplies SV sources.
 built is pluggable:
 
 - **Yosys frontend** (`frontends/yosys.py`) — runs `yosys -p
-  'read_verilog ...; hierarchy -top X; proc; flatten; opt_clean;
-  write_json /tmp/out.json'`, then loads the JSON via `netlist.load`.
+  'read_verilog ...; hierarchy -top X; proc; flatten;
+  write_json /tmp/out.json'` (no `opt_clean` since rtl-buddy-cdc#414,
+  §4.1a), then loads the JSON via `netlist.load`.
   This is the historical primary path and remains the default for
   `lint --frontend yosys` / `analyze --netlist file.json`.
 - **slang frontend** (`frontends/slang.py`) — elaborates SV sources
@@ -209,6 +212,28 @@ continuous `assign` additionally rewrites every cell emitted *earlier
 in source order* that read the net's placeholder bits (applied once at
 the end of the walk), so `if (pop && !empty)` above
 `assign empty = …` reads the flag's real driver (#326).
+
+A **top-level interface port** (rtl-buddy-cdc#414) is lowered through
+the interface instance slang elaborates for it
+(`AllowTopLevelIfacePorts`): the instance body is walked like an
+inlined child under the `<port>.` prefix (`apb.`, `apb[1].` for each
+element of an interface array, `o.inner.` for a nested interface), so
+a read or write of `apb.psel` anywhere in the design — through the
+modport, or through a child module's interface port bound to it — is
+that member's bits, and every member is a top-level `Port` named
+`<port>.<member>` (Yosys `read_verilog`'s name for it). Its direction is
+settled after the walk: `output` when anything drives one of its bits,
+else `input` (an undriven modport `output` stays an `output`). Before
+this, a read of `apb.psel` was an opaque driver and a write of
+`apb.prdata` was dropped.
+
+Whatever the builder cannot lower stays **observable**: a dropped
+output port connection, a dropped assignment or block and an opaque
+right-hand side each feed what they read into an `$_OPAQUE_SINK_` cell
+(no outputs, not a known Yosys cell, so an observation point for §4.1a
+and a dead end for the crossing walks). The registers behind such a
+construct are still crossing destinations; the construct itself is
+reported on stderr as before.
 Expression shapes lower to the Yosys cell zoo (binary →
 `$and`/`$or`/`$xor`/…; unary → `$not`/`$logic_not`/`$neg`/
 `$reduce_*`; conditional → `$mux`; element- and range-select →
@@ -334,7 +359,14 @@ Consequences, deliberately:
 
 - A flop whose `Q` reaches no observation point is dead with its whole
   input cone, so a crossing into it is **not reported**: nothing it
-  captures can reach an output. It is also the flop `opt_clean`
+  captures can reach an output. It is **named** instead
+  (rtl-buddy-cdc#414): `liveness.dropped_registers` lists every register
+  or latch the pass removed and the CLI prints `note: N register(s)
+  left out of the CDC analysis …` on stderr, so an unconnected
+  synchroniser never vanishes silently. For the same reason the `lint`
+  Yosys flow no longer runs `opt_clean`, which deleted those registers
+  before the analyzer could see them; constructs the slang frontend
+  cannot lower keep their inputs observable (§3.1). The pruned flop is the one `opt_clean`
   deletes, so the verdict on a netlist equals the verdict on that
   netlist after `opt_clean` (held for the whole corpus by
   `tests/test_gate_level_corpus.py::test_verdict_invariant_under_opt_clean`).
@@ -2484,7 +2516,7 @@ fork):
 
 | Flow | Cells |
 |---|---|
-| `lint` (`read_verilog` or `read_slang`; `proc; flatten; opt_clean`) | one `$memwr_v2` per write port; one **asynchronous** `$memrd` (`read_verilog`) / `$memrd_v2` (`read_slang`) per read, `CLK_ENABLE=0` — a registered read is that port feeding an ordinary flop; `$meminit_v2` for initialisers |
+| `lint` (`read_verilog` or `read_slang`; `proc; flatten`) | one `$memwr_v2` per write port; one **asynchronous** `$memrd` (`read_verilog`) / `$memrd_v2` (`read_slang`) per read, `CLK_ENABLE=0` — a registered read is that port feeding an ordinary flop; `$meminit_v2` for initialisers |
 | `memory_dff` | the same, with an output register merged into a **clocked** `$memrd_v2` where it can be (`CLK_ENABLE=1`, `ARST` / `SRST` / `EN` / `CE_OVER_SRST` …) |
 | `memory_collect` / `memory -nomap` | one `$mem_v2` per memory, every per-port field packed side by side: `WR_CLK` / `RD_CLK` one bit per port, `WR_ADDR` / `RD_ADDR` `ABITS` per port, `WR_DATA` / `WR_EN` / `RD_DATA` `WIDTH` per port, `RD_EN` one bit per port, and per-port flags (`WR_CLK_ENABLE`, `RD_CLK_ENABLE`, …) as bit strings, port *i* the *i*-th character from the right |
 | `memory_map` | plain flops and muxes — ordinary flop crossings, out of CDC-026's scope |
@@ -3646,6 +3678,44 @@ through logic into an R register), `good_async_fifo_inferred_ram`
 recognised), `good_same_clock_ram` (silent), and
 `bad_ram_write_addr_wrong_domain` (CDC-004 on the write port, no
 CDC-026). Both frontends reach the same verdict on all five.
+
+**Register arrays (rtl-buddy-cdc#414).** A memory written in a block
+with an asynchronous reset is not a memory to Yosys (`mem2reg`) or to
+the slang frontend (#401): it is `DEPTH` registers loaded through a
+decode of the write address and read through a mux — and a read side
+that captures the word in several registers fired CDC-020 once per
+word, on the textbook async FIFO. `regfile.recognise` (run by the CLI
+after §4.1a, on the live netlist, then §4.1a again) recognises exactly
+the memory shape and `regfile.rewrite` replaces it with one `$memwr_v2`
+(`ADDR` = the decode's control leaves, `DATA` = the shared write bus)
+and one asynchronous `$memrd_v2` per read tree, `MEMID` the array name,
+so the crossing walk and this rule see a memory. The conditions, all
+checked on the netlist:
+
+- ≥ 2 registers named as elements of one unpacked array (`mem[k]`, the
+  netnames both frontends emit), one clock / type / edge, no reset,
+  set or load pin (`$dff` / `$dffe`, gate-level `$_DFF(E)_*`);
+- each register's next state is its own value or one write-data bus
+  shared by all, through `$mux` legs (or an enable pin); the control
+  cone behind the selects — walked back through the comb cells only
+  the structure reads, stopping at a shared net, a register or a port,
+  each a free variable, ≤ 12 of them — is evaluated over every
+  assignment: **at most one** register loads, and each loads in some;
+- the registers are read only by their hold logic and multiplexer
+  trees (`$mux` / `$_MUX_` / `$pmux` / `$bmux` / `$shiftx`, grown only
+  through cells whose every data input is a word bit, a tree output
+  or a constant), one read port per connected tree; over every
+  assignment of each tree's control leaves its output is one whole
+  word (or undefined), each bit in a fixed column.
+
+Free variables over-approximate the reachable control values, so a
+pass is sound; correlation the enumeration cannot see only rejects. A
+rejected array stays registers, and a CDC-020 on an element names the
+array and the fix. Gate-level netlists (`techmap` turns the read
+`$pmux` into AND / OR gates) are not recognised (gate-level corpus
+allowlist). Fixture: `good_async_fifo_reset_block` (CDC-020 × 8 → clean
+on both frontends); an unsynchronised read of such an array is CDC-026
+(`tests/test_regfile_memory.py`).
 
 **Inside a greybox (rtl-buddy-cdc#411).** A memory in a `--greybox` body
 read asynchronously into the parent is judged in the parent from the
