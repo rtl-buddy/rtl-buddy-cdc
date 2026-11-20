@@ -45,6 +45,21 @@ def pytest_configure(config) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_yosys_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts with ``RTL_BUDDY_SLANG_PLUGIN`` unset.
+
+    ``lint --frontend yosys`` falls back to that variable for
+    ``--yosys-plugin``, which switches the flow from ``read_verilog`` to
+    ``read_slang``. The suite's ``--frontend yosys`` cases assert
+    ``read_verilog`` behaviour, so a developer shell that exports the
+    variable (as the plugin CI job does) must not change them. Tests of
+    the plugin read the variable at import time and pass the path with
+    ``--yosys-plugin``; tests of the fallback set it themselves.
+    """
+    monkeypatch.delenv("RTL_BUDDY_SLANG_PLUGIN", raising=False)
+
+
 # Opt-in switch for the ``integration`` marker (rtl-buddy-cdc#331).
 INTEGRATION_ENV = "RB_CDC_INTEGRATION"
 

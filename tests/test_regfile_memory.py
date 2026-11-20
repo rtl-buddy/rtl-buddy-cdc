@@ -34,13 +34,6 @@ PYSLANG = importlib.util.find_spec("pyslang") is not None
 YOSYS = shutil.which("yosys") is not None
 
 
-@pytest.fixture(autouse=True)
-def _no_ambient_yosys_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--frontend yosys`` here means ``read_verilog``: an ambient
-    ``RTL_BUDDY_SLANG_PLUGIN`` would switch the flow to ``read_slang``."""
-    monkeypatch.delenv("RTL_BUDDY_SLANG_PLUGIN", raising=False)
-
-
 def _run(tmp_path: Path, args: list[str]) -> tuple[dict, str]:
     out = tmp_path / "r.json"
     result = CliRunner().invoke(app, [*args, "--format", "json", "--output", str(out)])

@@ -53,13 +53,6 @@ _EXPECTED_PORTS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def _no_ambient_yosys_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--frontend yosys`` here means ``read_verilog``: an ambient
-    ``RTL_BUDDY_SLANG_PLUGIN`` would switch the flow to ``read_slang``."""
-    monkeypatch.delenv("RTL_BUDDY_SLANG_PLUGIN", raising=False)
-
-
 def _lint(tmp_path: Path, frontend: str, sv: Path = SV, sdc: Path = SDC, top=TOP):
     out = tmp_path / f"{frontend}.json"
     result = CliRunner().invoke(
